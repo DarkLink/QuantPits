@@ -30,7 +30,7 @@ port_analysis_config: &port_analysis_config
     backtest:
         start_time: <TBD>
         end_time: <TBD>
-        account: <TBD>
+        account: 10000000
         benchmark: *benchmark
         exchange_kwargs:
             limit_threshold: 0.095
