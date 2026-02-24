@@ -8,7 +8,7 @@ Post-Trade 脚本用于处理实盘交易数据：从交易软件导出文件中
 
 | 脚本 | 用途 |
 |------|------|
-| `weekly_post_trade.py` | 批量处理交易日数据，更新持仓和资金 |
+| `prod_post_trade.py` | 批量处理交易日数据，更新持仓和资金 |
 
 ---
 
@@ -18,14 +18,14 @@ Post-Trade 脚本用于处理实盘交易数据：从交易软件导出文件中
 QuantPits/
 ├── engine/
 │   ├── scripts/
-│   │   └── weekly_post_trade.py          # 本脚本
+│   │   └── prod_post_trade.py          # 本脚本
 │   └── docs/
 │       └── 04_POST_TRADE_GUIDE.md        # 本文档
 │
 └── workspaces/
     └── <YourWorkspace>/                  # 激活的隔离工作区
         ├── config/
-        │   ├── weekly_config.json        # 持仓/现金/处理状态
+            ├── prod_config.json        # 持仓/现金/处理状态
         │   └── cashflow.json             # 出入金记录
         └── data/
             ├── YYYY-MM-DD-table.xlsx     # 交易软件导出文件（每日一个）
@@ -89,16 +89,16 @@ QuantPits/
 cd QuantPits
 
 # 正常运行：处理上次处理日到今天的所有交易日
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 
 # 仅预览：查看会处理哪些日期和 cashflow，不写入任何文件
-python engine/scripts/weekly_post_trade.py --dry-run
+python engine/scripts/prod_post_trade.py --dry-run
 
 # 指定结束日期
-python engine/scripts/weekly_post_trade.py --end-date 2026-02-10
+python engine/scripts/prod_post_trade.py --end-date 2026-02-10
 
 # 详细输出：显示每笔交易明细
-python engine/scripts/weekly_post_trade.py --verbose
+python engine/scripts/prod_post_trade.py --verbose
 ```
 
 ---
@@ -139,16 +139,16 @@ cash_after = cash_before + 卖出收入 - 买入支出 + 红利利息 + cashflow
 
 ## 典型工作流
 
-### 场景 1：每周例行处理
+### 场景 1：例行处理
 
 ```bash
 # 1. 将交易软件导出文件放入 data/ 目录，命名为 YYYY-MM-DD-table.xlsx
 # 2. 如有出入金，编辑 config/cashflow.json
 # 3. 运行脚本
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 ```
 
-### 场景 2：周中有多次出入金
+### 场景 2：两次处理之间有多次出入金
 
 ```bash
 # 编辑 cashflow.json，按日期填写每次出入金
@@ -156,21 +156,21 @@ cat config/cashflow.json
 # {"cashflows": {"2026-02-03": 50000, "2026-02-06": -20000}}
 
 # 预览确认
-python engine/scripts/weekly_post_trade.py --dry-run
+python engine/scripts/prod_post_trade.py --dry-run
 
 # 确认无误后执行
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 ```
 
 ### 场景 3：先预览再执行
 
 ```bash
 # 查看处理计划
-python engine/scripts/weekly_post_trade.py --dry-run
+python engine/scripts/prod_post_trade.py --dry-run
 # → 显示将处理的日期列表和 cashflow
 
 # 确认后实际运行
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 ```
 
 ---
@@ -178,7 +178,7 @@ python engine/scripts/weekly_post_trade.py
 ## 完整参数一览
 
 ```
-python engine/scripts/weekly_post_trade.py --help
+python engine/scripts/prod_post_trade.py --help
 
 可选参数:
   --end-date TEXT   结束日期 (YYYY-MM-DD)，默认为今天
@@ -191,7 +191,7 @@ python engine/scripts/weekly_post_trade.py --help
 ## 注意事项
 
 > [!IMPORTANT]
-> 本脚本**仅处理实盘交易数据**，与训练 (`weekly_train_predict.py`)、预测 (`ensemble_predict.py`)、回测 (`brute_force_ensemble.py`) 等模块完全独立，互不耦合。
+> 本脚本**仅处理实盘交易数据**，与训练 (`prod_train_predict.py`)、预测 (`prod_predict_only.py`)、回测 (`brute_force_ensemble.py`) 等模块完全独立，互不耦合。
 
 > [!TIP]
 > 建议在正式运行前先用 `--dry-run` 确认处理计划，特别是有 cashflow 的情况。

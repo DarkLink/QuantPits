@@ -2,7 +2,7 @@
 
 ## 系统定位
 
-基于 Qlib 的**周频量化交易生产系统**，采用"多模型训练 → 组合优选 → 融合预测 → 订单生成"的流水线架构，服务于 CSI300 市场的实盘交易。
+基于 Qlib 的**各频次量化交易生产系统**（支持周频/日频），采用"多模型训练 → 组合优选 → 融合预测 → 订单生成"的流水线架构。
 
 ---
 
@@ -23,7 +23,7 @@
 
 ## 核心设计理念
 
-本系统的每一步都是**可选、可组合**的。只有"预测"和"订单生成"是每周必须执行的环节，其余步骤按需触发：
+本系统的每一步都是**可选、可组合**的。只有"预测"和"订单生成"是例行操作，其余步骤根据需要触发：
 
 | 步骤 | 是否每次都做 | 说明 |
 |------|:---:|------|
@@ -31,7 +31,7 @@
 | ② 预测 | ✅ 每次 | 可随训练一起产出，也可用已有模型单独预测 |
 | ③ 暴力穷举 | ❌ 偶尔 | 非常耗时，选好的组合可持续使用一段时间 |
 | ④ 融合预测 | ✅ 每次 | 支持多组合融合和对比，用选定组合生成最终融合信号 |
-| ⑤ Post-Trade | ✅ 每次 | 处理上周实盘数据,更新持仓和资金 |
+| ⑤ Post-Trade | ✅ 每次 | 处理上周期实盘数据,更新持仓和资金 |
 | ⑥ 订单生成 | ✅ 每次 | 基于融合预测和当前持仓,输出买卖建议 + 多模型判断 |
 | ⑦ 信号排名 | 可选 | 归一化分数生成 Top N 排名，适合分享 |
 
@@ -45,12 +45,12 @@
 ```mermaid
 flowchart TB
     subgraph TRAIN["① 训练（按需）"]
-        TP["weekly_train_predict.py<br/>全量训练"]
+        TP["prod_train_predict.py<br/>全量训练"]
         IT["incremental_train.py<br/>增量训练"]
     end
 
     subgraph PREDICT["② 预测（每次）"]
-        PO["weekly_predict_only.py<br/>仅预测"]
+        PO["prod_predict_only.py<br/>仅预测"]
     end
 
     subgraph BRUTEFORCE["③ 暴力穷举（偶尔）"]
@@ -63,7 +63,7 @@ flowchart TB
     end
 
     subgraph POSTTRADE["⑤ Post-Trade（每次）"]
-        PT["weekly_post_trade.py<br/>处理实盘"]
+        PT["prod_post_trade.py<br/>处理实盘"]
     end
 
     subgraph ORDERGEN["⑥ 订单生成（每次）"]
@@ -81,7 +81,7 @@ flowchart TB
     REG["model_registry.yaml<br/>模型注册表"]
     LTR["latest_train_records.json<br/>训练记录"]
     PRED_CSV["output/predictions/<br/>预测 CSV"]
-    WC["weekly_config.json<br/>持仓/现金"]
+    WC["prod_config.json<br/>持仓/现金"]
 
     REG --> TRAIN
     REG --> PREDICT
@@ -111,13 +111,13 @@ cd QuantPits
 source workspaces/Demo_Workspace/run_env.sh
 ```
 
-### 场景 A：完整周例行流程（含训练）
+### 场景 A：完整生产例行流程（含训练）
 
-适用于首次运行或需要刷新模型的周。
+适用于首次运行或需要刷新模型的周期。
 
 ```bash
 # ① 全量训练（产出预测 + 训练记录）
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 
 # ③ 暴力穷举找组合（可选，非常耗时）
 python engine/scripts/brute_force_fast.py --max-combo-size 3
@@ -127,25 +127,25 @@ python engine/scripts/ensemble_fusion.py \
   --models gru,linear_Alpha158,alstm_Alpha158
 
 # ⑤ 处理上周实盘交易
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 
 # ⑥ 生成本周订单
 python engine/scripts/order_gen.py
 ```
 
-### 场景 B：常规周（不重训，最小闭环）
+### 场景 B：常规流程（不重训，最小闭环）
 
-已有可用模型，数据更新后直接预测。**这是最常见的周流程。**
+适用于已有可用模型，数据更新后直接预测。**这是最常见的生产流程。**
 
 ```bash
 # ② 用已有模型预测新数据
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # ④ 融合预测（多组合对比）
 python engine/scripts/ensemble_fusion.py --from-config-all
 
 # ⑤ 处理上周实盘交易
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 
 # ⑥ 生成本周订单
 python engine/scripts/order_gen.py
@@ -171,7 +171,7 @@ python engine/scripts/ensemble_fusion.py \
   --models gru,linear_Alpha158,alstm_Alpha158
 
 # ⑤⑥ Post-Trade + 订单生成（同场景 B）
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 python engine/scripts/order_gen.py
 ```
 
@@ -181,7 +181,7 @@ python engine/scripts/order_gen.py
 
 ```bash
 # ② 用已有模型预测（或训练后自动产出）
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # ③ 快速穷举
 python engine/scripts/brute_force_fast.py --max-combo-size 5
@@ -207,11 +207,11 @@ python engine/scripts/ensemble_fusion.py \
 
 | 脚本 | 用途 | 保存语义 |
 |------|------|----------|
-| `weekly_train_predict.py` | 全量训练所有 enabled 模型 | **全量覆写** `latest_train_records.json` |
+| `prod_train_predict.py` | 全量训练所有 enabled 模型 | **全量覆写** `latest_train_records.json` |
 | `incremental_train.py` | 按名称/算法/标签等选择性训练 | **增量合并** `latest_train_records.json` |
 
 - 模型通过 `config/model_registry.yaml` 统一注册管理
-- 日期参数由 `config/model_config.json` 控制
+- 日期参数及频次（`week`/`day`）由 `config/model_config.json` 控制
 - 训练记录修改前自动备份到 `data/history/`
 - 增量训练支持 `--resume`（断点续训）和 `--dry-run`（预览）
 
@@ -221,7 +221,7 @@ python engine/scripts/ensemble_fusion.py \
 
 | 脚本 | 用途 |
 |------|------|
-| `weekly_predict_only.py` | 用已有模型对新数据预测，不重训 |
+| `prod_predict_only.py` | 用已有模型对新数据预测，不重训 |
 
 - 从 `latest_train_records.json` 加载模型，创建新 Recorder 保存预测
 - 支持与训练脚本相同的模型选择方式（按名称/算法/标签等）
@@ -260,12 +260,12 @@ python engine/scripts/ensemble_fusion.py \
 
 | 脚本 | 用途 |
 |------|------|
-| `weekly_post_trade.py` | 处理实盘交易数据，更新持仓和资金 |
+| `prod_post_trade.py` | 处理实盘交易数据，更新持仓和资金 |
 
 - **完全独立**于训练/预测/融合模块
 - 从交易软件导出文件(`.xlsx`)读取成交记录
 - 支持按日期指定多次出入金（`config/cashflow.json`）
-- 更新 `config/weekly_config.json` 中的持仓和现金余额
+- 更新 `config/prod_config.json` 中的持仓和现金余额
 
 ### ⑥ 订单生成模块
 
@@ -278,7 +278,7 @@ python engine/scripts/ensemble_fusion.py \
 - 支持三种预测来源：ensemble 融合（默认）/ 单模型 / 自定义文件
 - **多模型判断表**：自动加载所有 combo 和单一模型的预测，对每个标的生成 BUY/SELL/HOLD 判断
 - 附带可视化脚本 `plot_model_opinions.py` 生成多模型排名折线图
-- 依赖 `weekly_config.json` 中的持仓和现金（来自 Post-Trade）
+- 依赖 `prod_config.json` 中的持仓和现金（来自 Post-Trade）
 - TopK + DropN 策略决定买入/卖出/持有
 
 ### ⑦ 信号排名模块
@@ -300,7 +300,7 @@ python engine/scripts/ensemble_fusion.py \
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      配置层                                      │
-│  model_registry.yaml    model_config.json    weekly_config.json  │
+│  model_registry.yaml    model_config.json    prod_config.json    │
 │  cashflow.json          ensemble_config.json                     │
 └────────────┬──────────────────┬──────────────────┬──────────────┘
              │                  │                  │
@@ -311,7 +311,7 @@ python engine/scripts/ensemble_fusion.py \
 └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘
          │                     │                     │
          ▼                     ▼                     ▼
-  latest_train_records.json    weekly_config.json (持仓/现金更新)
+  latest_train_records.json    prod_config.json (持仓/现金更新)
          │                             │
          ▼                             │
   ┌──────────────────┐                 │
@@ -344,7 +344,7 @@ python engine/scripts/ensemble_fusion.py \
 |------|------|----------|
 | `model_registry.yaml` | 模型注册表：定义模型名、算法、数据集、标签 | 训练、预测 |
 | `model_config.json` | 日期参数：训练窗口、滑动/固定模式 | 训练、预测 |
-| `weekly_config.json` | 实盘状态：当前持仓、现金余额、处理日期 | Post-Trade、订单生成 |
+| `prod_config.json` | 实盘状态：当前持仓、现金余额、处理日期 | Post-Trade、订单生成 |
 | `cashflow.json` | 出入金记录：按日期的出入金 | Post-Trade |
 | `ensemble_config.json` | 多组合融合配置：combo 定义、权重、default | 融合预测、订单生成、信号排名 |
 | `workflow_config_*.yaml` | Qlib 工作流：各模型的训练配置 | 训练 |
@@ -418,7 +418,7 @@ python engine/scripts/ensemble_fusion.py \
 - 交易数据（订单建议、交易明细、xlsx）归档到 `data/order_history/`
 - 输出文件旧版本归档到 `archive/output/`
 - 支持 `--dry-run`、`--keep N`、`--include-notebooks`、`--cleanup-legacy`
-- **常态化使用**：每周运行后执行 `python engine/scripts/archive_dated_files.py` 即可
+- **常态化使用**：每个分析周期运行后执行 `python engine/scripts/archive_dated_files.py` 即可
 - **模型加载**：从 Qlib Recorder 加载模型和预测
 
 ---
@@ -443,8 +443,8 @@ python engine/scripts/ensemble_fusion.py \
 
 ```bash
 # 每周最小闭环（4 条命令，假设 workspace 已激活）
-python engine/scripts/weekly_predict_only.py --all-enabled     # 预测
+python engine/scripts/prod_predict_only.py --all-enabled     # 预测
 python engine/scripts/ensemble_fusion.py --from-config-all       # 融合
-python engine/scripts/weekly_post_trade.py                      # Post-Trade
+python engine/scripts/prod_post_trade.py                      # Post-Trade
 python engine/scripts/order_gen.py                              # 生成订单
 ```

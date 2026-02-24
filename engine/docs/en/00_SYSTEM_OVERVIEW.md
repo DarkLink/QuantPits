@@ -2,7 +2,7 @@
 
 ## System Positioning
 
-A **weekly quantitative trading production system** based on Qlib, adopting a "multi-model training → ensemble selection → fusion prediction → order generation" pipeline architecture, serving live trading in the CSI300 market.
+A **multi-frequency quantitative trading production system** (supporting weekly/daily) based on Qlib, adopting a "multi-model training → ensemble selection → fusion prediction → order generation" pipeline architecture.
 
 ---
 
@@ -21,7 +21,7 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 
 ## Core Design Philosophy
 
-Every step in this system is **optional and combinable**. Only "Prediction" and "Order Generation" are mandatory weekly steps, while others are triggered as needed:
+Every step in this system is **optional and combinable**. Only "Prediction" and "Order Generation" are mandatory routine steps, while others are triggered as needed:
 
 | Step | Required Every Time? | Description |
 |------|:---:|------|
@@ -29,12 +29,12 @@ Every step in this system is **optional and combinable**. Only "Prediction" and 
 | ② Prediction | ✅ Every time | Can be produced along with training, or run independently with existing models |
 | ③ Brute Force | ❌ Occasionally | Very time-consuming; a selected combo can be used for a long period |
 | ④ Fusion Prediction | ✅ Every time | Supports multi-combo fusion and comparison; generates final fusion signals using selected combos |
-| ⑤ Post-Trade | ✅ Every time | Processes last week's live data to update holdings and cash |
+| ⑤ Post-Trade | ✅ Every time | Processes last period's live data to update holdings and cash |
 | ⑥ Order Generation | ✅ Every time | Generates buy/sell suggestions and multi-model opinions based on fused predictions and current holdings |
 | ⑦ Signal Ranking | Optional | Normalizes scores into Top N rankings, suitable for sharing |
 
 > [!IMPORTANT]
-> Training is not required every week, but prediction is mandatory. Brute forcing combinations is a "heavy-duty" operation, and selected model combos can be used for a long time. The minimal daily/weekly operation loop is: **Prediction → Fusion → Post-Trade → Order Generation**.
+> Training is not required every time, but prediction is mandatory. Brute forcing combinations is a "heavy-duty" operation, and selected model combos can be used for a long time. The minimal routine operation loop is: **Prediction → Fusion → Post-Trade → Order Generation**.
 
 ---
 
@@ -43,12 +43,12 @@ Every step in this system is **optional and combinable**. Only "Prediction" and 
 ```mermaid
 flowchart TB
     subgraph TRAIN["① Train (On-demand)"]
-        TP["weekly_train_predict.py<br/>Full Train"]
+        TP["prod_train_predict.py<br/>Full Train"]
         IT["incremental_train.py<br/>Incremental Train"]
     end
 
     subgraph PREDICT["② Predict (Every time)"]
-        PO["weekly_predict_only.py<br/>Predict Only"]
+        PO["prod_predict_only.py<br/>Predict Only"]
     end
 
     subgraph BRUTEFORCE["③ Brute Force (Occasionally)"]
@@ -61,7 +61,7 @@ flowchart TB
     end
 
     subgraph POSTTRADE["⑤ Post-Trade (Every time)"]
-        PT["weekly_post_trade.py<br/>Process Live Trades"]
+        PT["prod_post_trade.py<br/>Process Live Trades"]
     end
 
     subgraph ORDERGEN["⑥ Order Generation (Every time)"]
@@ -79,7 +79,7 @@ flowchart TB
     REG["model_registry.yaml<br/>Model Registry"]
     LTR["latest_train_records.json<br/>Train Records"]
     PRED_CSV["output/predictions/<br/>Prediction CSVs"]
-    WC["weekly_config.json<br/>Holdings/Cash"]
+    WC["prod_config.json<br/>Holdings/Cash"]
 
     REG --> TRAIN
     REG --> PREDICT
@@ -109,13 +109,13 @@ cd QuantPits
 source workspaces/Demo_Workspace/run_env.sh
 ```
 
-### Scenario A: Full Weekly Routine (Including Training)
+### Scenario A: Full Production Routine (Including Training)
 
-Suitable for the first run or weeks when models need to be refreshed.
+Suitable for the first run or when models need to be refreshed.
 
 ```bash
 # ① Full Training (Outputs predictions + training records)
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 
 # ③ Brute force combo search (Optional, very time-consuming)
 python engine/scripts/brute_force_fast.py --max-combo-size 3
@@ -124,28 +124,28 @@ python engine/scripts/brute_force_fast.py --max-combo-size 3
 python engine/scripts/ensemble_fusion.py \
   --models gru,linear_Alpha158,alstm_Alpha158
 
-# ⑤ Process last week's live trades
-python engine/scripts/weekly_post_trade.py
+# ⑤ Process last period's live trades
+python engine/scripts/prod_post_trade.py
 
-# ⑥ Generate this week's orders
+# ⑥ Generate this period's orders
 python engine/scripts/order_gen.py
 ```
 
-### Scenario B: Regular Week (No Retraining, Minimal Loop)
+### Scenario B: Regular Routine (No Retraining, Minimal Loop)
 
-Existing models are available; directly predict after data updates. **This is the most common weekly workflow.**
+Existing models are available; directly predict after data updates. **This is the most common production workflow.**
 
 ```bash
 # ② Predict new data using existing models
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # ④ Fusion Prediction (Multi-combo comparison)
 python engine/scripts/ensemble_fusion.py --from-config-all
 
-# ⑤ Process last week's live trades
-python engine/scripts/weekly_post_trade.py
+# ⑤ Process last period's live trades
+python engine/scripts/prod_post_trade.py
 
-# ⑥ Generate this week's orders
+# ⑥ Generate this period's orders
 python engine/scripts/order_gen.py
 
 # ⑦ Generate Signal Rankings (Optional, for sharing)
@@ -169,7 +169,7 @@ python engine/scripts/ensemble_fusion.py \
   --models gru,linear_Alpha158,alstm_Alpha158
 
 # ⑤⑥ Post-Trade + Order Gen (Same as Scenario B)
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 python engine/scripts/order_gen.py
 ```
 
@@ -179,7 +179,7 @@ Re-run brute force periodically or when current combos are unsuitable.
 
 ```bash
 # ② Predict using existing models (or automatically outputted after training)
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # ③ Fast Brute Force Screening
 python engine/scripts/brute_force_fast.py --max-combo-size 5
@@ -205,11 +205,11 @@ python engine/scripts/ensemble_fusion.py \
 
 | Script | Purpose | Save Semantics |
 |------|------|----------|
-| `weekly_train_predict.py` | Full training of all enabled models | **Full Overwrite** of `latest_train_records.json` |
+| `prod_train_predict.py` | Full training of all enabled models | **Full Overwrite** of `latest_train_records.json` |
 | `incremental_train.py` | Selective training by name/algo/tags | **Incremental Merge** to `latest_train_records.json` |
 
 - Models are uniformly managed in `config/model_registry.yaml`
-- Date parameters are controlled by `config/model_config.json`
+- Date parameters and frequency (`week`/`day`) are controlled by `config/model_config.json`
 - Training records are auto-backed up to `data/history/` before modifying
 - Incremental training supports `--resume` (resume from breakpoint) and `--dry-run` (preview)
 
@@ -219,7 +219,7 @@ python engine/scripts/ensemble_fusion.py \
 
 | Script | Purpose |
 |------|------|
-| `weekly_predict_only.py` | Predict on new data using existing models, no retraining |
+| `prod_predict_only.py` | Predict on new data using existing models, no retraining |
 
 - Loads models from `latest_train_records.json` and creates a new Recorder to save predictions
 - Supports the same model selection methods as training scripts (by name/algo/tags)
@@ -258,12 +258,12 @@ python engine/scripts/ensemble_fusion.py \
 
 | Script | Purpose |
 |------|------|
-| `weekly_post_trade.py` | Processes live trading data to update holdings and cash |
+| `prod_post_trade.py` | Processes live trading data to update holdings and cash |
 
 - **Completely independent** of the training/predict/fusion modules
 - Reads executed trade records from brokerage exported files (`.xlsx`)
 - Supports multiple deposits/withdrawals by date (`config/cashflow.json`)
-- Updates holdings and cash balances in `config/weekly_config.json`
+- Updates holdings and cash balances in `config/prod_config.json`
 
 ### ⑥ Order Generation Module
 
@@ -276,7 +276,7 @@ python engine/scripts/ensemble_fusion.py \
 - Supports three prediction sources: ensemble fusion (default) / single model / custom file
 - **Multi-Model Opinion Table**: Auto-loads predictions from all combos and single models, generating BUY/SELL/HOLD judgments for each instrument
 - Includes visualization script `plot_model_opinions.py` to generate multi-model ranking line charts
-- Relies on holdings and cash in `weekly_config.json` (from Post-Trade)
+- Relies on holdings and cash in `prod_config.json` (from Post-Trade)
 - TopK + DropN strategy dictates buy/sell/hold decisions
 
 ### ⑦ Signal Ranking Module
@@ -298,7 +298,7 @@ python engine/scripts/ensemble_fusion.py \
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Configuration Layer                        │
-│  model_registry.yaml    model_config.json    weekly_config.json │
+│  model_registry.yaml    model_config.json    prod_config.json   │
 │  cashflow.json          ensemble_config.json                    │
 └────────────┬──────────────────┬──────────────────┬──────────────┘
              │                  │                  │
@@ -309,7 +309,7 @@ python engine/scripts/ensemble_fusion.py \
 └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘
          │                     │                     │
          ▼                     ▼                     ▼
-latest_train_records.json   weekly_config.json (Update Pos/Cash)
+latest_train_records.json   prod_config.json (Update Pos/Cash)
          │                             │
          ▼                             │
   ┌──────────────────┐                 │
@@ -342,7 +342,7 @@ latest_train_records.json   weekly_config.json (Update Pos/Cash)
 |------|------|----------|
 | `model_registry.yaml` | Model Registry: Defines model names, algorithms, datasets, labels | Train, Predict |
 | `model_config.json` | Date Params: Training windows, sliding/fixed mode | Train, Predict |
-| `weekly_config.json` | Live State: Current holdings, cash balance, processed date | Post-Trade, Order Gen |
+| `prod_config.json` | Live State: Current holdings, cash balance, processed date | Post-Trade, Order Gen |
 | `cashflow.json` | Cashflow Records: Deposits/Withdrawals by date | Post-Trade |
 | `ensemble_config.json` | Multi-combo Config: Combo definitions, weights, defaults | Fusion, Order Gen, Ranking |
 | `workflow_config_*.yaml` | Qlib Workflows: Training configurations for each model | Train |
@@ -416,7 +416,7 @@ latest_train_records.json   weekly_config.json (Update Pos/Cash)
 - Trading data (suggestions, logs, excel files) is safely archived to `data/order_history/`
 - Previous outputs migrated to `archive/output/`
 - Supports `--dry-run`, `--keep N`, `--include-notebooks`, `--cleanup-legacy`
-- **Routine use**: Just execute `python engine/scripts/archive_dated_files.py` post-run each week
+- **Routine use**: Just execute `python engine/scripts/archive_dated_files.py` post-run each period
 - **Model Loading**: Interfaces gracefully with Qlib's native Recorder instances
 
 ---
@@ -440,9 +440,9 @@ latest_train_records.json   weekly_config.json (Update Pos/Cash)
 ### What is the minimal daily / weekly operation?
 
 ```bash
-# Weekly minimal loop (4 commands, assuming workspace is activated)
-python engine/scripts/weekly_predict_only.py --all-enabled     # Predict
+# Routine minimal loop (4 commands, assuming workspace is activated)
+python engine/scripts/prod_predict_only.py --all-enabled     # Predict
 python engine/scripts/ensemble_fusion.py --from-config-all       # Fuse
-python engine/scripts/weekly_post_trade.py                      # Post-Trade
+python engine/scripts/prod_post_trade.py                      # Post-Trade
 python engine/scripts/order_gen.py                              # Generate Orders
 ```

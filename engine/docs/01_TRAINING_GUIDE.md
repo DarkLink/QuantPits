@@ -4,11 +4,11 @@
 
 训练系统由三个主脚本组成，共享同一套工具模块和模型注册表：
 
-| 脚本 | 用途 | 保存语义 |
-|------|------|----------|
-| `weekly_train_predict.py` | 全量训练所有 enabled 模型 | **全量覆写** `latest_train_records.json` |
-| `incremental_train.py` | 选择性训练个别模型 | **增量合并** `latest_train_records.json` |
-| `weekly_predict_only.py` | 仅预测（不训练） | **增量合并** `latest_train_records.json` |
+| 脚本 | 用途 | 训练 | 数据源 | 保存语义 |
+|------|------|------|--------|----------|
+| `prod_train_predict.py` | 全量训练+预测 | ✅ | configs | `latest_train_records.json` |
+| `incremental_train.py` | 增量训练+预测 | ✅ | configs | `latest_train_records.json` |
+| `prod_predict_only.py` | 仅预测 | ❌ | 已有模型 | `latest_train_records.json` |
 
 两个脚本都会在修改 `latest_train_records.json` 之前自动备份历史到 `data/history/`。
 
@@ -20,10 +20,10 @@
 QuantPits/
 ├── engine/
 │   ├── scripts/                      # 系统核心代码
-│   │   ├── weekly_train_predict.py   # 全量训练脚本
+│   │   ├── prod_train_predict.py   # 全量训练脚本
 │   │   ├── incremental_train.py      # 增量训练脚本
-│   │   ├── weekly_predict_only.py    # 仅预测脚本（不训练）
-│   │   ├── check_workflow_yaml.py    # 🔧 YAML配置周频验证与修复
+│   │   ├── prod_predict_only.py    # 仅预测脚本（不训练）
+│   │   ├── check_workflow_yaml.py    # 🔧 YAML配置生产环境参数验证
 │   │   └── train_utils.py            # 共享工具模块
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # 本文档
@@ -89,17 +89,17 @@ models:
 
 ---
 
-## 全量训练 (`weekly_train_predict.py`)
+## 全量训练 (`prod_train_predict.py`)
 
 ### 使用场景
-- 每周例行全量训练
+- 生产环境例行全量训练
 - 需要完整刷新所有模型记录的场景
 
 ### 运行
 
 ```bash
 cd QuantPits
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 ```
 
 ### 行为
@@ -193,7 +193,7 @@ python engine/scripts/incremental_train.py --list --tag tree
 
 ## 日期处理
 
-训练日期由 `config/model_config.json` 控制：
+训练日期和频次由 `config/model_config.json` 控制：
 
 | 参数 | 说明 |
 |------|------|
@@ -202,6 +202,7 @@ python engine/scripts/incremental_train.py --list --tag tree
 | `train_set_windows` | 训练集窗口大小（年） |
 | `valid_set_window` | 验证集窗口大小（年） |
 | `test_set_window` | 测试集窗口大小（年） |
+| `freq` | 交易频次 (`week`/`day`) |
 
 ### 日期切换注意
 - 全量训练和增量训练共享同一个 `model_config.json`
@@ -228,11 +229,11 @@ data/history/
 
 ## 典型工作流
 
-### 场景 1：每周例行训练
+### 场景 1：例行例行训练
 
 ```bash
 cd QuantPits
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 python engine/scripts/ensemble_predict.py --method icir_weighted --backtest
 ```
 
@@ -241,7 +242,7 @@ python engine/scripts/ensemble_predict.py --method icir_weighted --backtest
 ```bash
 cd QuantPits
 # 使用已有模型对新数据预测
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 # 后续穷举/融合流程不变
 python engine/scripts/brute_force_fast.py --max-combo-size 3
 python engine/scripts/ensemble_fusion.py --models gru,linear_Alpha158,alstm_Alpha158
@@ -292,13 +293,13 @@ python engine/scripts/incremental_train.py --tag tree
 
 ## 配置验证与修复
 
-为确保所有模型的 YAML 文件按预期配置为周频模式（如 `label` 取未来一周收益，`time_per_step` 为 `week`，`ann_scaler` 为 52），提供了自动化验证脚本。**建议在新增或修改 YAML 后运行此检查。**
+为确保所有模型的 YAML 文件按预期配置为生产模式（如 `label` 根据频次自动调整，`time_per_step` 匹配频次，`ann_scaler` 匹配频次），提供了自动化验证脚本。**建议在新增或修改 YAML 后运行此检查。**
 
 ```bash
-# 检查所有的 workflow_config_*.yaml 是否符合周频参数要求
+# 检查所有的 workflow_config_*.yaml 是否符合生产环境参数要求 (day/week)
 python engine/scripts/check_workflow_yaml.py
 
-# 尝试自动修正所有异常的 YAML 文件（自动将日频参数转为周频格式）
+# 尝试自动修正所有异常的 YAML 文件（自动将参数转为生产环境要求的格式）
 python engine/scripts/check_workflow_yaml.py --fix
 ```
 

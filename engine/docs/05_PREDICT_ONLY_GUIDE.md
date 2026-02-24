@@ -2,7 +2,7 @@
 
 ## 概述
 
-`scripts/weekly_predict_only.py` 用于**不重新训练**的情况下，使用已有模型对最新数据进行预测和回测。
+`scripts/prod_predict_only.py` 用于**不重新训练**的情况下，使用已有模型对最新数据进行预测和回测。
 
 **使用场景**：数据更新后无需重训，直接用现有模型生成新预测，然后接入穷举/融合流程。
 
@@ -16,16 +16,16 @@
 cd QuantPits
 
 # 预测所有 enabled 模型
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # 预测指定模型
-python engine/scripts/weekly_predict_only.py --models gru,mlp,linear_Alpha158
+python engine/scripts/prod_predict_only.py --models gru,mlp,linear_Alpha158
 
 # 只预测 tree 系列
-python engine/scripts/weekly_predict_only.py --tag tree
+python engine/scripts/prod_predict_only.py --tag tree
 
 # 查看会预测哪些模型（不实际执行）
-python engine/scripts/weekly_predict_only.py --all-enabled --dry-run
+python engine/scripts/prod_predict_only.py --all-enabled --dry-run
 ```
 
 ---
@@ -39,8 +39,8 @@ python engine/scripts/weekly_predict_only.py --all-enabled --dry-run
    a. 从源 Recorder 加载 model.pkl
    b. 用 model_config.json 计算新的日期窗口
    c. 构建新 dataset、执行 model.predict()
-   d. 在 Weekly_Predict_Only 实验下创建新 Recorder
-   e. 保存 pred.pkl + 运行 SignalRecord（生成 IC 指标）
+    d. 在 Prod_Predict_{FREQ} 实验下创建新 Recorder
+    e. 保存 pred.pkl + 运行 SignalRecord（生成 IC/ICIR 指标）
    f. 同时输出 CSV 到 output/predictions/
 4. Merge 方式更新 latest_train_records.json
 ```
@@ -63,7 +63,7 @@ python engine/scripts/weekly_predict_only.py --all-enabled --dry-run
 | `--skip` | 无 | 跳过指定模型，逗号分隔 |
 | `--source-records` | `latest_train_records.json` | 源训练记录文件 |
 | `--dry-run` | - | 仅打印计划 |
-| `--experiment-name` | `Weekly_Predict_Only` | MLflow 实验名称 |
+| `--experiment-name` | `Prod_Predict` | MLflow 实验名称 (会自动附带频率后缀) |
 | `--list` | - | 列出模型注册表 |
 
 ---
@@ -72,22 +72,22 @@ python engine/scripts/weekly_predict_only.py --all-enabled --dry-run
 
 ```bash
 # 1. 按名称指定
-python engine/scripts/weekly_predict_only.py --models gru,mlp
+python engine/scripts/prod_predict_only.py --models gru,mlp
 
 # 2. 按算法筛选
-python engine/scripts/weekly_predict_only.py --algorithm lstm
+python engine/scripts/prod_predict_only.py --algorithm lstm
 
 # 3. 按数据集筛选
-python engine/scripts/weekly_predict_only.py --dataset Alpha360
+python engine/scripts/prod_predict_only.py --dataset Alpha360
 
 # 4. 按标签筛选
-python engine/scripts/weekly_predict_only.py --tag tree
+python engine/scripts/prod_predict_only.py --tag tree
 
 # 5. 所有 enabled 模型
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # 6. 排除某些模型
-python engine/scripts/weekly_predict_only.py --all-enabled --skip catboost_Alpha158
+python engine/scripts/prod_predict_only.py --all-enabled --skip catboost_Alpha158
 ```
 
 ---
@@ -129,7 +129,7 @@ latest_train_records.json               # 更新后的训练记录（含新 reco
 cd QuantPits
 
 # Step 1: 用现有模型预测新数据
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # Step 2: 穷举组合（快速版）
 python engine/scripts/brute_force_fast.py --max-combo-size 3
@@ -139,14 +139,14 @@ python engine/scripts/ensemble_fusion.py \
   --models gru,linear_Alpha158,alstm_Alpha158
 
 # Step 4: 生成订单
-# (使用 weekly_order_gen_ensemble.ipynb)
+# (使用 order_gen.py)
 ```
 
 ### 场景 2：只预测部分模型
 
 ```bash
 # 只用 tree 系列模型预测
-python engine/scripts/weekly_predict_only.py --tag tree
+python engine/scripts/prod_predict_only.py --tag tree
 
 # 然后对这些模型做融合
 python engine/scripts/ensemble_fusion.py \
@@ -157,10 +157,10 @@ python engine/scripts/ensemble_fusion.py \
 
 ```bash
 # 先看看哪些模型会被预测
-python engine/scripts/weekly_predict_only.py --all-enabled --dry-run
+python engine/scripts/prod_predict_only.py --all-enabled --dry-run
 
 # 列出注册表和可用模型
-python engine/scripts/weekly_predict_only.py --list
+python engine/scripts/prod_predict_only.py --list
 ```
 
 ---
@@ -169,9 +169,9 @@ python engine/scripts/weekly_predict_only.py --list
 
 | 脚本 | 用途 | 是否训练 | 输入 | 输出 |
 |------|------|:--------:|------|------|
-| `weekly_train_predict.py` | 全量训练+预测 | ✅ | configs | `latest_train_records.json` |
+| `prod_train_predict.py` | 全量训练+预测 | ✅ | configs | `latest_train_records.json` |
 | `incremental_train.py` | 增量训练+预测 | ✅ | configs | `latest_train_records.json` |
-| **`weekly_predict_only.py`** | **仅预测** | **❌** | **已有模型** | **`latest_train_records.json`** |
+| **`prod_predict_only.py`** | **仅预测** | **❌** | **已有模型** | **`latest_train_records.json`** |
 | `brute_force_ensemble.py` | 穷举组合 | - | train records | leaderboard |
 | `ensemble_fusion.py` | 融合回测 | - | 选定模型 | 融合预测 + 绩效 |
 
@@ -183,6 +183,6 @@ python engine/scripts/weekly_predict_only.py --list
 
 1. **前提条件**：需要先运行过训练脚本，确保 `latest_train_records.json` 存在且包含模型记录
 2. **模型不存在**：如果选定模型不在源记录中，会自动跳过并警告
-3. **实验名区分**：predict-only 使用 `Weekly_Predict_Only` 实验名，可与训练实验区分
+3. **实验名区分**：predict-only 使用 `Prod_Predict_{Freq}` 实验名，可与训练实验区分
 4. **日期窗口**：使用 `model_config.json` 中的日期配置，与训练脚本一致
 5. **备份**：每次更新 `latest_train_records.json` 前自动备份到 `data/history/`

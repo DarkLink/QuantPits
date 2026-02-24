@@ -104,8 +104,8 @@ def parse_args():
     ctrl = parser.add_argument_group('运行控制')
     ctrl.add_argument('--dry-run', action='store_true',
                       help='仅打印待训练模型列表，不实际训练')
-    ctrl.add_argument('--experiment-name', type=str, default='Weekly_Production_Train',
-                      help='MLflow 实验名称 (默认: Weekly_Production_Train)')
+    ctrl.add_argument('--experiment-name', type=str, default=None,
+                      help='MLflow 实验名称 (默认: Prod_Train_{FREQ})')
     
     # 信息查看
     info = parser.add_argument_group('信息查看')
@@ -219,8 +219,9 @@ def run_incremental_train(args):
     
     # 计算日期
     params = calculate_dates()
+    freq = params.get('freq', 'week').upper()
     
-    experiment_name = args.experiment_name
+    experiment_name = args.experiment_name or f"Prod_Train_{freq}"
     
     # 初始化运行状态
     all_target_names = list(completed_models | set(targets.keys()))

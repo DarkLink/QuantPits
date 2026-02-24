@@ -37,7 +37,7 @@ python engine/scripts/ensemble_fusion.py --from-config-all
 | `--combo` | None | Runs a specifically named combo |
 | `--method` | `equal` | Weighting mode: `equal` / `icir_weighted` / `manual` / `dynamic` |
 | `--weights` | None | Manual weights string, e.g., `"gru:0.6,linear_Alpha158:0.4"` |
-| `--freq` | `week` | Backtest frequency: `day` / `week` |
+| `--freq` | `None` | Backtest frequency: `day` / `week` (Default: read from `model_config.json`) |
 | `--record-file` | `latest_train_records.json` | Train records pointer |
 | `--output-dir` | `output/ensemble` | Output directory bounds |
 | `--no-backtest` | false | Skip backtesting execution |
@@ -193,7 +193,7 @@ output/
 
 ```bash
 # Step 1: Train targeted algorithms
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 
 # Step 2: Brute force sweep uncovering optimized matrices
 python engine/scripts/brute_force_ensemble.py --min-models 3 --max-models 6
@@ -216,7 +216,7 @@ python engine/scripts/order_gen.py
 
 | Script Scope | Intent | Input | Output |
 |------|------|------|------|
-| `weekly_train_predict.py` | Model Training | config dicts | `latest_train_records.json` |
+| `prod_train_predict.py` | Train models | configs | `latest_train_records.json` |
 | `brute_force_ensemble.py` | Combo Exhaustion | train records | leaderboards |
 | **`ensemble_fusion.py`** | **Fusion Backtest** | **Targeted Combo sets** | **Fused Predictions + Risk Matrix** |
 | `signal_ranking.py` | Top N Output | Fusion CSVs | Ranked CSV sets |

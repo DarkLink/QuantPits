@@ -14,7 +14,7 @@ if SCRIPTS_DIR not in sys.path:
 import env
 
 ROOT_DIR = env.ROOT_DIR
-CONFIG_FILE = os.path.join(ROOT_DIR, "config", "weekly_config.json")
+CONFIG_FILE = os.path.join(ROOT_DIR, "config", "prod_config.json")
 MODEL_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "model_config.json")
 PREDICTION_DIR = os.path.join(ROOT_DIR, "output", "predictions")
 

@@ -44,7 +44,7 @@ The processing pipeline prioritizes prediction sources via a hierarchical tier:
 | 2 | `--model` | Single Model CSV | Automatically locates newest version in `output/predictions/{model}_*.csv` |
 | 3 | *(Default)* | Ensemble CSV | Prioritizes `ensemble_YYYY-MM-DD.csv` (default combo wrapper), fallback to `ensemble_default_*.csv`, then any `ensemble_*.csv` |
 
-### Employing Single Models (Bypassing Fusion)
+### Scenario 1: Nominal Routine Process
 
 ```bash
 # Operate exclusively utilizing the gru prediction trace
@@ -183,7 +183,7 @@ Optional Overrides:
 > [!IMPORTANT]
 > The engine mandates adherence strictly following:
 > 1. Accessible `.csv` vectors inside `output/predictions/` tracing upstream generator algorithms (Fusion/Prediction mappings).
-> 2. Synchronized array variables referencing native parameters scaling inside `config/weekly_config.json` denoting absolute capital + asset boundaries explicitly synced (Managed via `post-trade`).
+> 2. Synchronized array variables referencing native parameters scaling inside `config/prod_config.json` denoting absolute capital + asset boundaries explicitly synced (Managed via `post-trade`).
 
 > [!TIP]
 > Executing `--dry-run --verbose` is heavily advocated preventing critical misallocations prior to actual execution orders mapping.

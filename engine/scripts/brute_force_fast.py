@@ -1191,8 +1191,8 @@ def main():
         help="最小组合大小 (默认: 1)",
     )
     parser.add_argument(
-        "--freq", type=str, default="week", choices=["day", "week"],
-        help="回测交易频率 (默认: week)",
+        "--freq", type=str, default=None, choices=["day", "week"],
+        help="回测交易频率 (默认: 从 model_config 读取)",
     )
     parser.add_argument(
         "--top-n", type=int, default=50,
@@ -1272,11 +1272,13 @@ def main():
 
     init_qlib()
 
-    # 加载配置
+    # Stage 0: 初始化 & 配置加载
     train_records, model_config = load_config(args.record_file)
-    anchor_date = train_records.get(
-        "anchor_date", datetime.now().strftime("%Y-%m-%d")
-    )
+    anchor_date = train_records.get("anchor_date", "unknown")
+    
+    # 确定频率 (优先级: 命令行参数 > model_config > 默认 week)
+    freq = args.freq or model_config.get("freq", "week")
+    print(f"当前交易频率: {freq}")
     top_k = model_config.get("TopK", 22)
     drop_n = model_config.get("DropN", 3)
     benchmark = model_config.get("benchmark", "SH000300")
@@ -1298,11 +1300,11 @@ def main():
 
     if not args.analysis_only:
         # 确定调仓频率 (周频=5天, 日频=1天)
-        rebalance_freq = 5 if args.freq == "week" else 1
+        rebalance_freq = 5 if freq == "week" else 1
 
         # 加载日频收益率矩阵 (无论 freq 是什么都加载日频，全量加载)
         returns_wide, bench_returns, common_dates, instruments = load_returns_matrix(
-            norm_df, freq=args.freq
+            norm_df, freq=freq
         )
 
         # 构建 IS 对齐矩阵
@@ -1374,11 +1376,11 @@ def main():
             print(f"Stage 5: ⚡ 快速 Out-Of-Sample (OOS) 验证 (Top {args.auto_test_top})")
             print(f"{'='*60}")
             
-            rebalance_freq = 5 if args.freq == "week" else 1
+            rebalance_freq = 5 if freq == "week" else 1
             if args.analysis_only:
                 # 若使用了 analysis_only，需要单独加载一下全量收益矩阵
                 returns_wide, bench_returns, common_dates, instruments = load_returns_matrix(
-                    norm_df, freq=args.freq
+                    norm_df, freq=freq
                 )
                 
             oos_dates = oos_norm_df.index.get_level_values("datetime").unique().sort_values()

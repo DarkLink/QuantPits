@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 """
-Workflow YAML Validator (周频模式配置验证器)
+Workflow YAML Validator (频率模式配置验证器)
 
-检查 config/ 目录下的 workflow_config_*.yaml 文件是否完全符合周频模式的参数要求：
-1. data_handler_config 下的 label 必须为 ["Ref($close, -6) / Ref($close, -1) - 1"] (TCTS除外)
-2. port_analysis_config 下的 executor.kwargs.time_per_step 必须为 "week"
-3. task.record 下的 SigAnaRecord 的 ann_scaler 必须为 52
+检查 config/ 目录下的 workflow_config_*.yaml 文件是否完全符合配置要求：
+1. data_handler_config 下的 label 必须符合预期频次
+2. port_analysis_config 下的 executor.kwargs.time_per_step 必须与频次一致
+3. task.record 下的 SigAnaRecord 的 ann_scaler 必须正确
 
 用法：
     python engine/scripts/check_workflow_yaml.py [--fix]
@@ -24,8 +24,18 @@ ROOT_DIR = env.ROOT_DIR
 CONFIG_DIR = os.path.join(ROOT_DIR, "config")
 
 
-def check_yamls():
+def check_yamls(freq="week"):
     """检查所有的 workflow yaml，返回包含异常的字典"""
+    
+    # 根据频率确定预期值
+    if freq == "week":
+        expected_label = ["Ref($close, -6) / Ref($close, -1) - 1"]
+        expected_time_per_step = "week"
+        expected_ann_scaler = 52
+    else:
+        expected_label = ["Ref($close, -2) / Ref($close, -1) - 1"]
+        expected_time_per_step = "day"
+        expected_ann_scaler = 252
     files = glob.glob(os.path.join(CONFIG_DIR, "workflow_config_*.yaml"))
     anomalies = {}
     
@@ -41,7 +51,6 @@ def check_yamls():
         issues = []
         
         # 1. 检查 label
-        expected_label = ["Ref($close, -6) / Ref($close, -1) - 1"]
         # 对于多步预测模型(如tcts)，可能包含多个标签，但第一个必须是以-6结尾
         is_tcts = "tcts" in filename.lower()
         
@@ -88,8 +97,8 @@ def check_yamls():
             except KeyError:
                 pass
                 
-        if time_per_step != "week":
-            issues.append(f"TIME_PER_STEP: 期望 'week', 实际 '{time_per_step}'")
+        if time_per_step != expected_time_per_step:
+            issues.append(f"TIME_PER_STEP: 期望 '{expected_time_per_step}', 实际 '{time_per_step}'")
 
         # 3. 检查 ann_scaler
         ann_scaler = None
@@ -101,8 +110,8 @@ def check_yamls():
         except AttributeError:
             pass
             
-        if ann_scaler != 52:
-            issues.append(f"ANN_SCALER: 期望 52, 实际 '{ann_scaler}'")
+        if ann_scaler != expected_ann_scaler:
+            issues.append(f"ANN_SCALER: 期望 {expected_ann_scaler}, 实际 '{ann_scaler}'")
 
         # 4. 检查 lr 的科学计数法 (直接读取文本)
         with open(filepath, "r", encoding="utf-8") as raw_f:
@@ -116,8 +125,17 @@ def check_yamls():
     return anomalies
 
 
-def fix_yamls():
+def fix_yamls(freq="week"):
     """使用正则等字符串替换模式修复YAML，保留原本的格式和注释"""
+    
+    if freq == "week":
+        target_label = 'label: ["Ref($close, -6) / Ref($close, -1) - 1"]'
+        target_ann_scaler = 'ann_scaler: 52'
+        target_time_per_step = 'time_per_step: "week"'
+    else:
+        target_label = 'label: ["Ref($close, -2) / Ref($close, -1) - 1"]'
+        target_ann_scaler = 'ann_scaler: 252'
+        target_time_per_step = 'time_per_step: "day"'
     files = glob.glob(os.path.join(CONFIG_DIR, "workflow_config_*.yaml"))
     fixed_count = 0
     
@@ -138,7 +156,7 @@ def fix_yamls():
             if "tcts" not in filename.lower():
                 line = re.sub(
                     r'label:\s*\[[\"\']Ref\(\$close,\s*-\d+\)\s*/\s*Ref\(\$close,\s*-1\)\s*-\s*1[\"\']\]', 
-                    'label: ["Ref($close, -6) / Ref($close, -1) - 1"]', 
+                    target_label, 
                     line
                 )
             else:
@@ -152,10 +170,10 @@ def fix_yamls():
                     )
             
             # 2. 替换 ann_scaler (252 -> 52)
-            line = re.sub(r'ann_scaler:\s*\d+', 'ann_scaler: 52', line)
+            line = re.sub(r'ann_scaler:\s*\d+', target_ann_scaler, line)
             
             # 3. 替换 time_per_step (day/step -> week)
-            line = re.sub(r'time_per_step:\s*[\"\'](day|step)[\"\']', 'time_per_step: "week"', line)
+            line = re.sub(r'time_per_step:\s*[\"\'](day|step|week)[\"\']', target_time_per_step, line)
             
             # 4. 替换科学计数法的 lr
             lr_match = re.search(r'lr:\s*(\d+(\.\d+)?[eE]-\d+)', line)
@@ -182,7 +200,7 @@ def fix_yamls():
                     f"{indent}    class: SimulatorExecutor\n"
                     f"{indent}    module_path: qlib.backtest.executor\n"
                     f"{indent}    kwargs:\n"
-                    f"{indent}        time_per_step: \"week\"\n"
+                    f"{indent}        time_per_step: \"{freq}\"\n"
                     f"{indent}        generate_portfolio_metrics: true\n"
                     f"{indent}        verbose: false\n"
                 )
@@ -200,30 +218,39 @@ def fix_yamls():
                 f.writelines(new_lines)
             fixed_count += 1
             
-    print(f"🔧 已尝试自动修复 {fixed_count} 个配置文件。")
+    print(f"🔧 已尝试按 {freq} 频次自动修复 {fixed_count} 个配置文件。")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Workflow YAML 周频配置验证工具")
+    parser = argparse.ArgumentParser(description="Workflow YAML 频率配置验证工具")
     parser.add_argument("--fix", action="store_true", help="尝试自动修复有问题的参数")
     args = parser.parse_args()
     
-    anomalies = check_yamls()
+    import json
+    model_config_path = os.path.join(ROOT_DIR, "config", "model_config.json")
+    freq = "week"
+    if os.path.exists(model_config_path):
+        with open(model_config_path, "r") as f:
+            m_cfg = json.load(f)
+            freq = m_cfg.get("freq", "week")
+            
+    print(f"🔍 检测配置频次: {freq}")
+    anomalies = check_yamls(freq=freq)
     
     if args.fix:
         if anomalies:
-            print("开始执行自动修复...")
-            fix_yamls()
+            print(f"开始执行自动修复 ({freq})...")
+            fix_yamls(freq=freq)
             # 修复后再检查一次
-            anomalies = check_yamls()
+            anomalies = check_yamls(freq=freq)
         else:
-            print("所有的工作流配置文件都完美符合周频模式要求，无需修复！")
+            print(f"所有的工作流配置文件都完美符合 {freq} 模式要求，无需修复！")
             return
 
     if not anomalies:
-        print("✅ 所有的工作流配置文件都完美符合周频模式要求！")
+        print(f"✅ 所有的工作流配置文件都完美符合 {freq} 频次要求！")
     else:
-        print("❌ 发现部分配置文件仍不符合周频要求：")
+        print(f"❌ 发现部分配置文件仍不符合 {freq} 要求：")
         print("-" * 50)
         for filename, issues in anomalies.items():
             print(f"📄 {filename}")

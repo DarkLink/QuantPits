@@ -6,7 +6,7 @@ Order Generation - 基于融合/单模型预测生成买卖订单
 
 前置条件：
   - 已运行预测/融合脚本，output/predictions/ 中有预测结果
-  - 已运行 post-trade 脚本，weekly_config.json 中有最新持仓和现金
+  - 已运行 post-trade 脚本，prod_config.json 中有最新持仓和现金
 
 运行方式：
   # 使用最新融合预测
@@ -49,7 +49,7 @@ import pandas as pd
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
 
-CONFIG_FILE = os.path.join(ROOT_DIR, "config", "weekly_config.json")
+CONFIG_FILE = os.path.join(ROOT_DIR, "config", "prod_config.json")
 CASHFLOW_FILE = os.path.join(ROOT_DIR, "config", "cashflow.json")
 PREDICTION_DIR = os.path.join(ROOT_DIR, "output", "predictions")
 ENSEMBLE_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "ensemble_config.json")
@@ -74,7 +74,7 @@ def get_anchor_date():
 
 
 def load_configs():
-    """加载 weekly_config.json 和 cashflow.json"""
+    """加载 prod_config.json 和 cashflow.json"""
     with open(CONFIG_FILE, 'r') as f:
         config = json.load(f)
 
@@ -521,7 +521,7 @@ def generate_model_opinions(focus_instruments, current_holding_instruments,
                     record_id = train_records.get('models', {}).get(model_name)
                     if record_id:
                         from qlib.workflow import R
-                        experiment_name = train_records.get('experiment_name', 'weekly_train')
+                        experiment_name = train_records.get('experiment_name', 'prod_train')
                         recorder = R.get_recorder(recorder_id=record_id,
                                                   experiment_name=experiment_name)
                         pred_pkl = recorder.load_object('pred.pkl')

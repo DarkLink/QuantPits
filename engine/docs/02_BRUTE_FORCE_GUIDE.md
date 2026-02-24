@@ -58,7 +58,7 @@ python engine/scripts/brute_force_ensemble.py --use-groups --group-config config
 | `--record-file` | `latest_train_records.json` | 训练记录文件 |
 | `--max-combo-size` | `0` (全部) | 最大组合模型数（分组模式下指选几个组） |
 | `--min-combo-size` | `1` | 最小组合模型数（分组模式下指选几个组） |
-| `--freq` | `week` | 回测交易频率 (`day` / `week`) |
+| `--freq` | `None` | 回测交易频率 (`day` / `week`)，默认从 `model_config.json` 读取 |
 | `--top-n` | `50` | 分析时 Top/Bottom N |
 | `--output-dir` | `output/brute_force` | 输出目录 |
 | `--resume` | - | 从已有 CSV 继续（支持崩溃/中断后恢复） |
@@ -300,7 +300,7 @@ python engine/scripts/brute_force_fast.py --exclude-last-years 1 --auto-test-top
 | `--start-date YYYY-MM-DD` | 绝对日期过滤：强行指定 IS 阶段的最早开始日期。 |
 | `--end-date YYYY-MM-DD` | 绝对日期过滤：强行截断，即不使用该日期之后的数据。 |
 
-> 注：因为预测数据是随时间滚动（每周新增）的，推荐使用 `exclude-last-years` 或 `exclude-last-months` 动态保持始终剥离最新的样本，避免每次手动修改绝对日期。
+> 注：因为预测数据是随时间滚动（按交易频次新增）的，推荐使用 `exclude-last-years` 或 `exclude-last-months` 动态保持始终剥离最新的样本，避免每次手动修改绝对日期。
 
 ---
 

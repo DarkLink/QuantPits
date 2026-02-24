@@ -8,7 +8,7 @@ The Post-Trade script is designed to process live trading execution data: it par
 
 | Script | Purpose |
 |------|------|
-| `weekly_post_trade.py` | Batch processes missing trade dates, sequentially rolling positional and capital bounds |
+| `prod_post_trade.py` | Batch processes trading day data to update holdings and capital |
 
 ---
 
@@ -18,14 +18,14 @@ The Post-Trade script is designed to process live trading execution data: it par
 QuantPits/
 ├── engine/
 │   ├── scripts/
-│   │   └── weekly_post_trade.py          # Executable logic
+│   │   └── prod_post_trade.py          # This script
 │   └── docs/
 │       └── 04_POST_TRADE_GUIDE.md        # This document
 │
 └── workspaces/
     └── <YourWorkspace>/                  # Isolated active workspace
         ├── config/
-        │   ├── weekly_config.json        # Core state: Holdings/Cash/Cursor Date
+        │   ├── prod_config.json        # Holdings/Cash/Process state
         │   └── cashflow.json             # Deposit/Withdrawal mapping records
         └── data/
             ├── YYYY-MM-DD-table.xlsx     # Daily discrete exported trade spreadsheets
@@ -89,16 +89,16 @@ Upon processing consumption, executed entries inside the `cashflows` key are saf
 cd QuantPits
 
 # Standard Operation: Processes the backlog from the previous sync date up against today's bounds.
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 
 # Preview Mode: Previews what dates and cashflows will trigger chronologically, bypassing IO writes.
-python engine/scripts/weekly_post_trade.py --dry-run
+python engine/scripts/prod_post_trade.py --dry-run
 
 # Target End Date Override:
-python engine/scripts/weekly_post_trade.py --end-date 2026-02-10
+python engine/scripts/prod_post_trade.py --end-date 2026-02-10
 
 # Verbosity Trace: Ouputs individual transaction ledger items implicitly to stdout
-python engine/scripts/weekly_post_trade.py --verbose
+python engine/scripts/prod_post_trade.py --verbose
 ```
 
 ---
@@ -139,16 +139,16 @@ cash_after = cash_before + Total_Sell_Value - Total_Buy_Gross + Dividends_Intere
 
 ## Typical Workflow Operations
 
-### Scenario 1: Nominal Weekly Update
+### Scenario 1: Nominal Routine Update
 
 ```bash
 # 1. Distribute exported trade statements inside `data/` directory appropriately labelled `YYYY-MM-DD-table.xlsx`
 # 2. Open `config/cashflow.json` and declare deposits if necessary
 # 3. Synchronize pipeline:
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 ```
 
-### Scenario 2: Erratic Mid-Week Adjustments / Injections
+### Scenario 2: Erratic Mid-Interval Adjustments / Injections
 
 ```bash
 # Assign cashflows inside cashflow.json
@@ -156,21 +156,21 @@ cat config/cashflow.json
 # {"cashflows": {"2026-02-03": 50000, "2026-02-06": -20000}}
 
 # Safety check sequence outputs bounds
-python engine/scripts/weekly_post_trade.py --dry-run
+python engine/scripts/prod_post_trade.py --dry-run
 
 # Execute mutations upon clearance
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 ```
 
 ### Scenario 3: Blind Preview Inspection
 
 ```bash
 # Trace output sequencing
-python engine/scripts/weekly_post_trade.py --dry-run
+python engine/scripts/prod_post_trade.py --dry-run
 # -> Generates STDOUT mapping representing planned file ingestions and injected cash traces.
 
 # Dispatch when trace validates correctness
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 ```
 
 ---
@@ -178,7 +178,7 @@ python engine/scripts/weekly_post_trade.py
 ## Parameter Arguments
 
 ```text
-python engine/scripts/weekly_post_trade.py --help
+python engine/scripts/prod_post_trade.py --help
 
 Optional Overrides:
   --end-date TEXT   Override cursor target date (YYYY-MM-DD); bypasses fetching current day
@@ -191,7 +191,7 @@ Optional Overrides:
 ## Important Notices
 
 > [!IMPORTANT]
-> The absolute premise bounds of this script are dedicated mapped to **LIVE DATA only**. It is thoroughly decoupled from systemic backtesting modules (`brute_force_ensemble.py`), fusion mechanics (`ensemble_fusion.py`) and training vectors (`weekly_train_predict.py`).
+> This script **strictly processes live trading data**. It is completely independent and decoupled from training (`prod_train_predict.py`), prediction (`prod_predict_only.py`), backtesting (`brute_force_ensemble.py`), and other modules.
 
 > [!TIP]
 > Executing `--dry-run` is heavily advocated whenever complex multiday deposits (`cashflow.json`) are utilized prior to confirming data bounds updates.

@@ -1,31 +1,31 @@
 #!/usr/bin/env python
 """
-Predict-Only 脚本 (Weekly Predict Only)
+Predict-Only 脚本 (Production Predict Only)
 使用已训练好的模型对最新数据进行预测和回测，不重新训练。
 
 核心语义：
 - 从 latest_train_records.json 获取已有模型的 recorder_id
 - 加载 model.pkl，用最新数据生成新预测
-- 在 Weekly_Predict_Only 实验下创建新 Recorder（含 pred.pkl + SignalRecord）
+- 在 Prod_Predict_{Freq} 实验下创建新 Recorder（含 pred.pkl + SignalRecord）
 - 以 merge 方式更新 latest_train_records.json，保证下游穷举/融合兼容
 
-运行方式：cd QuantPits && python engine/scripts/weekly_predict_only.py [options]
+运行方式：cd QuantPits && python engine/scripts/prod_predict_only.py [options]
 
 示例：
   # 预测所有 enabled 模型
-  python engine/scripts/weekly_predict_only.py --all-enabled
+  python engine/scripts/prod_predict_only.py --all-enabled
 
   # 预测指定模型
-  python engine/scripts/weekly_predict_only.py --models gru,mlp
+  python engine/scripts/prod_predict_only.py --models gru,mlp
 
   # 按标签筛选
-  python engine/scripts/weekly_predict_only.py --tag tree
+  python engine/scripts/prod_predict_only.py --tag tree
 
   # Dry-run（仅查看计划）
-  python engine/scripts/weekly_predict_only.py --models gru,mlp --dry-run
+  python engine/scripts/prod_predict_only.py --models gru,mlp --dry-run
 
   # 查看可用模型
-  python engine/scripts/weekly_predict_only.py --list
+  python engine/scripts/prod_predict_only.py --list
 """
 
 import os
@@ -37,7 +37,7 @@ from datetime import datetime
 import env
 os.chdir(env.ROOT_DIR)
 
-DEFAULT_EXPERIMENT_NAME = "Weekly_Predict_Only"
+DEFAULT_EXPERIMENT_NAME = "Prod_Predict"
 
 
 # 延迟导入 qlib（在解析参数之后）
@@ -363,8 +363,11 @@ def run_predict_only(args):
 
     # 计算日期
     params = calculate_dates()
+    freq = params.get('freq', 'week').upper()
 
     experiment_name = args.experiment_name
+    if experiment_name == DEFAULT_EXPERIMENT_NAME:
+        experiment_name = f"{DEFAULT_EXPERIMENT_NAME}_{freq}"
 
     # 收集结果
     new_records = {

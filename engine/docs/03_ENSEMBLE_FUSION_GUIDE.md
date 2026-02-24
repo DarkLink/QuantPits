@@ -37,7 +37,7 @@ python engine/scripts/ensemble_fusion.py --from-config-all
 | `--combo` | 无 | 运行指定名称的 combo |
 | `--method` | `equal` | 权重模式: `equal` / `icir_weighted` / `manual` / `dynamic` |
 | `--weights` | 无 | 手动权重，如 `"gru:0.6,linear_Alpha158:0.4"` |
-| `--freq` | `week` | 回测频率: `day` / `week` |
+| `--freq` | `None` | 回测频率: `day` / `week` (默认从 `model_config.json` 读取) |
 | `--record-file` | `latest_train_records.json` | 训练记录文件 |
 | `--output-dir` | `output/ensemble` | 输出目录 |
 | `--no-backtest` | false | 跳过回测 |
@@ -193,7 +193,7 @@ output/
 
 ```bash
 # Step 1: 训练所有模型
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 
 # Step 2: 暴力穷举找最优组合
 python engine/scripts/brute_force_ensemble.py --min-models 3 --max-models 6
@@ -216,7 +216,7 @@ python engine/scripts/order_gen.py
 
 | 脚本 | 用途 | 输入 | 输出 |
 |------|------|------|------|
-| `weekly_train_predict.py` | 训练模型 | configs | `latest_train_records.json` |
+| `prod_train_predict.py` | 训练模型 | configs | `latest_train_records.json` |
 | `brute_force_ensemble.py` | 穷举组合 | train records | leaderboard |
 | **`ensemble_fusion.py`** | **融合回测** | **选定模型/多组合** | **融合预测 + 绩效 + 对比** |
 | `signal_ranking.py` | 信号排名 | 融合预测 | Top N 排名 CSV |

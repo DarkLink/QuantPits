@@ -59,17 +59,17 @@ source workspaces/Demo_Workspace/run_env.sh
 
 ### 3. 主动式流水线运行
 
-环境挂载完毕后，您可以直接按顺序触发引擎脚本执行基本的周流程逻辑循环：
+环境挂载完毕后，您可以直接按顺序触发引擎脚本执行基本的生产流程逻辑循环：
 
 ```bash
 # 1. 使用所有已使能的模型触发全量增量预测推断
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # 2. 调用当前库表配置好的融合配比组合完成多维度参数预测网格
 python engine/scripts/ensemble_fusion.py --from-config-all
 
 # 3. 处理回溯实盘执行状态变更（Post-Trade 落单归档）
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 
 # 4. 根据当前最新的组合建议及最新持仓执行全新订单信号推演
 python engine/scripts/order_gen.py

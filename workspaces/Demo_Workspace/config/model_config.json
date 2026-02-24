@@ -17,5 +17,6 @@
     "test_end_time": "2023-12-31",
     "backtest_start_time": "2023-01-01",
     "backtest_end_time": "2023-12-31",
-    "experiment_name_prefix": "demo_multi_model"
+    "experiment_name_prefix": "demo_multi_model",
+    "freq": "week"
 }

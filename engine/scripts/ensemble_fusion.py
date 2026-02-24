@@ -613,8 +613,8 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq):
     if report_df is not None:
         initial_cash = BACKTEST_CONFIG['account']
         final_nav = report_df.iloc[-1]['account']
-        total_return = (final_nav - initial_cash) / initial_cash
-        annualized_return = report_df['return'].mean() * 52
+        ann_scaler = 52 if freq == 'week' else 252
+        annualized_return = report_df['return'].mean() * ann_scaler
 
         report_df['nav'] = report_df['account']
         report_df['max_nav'] = report_df['nav'].cummax()
@@ -701,7 +701,8 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
 
     # 2. 子模型排行榜
     print('\n>>> 生成子模型对比排行榜...')
-    freq_suffix = '1week' if freq == 'week' else '1day'
+    freq_val = 'week' if freq == 'week' else 'day'
+    freq_suffix = '1week' if freq_val == 'week' else '1day'
     report_filename = f"portfolio_analysis/report_normal_{freq_suffix}.pkl"
 
     for model_name in loaded_models:
@@ -843,7 +844,8 @@ def compare_combos(combo_results, anchor_date, output_dir):
             initial_cash = BACKTEST_CONFIG['account']
             final_nav = report_df.iloc[-1]['account']
             total_return = (final_nav - initial_cash) / initial_cash
-            ann_return = report_df['return'].mean() * 52
+            ann_scaler = 52 if freq == 'week' else 252
+            ann_return = report_df['return'].mean() * ann_scaler
 
             report_df = report_df.copy()
             report_df['nav'] = report_df['account']
@@ -1049,9 +1051,9 @@ def main():
                         help='权重模式 (默认 equal，--models 模式下使用)')
     parser.add_argument('--weights', type=str,
                         help='手动权重, 如 "gru:0.6,linear_Alpha158:0.4"')
-    parser.add_argument('--freq', type=str, default='week',
+    parser.add_argument('--freq', type=str, default=None,
                         choices=['day', 'week'],
-                        help='回测频率 (默认 week)')
+                        help='回测频率 (默认从 model_config 读取)')
     parser.add_argument('--record-file', type=str, default='latest_train_records.json',
                         help='训练记录文件 (默认 latest_train_records.json)')
     parser.add_argument('--output-dir', type=str, default='output/ensemble',
@@ -1082,6 +1084,13 @@ def main():
 
     init_qlib()
     train_records, model_config, ensemble_config = load_config(args.record_file)
+
+    # 确定频率
+    if args.freq:
+        args.freq = args.freq
+    else:
+        args.freq = model_config.get('freq', 'week')
+    print(f"当前交易频率: {args.freq}")
 
     anchor_date = train_records.get('anchor_date', datetime.now().strftime('%Y-%m-%d'))
     experiment_name = train_records['experiment_name']

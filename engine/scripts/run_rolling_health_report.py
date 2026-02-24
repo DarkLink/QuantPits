@@ -106,7 +106,7 @@ def evaluate_health():
          health_status = "🟡 警告 (出现异动或轻微摩擦侵蚀，需关注监控)"
 
     # Format Markdown string
-    report_md = f"""# 📊 策略周度滚动体检报告 (Weekly Rolling Health Summary)
+    report_md = f"""# 📊 策略滚动体检报告 (Rolling Health Summary)
 
 **日期标签：** {last_date.strftime('%Y-%m-%d')} | **对比基期：** 过去20个交易日 (T-20) 
 **总体健康度：** {health_status}

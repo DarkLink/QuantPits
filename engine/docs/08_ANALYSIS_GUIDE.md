@@ -12,7 +12,7 @@
 
 1. **单模型表现 (`single_model_analyzer.py`)**：通过 Rank IC 与 T+1 ~ T+5 半衰期变化追踪原始信号的强度和退化速度。同时考察 ICIR (信息比率)、十分位收益排序 (Decile Spread) 和多头超额发掘能力 (Long-only IC)。
 2. **组合及相关性 (`ensemble_analyzer.py`)**：评估多模型跨截面的信号斯皮尔曼 (Spearman) 相关性，并通过 Leave-One-Out (留一法) 测算各子模型当前的**边际夏普贡献**，同时输出等权融合打分后的整体业务指标。
-3. **真实摩擦测算 (`execution_analyzer.py`)**：切分真实的交易记录，量化 **Delay Cost**（周五收盘到周一开盘的天然跳空缺口）及 **Execution Slippage**（开盘价到真实成交价的打滑成本）。同时通过 MFE/MAE 计算日内的极端路径。
+3. **真实摩擦测算 (`execution_analyzer.py`)**：切分真实的交易记录，量化 **Delay Cost**（交易日收盘到下一交易日开盘的天然跳空缺口）及 **Execution Slippage**（开盘价到真实成交价的打滑成本）。同时通过 MFE/MAE 计算日内的极端路径。
 4. **组合风险评估 (`portfolio_analyzer.py`)**：基于 `daily_amount_log_full.csv` 中的 **收盘价值** 和 `trade_log_full.csv` 中的 **CASHFLOW/成交金额** 严谨地推断出真实复权收益，并输出标准度量指标（CAGR、Vol、Sharpe 1.35% Rf、Max Drawdown 等）、资金运作效率（换手率、盈亏比）与风格敞口 (Barra Style Exposures)。
 
 ---
@@ -79,7 +79,7 @@ streamlit run rolling_dashboard.py --server.port 8503
   2. **阿尔法生命周期 (Rolling Return Attribution)**：堆叠柱状图，将每日收益明确切分为 Beta、Style Alpha 和纯粹的不跟风 Idiosyncratic Alpha。
 ### 5. 自动化滚动异常体检报告 (Automated Rolling Health Report)
 
-为了进一步减少人工看盘的时间，系统现增加了一键式“周度滚动体检”自动化诊断工具。该脚本会智能提取并对比不同滑动窗口(`output/rolling_metrics_{20/60}.csv`) 之间的多维指标，侦测异象并自动生成 Markdown 摘要与处理建议。
+为了进一步减少人工看盘的时间，系统现增加了一键式“滚动体检”自动化诊断工具。该脚本会智能提取并对比不同滑动窗口(`output/rolling_metrics_{20/60}.csv`) 之间的多维指标，侦测异象并自动生成 Markdown 摘要与处理建议。
 
 ```bash
 cd QuantPits
@@ -89,7 +89,7 @@ python engine/scripts/run_rolling_analysis.py --windows 20 60
 python engine/scripts/run_rolling_health_report.py
 ```
 这将在 `output/rolling_health_report.md` 生成最新的状态报文，其引擎内部会执行以下三级异常监测：
-1. **Z-Score 异常检测 (Friction limits)**：实时判定系统在最近一个交易周遭遇的微观滑点或延迟跳空损耗，是否向负面越过了过去 60 天平均值的 ±2 准差警戒线。如果发生，预警“执行摩擦崩盘”。
+1. **Z-Score 异常检测 (Friction limits)**：实时判定系统在最近一个分析周期的数据与持仓之后，快速验证系统健康度和组合多样性。
 2. **均线死叉断层 (Alpha Decay)**：利用最近 5 天平滑的短期 Idio Alph 下穿 60 日 Idio Alpha（死跌入水下），定性判断底层模型的纯净选股能力是否正在面临彻底失效与断层衰减。
 3. **极小/极大历史分位突破 (Factor Drift)**：判断最新的诸如 Size (市值)、Momentum 因子 Beta 的值，是否突破了这台策略一年历史环境以来的 5% 深水重灾极点。如果触及极高极低边界，会提出强制风格因子中性化的抢救建议。
 
@@ -102,7 +102,7 @@ python engine/scripts/run_rolling_health_report.py
 ### 1. 单模型及融合打分表现 (Model Quality)
 - **Rank IC Mean & ICIR**：
   - **绿灯**：IC > 0.035 且 ICIR > 0.15 即被认为是有效的 Alpha 来源。
-  - **红线行动**：若某个主力的 `T+1 IC` 连续数周低迷至 0.01 或变负，应当停止其参与 Ensemble Fusion，并调用 `incremental_train.py` 重训。
+  - **红线行动**：若某个主力的 `T+1 IC` 持续低迷至 0.01 或变负，应当停止其参与 Ensemble Fusion，并调用 `incremental_train.py` 重训。
 - **Decile Spread (十分位多空收益差)**：衡量模型打分前 10% 标的与后 10% 标的的收益差（基于次日）。该值应显著为正。
 - **Long-Only IC (Top 22)**：严格只计算模型预测头部分数（因实际只有对应仓位）与收益的 Spearman 相关性。由于头部样本少，稍微为正或在 0 附近即可接受；如果深负说明模型在“高优股票”中存在严重的偏好误导。
 - **IC Decay (衰减曲线)**：健康的信号应当在 T+1 时最强，随后平滑衰减。如果直线下坠，说明信号极度偏向高频或失效过快。

@@ -58,7 +58,7 @@ python engine/scripts/brute_force_ensemble.py --use-groups --group-config config
 | `--record-file` | `latest_train_records.json` | Train records pointer targeting model manifests. |
 | `--max-combo-size` | `0` (All) | Upper limit of combined models (Or clusters if grouped). |
 | `--min-combo-size` | `1` | Lower limit of combined models (Or clusters if grouped). |
-| `--freq` | `week` | Simulation periodicity (`day` / `week`). |
+| `--freq` | `None` | Backtest frequency (`day` / `week`). Default: read from `model_config.json` |
 | `--top-n` | `50` | Scale N target for Top/Bottom analysis metrics. |
 | `--output-dir` | `output/brute_force` | Directory bounds. |
 | `--resume` | - | Ingest target logic for crash recovery execution. |
@@ -140,8 +140,9 @@ python engine/scripts/brute_force_ensemble.py --max-combo-size 5
 # Ctrl+C applied here -> Wait for current thread sync, outputs termination prompt
 # "⚠️ Interrupted safely! Completed: X/Y combos. Utilize --resume next session."
 
-# Resume at later date
-python engine/scripts/brute_force_ensemble.py --max-combo-size 5 --resume
+# Step 1: Train targeted algorithms
+python engine/scripts/prod_train_predict.py
+ --max-combo-size 5 --resume
 ```
 
 ### RAM Safeguards
@@ -256,9 +257,9 @@ python engine/scripts/brute_force_fast.py --use-groups --group-config config/com
 
 ### Optimized Workflow Progression
 
-1. **Broad Net**: Engage `python engine/scripts/brute_force_fast.py` scaling all exhaustive combinations (Completes rapidly).
-2. **Precision Audit**: Extract top 10/20 groupings from the prior log, pushing them specifically against `brute_force_ensemble.py` ensuring deep realistic metrics.
-3. **Execution Delivery**: Cement the validated combination scope into `ensemble_fusion.py` driving trading signal distribution.
+1.  **Broad Net**: Engage `python engine/scripts/brute_force_fast.py` scaling all exhaustive combinations (Completes rapidly).
+2.  **Precision Audit**: Extract top 10/20 groupings from the prior log, pushing them specifically against `brute_force_ensemble.py` ensuring deep realistic metrics.
+3.  **Execution Delivery**: Cement the validated combination scope into `ensemble_fusion.py` driving trading signal distribution.
 
 ### Dedicated Fast Arguments
 
@@ -301,6 +302,7 @@ Deploying traces will output standardized bounds appending a `Stage 5: Autonomou
 | `--end-date YYYY-MM-DD` | Subversive forced stop bounds deleting all subsequent rows. |
 
 > Warning: Trading data is continually rolled per schedule natively. Implementing dynamic `exclude-last-years` / `exclude-last-months` fences inherently aligns testing without needing static arbitrary data edits per epoch.
+> Note: Since prediction data rolls over time (added according to frequency), it is recommended to use `exclude-last-years` or `exclude-last-months` to dynamically keep the latest samples stripped, avoiding manual modification of absolute dates.
 
 ---
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Weekly Post-Trade 批量处理脚本
+Production Post-Trade 批量处理脚本
 
 处理实盘交易数据：读取交易软件导出文件，更新持仓、现金、日志。
 本脚本与预测、融合、回测等模块完全解耦。
 
 使用方法:
     cd QuantPits
-    python engine/scripts/weekly_post_trade.py                # 正常运行
-    python engine/scripts/weekly_post_trade.py --dry-run       # 仅预览，不写文件
-    python engine/scripts/weekly_post_trade.py --end-date 2026-02-10  # 指定结束日期
-    python engine/scripts/weekly_post_trade.py --verbose       # 详细输出
+    python engine/scripts/prod_post_trade.py                # 正常运行
+    python engine/scripts/prod_post_trade.py --dry-run       # 仅预览，不写文件
+    python engine/scripts/prod_post_trade.py --end-date 2026-02-10  # 指定结束日期
+    python engine/scripts/prod_post_trade.py --verbose       # 详细输出
 """
 
 import os
@@ -31,7 +31,7 @@ os.chdir(env.ROOT_DIR)
 # ---------------------------------------------------------------------------
 CONFIG_DIR = "config"
 DATA_DIR = "data"
-WEEKLY_CONFIG_FILE = os.path.join(CONFIG_DIR, "weekly_config.json")
+PROD_CONFIG_FILE = os.path.join(env.ROOT_DIR, "config", "prod_config.json")
 CASHFLOW_CONFIG_FILE = os.path.join(CONFIG_DIR, "cashflow.json")
 TRADE_LOG_FILE = os.path.join(DATA_DIR, "trade_log_full.csv")
 HOLDING_LOG_FILE = os.path.join(DATA_DIR, "holding_log_full.csv")
@@ -51,9 +51,18 @@ INTEREST_TYPES = [
 # ---------------------------------------------------------------------------
 # Config Loading
 # ---------------------------------------------------------------------------
-def load_weekly_config():
-    """加载 weekly_config.json"""
-    with open(WEEKLY_CONFIG_FILE, "r") as f:
+def load_prod_config():
+    """加载 prod_config.json"""
+    config_file = PROD_CONFIG_FILE
+    if not os.path.exists(config_file):
+        legacy_file = os.path.join(env.ROOT_DIR, "config", "weekly_config.json")
+        if os.path.exists(legacy_file):
+            config_file = legacy_file
+        else:
+            print(f"[ERROR] Cannot find {PROD_CONFIG_FILE} or {legacy_file}")
+            sys.exit(1)
+            
+    with open(config_file, "r") as f:
         config = json.load(f)
     return config
 
@@ -96,9 +105,10 @@ def get_cashflow_for_date(cashflow_config, date_str, is_first_day=False):
     return Decimal("0")
 
 
-def save_weekly_config(config):
-    """保存 weekly_config.json"""
-    with open(WEEKLY_CONFIG_FILE, "w") as f:
+def save_prod_config(config):
+    """保存 prod_config.json"""
+    # 始终保存到新的 prod_config.json
+    with open(PROD_CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
 
 
@@ -521,14 +531,14 @@ def process_single_day(current_date_string, current_cash, current_holding,
 # ---------------------------------------------------------------------------
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Weekly Post-Trade 批量处理 — 处理实盘交易数据",
+        description="Production Post-Trade 批量处理 — 处理实盘交易数据",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python engine/scripts/weekly_post_trade.py                        # 正常运行
-  python engine/scripts/weekly_post_trade.py --dry-run              # 仅预览
-  python engine/scripts/weekly_post_trade.py --end-date 2026-02-10  # 指定结束日期
-  python engine/scripts/weekly_post_trade.py --verbose              # 详细输出
+  python engine/scripts/prod_post_trade.py                        # 正常运行
+  python engine/scripts/prod_post_trade.py --dry-run              # 仅预览
+  python engine/scripts/prod_post_trade.py --end-date 2026-02-10  # 指定结束日期
+  python engine/scripts/prod_post_trade.py --verbose              # 详细输出
 
 Cashflow 配置 (config/cashflow.json):
   新格式: {"cashflows": {"2026-02-03": 50000, "2026-02-06": -20000}}
@@ -559,18 +569,8 @@ def main():
 
     cwd = os.getcwd()
 
-    if not os.path.exists(WEEKLY_CONFIG_FILE):
-        print(f"[ERROR] Cannot find {WEEKLY_CONFIG_FILE}. "
-              f"Please check your workspace configuration.")
-        sys.exit(1)
-
-    print(f"Working directory: {cwd}")
-
-    # --- 初始化 qlib ---
-    init_qlib()
-
     # --- 加载配置 ---
-    config = load_weekly_config()
+    config = load_prod_config()
     cashflow_config = load_cashflow_config()
 
     last_processed_date = config.get("last_processed_date", config["current_date"])
@@ -644,7 +644,7 @@ def main():
     config["current_holding"] = current_holding
     config["current_date"] = trade_dates[-1]
     config["last_processed_date"] = trade_dates[-1]
-    save_weekly_config(config)
+    save_prod_config(config)
 
     # 归档 cashflow
     archive_cashflows(cashflow_config)

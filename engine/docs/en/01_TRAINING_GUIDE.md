@@ -6,9 +6,9 @@ The training system consists of three main scripts that share the same utility m
 
 | Script | Purpose | Save Semantics |
 |------|------|----------|
-| `weekly_train_predict.py` | Full training of all enabled models | **Full Overwrite** of `latest_train_records.json` |
+| `prod_train_predict.py` | Full training of all enabled models | **Full Overwrite** of `latest_train_records.json` |
 | `incremental_train.py` | Selective training of individual models | **Incremental Merge** to `latest_train_records.json` |
-| `weekly_predict_only.py` | Prediction only (no training) | **Incremental Merge** to `latest_train_records.json` |
+| `prod_predict_only.py` | Prediction only (no training) | **Incremental Merge** to `latest_train_records.json` |
 
 Both scripts automatically back up the history to `data/history/` before modifying `latest_train_records.json`.
 
@@ -20,10 +20,10 @@ Both scripts automatically back up the history to `data/history/` before modifyi
 QuantPits/
 ├── engine/
 │   ├── scripts/                      # Core system logic
-│   │   ├── weekly_train_predict.py   # Full training script
+│   │   ├── prod_train_predict.py   # Full training script
 │   │   ├── incremental_train.py      # Incremental training script
-│   │   ├── weekly_predict_only.py    # Prediction-only script (no training)
-│   │   ├── check_workflow_yaml.py    # 🔧 YAML config weekly validation & fix
+│   │   ├── prod_predict_only.py    # Prediction-only script (no training)
+│   │   ├── check_workflow_yaml.py    # 🔧 YAML config production validation & fix
 │   │   └── train_utils.py            # Shared utility module
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # This document
@@ -89,17 +89,17 @@ Set `enabled` to `false`. It will be automatically skipped during full training.
 
 ---
 
-## Full Training (`weekly_train_predict.py`)
+## Full Training (`prod_train_predict.py`)
 
 ### Usage Scenarios
-- Routine weekly full retraining
+- Routine production full retraining
 - When all model records need a complete refresh
 
 ### Execution
 
 ```bash
 cd QuantPits
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 ```
 
 ### Behavior
@@ -193,7 +193,7 @@ python engine/scripts/incremental_train.py --list --tag tree
 
 ## Date Handling
 
-Training dates are controlled by `config/model_config.json`:
+Training dates and frequency are controlled by `config/model_config.json`:
 
 | Parameter | Description |
 |------|------|
@@ -202,6 +202,7 @@ Training dates are controlled by `config/model_config.json`:
 | `train_set_windows` | Training set window (years) |
 | `valid_set_window` | Validation set window (years) |
 | `test_set_window` | Test set window (years) |
+| `freq` | Trading frequency (`week`/`day`) |
 
 ### Notes on Date Switching
 - Full and incremental training share the same `model_config.json`
@@ -228,11 +229,11 @@ This runs automatically without manual orchestration.
 
 ## Typical Workflows
 
-### Scenario 1: Weekly Routine Training
+### Scenario 1: Routine Training
 
 ```bash
 cd QuantPits
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 python engine/scripts/ensemble_predict.py --method icir_weighted --backtest
 ```
 
@@ -241,7 +242,7 @@ python engine/scripts/ensemble_predict.py --method icir_weighted --backtest
 ```bash
 cd QuantPits
 # Predict new data using existing models
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 # The subsequent brute force/fusion pipeline remains unchanged
 python engine/scripts/brute_force_fast.py --max-combo-size 3
 python engine/scripts/ensemble_fusion.py --models gru,linear_Alpha158,alstm_Alpha158
@@ -292,13 +293,13 @@ python engine/scripts/incremental_train.py --tag tree
 
 ## Configuration Validation and Auto-Fix
 
-To ensure all YAML workflow files meet the weekly frequency criteria (e.g., `label` predicting future 1-week returns, `time_per_step` set to `week`, `ann_scaler` as 52), an automated validation script is provided. **It is recommended to run this after adding or mutating YAMLs.**
+To ensure all YAML workflow files meet the production frequency criteria (e.g., `label` predicting future returns based on frequency, `time_per_step` matching frequency, `ann_scaler` based on frequency), an automated validation script is provided. **It is recommended to run this after adding or mutating YAMLs.**
 
 ```bash
-# Validate that all workflow_config_*.yaml conform to weekly parameters
+# Validate that all workflow_config_*.yaml conform to production parameters (day/week)
 python engine/scripts/check_workflow_yaml.py
 
-# Attempt to automatically fix all malformed YAMLs (converts daily params to weekly)
+# Attempt to automatically fix all malformed YAMLs (converts params to production requirements)
 python engine/scripts/check_workflow_yaml.py --fix
 ```
 

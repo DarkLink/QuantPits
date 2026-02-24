@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 训练共享工具模块 (Train Utilities)
-从 weekly_train_predict.py 提取的共享逻辑，供全量训练和增量训练复用。
+从生产训练逻辑中提取的共享工具，供全量训练和增量训练复用。
 
 主要功能：
 - 日期计算 (calculate_dates)
@@ -34,7 +34,7 @@ ROOT_DIR = env.ROOT_DIR
 
 REGISTRY_FILE = os.path.join(ROOT_DIR, "config", "model_registry.yaml")
 MODEL_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "model_config.json")
-WEEKLY_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "weekly_config.json")
+PROD_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "prod_config.json")
 RECORD_OUTPUT_FILE = os.path.join(ROOT_DIR, "latest_train_records.json")
 PREDICTION_OUTPUT_DIR = os.path.join(ROOT_DIR, "output", "predictions")
 HISTORY_DIR = os.path.join(ROOT_DIR, "data", "history")
@@ -46,16 +46,22 @@ def calculate_dates():
     """根据 model_config.json 计算训练日期窗口"""
     from qlib.data import D
 
+    if not os.path.exists(MODEL_CONFIG_FILE):
+        raise FileNotFoundError(f"Config file not found: {MODEL_CONFIG_FILE}")
+
     with open(MODEL_CONFIG_FILE, 'r') as file:
         config = json.load(file)
 
-    train_date_mode = config['train_date_mode']
-    data_slice_mode = config['data_slice_mode']
+    train_date_mode = config.get('train_date_mode', 'last_trade_date')
+    data_slice_mode = config.get('data_slice_mode', 'slide')
 
-    test_set_window = config["test_set_window"]
-    valid_set_window = config["valid_set_window"]
-    train_set_windows = config["train_set_windows"]
+    test_set_window = config.get("test_set_window", 3)
+    valid_set_window = config.get("valid_set_window", 2)
+    train_set_windows = config.get("train_set_windows", 8)
 
+    # 频次配置
+    freq = config.get("freq", "week").lower()
+    
     # 确定锚点日期
     if train_date_mode == 'last_trade_date':
         last_trade_date = D.calendar(future=False)[-1:][0]
@@ -65,9 +71,11 @@ def calculate_dates():
 
     def add_year_with_nextday(input_date, n):
         input_date_obj = datetime.strptime(input_date, "%Y-%m-%d")
-        added_year_date = datetime(input_date_obj.year + n, input_date_obj.month, input_date_obj.day)
-        next_day = added_year_date + timedelta(days=1)
-        return added_year_date.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d")
+        # 允许 fractional years
+        delta_days = int(n * 365.25)
+        target_date = input_date_obj + timedelta(days=delta_days)
+        next_day = target_date + timedelta(days=1)
+        return target_date.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d")
 
     if data_slice_mode == 'slide':
         _, start_time = add_year_with_nextday(anchor_date, -1 * (train_set_windows + valid_set_window + test_set_window))
@@ -78,23 +86,24 @@ def calculate_dates():
     else:
         start_time = config.get("start_time", "2008-01-01")
         fit_start_time = config.get("fit_start_time", "2008-01-01")
-        fit_end_time = config["fit_end_time"]
-        valid_start_time = config["valid_start_time"]
-        valid_end_time = config["valid_end_time"]
-        test_start_time = config["test_start_time"]
-        test_end_time = config["test_end_time"]
+        fit_end_time = config.get("fit_end_time", "")
+        valid_start_time = config.get("valid_start_time", "")
+        valid_end_time = config.get("valid_end_time", "")
+        test_start_time = config.get("test_start_time", "")
+        test_end_time = config.get("test_end_time", "")
 
-    # 加载周配置文件以获取当前资金信息
-    with open(WEEKLY_CONFIG_FILE, 'r') as file:
-        weekly_config = json.load(file)
+    # 加载生产配置文件以获取当前资金信息
+    account = 100000.0
+    if os.path.exists(PROD_CONFIG_FILE):
+        with open(PROD_CONFIG_FILE, 'r') as file:
+            prod_config = json.load(file)
+        account = prod_config.get("current_full_cash", 100000.0)
     
-    account = weekly_config.get("current_full_cash", 100000.0)
-
     date_params = {
         "market": config["market"],
         "benchmark": config["benchmark"],
-        "topk": config["TopK"],
-        "n_drop": config["DropN"],
+        "topk": config.get("TopK", 20),
+        "n_drop": config.get("DropN", 3),
         "account": account,
         "start_time": start_time,
         "end_time": test_end_time,
@@ -104,7 +113,8 @@ def calculate_dates():
         "valid_end_time": valid_end_time,
         "test_start_time": test_start_time,
         "test_end_time": test_end_time,
-        "anchor_date": anchor_date
+        "anchor_date": anchor_date,
+        "freq": freq
     }
 
     print("\n=== Date Calculation Result ===")
@@ -117,9 +127,11 @@ def calculate_dates():
 
 # ================= YAML 注入 =================
 def inject_config(yaml_path, params):
-    """将日期参数注入 YAML 配置"""
+    """将参数注入 YAML 配置 (包含频次感知注入)"""
     with open(yaml_path, 'r') as f:
         config = yaml.safe_load(f)
+
+    freq = params.get('freq', 'week').lower()
 
     config['market'] = params['market']
     config['benchmark'] = params['benchmark']
@@ -130,6 +142,17 @@ def inject_config(yaml_path, params):
     dh['fit_start_time'] = params['fit_start_time']
     dh['fit_end_time'] = params['fit_end_time']
     dh['instruments'] = params['market']
+
+    # 1. 注入 Label (根据频次)
+    # 如果 freq 为 week，标记可能是 Ref(-6) 或 Ref(-2)
+    # 策略：如果 model_config 中有 label_formula 则使用，否则根据频次猜测
+    if 'label_formula' in params:
+        dh['label'] = [params['label_formula']]
+    elif freq == 'week':
+        # Qlib 默认日频数据下，周收益率通常取 5-6 天
+        dh['label'] = ["Ref($close, -6) / Ref($close, -1) - 1"]
+    else:
+        dh['label'] = ["Ref($close, -2) / Ref($close, -1) - 1"]
 
     if 'task' in config and 'dataset' in config['task']:
         segs = config['task']['dataset']['kwargs']['segments']
@@ -142,11 +165,23 @@ def inject_config(yaml_path, params):
         if 'strategy' in pa and 'kwargs' in pa['strategy']:
             pa['strategy']['kwargs']['topk'] = params['topk']
             pa['strategy']['kwargs']['n_drop'] = params['n_drop']
+        
+        # 2. 注入 Executor time_per_step
+        if 'executor' in pa and 'kwargs' in pa['executor']:
+            pa['executor']['kwargs']['time_per_step'] = freq
+
         if 'backtest' in pa:
             pa['backtest']['start_time'] = params['test_start_time']
             pa['backtest']['end_time'] = params['test_end_time']
             pa['backtest']['account'] = params['account']
             pa['backtest']['benchmark'] = params['benchmark']
+
+    # 3. 注入 SigAnaRecord ann_scaler
+    if 'task' in config and 'record' in config['task']:
+        for r_cfg in config['task']['record']:
+            if r_cfg.get('class') == 'SigAnaRecord':
+                if 'kwargs' not in r_cfg: r_cfg['kwargs'] = {}
+                r_cfg['kwargs']['ann_scaler'] = 52 if freq == 'week' else 252
 
     return config
 
@@ -455,7 +490,7 @@ def merge_train_records(new_records, record_file=None):
 
 def overwrite_train_records(records, record_file=None):
     """
-    全量覆写训练记录（用于 weekly_train_predict.py 全量刷新模式）
+    全量覆写训练记录（用于 prod_train_predict.py 全量刷新模式）
     覆写前自动备份。
     
     Args:

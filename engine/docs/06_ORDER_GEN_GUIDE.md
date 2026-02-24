@@ -180,11 +180,11 @@ python engine/scripts/order_gen.py --help
 
 ## 典型工作流
 
-### 场景 1：完整周例行流程
+### 场景 1：完整例行流程
 
 ```bash
 # Step 1: 训练 / 预测
-python engine/scripts/weekly_train_predict.py
+python engine/scripts/prod_train_predict.py
 
 # Step 2: 穷举组合
 python engine/scripts/brute_force_fast.py --max-combo-size 3
@@ -193,7 +193,7 @@ python engine/scripts/brute_force_fast.py --max-combo-size 3
 python engine/scripts/ensemble_fusion.py --from-config-all
 
 # Step 4: 处理上周交易（如有）
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 
 # Step 5: 生成订单
 python engine/scripts/order_gen.py
@@ -226,7 +226,7 @@ python engine/scripts/order_gen.py
 > [!IMPORTANT]
 > 本脚本需要以下前置条件：
 > 1. `output/predictions/` 中存在预测文件（来自训练/融合脚本）
-> 2. `config/weekly_config.json` 中的持仓和现金已更新（来自 post-trade 脚本）
+> 2. `config/prod_config.json` 中的持仓和现金已更新（来自 post-trade 脚本）
 
 > [!TIP]
 > 建议在正式运行前先用 `--dry-run --verbose` 确认订单计划。
@@ -237,9 +237,9 @@ python engine/scripts/order_gen.py
 
 | 脚本 | 用途 | 输入 | 输出 |
 |------|------|------|------|
-| `weekly_train_predict.py` | 训练模型 | configs | `latest_train_records.json` |
+| `prod_train_predict.py` | 训练模型 | configs | `latest_train_records.json` |
 | `brute_force_fast.py` | 穷举组合 | train records | leaderboard |
 | `ensemble_fusion.py` | 融合回测 | 选定模型 | 融合预测 + 绩效 |
-| `weekly_post_trade.py` | 处理交易 | 交易文件 | 更新持仓/现金 |
+| `prod_post_trade.py` | 处理交易 | 交易文件 | 更新持仓/现金 |
 | `signal_ranking.py` | 信号排名 | 融合预测 | Top N 排名 CSV |
 | **`order_gen.py`** | **生成订单** | **预测 + 持仓** | **买卖建议 + 多模型判断** |

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """
-Weekly Train + Predict Script (全量训练)
-周末训练并预测，输出各模型成绩供选择。
+Production Train + Predict Script (全量训练)
+按频率训练并预测，输出各模型成绩供选择。
 
-运行方式：cd QuantPits && python engine/scripts/weekly_train_predict.py
+运行方式：cd QuantPits && python engine/scripts/prod_train_predict.py
 
 本脚本为全量训练模式：
 - 训练 model_registry.yaml 中所有 enabled=true 的模型
@@ -53,7 +53,7 @@ from train_utils import (
     RECORD_OUTPUT_FILE,
 )
 
-EXPERIMENT_NAME = "Weekly_Production_Train"
+# EXPERIMENT_NAME 将根据频次动态设置
 
 
 # ================= 主流程 =================
@@ -73,8 +73,10 @@ def run_train_predict():
 
     print_model_table(enabled_models, title="全量训练模型列表")
 
+    experiment_name = f"Prod_Train_{params.get('freq', 'week').upper()}"
+    
     current_records = {
-        "experiment_name": EXPERIMENT_NAME,
+        "experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "models": {}
@@ -89,7 +91,7 @@ def run_train_predict():
         print(f"{'─'*60}")
 
         yaml_file = model_info['yaml_file']
-        result = train_single_model(model_name, yaml_file, params, EXPERIMENT_NAME)
+        result = train_single_model(model_name, yaml_file, params, experiment_name)
 
         if result['success']:
             current_records['models'][model_name] = result['record_id']
@@ -108,7 +110,7 @@ def run_train_predict():
         json.dump(model_performances, f, indent=4)
 
     print(f"\n{'='*50}")
-    print(f"All tasks finished. Experiment: {EXPERIMENT_NAME}")
+    print(f"All tasks finished. Experiment: {experiment_name}")
     print(f"Records saved to {RECORD_OUTPUT_FILE}")
     print(f"Performance comparison saved to {perf_file}")
     print(f"\nModel Performances:")

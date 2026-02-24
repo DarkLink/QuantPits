@@ -59,17 +59,17 @@ source workspaces/Demo_Workspace/run_env.sh
 
 ### 3. Run the Pipeline
 
-Once activated, you can execute the minimal weekly loop using the engine scripts:
+Once activated, you can execute the minimal routine loop using the engine scripts:
 
 ```bash
 # 1. Generate predictions from existing models
-python engine/scripts/weekly_predict_only.py --all-enabled
+python engine/scripts/prod_predict_only.py --all-enabled
 
 # 2. Fuse predictions using your combo configs
 python engine/scripts/ensemble_fusion.py --from-config-all
 
 # 3. Process previous week's live trades (Post-Trade)
-python engine/scripts/weekly_post_trade.py
+python engine/scripts/prod_post_trade.py
 
 # 4. Generate new Buy/Sell orders based on current holdings
 python engine/scripts/order_gen.py

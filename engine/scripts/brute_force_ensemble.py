@@ -433,7 +433,8 @@ def run_single_backtest(
 
         initial_cash = BACKTEST_CONFIG["account"]
         final_nav = report.iloc[-1]["account"]
-        ann_ret = report["return"].mean() * 52
+        ann_scaler = 52 if freq == "week" else 252
+        ann_ret = report["return"].mean() * ann_scaler
 
         report["nav"] = report["account"]
         report["max_nav"] = report["nav"].cummax()
@@ -446,7 +447,7 @@ def run_single_backtest(
             / report.iloc[0]["bench"]
         )
         excess_ret = total_ret - bench_ret
-        ann_excess = ann_ret - (report["bench"].mean() * 52)
+        ann_excess = ann_ret - (report["bench"].mean() * ann_scaler)
 
         return {
             "models": ",".join(combo_models),
@@ -930,8 +931,10 @@ def analyze_results(
                 recorder = R.get_recorder(
                     recorder_id=record_id, experiment_name=experiment_name
                 )
+                freq_val = 'week' if args.freq == 'week' else 'day'
+                freq_suffix = '1week' if freq_val == 'week' else '1day'
                 report = recorder.load_object(
-                    "portfolio_analysis/report_normal_1week.pkl"
+                    f"portfolio_analysis/report_normal_{freq_suffix}.pkl"
                 )
                 returns_dict[model_name] = report["return"]
                 if "bench" in report.columns:
@@ -1183,8 +1186,8 @@ def main():
         help="最小组合大小 (默认: 1)",
     )
     parser.add_argument(
-        "--freq", type=str, default="week", choices=["day", "week"],
-        help="回测交易频率 (默认: week)",
+        "--freq", type=str, default=None, choices=["day", "week"],
+        help="回测交易频率 (默认: 从 model_config 读取)",
     )
     parser.add_argument(
         "--top-n", type=int, default=50,
@@ -1251,9 +1254,13 @@ def main():
     print("=" * 60)
 
     init_qlib()
-
-    # 加载配置
+    init_qlib()
     train_records, model_config = load_config(args.record_file)
+    
+    # 确定频率
+    freq = args.freq or model_config.get("freq", "week")
+    print(f"当前交易频率: {freq}")
+    
     anchor_date = train_records.get(
         "anchor_date", datetime.now().strftime("%Y-%m-%d")
     )
