@@ -95,9 +95,4 @@ def main():
     print(f"折线图已保存至: {out_img}")
 
 if __name__ == "__main__":
-    # 切换到项目根目录执行
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    ROOT_DIR = os.path.dirname(SCRIPT_DIR)
-    os.chdir(ROOT_DIR)
-    
     main()

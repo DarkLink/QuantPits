@@ -47,10 +47,10 @@ import pandas as pd
 # 路径设置
 # ---------------------------------------------------------------------------
 import env
+os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
-os.chdir(ROOT_DIR)
 
 PREDICTION_DIR = os.path.join(ROOT_DIR, "output", "predictions")
 ENSEMBLE_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "ensemble_config.json")

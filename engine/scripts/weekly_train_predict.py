@@ -11,13 +11,18 @@ Weekly Train + Predict Script (全量训练)
 - 如需增量训练个别模型，请使用 scripts/incremental_train.py
 """
 
+import os
+import sys
+import argparse
+from datetime import datetime, timedelta
+
+import env
+os.chdir(env.ROOT_DIR)  # 必须在 qlib 导入前切换目录并确保环境变量生效
+
 import qlib
 import yaml
 import json
 import pandas as pd
-import os
-import argparse
-import env
 from qlib.data import D
 from qlib.constant import REG_CN
 from qlib.utils import init_instance_by_config
@@ -28,7 +33,7 @@ from datetime import datetime, timedelta
 # 工作目录应该是 QuantPits/
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
-os.chdir(ROOT_DIR)  # 确保工作目录正确
+# os.chdir(ROOT_DIR)  # 已在上方完成
 
 # 初始化 Qlib
 provider_uri = "~/.qlib/qlib_data/cn_data"

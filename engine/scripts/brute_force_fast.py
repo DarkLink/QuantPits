@@ -40,9 +40,11 @@ import itertools
 import logging
 import argparse
 import time
+import pickle
 from datetime import datetime
 from collections import Counter
 from itertools import chain
+from pathlib import Path
 
 import yaml
 import pandas as pd
@@ -53,10 +55,11 @@ from tqdm.auto import tqdm
 # 路径设置
 # ---------------------------------------------------------------------------
 import env
+os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
-os.chdir(ROOT_DIR)
+# os.chdir(ROOT_DIR)  # 已在上方完成
 
 # ---------------------------------------------------------------------------
 # GPU 加速：自动检测 CuPy

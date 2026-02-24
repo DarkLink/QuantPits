@@ -53,17 +53,18 @@ import json
 import argparse
 from datetime import datetime
 
+import env
+os.chdir(env.ROOT_DIR)
+
 import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
 # 路径设置
 # ---------------------------------------------------------------------------
-import env
-
+# 已在上方导入并切换目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
-os.chdir(ROOT_DIR)
 sys.path.append(SCRIPT_DIR)
 
 # ---------------------------------------------------------------------------

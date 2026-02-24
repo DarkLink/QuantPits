@@ -44,7 +44,7 @@ def init_workspace(source, target):
     with open(run_env_path, "w") as f:
         f.write("#!/bin/bash\n")
         f.write("# Source this file to activate the workspace\n")
-        f.write("export QLIB_WORKSPACE_DIR=\"$(cd \\\"$(dirname \\\"${BASH_SOURCE[0]}\\\")\\\" && pwd)\"\n")
+        f.write('export QLIB_WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n')
         f.write("echo \"Workspace activated: $QLIB_WORKSPACE_DIR\"\n")
         
     # Make it executable just in case, though it should be sourced

@@ -34,6 +34,7 @@ ROOT_DIR = env.ROOT_DIR
 
 REGISTRY_FILE = os.path.join(ROOT_DIR, "config", "model_registry.yaml")
 MODEL_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "model_config.json")
+WEEKLY_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "weekly_config.json")
 RECORD_OUTPUT_FILE = os.path.join(ROOT_DIR, "latest_train_records.json")
 PREDICTION_OUTPUT_DIR = os.path.join(ROOT_DIR, "output", "predictions")
 HISTORY_DIR = os.path.join(ROOT_DIR, "data", "history")
@@ -83,11 +84,18 @@ def calculate_dates():
         test_start_time = config["test_start_time"]
         test_end_time = config["test_end_time"]
 
+    # 加载周配置文件以获取当前资金信息
+    with open(WEEKLY_CONFIG_FILE, 'r') as file:
+        weekly_config = json.load(file)
+    
+    account = weekly_config.get("current_full_cash", 100000.0)
+
     date_params = {
         "market": config["market"],
         "benchmark": config["benchmark"],
         "topk": config["TopK"],
         "n_drop": config["DropN"],
+        "account": account,
         "start_time": start_time,
         "end_time": test_end_time,
         "fit_start_time": fit_start_time,
@@ -137,6 +145,7 @@ def inject_config(yaml_path, params):
         if 'backtest' in pa:
             pa['backtest']['start_time'] = params['test_start_time']
             pa['backtest']['end_time'] = params['test_end_time']
+            pa['backtest']['account'] = params['account']
             pa['backtest']['benchmark'] = params['benchmark']
 
     return config

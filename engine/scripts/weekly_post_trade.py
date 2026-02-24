@@ -23,6 +23,9 @@ from decimal import Decimal
 
 import pandas as pd
 
+import env
+os.chdir(env.ROOT_DIR)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -554,8 +557,6 @@ Cashflow 配置 (config/cashflow.json):
 def main():
     args = parse_args()
 
-    import env
-    os.chdir(env.ROOT_DIR)
     cwd = os.getcwd()
 
     if not os.path.exists(WEEKLY_CONFIG_FILE):

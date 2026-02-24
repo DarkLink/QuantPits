@@ -6,6 +6,7 @@ from datetime import datetime
 import argparse
 
 import env
+os.chdir(env.ROOT_DIR)
 
 def evaluate_health():
     script_dir = os.path.dirname(os.path.abspath(__file__))

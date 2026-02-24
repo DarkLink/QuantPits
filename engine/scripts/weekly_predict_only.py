@@ -35,10 +35,7 @@ import argparse
 from datetime import datetime
 
 import env
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = env.ROOT_DIR
-os.chdir(ROOT_DIR)
+os.chdir(env.ROOT_DIR)
 
 DEFAULT_EXPERIMENT_NAME = "Weekly_Predict_Only"
 

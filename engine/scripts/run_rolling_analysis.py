@@ -10,6 +10,7 @@ from datetime import datetime
 
 # Adjust path so we can import analysis module
 import env
+os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR

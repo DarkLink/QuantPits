@@ -34,17 +34,18 @@ Brute Force Ensemble - 暴力穷举组合回测 + 结果分析
 import os
 import sys
 import json
-import gc
-import signal
-import itertools
-import logging
+import yaml
+import pickle
 import argparse
+import pandas as pd
 from datetime import datetime
+from pathlib import Path
+
+import env
+os.chdir(env.ROOT_DIR)
 from collections import Counter
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import yaml
 
 import pandas as pd
 import numpy as np
@@ -53,11 +54,9 @@ from tqdm.auto import tqdm
 # ---------------------------------------------------------------------------
 # 路径设置
 # ---------------------------------------------------------------------------
-import env
-
+# 已在上方导入并切换目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
-os.chdir(ROOT_DIR)
 
 # ---------------------------------------------------------------------------
 # 常量
