@@ -1,0 +1,8 @@
+models:
+  demo_linear_Alpha158:
+    algorithm: linear
+    dataset: Alpha158
+    market: csi300
+    yaml_file: config/workflow_config_demo.yaml
+    enabled: true
+    tags: [baseline]

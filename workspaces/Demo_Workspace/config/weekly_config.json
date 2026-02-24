@@ -1,0 +1,14 @@
+{
+    "model": "DemoModel",
+    "current_date": "2024-01-01",
+    "last_processed_date": "2024-01-01",
+    "initial_cash": 100000.0,
+    "current_full_cash": 100000.0,
+    "initial_holding": [],
+    "current_cash": 100000.0,
+    "current_holding": [],
+    "TopK": 20,
+    "DropN": 3,
+    "buy_suggestion_factor": 2,
+    "experiment_name": "demo_prod_run"
+}

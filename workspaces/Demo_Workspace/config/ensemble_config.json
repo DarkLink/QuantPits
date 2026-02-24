@@ -1,0 +1,13 @@
+{
+    "combos": {
+        "default": {
+            "models": [
+                "demo_linear_Alpha158"
+            ],
+            "method": "equal",
+            "default": true,
+            "description": "Demo Baseline Strategy"
+        }
+    },
+    "min_model_ic": 0.00
+}

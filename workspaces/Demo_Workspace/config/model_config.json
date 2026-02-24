@@ -1,0 +1,21 @@
+{
+    "train_date_mode": "last_trade_date",
+    "data_slice_mode": "slide",
+    "train_set_windows": 8,
+    "valid_set_window": 2,
+    "test_set_window": 3,
+    "market": "csirun300",
+    "benchmark": "SH000300",
+    "TopK": 20,
+    "DropN": 3,
+    "start_time": "2020-01-01",
+    "fit_start_time": "2020-01-01",
+    "fit_end_time": "2021-12-31",
+    "valid_start_time": "2022-01-01",
+    "valid_end_time": "2022-12-31",
+    "test_start_time": "2023-01-01",
+    "test_end_time": "2023-12-31",
+    "backtest_start_time": "2023-01-01",
+    "backtest_end_time": "2023-12-31",
+    "experiment_name_prefix": "demo_multi_model"
+}
