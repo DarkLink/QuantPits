@@ -1278,6 +1278,7 @@ def main():
     
     # 确定频率 (优先级: 命令行参数 > model_config > 默认 week)
     freq = args.freq or model_config.get("freq", "week")
+    args.freq = freq
     print(f"当前交易频率: {freq}")
     top_k = model_config.get("TopK", 22)
     drop_n = model_config.get("DropN", 3)

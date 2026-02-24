@@ -622,6 +622,7 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq):
         max_drawdown = report_df['drawdown'].min()
 
         bench_ret = (report_df.iloc[-1]['bench'] - report_df.iloc[0]['bench']) / report_df.iloc[0]['bench']
+        total_return = (final_nav / initial_cash) - 1
 
         print(f'\n{"="*20} 回测绩效报告 {"="*20}')
         print(f'回测区间     : {bt_start} ~ {bt_end}')

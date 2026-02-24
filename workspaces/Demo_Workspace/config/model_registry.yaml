@@ -3,6 +3,6 @@ models:
     algorithm: linear
     dataset: Alpha158
     market: csi300
-    yaml_file: config/workflow_config_demo.yaml
+    yaml_file: config/workflow_config_demo_weekly.yaml
     enabled: true
     tags: [baseline]

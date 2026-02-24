@@ -39,6 +39,7 @@ import signal
 import itertools
 import logging
 import argparse
+import yaml
 from datetime import datetime
 from collections import Counter
 from itertools import chain
@@ -46,9 +47,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import env
 os.chdir(env.ROOT_DIR)
-from collections import Counter
-from itertools import chain
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import numpy as np
@@ -460,7 +458,8 @@ def run_single_backtest(
             "Final_NAV": final_nav,
             "Calmar": ann_ret / abs(max_dd) if max_dd != 0 else 0,
         }
-    except Exception:
+    except Exception as e:
+        print(f"  [ERROR] Combo {combo_models} failed: {e}")
         # import traceback
         # traceback.print_exc()
         return None
@@ -1259,6 +1258,7 @@ def main():
     
     # 确定频率
     freq = args.freq or model_config.get("freq", "week")
+    args.freq = freq
     print(f"当前交易频率: {freq}")
     
     anchor_date = train_records.get(
