@@ -51,33 +51,12 @@ TRADE_DATA_PATTERNS = [
 
 # ── Legacy notebooks（已重构到 scripts/）──────────────────────────────────
 LEGACY_NOTEBOOKS = [
-    "weekly_ensemble_predict.ipynb",
-    "weekly_ensemble_predict_v2.ipynb",
-    "weekly_ensemble_predict_v3.ipynb",
-    "brute_force_data_check.ipynb",
-    "weekly_order_gen.ipynb",
-    "weekly_order_gen_ensemble.ipynb",
-    "weekly_order_gen_v2.ipynb",
-    "weekly_post_trade.ipynb",
+
 ]
 
 # ── 测试/实验遗留文件 ────────────────────────────────────────────────────
 LEGACY_ITEMS = {
-    # 目录
-    "output/Alpha158_full": "misc/Alpha158_full",
-    "output/analysis": "misc/analysis",
-    # 单文件
-    "data/emp-table.xlsx": "misc/emp-table.xlsx",
-    "scripts/compare_results.py": "misc/compare_results.py",
-    "scripts/model_compare.py": "misc/model_compare.py",
-    "scripts/ensemble_predict.py": "misc/ensemble_predict.py",
-    # output/ 根目录的早期测试散落文件（已被子目录的正式输出取代）
-    "output/brute_force_results_2026-02-06.csv": "misc/brute_force_results_2026-02-06.csv",
-    "output/best_model_2026-02-06.txt": "misc/best_model_2026-02-06.txt",
-    "output/ensemble_config_2026-02-06.json": "misc/ensemble_config_2026-02-06.json",
-    "output/ensemble_performance_2026-02-06.png": "misc/ensemble_performance_2026-02-06.png",
-    "output/leaderboard_2026-02-06.csv": "misc/leaderboard_2026-02-06.csv",
-    "output/model_comparison_2026-02-06.json": "misc/model_comparison_2026-02-06.json",
+
 }
 
 # ── 不应被归档的文件（累计日志等）─────────────────────────────────────────

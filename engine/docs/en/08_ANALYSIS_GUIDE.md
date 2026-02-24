@@ -27,7 +27,7 @@ Standard utilization environments typically trigger explicitly when structural a
 cd QuantPits
 
 # Triggers report serialization assessing comprehensive cross-logic frameworks mapped internally against stated algorithms explicitly
-conda run -n qlib_new python engine/scripts/run_analysis.py \
+python engine/scripts/run_analysis.py \
   --models gru_Alpha158 transformer_Alpha360 TabNet_Alpha158 sfm_Alpha360 \
   --output output/analysis_report.md
 ```
@@ -50,7 +50,7 @@ Alongside serialized markdown reports, the system delivers multi-dimensional vis
 cd QuantPits
 
 # Spawns visualization matrices explicitly (Accessed natively by bridging browsers evaluating http://localhost:8501 bounds)
-conda run -n qlib_new streamlit run dashboard.py
+streamlit run dashboard.py
 ```
 
 Operating internally bounding visual representations, developers natively govern temporal chronological windows (Start Date, End Date) alongside natively mapped Benchmark index parameters. Processing executions output explicit multi-segment architectures natively:
@@ -66,12 +66,12 @@ To counter the inherently obfuscated "style drift" and "gradual performance deca
 1. Initially execute generation sequences mapping requested target time window parameter matrices (example matrices isolating 20 and 60 parameters distinctly):
 ```bash
 cd QuantPits
-conda run -n qlib_new python engine/scripts/run_rolling_analysis.py --windows 20 60
+python engine/scripts/run_rolling_analysis.py --windows 20 60
 ```
 
 2. Follow directly executing explicit visualization rendering systems mapping targeting sequential ports uniquely:
 ```bash
-conda run -n qlib_new streamlit run rolling_dashboard.py --server.port 8503
+streamlit run rolling_dashboard.py --server.port 8503
 ```
 
 - Target monitoring scopes explicitly encompass:
@@ -86,8 +86,8 @@ Extrapolating bounds optimizing assessment intervals manually native systems inc
 cd QuantPits
 
 # Notice: execution explicitly demands active sequential parameters strictly rendered natively utilizing data extraction loops chronologically mapping ahead explicitly.
-conda run -n qlib_new python engine/scripts/run_rolling_analysis.py --windows 20 60
-conda run -n qlib_new python engine/scripts/run_rolling_health_report.py
+python engine/scripts/run_rolling_analysis.py --windows 20 60
+python engine/scripts/run_rolling_health_report.py
 ```
 This routine triggers bounding output mapped specifically generating `output/rolling_health_report.md` structures explicitly evaluating 3-stage multi-criteria alerts native architectures dynamically mapping explicit boundary exceptions explicitly tracking:
 1. **Z-Score Exclusion Boundaries (Friction limits)**: Real-time checks identifying explicitly whether immediate weekly execution parameters suffer explicit gap constraint deviances exceeding negative parameters trailing past average 60-day scopes bounding variance distributions explicitly triggering structured system alerts natively identifying structural execution failures dynamically.

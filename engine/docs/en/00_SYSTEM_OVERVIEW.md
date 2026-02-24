@@ -106,7 +106,7 @@ flowchart TB
 ⚠️ **All scenarios below must be executed in the system root directory (`QuantPits`) with the corresponding workspace activated beforehand.**
 ```bash
 cd QuantPits
-source workspaces/CSI300_Base/run_env.sh
+source workspaces/Demo_Workspace/run_env.sh
 ```
 
 ### Scenario A: Full Weekly Routine (Including Training)
@@ -377,8 +377,6 @@ latest_train_records.json   weekly_config.json (Update Pos/Cash)
 | Directory | Purpose |
 |------|------|
 | `output/` | Older output files (past versions of predictions, ensembles, brute forces) |
-| `notebooks/` | Legacy notebooks refactored into `scripts/` |
-| `misc/` | Leftover test/experimental files |
 
 ---
 

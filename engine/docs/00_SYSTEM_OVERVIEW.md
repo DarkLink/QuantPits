@@ -106,7 +106,7 @@ flowchart TB
 ⚠️ **以下所有场景均需在系统根目录（`QuantPits`）下操作，并已提前激活对应的工作区。**
 ```bash
 cd QuantPits
-source workspaces/CSI300_Base/run_env.sh
+source workspaces/Demo_Workspace/run_env.sh
 ```
 
 ### 场景 A：完整周例行流程（含训练）
@@ -377,8 +377,6 @@ python engine/scripts/ensemble_fusion.py \
 | 目录 | 用途 |
 |------|------|
 | `output/` | 历史输出文件（predictions、ensemble、brute_force 等的旧版本） |
-| `notebooks/` | 已重构到 scripts/ 的 legacy notebooks |
-| `misc/` | 测试/实验遗留文件 |
 
 ---
 

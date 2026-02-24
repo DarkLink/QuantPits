@@ -207,20 +207,6 @@ python engine/scripts/brute_force_ensemble.py --use-groups --min-combo-size 3 --
 
 ---
 
-## Contrast to Notebook Topologies
-
-| Scope | Script Target | Corresponding Notebook |
-|------|:----:|:--------:|
-| Extrapolated Combo Processing | ✅ | ~~weekly_ensemble_predict_v2.ipynb Terminal Block~~ |
-| Basic Data Distribution | ✅ | ~~brute_force_data_check.ipynb~~ |
-| Alpha Decay / IC Bleed Models | ❌ | brute_force_data_check.ipynb |
-| Shock Sensitivity Tests | ❌ | brute_force_data_check.ipynb |
-| Stylized Regime Analysis | ❌ | brute_force_data_check.ipynb |
-
-> Deep dives regarding decay variables remain intrinsically reliant on visualization tooling within legacy notebooks mapping.
-
----
-
 ## ⚡ Accelerated Vectors (`brute_force_fast.py`)
 
 Processing matrices expanding above a 10+ node density yield unacceptable wait loops executing natively on Qlib. `brute_force_fast.py` overrides the simulation core by utilizing **NumPy/CuPy vectorized matrix calculation methodologies**. It yields a **~5000x acceleration multiplier**.
@@ -266,7 +252,7 @@ python engine/scripts/brute_force_fast.py --use-groups --group-config config/com
 | Cash Reinvestment Logic | ✅ Dynamic Volume | ❌ Pure equal-balance assumptions |
 | Time Constraint | ~5s/combo | ~0.001s/combo |
 
-> **Sort Scaling Ratios Output Consistent Ranks**: The absolute numerical estimates manifest variance from reality; however, internal relational scoring logic remains mathematically consistent, establishing an ultra-efficient sorting filter scope.
+> **Sort Scaling Ratios Output Consistent Ranks**: The absolute numerical estimates manifest variance from reality; however, internal relational scoring logic remains mathematically consistent, establishing an ultra-efficient sorting filter scope. （**NO GOOD, USE WITH CAUTION**）
 
 ### Optimized Workflow Progression
 

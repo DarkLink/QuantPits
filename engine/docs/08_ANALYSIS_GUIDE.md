@@ -27,7 +27,7 @@
 cd QuantPits
 
 # 使用当前所有指定的模型作为融合主体，输出 Markdown 分析报告
-conda run -n qlib_new python engine/scripts/run_analysis.py \
+python engine/scripts/run_analysis.py \
   --models gru_Alpha158 transformer_Alpha360 TabNet_Alpha158 sfm_Alpha360 \
   --output output/analysis_report.md
 ```
@@ -50,7 +50,7 @@ conda run -n qlib_new python engine/scripts/run_analysis.py \
 cd QuantPits
 
 # 启动交互式看板（启动后在浏览器打开 http://localhost:8501 ）
-conda run -n qlib_new streamlit run dashboard.py
+streamlit run dashboard.py
 ```
 
 在前端界面中，你可以自由选择测算的时间范围 (Start Date, End Date) 及对标基准 (Market Benchmark)，点击生成即可得到四大可视化模块：
@@ -66,12 +66,12 @@ conda run -n qlib_new streamlit run dashboard.py
 1. 首先运行数据生成脚本。你可以自由地指定一个或多个所需的滑动窗口长度（例如 20日 和 60日）：
 ```bash
 cd QuantPits
-conda run -n qlib_new python engine/scripts/run_rolling_analysis.py --windows 20 60
+python engine/scripts/run_rolling_analysis.py --windows 20 60
 ```
 
 2. 然后启动专门的滚动可视化看板：
 ```bash
-conda run -n qlib_new streamlit run rolling_dashboard.py --server.port 8503
+streamlit run rolling_dashboard.py --server.port 8503
 ```
 
 - 该看板包含四大滚动监控模块：
@@ -85,8 +85,8 @@ conda run -n qlib_new streamlit run rolling_dashboard.py --server.port 8503
 cd QuantPits
 
 # 注意：运行此检验前必须先生成好底层的窗口参数数据
-conda run -n qlib_new python engine/scripts/run_rolling_analysis.py --windows 20 60
-conda run -n qlib_new python engine/scripts/run_rolling_health_report.py
+python engine/scripts/run_rolling_analysis.py --windows 20 60
+python engine/scripts/run_rolling_health_report.py
 ```
 这将在 `output/rolling_health_report.md` 生成最新的状态报文，其引擎内部会执行以下三级异常监测：
 1. **Z-Score 异常检测 (Friction limits)**：实时判定系统在最近一个交易周遭遇的微观滑点或延迟跳空损耗，是否向负面越过了过去 60 天平均值的 ±2 准差警戒线。如果发生，预警“执行摩擦崩盘”。
@@ -124,7 +124,7 @@ conda run -n qlib_new python engine/scripts/run_rolling_health_report.py
 
 这部分数据基于**实盘流水表 (`daily_amount_log_full.csv`和`trade_log_full.csv`)** 剔除出入金 (Cashflow) 后推断的复权净值计算：
 
-- **基础收益与回撤 (CAGR & Max Drawdown)**：与交易终端 (例如 GAT 系统) 看板对齐。如果剧烈不符，请首先检查 CSV 中近期是否存在出入金格式变更未被兼容。*计算 Sharpe 时使用的无风险收益率为 1.35% (年化)。*新增单独显示的 ** Absolute Return**（累积回报），以抑制系统短时间内截取数据时 CAGR 引发的“年化幻觉”。
+- **基础收益与回撤 (CAGR & Max Drawdown)**：与交易终端 (例如实盘系统) 看板对齐。如果剧烈不符，请首先检查 CSV 中近期是否存在出入金格式变更未被兼容。*计算 Sharpe 时使用的无风险收益率为 1.35% (年化)。*新增单独显示的 ** Absolute Return** （累积回报），以抑制系统短时间内截取数据时 CAGR 引发的“年化幻觉”。
 - **相对基准风险 (Relative Risk to Benchmark)**：
   - **Tracking Error (跟踪误差)**：计算策略跑赢/跑输沪深 300 基准的主动收益的标准差。数值越小，代表策略偏离大环境的程度越低。
   - **Information Ratio (信息比率)**：即 `主动年化超额收益 / 年化 Tracking Error`。衡量承担每单位非系统风险所带来的超额回报。
@@ -133,7 +133,7 @@ conda run -n qlib_new python engine/scripts/run_rolling_health_report.py
   - **Turnover_Rate_Annual (年化换手率)**：通常日度优选策略的年化换手率在 1000% - 2500% 左右（单边 2%-5%/日）。太高意味着每天全仓换发，交易成本将抹平 alpha。
   - **Win/Loss Ratio (盈亏比)**：平均盈利日的收益除以平均亏损日的绝对收益。
 - **水下时间考量 (Time Under Water)**：
-  - **Max / Avg Time under Water Days**：资产在创下某一个历史新高后，随后的连跌或震荡导致它“直到重新突破前高”所耗费的交易日数量。如果你的 Avg 等于 Max（例如一年时间里都是 243），这绝不是代码 Bug！这说明策略在这一年**仅仅经历了一次贯穿全局、连续未破前高的回撤区间**（可能波动很小，也没跌多少），但被困了很久。
+  - **Max / Avg Time under Water Days**：资产在创下某一个历史新高后，随后的连跌或震荡导致它“直到重新突破前高”所耗费的交易日数量。
   - **Days Below Initial Capital**：即资产跌破初始本金的真实亏损天数，与水下时间配合服用，可判别“横盘期”与“实亏期”。
 - **Barra 风格暴露 (Proxy Style Exposures)**：
   - 基于实际资产日收益对简单的 Barra 代理特征 (Size, Momentum, Volatility) 进行横截面回归。若某一项系数绝对值异常偏高（例如 Size 远负于 -0.5 等），说明策略严重暴露于某些市值/热度因子陷阱中。

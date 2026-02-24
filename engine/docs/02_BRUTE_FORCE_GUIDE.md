@@ -207,20 +207,6 @@ python engine/scripts/brute_force_ensemble.py --use-groups --min-combo-size 3 --
 
 ---
 
-## 与 Notebook 的关系
-
-| 功能 | 脚本 | Notebook |
-|------|:----:|:--------:|
-| 暴力穷举回测 | ✅ | ~~weekly_ensemble_predict_v2.ipynb 最后一个 cell~~ |
-| 基础数据分析 | ✅ | ~~brute_force_data_check.ipynb~~ |
-| Alpha Decay / IC 衰减 | ❌ | brute_force_data_check.ipynb |
-| 压力测试 | ❌ | brute_force_data_check.ipynb |
-| 市场状态归因 | ❌ | brute_force_data_check.ipynb |
-
-> Alpha Decay 等需要交互式可视化的分析建议继续在 notebook 中完成.
-
----
-
 ## ⚡ 快速模式 (`brute_force_fast.py`)
 
 当模型数量较多（>10）、组合数量巨大时，原版 qlib 回测非常慢。`brute_force_fast.py` 使用 **NumPy/CuPy 向量化矩阵运算** 替代 qlib 的逐单模拟，速度提升 **~5000 倍**。
@@ -266,7 +252,7 @@ python engine/scripts/brute_force_fast.py --use-groups --group-config config/com
 | 资金管理 | ✅ 完整 | ❌ 假设全仓等权 |
 | 速度 | ~5s/combo | ~0.001s/combo |
 
-> **组合排序高度一致**：快速版的绝对指标有偏差，但组合间的相对排序与原版一致，适合粗筛。
+> **组合排序高度一致**：快速版的绝对指标有偏差，但组合间的相对排序与原版一致，适合粗筛。（ **完全不一致，谨慎使用** ）
 
 ### 推荐工作流
 
