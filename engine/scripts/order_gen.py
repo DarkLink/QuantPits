@@ -767,7 +767,7 @@ def main():
     top_k = config.get('TopK', 22)
     drop_n = config.get('DropN', 3)
     buy_suggestion_factor = config.get('buy_suggestion_factor', 3)
-    market = config.get('market', 'csirun300')
+    market = config.get('market', 'csi300')
     current_cash = float(config.get('current_cash', 0))
     current_holding = config.get('current_holding', [])
     cash_flow_today = get_cashflow_today(cashflow_config, anchor_date)

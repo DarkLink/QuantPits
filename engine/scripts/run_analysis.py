@@ -217,7 +217,7 @@ def main():
         factor_ann = exposure.pop('Factor_Annualized', {})
         beta = exposure.get('Beta_Market', 0)
         
-        report.append("\n### Factor Exposure (csirun300 Basis)")
+        report.append("\n### Factor Exposure (csi300 Basis)")
         for k, v in exposure.items():
             if 'R_Squared' in k:
                 report.append(f"- **{k}**: {v:.4f}")

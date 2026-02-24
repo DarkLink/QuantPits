@@ -103,9 +103,9 @@ flowchart TB
 
 ## 典型运行场景
 
-⚠️ **以下所有场景均需在系统根目录（`PROD/QuantPits`）下操作，并已提前激活对应的工作区。**
+⚠️ **以下所有场景均需在系统根目录（`QuantPits`）下操作，并已提前激活对应的工作区。**
 ```bash
-cd PROD/QuantPits
+cd QuantPits
 source workspaces/CSI300_Base/run_env.sh
 ```
 

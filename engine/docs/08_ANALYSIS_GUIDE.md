@@ -13,7 +13,7 @@
 1. **单模型表现 (`single_model_analyzer.py`)**：通过 Rank IC 与 T+1 ~ T+5 半衰期变化追踪原始信号的强度和退化速度。同时考察 ICIR (信息比率)、十分位收益排序 (Decile Spread) 和多头超额发掘能力 (Long-only IC)。
 2. **组合及相关性 (`ensemble_analyzer.py`)**：评估多模型跨截面的信号斯皮尔曼 (Spearman) 相关性，并通过 Leave-One-Out (留一法) 测算各子模型当前的**边际夏普贡献**，同时输出等权融合打分后的整体业务指标。
 3. **真实摩擦测算 (`execution_analyzer.py`)**：切分真实的交易记录，量化 **Delay Cost**（周五收盘到周一开盘的天然跳空缺口）及 **Execution Slippage**（开盘价到真实成交价的打滑成本）。同时通过 MFE/MAE 计算日内的极端路径。
-4. **组合风险评估 (`portfolio_analyzer.py`)**：基于 `GAT/daily_amount_log_full.csv` 中的 **收盘价值** 和 `trade_log_full.csv` 中的 **CASHFLOW/成交金额** 严谨地推断出真实复权收益，并输出标准度量指标（CAGR、Vol、Sharpe 1.35% Rf、Max Drawdown 等）、资金运作效率（换手率、盈亏比）与风格敞口 (Barra Style Exposures)。
+4. **组合风险评估 (`portfolio_analyzer.py`)**：基于 `daily_amount_log_full.csv` 中的 **收盘价值** 和 `trade_log_full.csv` 中的 **CASHFLOW/成交金额** 严谨地推断出真实复权收益，并输出标准度量指标（CAGR、Vol、Sharpe 1.35% Rf、Max Drawdown 等）、资金运作效率（换手率、盈亏比）与风格敞口 (Barra Style Exposures)。
 
 ---
 
@@ -39,7 +39,7 @@ conda run -n qlib_new python engine/scripts/run_analysis.py \
 | `--models` | 必选 | 需要纳入分析和相关性评估的模型名称清单，例如 `gru_Alpha158` 或 `mlp`。 |
 | `--start-date` | 可选 | 截取数据的开始日期 (YYYY-MM-DD)。默认自动从预测文件和日志中推断。 |
 | `--end-date`| 可选 | 截取数据的结束日期 (YYYY-MM-DD)。默认自动从预测文件和日志中推断。 |
-| `--market`| 可选 | 设定的市场池或基准，默认为 `csirun300` |
+| `--market`| 可选 | 设定的市场池或基准，默认为 `csi300` |
 | `--output` | 可选 | 将生成的最终 Markdown 审查报告完整路径（默认仅打印在终端） |
 
 ### 3. 交互式可视化看板 (Interactive Visual Dashboard)

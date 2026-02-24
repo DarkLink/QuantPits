@@ -574,7 +574,7 @@ def main():
 
     last_processed_date = config.get("last_processed_date", config["current_date"])
     model = config.get("model", "GATs")
-    market = config.get("market", "csirun300")
+    market = config.get("market", "csi300")
     benchmark = config.get("benchmark", "SH000300")
 
     current_cash = Decimal(str(config["current_cash"]))

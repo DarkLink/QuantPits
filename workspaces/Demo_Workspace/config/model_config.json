@@ -4,7 +4,7 @@
     "train_set_windows": 8,
     "valid_set_window": 2,
     "test_set_window": 3,
-    "market": "csirun300",
+    "market": "csi300",
     "benchmark": "SH000300",
     "TopK": 20,
     "DropN": 3,

@@ -39,7 +39,7 @@ conda run -n qlib_new python engine/scripts/run_analysis.py \
 | `--models` | Mandatory | Discrete mapping targets instructing assessment boundary generation explicit algorithm subsets e.g. `gru_Alpha158`. |
 | `--start-date` | Optional | Temporal beginning parameter bounds (YYYY-MM-DD format). Safely inferred bounding dynamically native persistence arrays by default explicitly. |
 | `--end-date`| Optional | Temporal ceiling parameter bounds (YYYY-MM-DD format). Bounds inherited autonomously mapping outputs absent targets natively. |
-| `--market`| Optional | Target asset scaling universe mapping targets implicitly (defaults explicitly targeted `csirun300`). |
+| `--market`| Optional | Target asset scaling universe mapping targets implicitly (defaults explicitly targeted `csi300`). |
 | `--output` | Optional | Forces IO persistence output routines generating exact discrete markdown file strings. Bypasses terminal exclusively printing sequences typically native defaulting absent paths. |
 
 ### 3. Interactive Visual Dashboard 

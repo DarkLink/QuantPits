@@ -34,7 +34,7 @@ def get_trading_dates(start_date, end_date):
     return [d.strftime('%Y-%m-%d') for d in cal]
 
 
-def get_daily_features(start_date, end_date, market="csirun300", features=None):
+def get_daily_features(start_date, end_date, market="csi300", features=None):
     """
     Fetch daily features from Qlib. Default fetches price information.
     """
@@ -59,7 +59,7 @@ def get_daily_features(start_date, end_date, market="csirun300", features=None):
     return df
 
 
-def get_forward_returns(start_date, end_date, market="csirun300", n_days=1):
+def get_forward_returns(start_date, end_date, market="csi300", n_days=1):
     """
     Fetch N-day forward returns from Qlib.
     Return from T's close to T+N's close.

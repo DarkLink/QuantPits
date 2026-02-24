@@ -231,7 +231,7 @@ class PortfolioAnalyzer:
             'Turnover_Rate_Annual': turnover_annual
         }
 
-    def calculate_factor_exposure(self, market="csirun300"):
+    def calculate_factor_exposure(self, market="csi300"):
         """
         Regress daily returns against market benchmark returns.
         """
@@ -285,7 +285,7 @@ class PortfolioAnalyzer:
             'R_Squared': float(model.rsquared)
         }
 
-    def calculate_style_exposures(self, market="csirun300"):
+    def calculate_style_exposures(self, market="csi300"):
         """
         Regress daily returns against proxy style factors (Size, Momentum, Volatility).
         """

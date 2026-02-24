@@ -42,7 +42,7 @@ def main():
     start_date = st.sidebar.date_input("Start Date", default_start)
     end_date = st.sidebar.date_input("End Date", default_end)
     
-    market = st.sidebar.selectbox("Market Benchmark", ["csirun300", "csi300", "csi500"])
+    market = st.sidebar.selectbox("Market Benchmark", ["csi300", "csi300", "csi500"])
     
     run_btn = st.sidebar.button("Generate Dashboard", type="primary")
     
@@ -65,7 +65,7 @@ def render_macro_performance(port_a, returns, market):
     st.header("Module 1: Macro Performance & Risk")
     
     daily_amount = port_a.daily_amount
-    market_col = 'CSI300' if market == 'csirun300' else market.upper()
+    market_col = 'CSI300' if market == 'csi300' else market.upper()
     
     bench_returns = pd.Series(0.0, index=returns.index)
     if market_col in daily_amount.columns:

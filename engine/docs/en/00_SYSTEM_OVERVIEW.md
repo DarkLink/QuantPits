@@ -103,9 +103,9 @@ flowchart TB
 
 ## Typical Execution Scenarios
 
-⚠️ **All scenarios below must be executed in the system root directory (`PROD/QuantPits`) with the corresponding workspace activated beforehand.**
+⚠️ **All scenarios below must be executed in the system root directory (`QuantPits`) with the corresponding workspace activated beforehand.**
 ```bash
-cd PROD/QuantPits
+cd QuantPits
 source workspaces/CSI300_Base/run_env.sh
 ```
 

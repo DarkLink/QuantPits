@@ -35,7 +35,7 @@ class SingleModelAnalyzer:
         
         return daily_ic, ic_win_rate, icir
         
-    def calculate_ic_decay(self, market="csirun300", max_days=5):
+    def calculate_ic_decay(self, market="csi300", max_days=5):
         """
         Calculate IC for T+1 up to T+max_days.
         """

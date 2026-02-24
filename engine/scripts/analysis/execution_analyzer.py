@@ -17,7 +17,7 @@ class ExecutionAnalyzer:
             if end_date:
                 self.trade_log = self.trade_log[self.trade_log['成交日期'] <= pd.to_datetime(end_date)]
         
-    def calculate_slippage_and_delay(self, market="csirun300"):
+    def calculate_slippage_and_delay(self, market="csi300"):
         """
         Delay Cost: Close(T-1) -> Open(T)
         Execution Slippage: Open(T) -> Actual Execution Price(T)
@@ -96,7 +96,7 @@ class ExecutionAnalyzer:
         
         return merged
 
-    def calculate_path_dependency(self, market="csirun300"):
+    def calculate_path_dependency(self, market="csi300"):
         """
         Calculate Maximum Favorable Excursion (MFE) and Maximum Adverse Excursion (MAE)
         Intra-day relative to the execution price.
@@ -173,10 +173,10 @@ class ExecutionAnalyzer:
             'total_dividend': total_dividend
         }
 
-    def analyze_order_discrepancies(self, order_dir, market="csirun300"):
+    def analyze_order_discrepancies(self, order_dir, market="csi300"):
         """
         Analyze substitution bias (missed buys vs actual buys).
-        order_dir: Path to PROD_REFACTORED/data/order_suggestions or similar.
+        order_dir: Path to {workspace}/data/order_suggestions or similar.
         Returns a dict of metrics.
         """
         import os
