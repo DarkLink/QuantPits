@@ -681,7 +681,7 @@ def brute_force_backtest(
 # ============================================================================
 
 def analyze_results(
-    results_df, corr_matrix, norm_df, train_records, output_dir, anchor_date, top_n=50,
+    results_df, corr_matrix, norm_df, train_records, output_dir, anchor_date, top_n=50, freq='day',
 ):
     """对暴力穷举结果进行全面分析"""
     import matplotlib
@@ -930,7 +930,7 @@ def analyze_results(
                 recorder = R.get_recorder(
                     recorder_id=record_id, experiment_name=experiment_name
                 )
-                freq_val = 'week' if args.freq == 'week' else 'day'
+                freq_val = 'week' if freq == 'week' else 'day'
                 freq_suffix = '1week' if freq_val == 'week' else '1day'
                 report = recorder.load_object(
                     f"portfolio_analysis/report_normal_{freq_suffix}.pkl"
@@ -1329,6 +1329,7 @@ def main():
             output_dir=args.output_dir,
             anchor_date=anchor_date,
             top_n=args.top_n,
+            freq=freq,
         )
         
     # Stage 5: OOS 验证
