@@ -66,7 +66,6 @@ python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --r
 ```
 
 > **注意：** 该数据集包含海量历史行情，初次下载可能需要占用十几 GB 的硬盘空间和较长的一段时间。请耐心等待。
-```
 请确保您配置的 Workspace 数据源路径能够准确命中该目录。
 
 ### 3. 激活工作区
@@ -87,16 +86,19 @@ source workspaces/Demo_Workspace/run_env.sh
 # 注意：本引擎假设 Qlib 底层数据已由外部 Cron 任务定时更新完毕。
 # 如果未更新，请在此步骤前优先更新。
 
-# 1. 使用所有已使能的模型触发全量增量预测推断
+# 1. 全量训练模型（首次运行或需要刷新模型时必做）
+python -m quantpits.scripts.prod_train_predict
+
+# 2. 使用所有已使能的模型触发全量增量预测推断
 python -m quantpits.scripts.prod_predict_only --all-enabled
 
-# 2. 调用当前库表配置好的融合配比组合完成多维度参数预测网格
+# 3. 调用当前库表配置好的融合配比组合完成多维度参数预测网格
 python -m quantpits.scripts.ensemble_fusion --from-config-all
 
-# 3. 处理回溯实盘执行状态变更（Post-Trade 落单归档）
+# 4. 处理回溯实盘执行状态变更（Post-Trade 落单归档）
 python -m quantpits.scripts.prod_post_trade
 
-# 4. 根据当前最新的组合建议及最新持仓执行全新订单信号推演
+# 5. 根据当前最新的组合建议及最新持仓执行全新订单信号推演
 python -m quantpits.scripts.order_gen
 ```
 

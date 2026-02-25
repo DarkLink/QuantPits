@@ -66,7 +66,6 @@ python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --r
 ```
 
 > **Note:** This dataset contains massive historical market data. The initial download may require tens of GBs of disk space and a considerable amount of time. Please be patient.
-```
 Make sure `workspaces/Demo_Workspace/run_env.sh` or your Qlib initialization points to this directory.
 
 ### 3. Activate a Workspace
@@ -87,16 +86,19 @@ Once activated, you can execute the minimal routine loop using the quantpits scr
 # Note: This engine assumes underlying Qlib data has been updated (e.g., via external Cron). 
 # If not, update it first.
 
-# 1. Generate predictions from existing models
+# 1. Train models (Required for first-time setup or retraining)
+python -m quantpits.scripts.prod_train_predict
+
+# 2. Generate predictions from existing models
 python -m quantpits.scripts.prod_predict_only --all-enabled
 
-# 2. Fuse predictions using your combo configs
+# 3. Fuse predictions using your combo configs
 python -m quantpits.scripts.ensemble_fusion --from-config-all
 
-# 3. Process previous week's live trades (Post-Trade)
+# 4. Process previous week's live trades (Post-Trade)
 python -m quantpits.scripts.prod_post_trade
 
-# 4. Generate new Buy/Sell orders based on current holdings
+# 5. Generate new Buy/Sell orders based on current holdings
 python -m quantpits.scripts.order_gen
 ```
 
