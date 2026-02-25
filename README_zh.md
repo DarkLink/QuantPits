@@ -1,5 +1,9 @@
 # QuantPits 量化交易系统
 
+![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Qlib](https://img.shields.io/badge/Tech_Stack-Qlib-brightgreen.svg)
+
 基于 [Microsoft Qlib](https://github.com/microsoft/qlib) 构建的先进、生产级别的量化交易系统。本系统提供了一个用于支持周频及日频交易的完整端到端流水道，核心特点包括高度模块化架构、多实例隔离运行（Workspace 机制）、模型融合（Ensemble）、执行归因分析以及全交互式的可视化数据面板。
 
 🌐 [English Version (README.md)](./README.md)
@@ -22,7 +26,7 @@
 
 ```text
 QuantPits/
-├── engine/                 # 核心逻辑及执行脚本、分析面板
+├── quantpits/                 # 核心逻辑及执行脚本、分析面板
 │   ├── scripts/            # Pipeline 流水线脚本矩阵
 │   ├── docs/               # 详细的系统开发及应用操作手册（00-08）
 │   ├── dashboard.py        # 宏观资管业绩评估 Streamlit 面板
@@ -33,6 +37,7 @@ QuantPits/
         ├── config/         # 交易边界约束、模型注册表、出入金路由
         ├── data/           # 订单簿记录、持仓簿流转、单日资金盘口
         ├── output/         # 单一预测结果、融合模型阵列结果、评估报告
+        ├── mlruns/         # MLflow 追踪日志
         └── run_env.sh      # 工作区安全隔离的环境激活脚本
 ```
 
@@ -56,7 +61,7 @@ pip install -e .
 
 ```bash
 # 示例：下载中国市场的 1D 日频数据
-python scripts/get_data.py qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
+python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
 ```
 请确保您配置的 Workspace 数据源路径能够准确命中该目录。
 
@@ -71,20 +76,24 @@ source workspaces/Demo_Workspace/run_env.sh
 
 ### 4. 主动式流水线运行
 
-环境挂载完毕后，您可以直接按顺序触发引擎脚本执行基本的生产流程逻辑循环：
+环境挂载完毕后，您可以直接按顺序触发引擎脚本执行基本的生产流程逻辑循环（或直接在仓库根目录执行 `make run-daily-pipeline`）：
 
 ```bash
+# 0. 更新每日市场数据
+# 注意：本引擎假设 Qlib 底层数据已由外部 Cron 任务定时更新完毕。
+# 如果未更新，请在此步骤前优先更新。
+
 # 1. 使用所有已使能的模型触发全量增量预测推断
-python engine/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/prod_predict_only.py --all-enabled
 
 # 2. 调用当前库表配置好的融合配比组合完成多维度参数预测网格
-python engine/scripts/ensemble_fusion.py --from-config-all
+python quantpits/scripts/ensemble_fusion.py --from-config-all
 
 # 3. 处理回溯实盘执行状态变更（Post-Trade 落单归档）
-python engine/scripts/prod_post_trade.py
+python quantpits/scripts/prod_post_trade.py
 
 # 4. 根据当前最新的组合建议及最新持仓执行全新订单信号推演
-python engine/scripts/order_gen.py
+python quantpits/scripts/order_gen.py
 ```
 
 ### 5. 驱动可视化数据面板
@@ -93,10 +102,10 @@ python engine/scripts/order_gen.py
 
 ```bash
 # 资产组合执行及持仓情况综合评估面板
-streamlit run engine/dashboard.py
+streamlit run quantpits/dashboard.py
 
 # 时序策略微观执行损耗及因子漂移监测面板
-streamlit run engine/rolling_dashboard.py
+streamlit run quantpits/rolling_dashboard.py
 ```
 
 ## 🏗️ 创设新实例工作区
@@ -104,7 +113,7 @@ streamlit run engine/rolling_dashboard.py
 如果您希望针对截然不同的标的物池（如建立一个专注于中证500的实例分支），可以使用自带的脚手架指令：
 
 ```bash
-python engine/scripts/init_workspace.py \
+python quantpits/scripts/init_workspace.py \
   --source workspaces/Demo_Workspace \
   --target workspaces/CSI500_Base
 ```
@@ -113,7 +122,7 @@ python engine/scripts/init_workspace.py \
 
 ## 📖 深度说明文档
 
-如需从零剖析具体各个计算节点以及架构组件的底层原理与完整参数，请前往 `engine/docs/` 阅读系统手册：
+如需从零剖析具体各个计算节点以及架构组件的底层原理与完整参数，请前往 `quantpits/docs/` 阅读系统手册：
 - `00_SYSTEM_OVERVIEW.md` (系统架构部署与流水线总览)
 - `01_TRAINING_GUIDE.md` (全量训练及模型配置向导)
 - `02_BRUTE_FORCE_GUIDE.md` (穷举回测及GPU加速矩阵操作向导)

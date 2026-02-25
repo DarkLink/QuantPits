@@ -1,5 +1,9 @@
 # QuantPits 
 
+![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Qlib](https://img.shields.io/badge/Tech_Stack-Qlib-brightgreen.svg)
+
 An advanced, production-ready quantitative trading system built on top of [Microsoft Qlib](https://github.com/microsoft/qlib). This system provides a complete end-to-end pipeline for weekly and daily frequency trading, featuring modular architecture, multi-instance isolation (Workspaces), ensemble modeling, execution analytics, and interactive dashboards.
 
 🌐 [中文版本 (README_zh.md)](./README_zh.md)
@@ -22,7 +26,7 @@ The system strictly decouples the **Engine (Code)** from the **Workspace (Config
 
 ```text
 QuantPits/
-├── engine/                 # Core logic, scripts, and dashboards
+├── quantpits/                 # Core logic, scripts, and dashboards
 │   ├── scripts/            # Pipeline execution scripts
 │   ├── docs/               # Detailed system manuals (00-08)
 │   ├── dashboard.py        # Macro performance streamlit app
@@ -33,6 +37,7 @@ QuantPits/
         ├── config/         # Trading bounds, model registry, cashflow
         ├── data/           # Order logs, holding logs, daily amount
         ├── output/         # Model predictions, fusion results, reports
+        ├── mlruns/         # MLflow tracking logs
         └── run_env.sh      # Environment activation script
 ```
 
@@ -56,7 +61,7 @@ Before running the engine, ensure you have the required Qlib dataset downloaded 
 
 ```bash
 # Example: Download 1D data for the Chinese market
-python scripts/get_data.py qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
+python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
 ```
 Make sure `workspaces/Demo_Workspace/run_env.sh` or your Qlib initialization points to this directory.
 
@@ -71,20 +76,24 @@ source workspaces/Demo_Workspace/run_env.sh
 
 ### 4. Run the Pipeline
 
-Once activated, you can execute the minimal routine loop using the engine scripts:
+Once activated, you can execute the minimal routine loop using the quantpits scripts (or you can simply run `make run-daily-pipeline` from the repository root):
 
 ```bash
+# 0. Update Daily Market Data
+# Note: This engine assumes underlying Qlib data has been updated (e.g., via external Cron). 
+# If not, update it first.
+
 # 1. Generate predictions from existing models
-python engine/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/prod_predict_only.py --all-enabled
 
 # 2. Fuse predictions using your combo configs
-python engine/scripts/ensemble_fusion.py --from-config-all
+python quantpits/scripts/ensemble_fusion.py --from-config-all
 
 # 3. Process previous week's live trades (Post-Trade)
-python engine/scripts/prod_post_trade.py
+python quantpits/scripts/prod_post_trade.py
 
 # 4. Generate new Buy/Sell orders based on current holdings
-python engine/scripts/order_gen.py
+python quantpits/scripts/order_gen.py
 ```
 
 ### 5. Launch Dashboards
@@ -93,10 +102,10 @@ To view the interactive analytics of your active workspace:
 
 ```bash
 # Portfolio Execution and Holding Dashboard
-streamlit run engine/dashboard.py
+streamlit run quantpits/dashboard.py
 
 # Rolling Strategy Health & Factor Drift Dashboard
-streamlit run engine/rolling_dashboard.py
+streamlit run quantpits/rolling_dashboard.py
 ```
 
 ## 🏗️ Creating a New Workspace
@@ -104,7 +113,7 @@ streamlit run engine/rolling_dashboard.py
 To spin up a new strategy for a different index (e.g., CSI 500), use the scaffolding utility:
 
 ```bash
-python engine/scripts/init_workspace.py \
+python quantpits/scripts/init_workspace.py \
   --source workspaces/Demo_Workspace \
   --target workspaces/CSI500_Base
 ```
@@ -113,7 +122,7 @@ This will cleanly clone the configuration files and generate empty `data/`, `out
 
 ## 📖 Documentation
 
-For a deep dive into each module, refer to the documentation in `engine/docs/`:
+For a deep dive into each module, refer to the documentation in `quantpits/docs/`:
 - `00_SYSTEM_OVERVIEW.md` (System Architecture & Workflows)
 - `01_TRAINING_GUIDE.md`
 - `02_BRUTE_FORCE_GUIDE.md`
