@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
-from .utils import load_daily_amount, get_daily_features, load_holding_log
+from .utils import load_daily_amount, get_daily_features, load_holding_log, load_market_config
 
 class PortfolioAnalyzer:
     def __init__(self, daily_amount_df=None, trade_log_df=None, holding_log_df=None, start_date=None, end_date=None):
@@ -231,10 +231,13 @@ class PortfolioAnalyzer:
             'Turnover_Rate_Annual': turnover_annual
         }
 
-    def calculate_factor_exposure(self, market="csi300"):
+    def calculate_factor_exposure(self, market=None):
         """
         Regress daily returns against market benchmark returns.
+        market 默认从 model_config.json 读取。
         """
+        if market is None:
+            market, _ = load_market_config()
         returns = self.calculate_daily_returns()
         if returns.empty:
             return {}
@@ -285,10 +288,13 @@ class PortfolioAnalyzer:
             'R_Squared': float(model.rsquared)
         }
 
-    def calculate_style_exposures(self, market="csi300"):
+    def calculate_style_exposures(self, market=None):
         """
         Regress daily returns against proxy style factors (Size, Momentum, Volatility).
+        market 默认从 model_config.json 读取。
         """
+        if market is None:
+            market, _ = load_market_config()
         returns = self.calculate_daily_returns()
         if returns.empty:
             return {}

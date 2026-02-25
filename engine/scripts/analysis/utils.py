@@ -18,6 +18,28 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "config", "prod_config.json")
 MODEL_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "model_config.json")
 PREDICTION_DIR = os.path.join(ROOT_DIR, "output", "predictions")
 
+# 默认市场和基准（当配置文件不存在时使用）
+DEFAULT_MARKET = "csi300"
+DEFAULT_BENCHMARK = "SH000300"
+
+
+def load_market_config():
+    """
+    从 model_config.json 读取 market 和 benchmark 配置。
+    返回 (market, benchmark) 元组。
+    """
+    market = DEFAULT_MARKET
+    benchmark = DEFAULT_BENCHMARK
+    if os.path.exists(MODEL_CONFIG_FILE):
+        try:
+            with open(MODEL_CONFIG_FILE, 'r') as f:
+                cfg = json.load(f)
+            market = cfg.get("market", DEFAULT_MARKET)
+            benchmark = cfg.get("benchmark", DEFAULT_BENCHMARK)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return market, benchmark
+
 
 def init_qlib():
     """Initialize Qlib environment."""
@@ -34,11 +56,14 @@ def get_trading_dates(start_date, end_date):
     return [d.strftime('%Y-%m-%d') for d in cal]
 
 
-def get_daily_features(start_date, end_date, market="csi300", features=None):
+def get_daily_features(start_date, end_date, market=None, features=None):
     """
     Fetch daily features from Qlib. Default fetches price information.
+    market 默认从 model_config.json 读取，未配置时 fallback 到 csi300。
     """
     from qlib.data import D
+    if market is None:
+        market, _ = load_market_config()
     if features is None:
         features = {
             'close': '$close',
@@ -59,12 +84,15 @@ def get_daily_features(start_date, end_date, market="csi300", features=None):
     return df
 
 
-def get_forward_returns(start_date, end_date, market="csi300", n_days=1):
+def get_forward_returns(start_date, end_date, market=None, n_days=1):
     """
     Fetch N-day forward returns from Qlib.
     Return from T's close to T+N's close.
+    market 默认从 model_config.json 读取。
     """
     from qlib.data import D
+    if market is None:
+        market, _ = load_market_config()
     instruments = D.instruments(market=market)
     field = f"Ref($close, -{n_days}) / $close - 1"
     df = D.features(instruments, [field], start_time=start_date, end_time=end_date)

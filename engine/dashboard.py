@@ -18,7 +18,7 @@ from scripts import env
 os.chdir(env.ROOT_DIR)
 
 # Must initialize Qlib before importing analyzers if they fetch data
-from scripts.analysis.utils import init_qlib
+from scripts.analysis.utils import init_qlib, load_market_config
 try:
     init_qlib()
 except Exception as e:
@@ -42,7 +42,10 @@ def main():
     start_date = st.sidebar.date_input("Start Date", default_start)
     end_date = st.sidebar.date_input("End Date", default_end)
     
-    market = st.sidebar.selectbox("Market Benchmark", ["csi300", "csi300", "csi500"])
+    # 从配置文件读取默认市场
+    config_market, config_benchmark = load_market_config()
+    market_options = list(dict.fromkeys([config_market, "csi300", "csi500"]))
+    market = st.sidebar.selectbox("Market Benchmark", market_options)
     
     run_btn = st.sidebar.button("Generate Dashboard", type="primary")
     
@@ -65,7 +68,8 @@ def render_macro_performance(port_a, returns, market):
     st.header("Module 1: Macro Performance & Risk")
     
     daily_amount = port_a.daily_amount
-    market_col = 'CSI300' if market == 'csi300' else market.upper()
+    # 根据市场名称确定基准列名
+    market_col = market.upper() if market else 'CSI300'
     
     bench_returns = pd.Series(0.0, index=returns.index)
     if market_col in daily_amount.columns:

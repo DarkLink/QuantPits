@@ -15,7 +15,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
 sys.path.append(ROOT_DIR)
 
-from scripts.analysis.utils import init_qlib, load_model_predictions, get_forward_returns
+from scripts.analysis.utils import init_qlib, load_model_predictions, get_forward_returns, load_market_config
 from scripts.analysis.single_model_analyzer import SingleModelAnalyzer
 from scripts.analysis.ensemble_analyzer import EnsembleAnalyzer
 from scripts.analysis.execution_analyzer import ExecutionAnalyzer
@@ -31,6 +31,10 @@ def main():
 
     print("Initializing Qlib...")
     init_qlib()
+    
+    # 从配置文件读取市场和基准
+    market, benchmark = load_market_config()
+    print(f"Market: {market}, Benchmark: {benchmark}")
     
     report = [f"# Comprehensive Analysis Report ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"]
     report.append("\n## Analysis Scope")
@@ -218,7 +222,7 @@ def main():
         factor_ann = exposure.pop('Factor_Annualized', {})
         beta = exposure.get('Beta_Market', 0)
         
-        report.append("\n### Factor Exposure (csi300 Basis)")
+        report.append(f"\n### Factor Exposure ({market} Basis)")
         for k, v in exposure.items():
             if 'R_Squared' in k:
                 report.append(f"- **{k}**: {v:.4f}")

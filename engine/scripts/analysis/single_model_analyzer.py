@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from scipy.stats import spearmanr
-from .utils import get_forward_returns
+from .utils import get_forward_returns, load_market_config
 
 class SingleModelAnalyzer:
     def __init__(self, pred_df):
@@ -35,10 +35,13 @@ class SingleModelAnalyzer:
         
         return daily_ic, ic_win_rate, icir
         
-    def calculate_ic_decay(self, market="csi300", max_days=5):
+    def calculate_ic_decay(self, market=None, max_days=5):
         """
         Calculate IC for T+1 up to T+max_days.
+        market 默认从 model_config.json 读取。
         """
+        if market is None:
+            market, _ = load_market_config()
         dates = self.pred_df.index.get_level_values('datetime').unique()
         if len(dates) == 0:
             return {}

@@ -16,7 +16,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
 sys.path.append(ROOT_DIR)
 
-from scripts.analysis.utils import init_qlib, get_daily_features
+from scripts.analysis.utils import init_qlib, get_daily_features, load_market_config
 from scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
 from scripts.analysis.execution_analyzer import ExecutionAnalyzer
 
@@ -186,7 +186,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate rolling metrics for dashboard visualization.")
     parser.add_argument('--windows', type=int, nargs='+', default=[20, 60], help="List of rolling window sizes (days), e.g., --windows 20 60 120")
     parser.add_argument('--sub-window', type=int, default=20, help="Sub-window size for feature generation, default 20.")
-    parser.add_argument('--market', type=str, default='csi300', help="Market benchmark.")
+    config_market, _ = load_market_config()
+    parser.add_argument('--market', type=str, default=config_market, help=f"Market benchmark (default: {config_market} from config).")
     args = parser.parse_args()
     
     compute_rolling_metrics(windows=args.windows, sub_window=args.sub_window, market=args.market)

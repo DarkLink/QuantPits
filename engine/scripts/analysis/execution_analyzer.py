@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from .utils import load_trade_log, get_daily_features
+from .utils import load_trade_log, get_daily_features, load_market_config
 
 class ExecutionAnalyzer:
     def __init__(self, trade_log_df=None, start_date=None, end_date=None):
@@ -17,12 +17,15 @@ class ExecutionAnalyzer:
             if end_date:
                 self.trade_log = self.trade_log[self.trade_log['成交日期'] <= pd.to_datetime(end_date)]
         
-    def calculate_slippage_and_delay(self, market="csi300"):
+    def calculate_slippage_and_delay(self, market=None):
         """
         Delay Cost: Close(T-1) -> Open(T)
         Execution Slippage: Open(T) -> Actual Execution Price(T)
         Returns a DataFrame of trades with slippage metrics added.
+        market 默认从 model_config.json 读取。
         """
+        if market is None:
+            market, _ = load_market_config()
         if self.trade_log.empty:
             return pd.DataFrame()
             
@@ -96,11 +99,14 @@ class ExecutionAnalyzer:
         
         return merged
 
-    def calculate_path_dependency(self, market="csi300"):
+    def calculate_path_dependency(self, market=None):
         """
         Calculate Maximum Favorable Excursion (MFE) and Maximum Adverse Excursion (MAE)
         Intra-day relative to the execution price.
+        market 默认从 model_config.json 读取。
         """
+        if market is None:
+            market, _ = load_market_config()
         if self.trade_log.empty:
             return pd.DataFrame()
             
@@ -173,12 +179,15 @@ class ExecutionAnalyzer:
             'total_dividend': total_dividend
         }
 
-    def analyze_order_discrepancies(self, order_dir, market="csi300"):
+    def analyze_order_discrepancies(self, order_dir, market=None):
         """
         Analyze substitution bias (missed buys vs actual buys).
         order_dir: Path to {workspace}/data/order_suggestions or similar.
         Returns a dict of metrics.
+        market 默认从 model_config.json 读取。
         """
+        if market is None:
+            market, _ = load_market_config()
         import os
         import glob
         from .utils import get_forward_returns
