@@ -26,11 +26,12 @@
 
 ```text
 QuantPits/
-├── quantpits/                 # 核心逻辑及执行脚本、分析面板
-│   ├── scripts/            # Pipeline 流水线脚本矩阵
-│   ├── docs/               # 详细的系统开发及应用操作手册（00-08）
+├── docs/                   # 详细的系统开发及应用操作手册（00-08）
+├── ui/                     # 交互式数据图表面板
 │   ├── dashboard.py        # 宏观资管业绩评估 Streamlit 面板
 │   └── rolling_dashboard.py# 时序策略执行健康监测 Streamlit 面板
+├── quantpits/              # 核心逻辑及执行引擎组件
+│   └── scripts/            # Pipeline 流水线脚本矩阵
 │
 └── workspaces/             # 隔离式的实盘配置存储区
     └── Demo_Workspace/     # 示范性的可配置交易运行库
@@ -63,6 +64,9 @@ pip install -e .
 # 示例：下载中国市场的 1D 日频数据
 python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
 ```
+
+> **注意：** 该数据集包含海量历史行情，初次下载可能需要占用十几 GB 的硬盘空间和较长的一段时间。请耐心等待。
+```
 请确保您配置的 Workspace 数据源路径能够准确命中该目录。
 
 ### 3. 激活工作区
@@ -84,16 +88,16 @@ source workspaces/Demo_Workspace/run_env.sh
 # 如果未更新，请在此步骤前优先更新。
 
 # 1. 使用所有已使能的模型触发全量增量预测推断
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python -m quantpits.scripts.prod_predict_only --all-enabled
 
 # 2. 调用当前库表配置好的融合配比组合完成多维度参数预测网格
-python quantpits/scripts/ensemble_fusion.py --from-config-all
+python -m quantpits.scripts.ensemble_fusion --from-config-all
 
 # 3. 处理回溯实盘执行状态变更（Post-Trade 落单归档）
-python quantpits/scripts/prod_post_trade.py
+python -m quantpits.scripts.prod_post_trade
 
 # 4. 根据当前最新的组合建议及最新持仓执行全新订单信号推演
-python quantpits/scripts/order_gen.py
+python -m quantpits.scripts.order_gen
 ```
 
 ### 5. 驱动可视化数据面板
@@ -102,10 +106,10 @@ python quantpits/scripts/order_gen.py
 
 ```bash
 # 资产组合执行及持仓情况综合评估面板
-streamlit run quantpits/dashboard.py
+streamlit run ui/dashboard.py
 
 # 时序策略微观执行损耗及因子漂移监测面板
-streamlit run quantpits/rolling_dashboard.py
+streamlit run ui/rolling_dashboard.py
 ```
 
 ## 🏗️ 创设新实例工作区
@@ -113,7 +117,7 @@ streamlit run quantpits/rolling_dashboard.py
 如果您希望针对截然不同的标的物池（如建立一个专注于中证500的实例分支），可以使用自带的脚手架指令：
 
 ```bash
-python quantpits/scripts/init_workspace.py \
+python -m quantpits.scripts.init_workspace \
   --source workspaces/Demo_Workspace \
   --target workspaces/CSI500_Base
 ```
@@ -122,7 +126,7 @@ python quantpits/scripts/init_workspace.py \
 
 ## 📖 深度说明文档
 
-如需从零剖析具体各个计算节点以及架构组件的底层原理与完整参数，请前往 `quantpits/docs/` 阅读系统手册：
+如需从零剖析具体各个计算节点以及架构组件的底层原理与完整参数，请前往 `docs/` 阅读系统手册：
 - `00_SYSTEM_OVERVIEW.md` (系统架构部署与流水线总览)
 - `01_TRAINING_GUIDE.md` (全量训练及模型配置向导)
 - `02_BRUTE_FORCE_GUIDE.md` (穷举回测及GPU加速矩阵操作向导)

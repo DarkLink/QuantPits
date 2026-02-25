@@ -26,11 +26,12 @@ The system strictly decouples the **Engine (Code)** from the **Workspace (Config
 
 ```text
 QuantPits/
-├── quantpits/                 # Core logic, scripts, and dashboards
-│   ├── scripts/            # Pipeline execution scripts
-│   ├── docs/               # Detailed system manuals (00-08)
-│   ├── dashboard.py        # Macro performance streamlit app
-│   └── rolling_dashboard.py# Temporal strategy health streamlit app
+├── docs/                   # Detailed system manuals (00-08)
+├── ui/                     # Streamlit interactive dashboards
+│   ├── dashboard.py        # Macro performance app
+│   └── rolling_dashboard.py# Temporal strategy health app
+├── quantpits/              # Core logic engine and components
+│   └── scripts/            # Pipeline execution scripts
 │
 └── workspaces/             # Isolated trading instances
     └── Demo_Workspace/     # Example configured instance
@@ -63,6 +64,9 @@ Before running the engine, ensure you have the required Qlib dataset downloaded 
 # Example: Download 1D data for the Chinese market
 python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
 ```
+
+> **Note:** This dataset contains massive historical market data. The initial download may require tens of GBs of disk space and a considerable amount of time. Please be patient.
+```
 Make sure `workspaces/Demo_Workspace/run_env.sh` or your Qlib initialization points to this directory.
 
 ### 3. Activate a Workspace
@@ -84,16 +88,16 @@ Once activated, you can execute the minimal routine loop using the quantpits scr
 # If not, update it first.
 
 # 1. Generate predictions from existing models
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python -m quantpits.scripts.prod_predict_only --all-enabled
 
 # 2. Fuse predictions using your combo configs
-python quantpits/scripts/ensemble_fusion.py --from-config-all
+python -m quantpits.scripts.ensemble_fusion --from-config-all
 
 # 3. Process previous week's live trades (Post-Trade)
-python quantpits/scripts/prod_post_trade.py
+python -m quantpits.scripts.prod_post_trade
 
 # 4. Generate new Buy/Sell orders based on current holdings
-python quantpits/scripts/order_gen.py
+python -m quantpits.scripts.order_gen
 ```
 
 ### 5. Launch Dashboards
@@ -102,10 +106,10 @@ To view the interactive analytics of your active workspace:
 
 ```bash
 # Portfolio Execution and Holding Dashboard
-streamlit run quantpits/dashboard.py
+streamlit run ui/dashboard.py
 
 # Rolling Strategy Health & Factor Drift Dashboard
-streamlit run quantpits/rolling_dashboard.py
+streamlit run ui/rolling_dashboard.py
 ```
 
 ## 🏗️ Creating a New Workspace
@@ -113,7 +117,7 @@ streamlit run quantpits/rolling_dashboard.py
 To spin up a new strategy for a different index (e.g., CSI 500), use the scaffolding utility:
 
 ```bash
-python quantpits/scripts/init_workspace.py \
+python -m quantpits.scripts.init_workspace \
   --source workspaces/Demo_Workspace \
   --target workspaces/CSI500_Base
 ```
@@ -122,7 +126,7 @@ This will cleanly clone the configuration files and generate empty `data/`, `out
 
 ## 📖 Documentation
 
-For a deep dive into each module, refer to the documentation in `quantpits/docs/`:
+For a deep dive into each module, refer to the documentation in `docs/`:
 - `00_SYSTEM_OVERVIEW.md` (System Architecture & Workflows)
 - `01_TRAINING_GUIDE.md`
 - `02_BRUTE_FORCE_GUIDE.md`
