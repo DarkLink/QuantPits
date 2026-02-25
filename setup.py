@@ -1,0 +1,21 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="quantpits",
+    version="0.1.0",
+    packages=find_packages(),
+    python_requires=">=3.8, <3.13",
+    install_requires=[
+        "pyqlib",
+        "pandas>=1.3.0",
+        "numpy>=1.20.0,<2.0.0",
+        "scipy>=1.7.0",
+        "PyYAML>=5.4.1",
+        "joblib>=1.0.1",
+        "statsmodels>=0.13.0",
+        "streamlit>=1.10.0",
+        "plotly>=5.9.0"
+    ],
+    description="QuantPits: An advanced, production-ready quantitative trading system built on top of Microsoft Qlib.",
+    author="DarkLink",
+)

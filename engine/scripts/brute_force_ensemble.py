@@ -1154,6 +1154,8 @@ def analyze_results(
 # ============================================================================
 
 def main():
+    import env
+    env.safeguard("Brute Force Ensemble")
     parser = argparse.ArgumentParser(
         description="暴力穷举模型组合回测 + 结果分析",
         formatter_class=argparse.RawDescriptionHelpFormatter,

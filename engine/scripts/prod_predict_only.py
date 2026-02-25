@@ -495,6 +495,8 @@ def show_list(args):
 
 
 def main():
+    import env
+    env.safeguard("Prod Predict Only")
     args = parse_args()
 
     # 信息查看类命令（不需要 Qlib 初始化）

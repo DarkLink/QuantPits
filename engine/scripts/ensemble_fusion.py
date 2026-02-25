@@ -1073,6 +1073,9 @@ def main():
                         help='仅使用最后 N 个月的预测数据 (作为 OOS 测试集)')
     args = parser.parse_args()
 
+    import env
+    env.safeguard("Ensemble Fusion")
+
     # ---- 验证参数 ----
     if not args.models and not args.from_config and not args.from_config_all and not args.combo:
         parser.error("必须指定 --models、--from-config、--from-config-all 或 --combo")

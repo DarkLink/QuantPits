@@ -720,6 +720,8 @@ def save_orders(sell_orders, buy_orders, next_trade_date_string, output_dir,
 # Main
 # ============================================================================
 def main():
+    import env
+    env.safeguard("Order Generation")
     parser = argparse.ArgumentParser(
         description='Order Generation - 基于融合/单模型预测生成买卖订单',
         formatter_class=argparse.RawDescriptionHelpFormatter,

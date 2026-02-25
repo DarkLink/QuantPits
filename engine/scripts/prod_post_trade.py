@@ -565,6 +565,8 @@ Cashflow 配置 (config/cashflow.json):
 
 
 def main():
+    import env
+    env.safeguard("Prod Post Trade")
     args = parse_args()
 
     cwd = os.getcwd()

@@ -312,7 +312,7 @@ Engaging CuPy drivers natively scales architectures to parallel acceleration:
 
 ```bash
 # CUDA 12.x Install Path
-pip install cupy-cuda12x
+pip install cupy-cuda11x # or cupy-cuda12x, depending on your CUDA version
 
 # CUDA 11.x Install Path
 pip install cupy-cuda11x

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Initialize a new Qlib Workspace (Pit)
-Usage: python engine/scripts/init_workspace.py --source /path/to/existing/workspace --target /path/to/new/workspace
+Usage: python engine/scripts/init_workspace.py --source workspaces/Demo_Workspace --target ~/.quantpits/workspaces/MyNewWorkspace
 """
 import argparse
 import os
@@ -56,8 +56,8 @@ def init_workspace(source, target):
 
 def main():
     parser = argparse.ArgumentParser(description="Initialize a new Qlib Workspace")
-    parser.add_argument("--source", required=True, help="Path to existing workspace to clone config from (e.g., ./)")
-    parser.add_argument("--target", required=True, help="Path to new workspace directory")
+    parser.add_argument("--source", required=True, help="Path to existing workspace to clone config from (e.g., workspaces/Demo_Workspace)")
+    parser.add_argument("--target", required=True, help="Path to new workspace directory (e.g., ~/.quantpits/workspaces/MyNewWorkspace)")
     args = parser.parse_args()
     
     init_workspace(args.source, args.target)

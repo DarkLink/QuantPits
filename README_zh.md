@@ -2,7 +2,7 @@
 
 基于 [Microsoft Qlib](https://github.com/microsoft/qlib) 构建的先进、生产级别的量化交易系统。本系统提供了一个用于支持周频及日频交易的完整端到端流水道，核心特点包括高度模块化架构、多实例隔离运行（Workspace 机制）、模型融合（Ensemble）、执行归因分析以及全交互式的可视化数据面板。
 
-🌐 [English Version (README.md)](README.md)
+🌐 [English Version (README.md)](./README.md)
 
 > **注意：** 这是一个内部仓库的只读镜像。欢迎提交 Issue 报告问题，但目前请不要提交 PR，因为我们无法直接将其合并到内部系统中。
 
@@ -40,15 +40,27 @@ QuantPits/
 
 ### 1. 依赖安装
 
-请确保当前环境内具备基础的 **Qlib** 安装生态。随后加载并安装额外依赖：
+请确保当前环境内具备基础的 **Qlib** 安装生态。引擎官方支持 Python 3.8 至 3.12。随后加载并安装额外依赖：
 
 ```bash
 pip install -r requirements.txt
+# (可选) 将 engine 作为一个系统级包安装以获得全局可见性:
+pip install -e .
 ```
 
-*(注意: 针对采用 GPU 硬加速的穷举排列组合模块，需激活安装 `cupy-cuda12x`)*
+*(注意: 针对采用 GPU 硬加速的穷举排列组合模块，需视您本地电脑的 CUDA 版本决定安装 `cupy-cuda11x` 或 `cupy-cuda12x`)*
 
-### 2. 激活工作区
+### 2. 准备底层行情数据
+
+在执行后续流程之前，请确保您已经在本地准备好了 Qlib 所需的日频或高频特征数据（通常放在 `~/.qlib/qlib_data/cn_data`）：
+
+```bash
+# 示例：下载中国市场的 1D 日频数据
+python scripts/get_data.py qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
+```
+请确保您配置的 Workspace 数据源路径能够准确命中该目录。
+
+### 3. 激活工作区
 
 所有的模块运行都要求显式地具备明确且已激活的隔离工作区上下文。系统内置了一套完整的 `Demo_Workspace` 供基础调试：
 
@@ -57,7 +69,7 @@ cd QuantPits/
 source workspaces/Demo_Workspace/run_env.sh
 ```
 
-### 3. 主动式流水线运行
+### 4. 主动式流水线运行
 
 环境挂载完毕后，您可以直接按顺序触发引擎脚本执行基本的生产流程逻辑循环：
 
@@ -75,7 +87,7 @@ python engine/scripts/prod_post_trade.py
 python engine/scripts/order_gen.py
 ```
 
-### 4. 驱动可视化数据面板
+### 5. 驱动可视化数据面板
 
 渲染查看已激活工作区内的深度分析数据图层：
 

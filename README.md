@@ -2,7 +2,7 @@
 
 An advanced, production-ready quantitative trading system built on top of [Microsoft Qlib](https://github.com/microsoft/qlib). This system provides a complete end-to-end pipeline for weekly and daily frequency trading, featuring modular architecture, multi-instance isolation (Workspaces), ensemble modeling, execution analytics, and interactive dashboards.
 
-🌐 [中文版本 (README_zh.md)](README_zh.md)
+🌐 [中文版本 (README_zh.md)](./README_zh.md)
 
 > **Note:** This repository is a read-only mirror of an internal monorepo. We welcome bug reports and issues, but please DO NOT submit Pull Requests at this time, as they cannot be merged into our internal system directly.
 
@@ -40,15 +40,27 @@ QuantPits/
 
 ### 1. Requirements
 
-Ensure you have a working installation of **Qlib**. Then install the extra dependencies:
+Ensure you have a working installation of **Qlib**. The engine officially supports Python 3.8 to 3.12. Then install the extra dependencies:
 
 ```bash
 pip install -r requirements.txt
+# (Optional) Install the engine as a package for global access:
+pip install -e .
 ```
 
-*(Note: For GPU-accelerated brute force combinatorial backtesting, install `cupy-cuda12x`)*
+*(Note: For GPU-accelerated brute force combinatorial backtesting, install `cupy-cuda11x` or `cupy-cuda12x` depending on your local CUDA version)*
 
-### 2. Activate a Workspace
+### 2. Prepare Market Data
+
+Before running the engine, ensure you have the required Qlib dataset downloaded to your local machine (e.g., `~/.qlib/qlib_data/cn_data`):
+
+```bash
+# Example: Download 1D data for the Chinese market
+python scripts/get_data.py qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
+```
+Make sure `workspaces/Demo_Workspace/run_env.sh` or your Qlib initialization points to this directory.
+
+### 3. Activate a Workspace
 
 Every action must be performed within the context of an active workspace. We provide a `Demo_Workspace` to get you started:
 
@@ -57,7 +69,7 @@ cd QuantPits/
 source workspaces/Demo_Workspace/run_env.sh
 ```
 
-### 3. Run the Pipeline
+### 4. Run the Pipeline
 
 Once activated, you can execute the minimal routine loop using the engine scripts:
 
@@ -75,7 +87,7 @@ python engine/scripts/prod_post_trade.py
 python engine/scripts/order_gen.py
 ```
 
-### 4. Launch Dashboards
+### 5. Launch Dashboards
 
 To view the interactive analytics of your active workspace:
 

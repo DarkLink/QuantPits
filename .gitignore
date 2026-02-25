@@ -171,12 +171,24 @@ cython_debug/
 .DS_Store
 
 # QuantPits Specific Output and Data
-# (We only keep Demo_Workspace/config in version control by default)
-workspaces/*/data/*.xlsx
-workspaces/*/data/*.csv
-workspaces/*/output/
-workspaces/*/archive/
-workspaces/*/mlruns/
+# We ignore all workspaces to prevent accidental commits of real trading data
+workspaces/*
+
+# But we explicitly retain the Demo_Workspace
+!workspaces/Demo_Workspace/
+
+# Inside Demo_Workspace, we only keep config and basic shell scripts; ignore outputs
+workspaces/Demo_Workspace/data/*.xlsx
+workspaces/Demo_Workspace/data/*.csv
+workspaces/Demo_Workspace/output/*
+!workspaces/Demo_Workspace/output/.gitkeep
+workspaces/Demo_Workspace/archive/*
+!workspaces/Demo_Workspace/archive/.gitkeep
+workspaces/Demo_Workspace/mlruns/*
+!workspaces/Demo_Workspace/mlruns/.gitkeep
+workspaces/Demo_Workspace/data/*
+!workspaces/Demo_Workspace/data/.gitkeep
+
 *.log
 *.zip
 *.tar.gz

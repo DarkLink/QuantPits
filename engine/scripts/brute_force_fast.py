@@ -1157,6 +1157,8 @@ def analyze_results(
 # ============================================================================
 
 def main():
+    import env
+    env.safeguard("Brute Force Fast")
     parser = argparse.ArgumentParser(
         description="⚡ 快速向量化暴力穷举组合回测 + 结果分析",
         formatter_class=argparse.RawDescriptionHelpFormatter,

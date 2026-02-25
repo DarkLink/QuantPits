@@ -310,7 +310,7 @@ python engine/scripts/brute_force_fast.py --exclude-last-years 1 --auto-test-top
 
 ```bash
 # CUDA 12.x
-pip install cupy-cuda12x
+pip install cupy-cuda11x # 或者安装 cupy-cuda12x，取决于你的 CUDA 版本
 
 # CUDA 11.x
 pip install cupy-cuda11x
