@@ -166,6 +166,18 @@ def resolve_target_models(args):
 
 def run_incremental_train(args):
     """执行增量训练"""
+    from train_utils import (
+        calculate_dates,
+        train_single_model,
+        merge_train_records,
+        merge_performance_file,
+        save_run_state,
+        load_run_state,
+        clear_run_state,
+        print_model_table,
+        backup_file_with_date,
+        RECORD_OUTPUT_FILE,
+    )
     
     # 解析目标模型
     targets = resolve_target_models(args)

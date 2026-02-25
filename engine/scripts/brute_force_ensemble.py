@@ -1253,7 +1253,7 @@ def main():
     print("=" * 60)
 
     init_qlib()
-    init_qlib()
+    
     train_records, model_config = load_config(args.record_file)
     
     # 确定频率
