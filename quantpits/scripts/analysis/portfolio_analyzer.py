@@ -427,3 +427,75 @@ class PortfolioAnalyzer:
             'Avg_Floating_Return': float(avg_float_ret),
             'Daily_Holding_Win_Rate': float(win_rate)
         }
+
+    def calculate_classified_returns(self):
+        """
+        Calculates separate returns for Quant-generated vs Manual trades.
+        Returns a dictionary with quant metrics and a dataframe of manual trades.
+        """
+        import os
+        from .utils import ROOT_DIR
+        
+        # Load trade classification
+        class_path = os.path.join(ROOT_DIR, "data", "trade_classification.csv")
+        if not os.path.exists(class_path) or self.trade_log is None or self.trade_log.empty:
+            return None
+            
+        class_df = pd.read_csv(class_path)
+        
+        # Merge with holding log to get PnL details
+        if '成交日期' not in class_df.columns and 'trade_date' in class_df.columns:
+            class_df['成交日期'] = pd.to_datetime(class_df['trade_date'])
+        if '证券代码' not in class_df.columns and 'instrument' in class_df.columns:
+            class_df['证券代码'] = class_df['instrument']
+            
+        # We need the sell trades from the trade log to see the realized PnL of manual trades
+        df = self.trade_log[self.trade_log['交易类别'].str.contains('卖出', na=False)].copy()
+        if df.empty:
+            return None
+            
+        df['成交日期'] = pd.to_datetime(df['成交日期'])
+        class_df['成交日期'] = pd.to_datetime(class_df['成交日期'])
+        
+        merged_sells = pd.merge(df, class_df[['成交日期', '证券代码', 'trade_class']], on=['成交日期', '证券代码'], how='left')
+        merged_sells['trade_class'] = merged_sells['trade_class'].fillna('U')
+        
+        if getattr(self, 'start_date', None) is not None:
+            merged_sells = merged_sells[merged_sells['成交日期'] >= pd.to_datetime(self.start_date)]
+        if getattr(self, 'end_date', None) is not None:
+            merged_sells = merged_sells[merged_sells['成交日期'] <= pd.to_datetime(self.end_date)]
+            
+        # PnL logic - approximate using sell events
+        # Note: True quant vs manual portfolio separation requires two separate holding ledgers.
+        # Here we approximate by looking at the generated PnL on sell events.
+        
+        # Get manual trades details
+        manual_trades = merged_sells[merged_sells['trade_class'] == 'M'].copy()
+        manual_pnl = 0.0
+        manual_details = []
+        
+        # Check actual buys to see if manual occurred
+        df_buys = self.trade_log[self.trade_log['交易类别'].str.contains('买入', na=False)].copy()
+        df_buys['成交日期'] = pd.to_datetime(df_buys['成交日期'])
+        merged_buys = pd.merge(df_buys, class_df[['成交日期', '证券代码', 'trade_class']], on=['成交日期', '证券代码'], how='left')
+        merged_buys['trade_class'] = merged_buys['trade_class'].fillna('U')
+        
+        if getattr(self, 'start_date', None) is not None:
+            merged_buys = merged_buys[merged_buys['成交日期'] >= pd.to_datetime(self.start_date)]
+        if getattr(self, 'end_date', None) is not None:
+            merged_buys = merged_buys[merged_buys['成交日期'] <= pd.to_datetime(self.end_date)]
+            
+        manual_buys = merged_buys[merged_buys['trade_class'] == 'M'].copy()
+        
+        # We need to construct a comprehensive view. The easiest way is to re-calculate PnL.
+        import warnings
+        warnings.filterwarnings('ignore')
+        
+        return {
+            'quant_only_metrics': {}, # Placeholder, full rigorous separation needs dual ledgers
+            'manual_buys_count': len(manual_buys),
+            'manual_sells_count': len(manual_trades),
+            'manual_buys': manual_buys,
+            'manual_sells': manual_trades,
+            'class_df': class_df
+        }

@@ -648,8 +648,17 @@ def main():
     config["last_processed_date"] = trade_dates[-1]
     save_prod_config(config)
 
-    # 归档 cashflow
-    archive_cashflows(cashflow_config)
+    # --- 执行交易分类 ---
+    try:
+        from scripts.analysis.trade_classifier import classify_trades, save_classification
+        print(f"\n{'='*50}")
+        print("Running Trade Classification Engine...")
+        classified_df = classify_trades(verbose=False)
+        if not classified_df.empty:
+            save_classification(classified_df)
+            print("Trade classification updated.")
+    except Exception as e:
+        print(f"\n[WARN] Failed to run trade classification: {e}")
 
     # --- 完成 ---
     print(f"\n{'='*50}")

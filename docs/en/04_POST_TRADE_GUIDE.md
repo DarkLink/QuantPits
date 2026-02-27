@@ -32,6 +32,7 @@ QuantPits/
             ├── emp-table.xlsx            # Null placeholder templates (Used automatically for empty trading days)
             ├── trade_log_full.csv        # Cumulative holistic trade transaction ledger
             ├── trade_detail_YYYY-MM-DD.csv # Explicit daily trade itemization
+            ├── trade_classification.csv  # Trade classification tags (Cumulative: Signal, Substitute, Manual)
             ├── holding_log_full.csv      # Cumulative snapshot holding logs
             └── daily_amount_log_full.csv # Cumulative capital balance trajectory
 ```
@@ -118,6 +119,7 @@ flowchart TD
     G --> H[Query Closing Market Vector]
     H --> I[Estimate Unrealized Fluctuations]
     I --> J[Serialize Daily Logs (CSV)]
+    J --> K[Execute Trade Classification Engine]
 ```
 
 ### Capital Rollover Algorithm
@@ -131,6 +133,7 @@ cash_after = cash_before + Total_Sell_Value - Total_Buy_Gross + Dividends_Intere
 | Target Element | Contents | Overwrite Protocol |
 |------|------|----------|
 | `trade_log_full.csv` | Holistic executed ledger database | Append + Deduplication |
+| `trade_classification.csv` | Quantitative signal vs Manual trade classification mappings | Regenerated via suggestions |
 | `holding_log_full.csv` | Inter-day positional footprint snapshots | Append + Deduplication |
 | `daily_amount_log_full.csv` | Aggregate account capitalization tracking | Append + Deduplication |
 | `trade_detail_*.csv` | Discrete slice of single day trade logs | Daily Full Overwrite |

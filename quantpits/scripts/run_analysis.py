@@ -13,13 +13,14 @@ os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
-sys.path.append(ROOT_DIR)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+sys.path.append(PROJECT_ROOT)
 
-from scripts.analysis.utils import init_qlib, load_model_predictions, get_forward_returns, load_market_config
-from scripts.analysis.single_model_analyzer import SingleModelAnalyzer
-from scripts.analysis.ensemble_analyzer import EnsembleAnalyzer
-from scripts.analysis.execution_analyzer import ExecutionAnalyzer
-from scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+from quantpits.scripts.analysis.utils import init_qlib, load_model_predictions, get_forward_returns, load_market_config
+from quantpits.scripts.analysis.single_model_analyzer import SingleModelAnalyzer
+from quantpits.scripts.analysis.ensemble_analyzer import EnsembleAnalyzer
+from quantpits.scripts.analysis.execution_analyzer import ExecutionAnalyzer
+from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
 
 def main():
     parser = argparse.ArgumentParser(description="Comprehensive Analysis Module")
@@ -128,8 +129,14 @@ def main():
         # Drop NaNs across all components simultaneously so denominators exactly match
         slip_df = slip_df.dropna(subset=['Delay_Cost', 'Exec_Slippage', 'Total_Friction', '成交金额'])
         
-        buy_slip = slip_df[slip_df['交易类别'].str.contains('买入', na=False)]
-        sell_slip = slip_df[slip_df['交易类别'].str.contains('卖出', na=False)]
+        # Exclude manual trades from quant execution friction
+        if 'trade_class' in slip_df.columns:
+            quant_slip_df = slip_df[slip_df['trade_class'] != 'M'].copy()
+        else:
+            quant_slip_df = slip_df.copy()
+            
+        buy_slip = quant_slip_df[quant_slip_df['交易类别'].str.contains('买入', na=False)]
+        sell_slip = quant_slip_df[quant_slip_df['交易类别'].str.contains('卖出', na=False)]
         
         def weighted_avg(df, col, weight_col='成交金额'):
             if df.empty or df[weight_col].sum() == 0: return 0.0
@@ -257,6 +264,59 @@ def main():
             report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.2%}")
             report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.2%}")
             report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap:.2%}")
+            
+    # 5. Trade Classification & Manual Impact
+    print("Analyzing Trade Classification & Manual Impact...")
+    class_returns = port_a.calculate_classified_returns()
+    if class_returns and 'class_df' in class_returns:
+        class_df = class_returns['class_df']
+        report.append("\n## 5. Trade Classification & Manual Impact")
+        
+        # Classification Distribution
+        report.append("\n### Classification Distribution")
+        report.append("| Class | Count | Pct | Total Amount |")
+        report.append("|-------|-------|-----|--------------|")
+        
+        # We need the full trade log to get amounts
+        trade_log = exec_a.trade_log
+        if not trade_log.empty and 'trade_class' in trade_log.columns:
+            total_trades = len(trade_log)
+            if total_trades > 0:
+                for cls, label in [('S', 'SIGNAL'), ('A', 'SUBSTITUTE'), ('M', 'MANUAL')]:
+                    subset = trade_log[trade_log['trade_class'] == cls]
+                    count = len(subset)
+                    pct = count / total_trades
+                    amt = subset['成交金额'].sum() if '成交金额' in subset.columns else 0.0
+                    report.append(f"| {label} | {count} | {pct:.1%} | ¥{amt:,.0f} |")
+                    
+        # Quantitative Performance
+        quant_cagr_str = "N/A (Rigorous separation coming in v2)"
+        report.append("\n### Quantitative-Only Performance")
+        report.append(f"- Quant CAGR: {quant_cagr_str}")
+        
+        # Manual Trade Details
+        manual_buys = class_returns['manual_buys']
+        manual_sells = class_returns['manual_sells']
+        
+        report.append("\n### Manual Trade Details")
+        if manual_buys.empty and manual_sells.empty:
+            report.append("*No manual trades recorded in this period.*")
+        else:
+            report.append("| Date | Instrument | Direction | Amount |")
+            report.append("|------|-----------|-----------|--------|")
+            
+            # Combine buys and sells for display
+            manual_all = pd.concat([manual_buys, manual_sells])
+            if not manual_all.empty:
+                manual_all = manual_all.sort_values('成交日期')
+                for _, row in manual_all.iterrows():
+                    date_val = row['成交日期'].strftime('%Y-%m-%d') if pd.notna(row['成交日期']) else ""
+                    inst = row.get('证券代码', '')
+                    direction = "BUY" if '买入' in str(row.get('交易类别', '')) else "SELL"
+                    amt = row.get('成交金额', 0)
+                    report.append(f"| {date_val} | {inst} | {direction} | ¥{amt:,.0f} |")
+                    
+            report.append("\n*(Detailed manual trade PnL tracking and T+5 returns require dual-ledger system integration)*")
             
     # Write report
     report_text = "\n".join(report)

@@ -11,11 +11,37 @@ class ExecutionAnalyzer:
             trade_log_df = load_trade_log()
         self.trade_log = trade_log_df
         
+        # Load classification if exists and merge
+        try:
+            import os
+            from .utils import ROOT_DIR
+            class_path = os.path.join(ROOT_DIR, "data", "trade_classification.csv")
+            if os.path.exists(class_path):
+                class_df = pd.read_csv(class_path)
+                if '成交日期' not in class_df.columns and 'trade_date' in class_df.columns:
+                    class_df['成交日期'] = pd.to_datetime(class_df['trade_date'])
+                if '证券代码' not in class_df.columns and 'instrument' in class_df.columns:
+                    class_df['证券代码'] = class_df['instrument']
+                if '交易类别' not in class_df.columns and 'trade_type' in class_df.columns:
+                    class_df['交易方向'] = class_df['trade_type']
+                    
+                # We merge on date and instrument. To be safe, just date and instrument.
+                if not class_df.empty:
+                    # Drop duplicates just in case
+                    class_df = class_df.drop_duplicates(subset=['成交日期', '证券代码'])
+                    if not self.trade_log.empty and '成交日期' in self.trade_log.columns:
+                        self.trade_log['成交日期'] = pd.to_datetime(self.trade_log['成交日期'])
+                        self.trade_log = pd.merge(self.trade_log, class_df[['成交日期', '证券代码', 'trade_class']], on=['成交日期', '证券代码'], how='left')
+                        self.trade_log['trade_class'] = self.trade_log['trade_class'].fillna('U') # Unclassified
+        except Exception as e:
+            print(f"Warning: Failed to load trade classification: {e}")
+            
         if not self.trade_log.empty:
             if start_date:
                 self.trade_log = self.trade_log[self.trade_log['成交日期'] >= pd.to_datetime(start_date)]
             if end_date:
                 self.trade_log = self.trade_log[self.trade_log['成交日期'] <= pd.to_datetime(end_date)]
+
         
     def calculate_slippage_and_delay(self, market=None):
         """

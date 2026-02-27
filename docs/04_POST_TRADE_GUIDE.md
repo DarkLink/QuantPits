@@ -32,6 +32,7 @@ QuantPits/
             ├── emp-table.xlsx            # 空模板（无交易日使用）
             ├── trade_log_full.csv        # 交易日志（累计）
             ├── trade_detail_YYYY-MM-DD.csv # 每日交易详情
+            ├── trade_classification.csv  # 交易分类打标（累计：量化信号、替代、手工）
             ├── holding_log_full.csv      # 持仓日志（累计）
             └── daily_amount_log_full.csv # 每日资金汇总（累计）
 ```
@@ -117,7 +118,8 @@ flowchart TD
     F --> G[更新持仓]
     G --> H[获取收盘价]
     H --> I[计算浮盈]
-    I --> J[写入日志]
+    I --> J[写入各项资金与持仓日志]
+    J --> K[执行交易分类分类匹配]
 ```
 
 ### 现金更新公式
@@ -131,6 +133,7 @@ cash_after = cash_before + 卖出收入 - 买入支出 + 红利利息 + cashflow
 | 文件 | 内容 | 更新方式 |
 |------|------|----------|
 | `trade_log_full.csv` | 全部交易记录 | 追加 + 去重 |
+| `trade_classification.csv` | 核心量化/手工买卖归因打标 | 自动依赖建议文件推算 |
 | `holding_log_full.csv` | 每日持仓快照 | 追加 + 去重 |
 | `daily_amount_log_full.csv` | 每日资金汇总 | 追加 + 去重 |
 | `trade_detail_*.csv` | 单日交易详情 | 每日覆写 |
