@@ -810,7 +810,7 @@ def generate_charts(all_reports, report_df, final_weights, is_dynamic,
 # ============================================================================
 # Combo Comparison (multi-combo mode)
 # ============================================================================
-def compare_combos(combo_results, anchor_date, output_dir):
+def compare_combos(combo_results, anchor_date, output_dir, freq):
     """
     生成跨组合对比汇总。
 
@@ -820,6 +820,7 @@ def compare_combos(combo_results, anchor_date, output_dir):
               "pred_file": str, "report_df": DataFrame or None, ...}]
         anchor_date: 锚点日期
         output_dir: 输出目录
+        freq: 回测频率 (day/week)
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -1215,7 +1216,7 @@ def main():
 
     # ---- 多组合对比 ----
     if len(combo_results) > 1:
-        compare_combos(combo_results, anchor_date, args.output_dir)
+        compare_combos(combo_results, anchor_date, args.output_dir, args.freq)
 
     # ---- 完成 ----
     print(f"\n{'#'*60}")

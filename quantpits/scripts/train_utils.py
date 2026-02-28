@@ -331,6 +331,11 @@ def train_single_model(model_name, yaml_file, params, experiment_name):
             print(f"[{model_name}] Predicting...")
             pred = model.predict(dataset=dataset)
             
+            # 保存模型对象（供 prod_predict_only.py 加载）
+            print(f"[{model_name}] Saving model to recorder...")
+            recorder = R.get_recorder()
+            recorder.save_objects(**{"model.pkl": model})
+            
             # 保存预测结果
             os.makedirs(PREDICTION_OUTPUT_DIR, exist_ok=True)
             pred_file = os.path.join(PREDICTION_OUTPUT_DIR, f"{model_name}_{params['anchor_date']}.csv")
