@@ -15,6 +15,13 @@ Production Post-Trade 批量处理脚本
 
 import os
 import sys
+import os
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import json
 import argparse
 import copy
@@ -250,6 +257,9 @@ def process_single_day(current_date_string, current_cash, current_holding,
 
     # --- 转换持仓为 DataFrame ---
     current_holding_df = pd.DataFrame(current_holding)
+    if not current_holding_df.empty and "value" in current_holding_df.columns:
+        current_holding_df["value"] = current_holding_df["value"].apply(lambda x: Decimal(str(x)))
+        current_holding_df["amount"] = current_holding_df["amount"].apply(lambda x: Decimal(str(x)))
 
     # --- 处理卖出 ---
     total_sell_amount = Decimal("0")
@@ -567,6 +577,10 @@ Cashflow 配置 (config/cashflow.json):
 def main():
     import env
     env.safeguard("Prod Post Trade")
+    
+    # 初始化 Qlib
+    init_qlib()
+
     args = parse_args()
 
     cwd = os.getcwd()
@@ -650,15 +664,19 @@ def main():
 
     # --- 执行交易分类 ---
     try:
-        from scripts.analysis.trade_classifier import classify_trades, save_classification
+        from quantpits.scripts.analysis.trade_classifier import classify_trades, save_classification
         print(f"\n{'='*50}")
-        print("Running Trade Classification Engine...")
-        classified_df = classify_trades(verbose=False)
+        print(f"Running Trade Classification Engine for {len(trade_dates)} dates...")
+        classified_df = classify_trades(verbose=False, trade_dates=trade_dates)
         if not classified_df.empty:
-            save_classification(classified_df)
+            save_classification(classified_df, append=True, trade_dates=trade_dates)
             print("Trade classification updated.")
+        else:
+            print("No new trades required classification.")
     except Exception as e:
         print(f"\n[WARN] Failed to run trade classification: {e}")
+        import traceback
+        traceback.print_exc()
 
     # --- 完成 ---
     print(f"\n{'='*50}")

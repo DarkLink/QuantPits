@@ -23,6 +23,7 @@ from quantpits.scripts.analysis.utils import ROOT_DIR
 # ---------------------------------------------------------------------------
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 ORDER_DIR = os.path.join(DATA_DIR, "order_history")
+OUTPUT_DIR = os.path.join(ROOT_DIR, "output")
 CLASSIFICATION_FILE = os.path.join(DATA_DIR, "trade_classification.csv")
 TRADE_LOG_FILE = os.path.join(DATA_DIR, "trade_log_full.csv")
 
@@ -35,34 +36,53 @@ SELL_TYPES = ["上海A股普通股票竞价卖出", "深圳A股普通股票竞�
 # ---------------------------------------------------------------------------
 
 def _scan_suggestion_dates(prefix="buy_suggestion"):
-    """Scan order_history/ to discover all available suggestion file dates."""
-    pattern = os.path.join(ORDER_DIR, f"{prefix}_*.csv")
+    """Scan order_history/ and output/ to discover all available suggestion file dates."""
     dates = []
-    for f in sorted(glob.glob(pattern)):
+    
+    # 1. Check order_history
+    pattern1 = os.path.join(ORDER_DIR, f"{prefix}_*.csv")
+    for f in sorted(glob.glob(pattern1)):
         base = os.path.basename(f)
-        # Extract date from e.g. buy_suggestion_2024-07-03.csv
         date_str = base.replace(f"{prefix}_", "").replace(".csv", "")
         try:
             dates.append(pd.Timestamp(date_str))
         except Exception:
-            continue
-    return sorted(dates)
+            pass
+            
+    # 2. Check output directory
+    pattern2 = os.path.join(OUTPUT_DIR, f"{prefix}_*.csv")
+    for f in sorted(glob.glob(pattern2)):
+        base = os.path.basename(f)
+        # e.g., buy_suggestion_ensemble_2026-02-24.csv
+        date_part = base.replace(".csv", "")[-10:]
+        try:
+            dates.append(pd.Timestamp(date_part))
+        except Exception:
+            pass
+            
+    return sorted(list(set(dates)))
 
 
-def _find_suggestion_date(trade_date, available_dates):
+def _find_suggestion_date(trade_date, available_dates, strict_after="2026-02-13"):
     """
     For a given trade_date, find the matching suggestion file date.
 
     Strategy:
       1. Exact match on trade_date
-      2. Previous trading day (trade_date - 1 calendar day, check backwards up to 7 days)
+      2. For history (<= strict_after): fallback by searching backwards up to 7 days.
+      3. For future (> strict_after): exact match only. No file = Manual.
     Returns the matched date or None.
     """
     td = pd.Timestamp(trade_date)
     # Exact match
     if td in available_dates:
         return td
-    # Fallback: search backwards up to 7 days
+        
+    # Strict matching for future data
+    if strict_after and td > pd.Timestamp(strict_after):
+        return None
+
+    # Fallback for historical data: search backwards up to 7 days
     for delta in range(1, 8):
         candidate = td - pd.Timedelta(days=delta)
         if candidate in available_dates:
@@ -73,7 +93,20 @@ def _find_suggestion_date(trade_date, available_dates):
 def _load_suggestion(prefix, date):
     """Load a buy/sell suggestion CSV for a given date. Returns a DataFrame."""
     date_str = pd.Timestamp(date).strftime("%Y-%m-%d")
-    path = os.path.join(ORDER_DIR, f"{prefix}_{date_str}.csv")
+    
+    # Priority 1: Check output directory (latest generated ones)
+    out_pattern1 = os.path.join(OUTPUT_DIR, f"{prefix}_*_{date_str}.csv")
+    out_files = sorted(glob.glob(out_pattern1))
+    if not out_files:
+        out_pattern2 = os.path.join(OUTPUT_DIR, f"{prefix}_{date_str}.csv")
+        out_files = sorted(glob.glob(out_pattern2))
+        
+    if out_files:
+        path = out_files[-1]
+    else:
+        # Priority 2: Check order_history directory
+        path = os.path.join(ORDER_DIR, f"{prefix}_{date_str}.csv")
+
     if not os.path.exists(path):
         return pd.DataFrame()
     df = pd.read_csv(path)
@@ -99,15 +132,15 @@ def _add_prefix(code):
 # Core Classification
 # ---------------------------------------------------------------------------
 
-def classify_trades(verbose=False):
+def classify_trades(verbose=False, trade_dates=None):
     """
     Classify all buy/sell trades in trade_log_full.csv.
+
+    If trade_dates is strictly defined, only filters and classifies trades from those days.
 
     Returns a DataFrame with columns:
         trade_date, instrument, trade_type, trade_class,
         suggestion_date, suggestion_rank
-
-    Also saves to data/trade_classification.csv.
     """
     # 1. Load trade log
     if not os.path.exists(TRADE_LOG_FILE):
@@ -120,6 +153,14 @@ def classify_trades(verbose=False):
         trade_df["成交日期"] = pd.to_datetime(trade_df["成交日期"])
     else:
         raise ValueError("Column '成交日期' not found in trade log")
+
+    # Filter to specific trade dates if requested
+    if trade_dates:
+        target_dates = [pd.Timestamp(d) for d in trade_dates]
+        trade_df = trade_df[trade_df["成交日期"].isin(target_dates)]
+        
+    if trade_df.empty:
+        return pd.DataFrame()
 
     # Filter only buy/sell trades (exclude dividends, interest, etc.)
     all_types = BUY_TYPES + SELL_TYPES
@@ -252,12 +293,22 @@ def _normalize_instrument(code):
     return _add_prefix(code)
 
 
-def save_classification(df, path=None):
-    """Save classification DataFrame to CSV."""
+def save_classification(df, path=None, append=False, trade_dates=None):
+    """Save classification DataFrame to CSV. Supports incremental appends overriding specific dates."""
     if path is None:
         path = CLASSIFICATION_FILE
-    df.to_csv(path, index=False)
-    print(f"  → Saved {len(df)} classification records to {path}")
+        
+    if append and os.path.exists(path) and trade_dates:
+        # Load existing cleanly and wipe out overlapping dates
+        existing_df = pd.read_csv(path)
+        existing_df = existing_df[~existing_df["trade_date"].isin(trade_dates)]
+        final_df = pd.concat([existing_df, df], ignore_index=True)
+        final_df = final_df.sort_values("trade_date").reset_index(drop=True)
+    else:
+        final_df = df
+        
+    final_df.to_csv(path, index=False)
+    print(f"  → Saved classification records to {path}")
 
 
 def load_classification(path=None):
