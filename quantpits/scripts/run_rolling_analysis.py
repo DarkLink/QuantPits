@@ -9,16 +9,18 @@ from statsmodels.regression.rolling import RollingOLS
 from datetime import datetime
 
 # Adjust path so we can import analysis module
-import env
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# 假设 run_rolling_analysis.py 在 quantpits/scripts/ 目录下，向上两级是 PROJECT_ROOT
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+    
+import quantpits.scripts.env as env
 os.chdir(env.ROOT_DIR)
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = env.ROOT_DIR
-sys.path.append(ROOT_DIR)
-
-from scripts.analysis.utils import init_qlib, get_daily_features, load_market_config
-from scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
-from scripts.analysis.execution_analyzer import ExecutionAnalyzer
+from quantpits.scripts.analysis.utils import init_qlib, get_daily_features, load_market_config
+from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+from quantpits.scripts.analysis.execution_analyzer import ExecutionAnalyzer
 
 def compute_rolling_metrics(windows=[60, 20], sub_window=20, market='csi300'):
     print(f"Initializing Qlib for Market: {market}...")
@@ -130,7 +132,7 @@ def compute_rolling_metrics(windows=[60, 20], sub_window=20, market='csi300'):
             daily_trades = daily_trades.reindex(returns.index).fillna(0)
 
     # 4. Generate Rolling Windows
-    out_dir = os.path.join(ROOT_DIR, 'output')
+    out_dir = os.path.join(env.ROOT_DIR, 'output')
     os.makedirs(out_dir, exist_ok=True)
 
     for window in windows:

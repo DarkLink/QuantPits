@@ -11,10 +11,11 @@ st.set_page_config(page_title="Rolling Analysis Dashboard", layout="wide")
 
 import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.append(SCRIPT_DIR)
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-from scripts import env
+from quantpits.scripts import env
 
 def get_available_windows():
     out_dir = os.path.join(env.ROOT_DIR, "output")

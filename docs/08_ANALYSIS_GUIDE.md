@@ -2,13 +2,13 @@
 
 本模块用于为量化系统提供专业级的多维审查视角，包括且不限于：单模型的有效性衰减、融合组合的边际贡献差异、真实的执行滑点成本及基于实盘资金的传统风险评估。
 
-核心入口脚本为：`scripts/run_analysis.py`
+核心入口脚本为：`quantpits/scripts/run_analysis.py`
 
 ---
 
 ## 一、模块功能概览
 
-总控脚本基于 4 个相互独立的分析组件 (`scripts/analysis/`) 生成完整的 Markdown 审查报告：
+总控脚本基于 4 个相互独立的分析组件 (`quantpits/scripts/analysis/`) 生成完整的 Markdown 审查报告：
 
 1. **单模型表现 (`single_model_analyzer.py`)**：通过 Rank IC 与 T+1 ~ T+5 半衰期变化追踪原始信号的强度和退化速度。同时考察 ICIR (信息比率)、十分位收益排序 (Decile Spread) 和多头超额发掘能力 (Long-only IC)。
 2. **组合及相关性 (`ensemble_analyzer.py`)**：评估多模型跨截面的信号斯皮尔曼 (Spearman) 相关性，并通过 Leave-One-Out (留一法) 测算各子模型当前的**边际夏普贡献**，同时输出等权融合打分后的整体业务指标。
@@ -50,7 +50,7 @@ python quantpits/scripts/run_analysis.py \
 cd QuantPits
 
 # 启动交互式看板（启动后在浏览器打开 http://localhost:8501 ）
-streamlit run dashboard.py
+streamlit run ui/dashboard.py
 ```
 
 在前端界面中，你可以自由选择测算的时间范围 (Start Date, End Date) 及对标基准 (Market Benchmark)，点击生成即可得到四大可视化模块：
@@ -71,7 +71,7 @@ python quantpits/scripts/run_rolling_analysis.py --windows 20 60
 
 2. 然后启动专门的滚动可视化看板：
 ```bash
-streamlit run rolling_dashboard.py --server.port 8503
+streamlit run ui/rolling_dashboard.py --server.port 8503
 ```
 
 - 该看板包含四大滚动监控模块：

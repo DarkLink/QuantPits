@@ -11,21 +11,22 @@ from datetime import datetime
 
 # Setup paths to import from backend
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.append(SCRIPT_DIR)
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-from scripts import env
+from quantpits.scripts import env
 os.chdir(env.ROOT_DIR)
 
 # Must initialize Qlib before importing analyzers if they fetch data
-from scripts.analysis.utils import init_qlib, load_market_config
+from quantpits.scripts.analysis.utils import init_qlib, load_market_config
 try:
     init_qlib()
 except Exception as e:
     st.warning(f"Qlib initialization might have already run or failed: {e}")
 
-from scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
-from scripts.analysis.execution_analyzer import ExecutionAnalyzer
+from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+from quantpits.scripts.analysis.execution_analyzer import ExecutionAnalyzer
 
 st.set_page_config(page_title="Quantitative Strategy Dashboard", layout="wide", initial_sidebar_state="expanded")
 
@@ -190,7 +191,7 @@ def render_factor_exposure(port_a, market):
     min_date = returns.index.min().strftime('%Y-%m-%d')
     max_date = returns.index.max().strftime('%Y-%m-%d')
     
-    from scripts.analysis.utils import get_daily_features
+    from quantpits.scripts.analysis.utils import get_daily_features
     features_dict = {'close': '$close', 'volume': '$volume'}
     features = get_daily_features(min_date, max_date, market=market, features=features_dict)
     

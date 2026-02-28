@@ -2,13 +2,13 @@
 
 This module exists to provide professional, multi-dimensional auditing perspectives for the quantitative system, encompassing but not limited to: individual model validity decay, marginal contribution discrepancies of fused ensembles, authentic execution slippage friction, and traditional risk evaluations mapped natively from actual capital trajectories.
 
-The centralized entry access script operates as: `scripts/run_analysis.py`
+The centralized entry access script operates as: `quantpits/scripts/run_analysis.py`
 
 ---
 
 ## I. Overview of Module Architecture
 
-The execution controller script spawns 4 mutually disconnected component analyzers (`scripts/analysis/`) synthesizing a fully compiled Markdown intelligence report:
+The execution controller script spawns 4 mutually disconnected component analyzers (`quantpits/scripts/analysis/`) synthesizing a fully compiled Markdown intelligence report:
 
 1. **Single Model Performance (`single_model_analyzer.py`)**: Tracks raw predictive intensity metrics and degeneration velocity curves primarily relying upon Rank IC evaluations paired with temporally decaying T+1 through T+5 half-life projections. Sequentially reviews ICIR distributions, Decile Spread hierarchies, alongside long-only bounds isolated via exclusively Top asset subset parsing matrices (Long-only IC).
 2. **Ensemble Dynamics & Correlation (`ensemble_analyzer.py`)**: Assesses spearman correlations tracing identical evaluation spans bounded cross-sectionally across logic variants. Explicitly applies empirical Leave-One-Out validation calculating strict **marginal Sharpe contributions** for each atomic submodule, concurrently assessing native metrics generated simulating basic equalized distributions bounding the holistic ensemble mechanism.
@@ -50,7 +50,7 @@ Alongside serialized markdown reports, the system delivers multi-dimensional vis
 cd QuantPits
 
 # Spawns visualization matrices explicitly (Accessed natively by bridging browsers evaluating http://localhost:8501 bounds)
-streamlit run dashboard.py
+streamlit run ui/dashboard.py
 ```
 
 Operating internally bounding visual representations, developers natively govern temporal chronological windows (Start Date, End Date) alongside natively mapped Benchmark index parameters. Processing executions output explicit multi-segment architectures natively:
@@ -71,7 +71,7 @@ python quantpits/scripts/run_rolling_analysis.py --windows 20 60
 
 2. Follow directly executing explicit visualization rendering systems mapping targeting sequential ports uniquely:
 ```bash
-streamlit run rolling_dashboard.py --server.port 8503
+streamlit run ui/rolling_dashboard.py --server.port 8503
 ```
 
 - Target monitoring scopes explicitly encompass:
