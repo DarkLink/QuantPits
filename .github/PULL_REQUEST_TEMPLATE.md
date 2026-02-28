@@ -1,5 +1,19 @@
-> [!IMPORTANT]
-> 这是一个内部 monorepo 的镜像仓库，**不接受任何 Pull Request**。
->
-> 提交的 PR 将被忽略或自动关闭。如果您有任何问题、发现 bug 或有功能建议，请**直接提交 Issue** 进行讨论。
-> 感谢您的理解与支持！
+## Description
+<!-- Please provide a brief summary of the changes and the motivation for this pull request. -->
+
+## Type of Change
+- [ ] Bug fix (non-breaking change which fixes an issue)
+- [ ] New feature (non-breaking change which adds functionality)
+- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
+- [ ] Documentation update
+
+## How Has This Been Tested?
+<!-- Please describe the tests that you ran to verify your changes. Provide instructions so we can reproduce. -->
+
+## Checklist
+- [ ] My code follows the style guidelines of this project
+- [ ] I have performed a self-review of my own code
+- [ ] I have commented my code, particularly in hard-to-understand areas
+- [ ] I have made corresponding changes to the documentation
+- [ ] My changes generate no new warnings
+- [ ] Any dependent changes have been merged and published in downstream modules

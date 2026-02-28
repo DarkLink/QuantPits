@@ -8,7 +8,7 @@ An advanced, production-ready quantitative trading system built on top of [Micro
 
 🌐 [中文版本 (README_zh.md)](./README_zh.md)
 
-> **Note:** This repository is a read-only mirror of an internal monorepo. We welcome bug reports and issues, but please DO NOT submit Pull Requests at this time, as they cannot be merged into our internal system directly.
+> **Note:** We welcome contributions! If you find a bug or have a feature suggestion, please feel free to open an Issue or submit a Pull Request.
 
 ## 🚀 Key Features
 

@@ -8,7 +8,7 @@
 
 🌐 [English Version (README.md)](./README.md)
 
-> **注意：** 这是一个内部仓库的只读镜像。欢迎提交 Issue 报告问题，但目前请不要提交 PR，因为我们无法直接将其合并到内部系统中。
+> **注意：** 欢迎各种形式的贡献！如果您发现 Bug 或有功能建议，请随时提交 Issue 或 Pull Request。
 
 ## 🚀 核心特性
 
