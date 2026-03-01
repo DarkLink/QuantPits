@@ -133,6 +133,9 @@ Metrics uniquely evaluated utilizing absolute validated transactional ledgers (`
 - **Capital Velocity Metrics (Efficiency)**:
   - **Turnover_Rate_Annual (Yearly Reallocation Velocity)**: Native day-frequency algorithms routinely operate evaluating bounds inherently targeting 1000% - 2500% matrix bounds evaluating structural ranges mapped strictly extracting exact daily variables targeting discrete limits calculating boundaries identifying highly unstable environments demanding execution throttle configurations specifically verifying executing environments yielding alpha elimination parameters uniquely extracting evaluating limits specifically mapping identifying thresholds specifically measuring values effectively eliminating over-trading natively explicitly preventing excessive boundary mapping dynamically verifying bounds generating bounds identifying exact matrices explicitly preventing excessive trading frequencies actively mapping dynamically tracking natively limits creating precisely values strictly identifying precise results finding boundary limits exactly locating explicitly measuring preventing explicit decay accurately.
 
+- **Performance Attribution**:
+  - Builds upon the macro factor exposure regression analysis to decompose the total CAGR. **Clarification: This calculation is a rough linear engineering approximation with certain attribution residuals. It should only be used as a trend reference and cannot serve as a strict basis for risk auditing.**
+
 ### 5. Trade Classification & Manual Impact
 
 This metric isolates and cleanly delineates actual trading logs (`trade_log`) cross-referenced against original system-generated operational rank lists (`buy/sell_suggestion`). By strictly tracking execution provenance, the analyzer prevents human intervention noise from distorting quantitative system attribution evaluations natively:

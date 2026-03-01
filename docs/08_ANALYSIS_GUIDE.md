@@ -138,7 +138,7 @@ python quantpits/scripts/run_rolling_health_report.py
 - **Barra 风格暴露 (Proxy Style Exposures)**：
   - 基于实际资产日收益对简单的 Barra 代理特征 (Size, Momentum, Volatility) 进行横截面回归。若某一项系数绝对值异常偏高（例如 Size 远负于 -0.5 等），说明策略严重暴露于某些市值/热度因子陷阱中。
 - **Performance Attribution (收益归因分析)**：
-  - 在大类因子暴露回归分析的基础上，进一步将模型的总 CAGR 等权重拆分。
+  - 在大类因子暴露回归分析的基础上，进一步将模型的总 CAGR 等权重拆分。**明确：此计算为粗略的线性工程近似，存在一定的归因残差，仅作趋势参考，不可作为严格的风险审计依据。**
   - **Beta Return**：源于纯粹跟踪大盘 Beta (比如市场涨了，你也随之被动涨出的收益部分)。
   - **Style Alpha**：源于模型在市值、动能、波动率三大类因子上的线性暴露。这里运用**年化算术收益率**(Arithmetic Return) 与 Beta 相乘计算得出，彻底排除了几何复利爆炸偏差。
 - **Idiosyncratic Alpha (特异性阿尔法)**：即 `总 CAGR - Beta Return - Style Alpha`。这是本策略极具价值的核心指标，代表了纯粹不跟风的，完全由模型自身的择时、独门因子或交易结构带来的残差超额收益（即真 Alpha）。数值越大（如持续为正的大几个点），系统愈发高级且不可替代。

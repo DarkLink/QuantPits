@@ -65,7 +65,7 @@ pip install -e .
 python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
 ```
 
-> **注意：** 该数据集包含海量历史行情，初次下载可能需要占用十几 GB 的硬盘空间和较长的一段时间。请耐心等待。
+> **注意：** 该数据集包含海量历史行情，初次下载可能需要占用十几 GB 的硬盘空间和较长的一段时间。请耐心等待。关于数据，可以参考这个repo https://github.com/chenditc/investment_data 提供日频数据。
 请确保您配置的 Workspace 数据源路径能够准确命中该目录。
 
 ### 3. 激活工作区

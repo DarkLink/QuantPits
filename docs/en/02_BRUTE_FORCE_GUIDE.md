@@ -253,7 +253,7 @@ python quantpits/scripts/brute_force_fast.py --use-groups --group-config config/
 | Cash Reinvestment Logic | ✅ Dynamic Volume | ❌ Pure equal-balance assumptions |
 | Time Constraint | ~5s/combo | ~0.001s/combo |
 
-> **Sort Scaling Ratios Output Consistent Ranks**: The absolute numerical estimates manifest variance from reality; however, internal relational scoring logic remains mathematically consistent, establishing an ultra-efficient sorting filter scope. （**NO GOOD, USE WITH CAUTION**）
+> **Note on Precision Deviations**: There are significant discrepancies between the fast version and the formal exhaustive search (since the fast version cannot smoothly handle positional states, leading to substantial errors for transactions that do not involve full-position swaps). Please use with caution.
 
 ### Optimized Workflow Progression
 

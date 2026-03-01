@@ -65,7 +65,7 @@ Before running the engine, ensure you have the required Qlib dataset downloaded 
 python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --version v2
 ```
 
-> **Note:** This dataset contains massive historical market data. The initial download may require tens of GBs of disk space and a considerable amount of time. Please be patient.
+> **Note:** This dataset contains massive historical market data. The initial download may require tens of GBs of disk space and a considerable amount of time. Please be patient. For daily frequency data, you can also reference this repo: https://github.com/chenditc/investment_data
 Make sure `workspaces/Demo_Workspace/run_env.sh` or your Qlib initialization points to this directory.
 
 ### 3. Activate a Workspace
