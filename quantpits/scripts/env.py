@@ -36,6 +36,30 @@ else:
 mlruns_dir = os.path.abspath(os.path.join(ROOT_DIR, 'mlruns'))
 os.environ["MLFLOW_TRACKING_URI"] = f"file://{mlruns_dir}"
 
+# Qlib 数据路径：优先环境变量，兜底默认值
+QLIB_DATA_DIR = os.environ.get("QLIB_DATA_DIR", "~/.qlib/qlib_data/cn_data")
+QLIB_REGION = os.environ.get("QLIB_REGION", "cn")
+
+
+def init_qlib():
+    """
+    集中初始化 Qlib 环境。
+
+    数据路径和区域通过环境变量控制：
+      - QLIB_DATA_DIR: Qlib 数据目录 (默认 ~/.qlib/qlib_data/cn_data)
+      - QLIB_REGION:   Qlib 区域     (默认 cn)
+
+    在各 workspace 的 run_env.sh 中可按需设置这两个变量来实现数据分离。
+    """
+    import qlib
+    from qlib.constant import REG_CN, REG_US
+
+    region_map = {"cn": REG_CN, "us": REG_US}
+    region = region_map.get(QLIB_REGION.lower(), REG_CN)
+
+    qlib.init(provider_uri=QLIB_DATA_DIR, region=region)
+
+
 def safeguard(script_name="Pipeline"):
     """
     Safety lock to prevent accidental execution in the wrong workspace.
@@ -47,6 +71,8 @@ def safeguard(script_name="Pipeline"):
     print(f"[{script_name}] is about to run.")
     print(f"Active Workspace: \033[1;31;40m{workspace_name}\033[0m")
     print(f"Workspace Path  : {ROOT_DIR}")
+    print(f"Qlib Data Dir   : {QLIB_DATA_DIR}")
+    print(f"Qlib Region     : {QLIB_REGION}")
     print("=" * 60)
     print("Please confirm. (Press Ctrl+C within 3 seconds to abort if this is the wrong workspace!)")
     time.sleep(3)

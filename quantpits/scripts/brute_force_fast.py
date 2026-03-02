@@ -127,11 +127,8 @@ BACKTEST_CONFIG = {
 # ============================================================================
 
 def init_qlib():
-    """初始化 Qlib"""
-    import qlib
-    from qlib.constant import REG_CN
-    provider_uri = "~/.qlib/qlib_data/cn_data"
-    qlib.init(provider_uri=provider_uri, region=REG_CN)
+    """初始化 Qlib（委托给 env.init_qlib）"""
+    env.init_qlib()
 
 
 def load_config(record_file="latest_train_records.json"):

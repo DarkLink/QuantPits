@@ -67,7 +67,13 @@ python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --r
 ```
 
 > **注意：** 该数据集包含海量历史行情，初次下载可能需要占用十几 GB 的硬盘空间和较长的一段时间。请耐心等待。关于数据，可以参考这个repo https://github.com/chenditc/investment_data 提供日频数据。
-请确保您配置的 Workspace 数据源路径能够准确命中该目录。
+
+默认情况下，所有脚本从 `~/.qlib/qlib_data/cn_data` 读取数据。如需按工作区配置不同的数据源，只需在对应 `run_env.sh` 中取消注释并修改：
+
+```bash
+export QLIB_DATA_DIR="/path/to/your/qlib_data"
+export QLIB_REGION="cn"   # 或 "us"
+```
 
 ### 3. 激活工作区
 

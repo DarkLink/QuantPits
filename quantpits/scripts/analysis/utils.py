@@ -42,11 +42,8 @@ def load_market_config():
 
 
 def init_qlib():
-    """Initialize Qlib environment."""
-    import qlib
-    from qlib.constant import REG_CN
-    provider_uri = "~/.qlib/qlib_data/cn_data"
-    qlib.init(provider_uri=provider_uri, region=REG_CN)
+    """Initialize Qlib environment (delegates to env.init_qlib)."""
+    env.init_qlib()
 
 
 def get_trading_dates(start_date, end_date):

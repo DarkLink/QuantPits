@@ -24,7 +24,6 @@ import yaml
 import json
 import pandas as pd
 from qlib.data import D
-from qlib.constant import REG_CN
 from qlib.utils import init_instance_by_config
 from qlib.workflow import R
 from datetime import datetime, timedelta
@@ -36,8 +35,7 @@ ROOT_DIR = env.ROOT_DIR
 # os.chdir(ROOT_DIR)  # 已在上方完成
 
 # 初始化 Qlib
-provider_uri = "~/.qlib/qlib_data/cn_data"
-qlib.init(provider_uri=provider_uri, region=REG_CN)
+env.init_qlib()
 
 # 导入共享工具
 from train_utils import (

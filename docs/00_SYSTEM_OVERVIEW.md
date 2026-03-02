@@ -15,9 +15,10 @@
 **如何使用工作区？**
 1. 创建新工作区：使用 `python quantpits/scripts/init_workspace.py --source workspaces/A --target workspaces/B` 快速搭建。
 2. 激活工作区：进入系统目录，`source workspaces/<你的工作区>/run_env.sh` 设置 `QLIB_WORKSPACE_DIR`。
-3. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
+3. (可选) 自定义数据源：在 `run_env.sh` 中取消注释 `QLIB_DATA_DIR` / `QLIB_REGION`，即可为该工作区指向不同的 Qlib 数据目录（默认 `~/.qlib/qlib_data/cn_data`、`cn`）。
+4. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
    > [!IMPORTANT]
-   > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，并且 `MLFLOW_TRACKING_URI` 指向工作区内部的 `mlruns/` 目录。
+   > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 `mlruns/` 目录，并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径。
 
 ---
 

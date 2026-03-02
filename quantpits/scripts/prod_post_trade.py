@@ -136,11 +136,8 @@ def archive_cashflows(cashflow_config):
 # Trade Date Helpers
 # ---------------------------------------------------------------------------
 def init_qlib():
-    """初始化 qlib"""
-    import qlib
-    from qlib.constant import REG_CN
-    provider_uri = "~/.qlib/qlib_data/cn_data"
-    qlib.init(provider_uri=provider_uri, region=REG_CN)
+    """初始化 Qlib（委托给 env.init_qlib）"""
+    env.init_qlib()
 
 
 def get_trade_dates(start_date, end_date):

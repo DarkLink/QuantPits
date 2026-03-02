@@ -15,7 +15,8 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 **How to use workspaces?**
 1. Create a new workspace: Use `python quantpits/scripts/init_workspace.py --source workspaces/A --target workspaces/B` for quick scaffolding.
 2. Activate a workspace: Enter the system directory and run `source workspaces/<Your_Workspace>/run_env.sh` to set `QLIB_WORKSPACE_DIR`.
-3. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace.
+3. (Optional) Custom data source: Uncomment `QLIB_DATA_DIR` / `QLIB_REGION` in `run_env.sh` to point the workspace at a different Qlib data directory (defaults to `~/.qlib/qlib_data/cn_data` and `cn`).
+4. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace, and `env.init_qlib()` will initialize Qlib with the configured data path.
 
 ---
 

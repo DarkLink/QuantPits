@@ -40,13 +40,7 @@ os.chdir(env.ROOT_DIR)
 DEFAULT_EXPERIMENT_NAME = "Prod_Predict"
 
 
-# 延迟导入 qlib（在解析参数之后）
-def init_qlib():
-    """初始化 Qlib 环境"""
-    import qlib
-    from qlib.constant import REG_CN
-    provider_uri = "~/.qlib/qlib_data/cn_data"
-    qlib.init(provider_uri=provider_uri, region=REG_CN)
+# init_qlib 由 env.init_qlib() 集中管理（延迟导入 qlib，在解析参数之后调用）
 
 
 def parse_args():
@@ -359,7 +353,7 @@ def run_predict_only(args):
     print("=" * 60)
 
     # 初始化 Qlib
-    init_qlib()
+    env.init_qlib()
 
     # 计算日期
     params = calculate_dates()

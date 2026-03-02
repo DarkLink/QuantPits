@@ -67,7 +67,13 @@ python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --r
 ```
 
 > **Note:** This dataset contains massive historical market data. The initial download may require tens of GBs of disk space and a considerable amount of time. Please be patient. For daily frequency data, you can also reference this repo: https://github.com/chenditc/investment_data
-Make sure `workspaces/Demo_Workspace/run_env.sh` or your Qlib initialization points to this directory.
+
+By default, all scripts read the data from `~/.qlib/qlib_data/cn_data`. To override this on a per-workspace basis, uncomment and modify the relevant lines in `run_env.sh`:
+
+```bash
+export QLIB_DATA_DIR="/path/to/your/qlib_data"
+export QLIB_REGION="cn"   # or "us"
+```
 
 ### 3. Activate a Workspace
 
