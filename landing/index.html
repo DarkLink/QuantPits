@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuantPits — Where Alphas Are Forged</title>
+  <meta name="description"
+    content="QuantPits is a production-ready quantitative trading system built on Microsoft Qlib. End-to-end pipeline with ensemble modeling, workspace isolation, and interactive dashboards." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap"
+    rel="stylesheet" />
+  <style>
+    /* ===== CSS RESET & BASE ===== */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg-primary: #06080f;
+      --bg-secondary: #0c1120;
+      --bg-card: rgba(15, 23, 42, 0.6);
+      --border-glow: rgba(56, 189, 248, 0.15);
+      --text-primary: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-cyan: #38bdf8;
+      --accent-purple: #a78bfa;
+      --accent-pink: #f472b6;
+      --accent-green: #34d399;
+      --gradient-main: linear-gradient(135deg, #38bdf8, #818cf8, #a78bfa);
+      --gradient-hero: linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(167, 139, 250, 0.08));
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --radius: 16px;
+      --radius-sm: 8px;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.7;
+      overflow-x: hidden;
+    }
+
+    a {
+      color: var(--accent-cyan);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    a:hover {
+      color: #7dd3fc;
+    }
+
+    /* ===== ANIMATED BG ===== */
+    .bg-grid {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(56, 189, 248, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(56, 189, 248, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+    }
+
+    .bg-glow {
+      position: fixed;
+      z-index: 0;
+      pointer-events: none;
+      width: 600px;
+      height: 600px;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.12;
+    }
+
+    .bg-glow--1 {
+      top: -200px;
+      left: -100px;
+      background: var(--accent-cyan);
+    }
+
+    .bg-glow--2 {
+      bottom: -200px;
+      right: -100px;
+      background: var(--accent-purple);
+    }
+
+    /* ===== NAV ===== */
+    .nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 0 2rem;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(6, 8, 15, 0.7);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border-glow);
+      transition: background 0.3s;
+    }
+
+    .nav__logo {
+      font-weight: 800;
+      font-size: 1.3rem;
+      letter-spacing: -0.5px;
+      background: var(--gradient-main);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .nav__logo span {
+      font-weight: 400;
+      opacity: 0.7;
+    }
+
+    .nav__links {
+      display: flex;
+      gap: 1.8rem;
+      align-items: center;
+    }
+
+    .nav__links a {
+      color: var(--text-secondary);
+      font-size: 0.88rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .nav__links a:hover {
+      color: var(--text-primary);
+    }
+
+    .nav__lang {
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      color: var(--accent-cyan);
+      padding: 0.3rem 0.8rem;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .nav__lang:hover {
+      background: rgba(56, 189, 248, 0.2);
+    }
+
+    .nav__hamburger {
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 4px;
+    }
+
+    .nav__hamburger span {
+      width: 24px;
+      height: 2px;
+      background: var(--text-secondary);
+      border-radius: 2px;
+      transition: 0.3s;
+    }
+
+    /* ===== HERO ===== */
+    .hero {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 6rem 2rem 4rem;
+    }
+
+    .hero__badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 1rem;
+      border-radius: 50px;
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid rgba(56, 189, 248, 0.15);
+      font-size: 0.82rem;
+      color: var(--accent-cyan);
+      font-weight: 500;
+      margin-bottom: 2rem;
+      animation: fadeInUp 0.8s ease both;
+    }
+
+    .hero__badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 8px var(--accent-green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.4;
+      }
+    }
+
+    .hero__title {
+      font-size: clamp(2.8rem, 7vw, 5.5rem);
+      font-weight: 900;
+      letter-spacing: -2px;
+      line-height: 1.05;
+      margin-bottom: 1.5rem;
+      animation: fadeInUp 0.8s ease 0.1s both;
+    }
+
+    .hero__title .gradient-text {
+      background: var(--gradient-main);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero__subtitle {
+      font-size: clamp(1rem, 2vw, 1.25rem);
+      color: var(--text-secondary);
+      max-width: 680px;
+      line-height: 1.8;
+      margin-bottom: 2.5rem;
+      animation: fadeInUp 0.8s ease 0.2s both;
+    }
+
+    .hero__actions {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      animation: fadeInUp 0.8s ease 0.3s both;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.85rem 2rem;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: all 0.25s ease;
+      cursor: pointer;
+      border: none;
+      font-family: var(--font-sans);
+    }
+
+    .btn--primary {
+      background: var(--gradient-main);
+      color: #0f172a;
+      box-shadow: 0 4px 24px rgba(56, 189, 248, 0.25);
+    }
+
+    .btn--primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(56, 189, 248, 0.35);
+      color: #0f172a;
+    }
+
+    .btn--secondary {
+      background: rgba(56, 189, 248, 0.08);
+      color: var(--text-primary);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+    }
+
+    .btn--secondary:hover {
+      background: rgba(56, 189, 248, 0.15);
+      transform: translateY(-2px);
+      color: var(--text-primary);
+    }
+
+    .hero__stats {
+      display: flex;
+      gap: 3rem;
+      margin-top: 4rem;
+      animation: fadeInUp 0.8s ease 0.4s both;
+    }
+
+    .hero__stat-value {
+      font-size: 1.6rem;
+      font-weight: 800;
+      background: var(--gradient-main);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero__stat-label {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+
+    /* ===== SECTIONS ===== */
+    .section {
+      position: relative;
+      z-index: 1;
+      padding: 6rem 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .section__label {
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      color: var(--accent-cyan);
+      margin-bottom: 0.8rem;
+    }
+
+    .section__title {
+      font-size: clamp(1.8rem, 4vw, 2.8rem);
+      font-weight: 800;
+      letter-spacing: -1px;
+      margin-bottom: 1rem;
+    }
+
+    .section__desc {
+      font-size: 1.05rem;
+      color: var(--text-secondary);
+      max-width: 640px;
+      margin-bottom: 3.5rem;
+    }
+
+    /* ===== FEATURES ===== */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glow);
+      border-radius: var(--radius);
+      padding: 2rem;
+      backdrop-filter: blur(12px);
+      transition: all 0.35s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--gradient-main);
+      transform: scaleX(0);
+      transition: transform 0.35s ease;
+      transform-origin: left;
+    }
+
+    .feature-card:hover::before {
+      transform: scaleX(1);
+    }
+
+    .feature-card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(56, 189, 248, 0.3);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+    }
+
+    .feature-card__icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      margin-bottom: 1.2rem;
+    }
+
+    .feature-card__icon--cyan {
+      background: rgba(56, 189, 248, 0.12);
+    }
+
+    .feature-card__icon--purple {
+      background: rgba(167, 139, 250, 0.12);
+    }
+
+    .feature-card__icon--pink {
+      background: rgba(244, 114, 182, 0.12);
+    }
+
+    .feature-card__icon--green {
+      background: rgba(52, 211, 153, 0.12);
+    }
+
+    .feature-card__title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-bottom: 0.6rem;
+    }
+
+    .feature-card__desc {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      line-height: 1.7;
+    }
+
+    /* ===== ARCHITECTURE ===== */
+    .arch-terminal {
+      background: #0d1117;
+      border: 1px solid rgba(56, 189, 248, 0.1);
+      border-radius: var(--radius);
+      overflow: hidden;
+      max-width: 720px;
+      margin: 0 auto;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+    }
+
+    .arch-terminal__bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 18px;
+      background: rgba(255, 255, 255, 0.03);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .arch-terminal__dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .arch-terminal__dot--red {
+      background: #ff5f57;
+    }
+
+    .arch-terminal__dot--yellow {
+      background: #febc2e;
+    }
+
+    .arch-terminal__dot--green {
+      background: #28c840;
+    }
+
+    .arch-terminal__title {
+      flex: 1;
+      text-align: center;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .arch-terminal__code {
+      padding: 1.5rem 2rem;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      line-height: 1.8;
+      color: var(--text-secondary);
+      overflow-x: auto;
+    }
+
+    .arch-terminal__code .dir {
+      color: var(--accent-cyan);
+      font-weight: 500;
+    }
+
+    .arch-terminal__code .file {
+      color: var(--text-secondary);
+    }
+
+    .arch-terminal__code .comment {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* ===== PIPELINE ===== */
+    .pipeline {
+      display: flex;
+      align-items: flex-start;
+      gap: 0;
+      overflow-x: auto;
+      padding: 1rem 0;
+    }
+
+    .pipeline-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex: 1;
+      min-width: 160px;
+      position: relative;
+      text-align: center;
+    }
+
+    .pipeline-step__circle {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      border: 2px solid rgba(56, 189, 248, 0.3);
+      background: var(--bg-secondary);
+      position: relative;
+      z-index: 2;
+      transition: all 0.3s;
+    }
+
+    .pipeline-step:hover .pipeline-step__circle {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 24px rgba(56, 189, 248, 0.2);
+      transform: scale(1.1);
+    }
+
+    .pipeline-step__label {
+      margin-top: 1rem;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .pipeline-step__desc {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 0.3rem;
+      max-width: 130px;
+    }
+
+    .pipeline-connector {
+      flex: 0 0 auto;
+      width: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding-top: 0;
+      margin-top: 26px;
+    }
+
+    .pipeline-connector__line {
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(90deg, rgba(56, 189, 248, 0.3), rgba(167, 139, 250, 0.3));
+      position: relative;
+    }
+
+    .pipeline-connector__line::after {
+      content: '›';
+      position: absolute;
+      right: -4px;
+      top: -10px;
+      color: var(--accent-cyan);
+      font-size: 1.2rem;
+    }
+
+    /* ===== QUICKSTART ===== */
+    .quickstart-code {
+      background: #0d1117;
+      border: 1px solid rgba(56, 189, 248, 0.1);
+      border-radius: var(--radius);
+      overflow: hidden;
+      max-width: 720px;
+    }
+
+    .quickstart-code__tabs {
+      display: flex;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .quickstart-code__tab {
+      padding: 0.75rem 1.5rem;
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      font-family: var(--font-sans);
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .quickstart-code__tab.active {
+      color: var(--accent-cyan);
+      border-bottom-color: var(--accent-cyan);
+      background: rgba(56, 189, 248, 0.05);
+    }
+
+    .quickstart-code__tab:hover {
+      color: var(--text-secondary);
+    }
+
+    .quickstart-code__panel {
+      display: none;
+      padding: 1.5rem 2rem;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      line-height: 2;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      overflow-x: auto;
+    }
+
+    .quickstart-code__panel.active {
+      display: block;
+    }
+
+    .quickstart-code__panel .cmd {
+      color: var(--accent-green);
+    }
+
+    .quickstart-code__panel .flag {
+      color: var(--accent-purple);
+    }
+
+    .quickstart-code__panel .cmt {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .quickstart-code__panel .prompt {
+      color: var(--accent-cyan);
+      user-select: none;
+    }
+
+    /* ===== CTA ===== */
+    .cta {
+      text-align: center;
+      padding: 6rem 2rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .cta__box {
+      max-width: 700px;
+      margin: 0 auto;
+      padding: 4rem 3rem;
+      background: var(--gradient-hero);
+      border: 1px solid var(--border-glow);
+      border-radius: var(--radius);
+      backdrop-filter: blur(12px);
+    }
+
+    .cta__title {
+      font-size: clamp(1.6rem, 3vw, 2.4rem);
+      font-weight: 800;
+      margin-bottom: 1rem;
+    }
+
+    .cta__desc {
+      color: var(--text-secondary);
+      margin-bottom: 2rem;
+      font-size: 1.05rem;
+    }
+
+    /* ===== FOOTER ===== */
+    .footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 3rem 2rem;
+      border-top: 1px solid rgba(56, 189, 248, 0.08);
+      color: var(--text-muted);
+      font-size: 0.82rem;
+    }
+
+    .footer a {
+      color: var(--text-secondary);
+    }
+
+    .footer__links {
+      display: flex;
+      gap: 2rem;
+      justify-content: center;
+      margin-bottom: 1rem;
+    }
+
+    /* ===== ANIMATIONS ===== */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(24px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ===== RESPONSIVE ===== */
+    @media (max-width: 768px) {
+      .nav__links {
+        display: none;
+      }
+
+      .nav__hamburger {
+        display: flex;
+      }
+
+      .nav__links.open {
+        display: flex;
+        flex-direction: column;
+        position: absolute;
+        top: 64px;
+        left: 0;
+        right: 0;
+        background: rgba(6, 8, 15, 0.95);
+        padding: 1.5rem 2rem;
+        border-bottom: 1px solid var(--border-glow);
+        backdrop-filter: blur(20px);
+      }
+
+      .hero__stats {
+        gap: 1.5rem;
+      }
+
+      .pipeline {
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+
+      .pipeline-connector {
+        width: 40px;
+      }
+
+      .quickstart-code__panel {
+        padding: 1rem;
+        font-size: 0.78rem;
+      }
+
+      .cta__box {
+        padding: 2.5rem 1.5rem;
+      }
+    }
+
+    /* ===== I18N TOGGLE ===== */
+    [data-lang="zh"] .en {
+      display: none;
+    }
+
+    [data-lang="en"] .zh {
+      display: none;
+    }
+  </style>
+</head>
+
+<body data-lang="en">
+
+  <!-- Background effects -->
+  <div class="bg-grid"></div>
+  <div class="bg-glow bg-glow--1"></div>
+  <div class="bg-glow bg-glow--2"></div>
+
+  <!-- ===== NAVBAR ===== -->
+  <nav class="nav" id="nav">
+    <a href="#" class="nav__logo">Quant<span>Pits</span></a>
+    <div class="nav__links" id="navLinks">
+      <a href="#features">
+        <span class="en">Features</span><span class="zh">核心特性</span>
+      </a>
+      <a href="#architecture">
+        <span class="en">Architecture</span><span class="zh">架构</span>
+      </a>
+      <a href="#pipeline">
+        <span class="en">Pipeline</span><span class="zh">流水线</span>
+      </a>
+      <a href="#quickstart">
+        <span class="en">Get Started</span><span class="zh">快速开始</span>
+      </a>
+      <a href="https://github.com/DarkLink/QuantPits" target="_blank">GitHub</a>
+      <button class="nav__lang" id="langToggle" onclick="toggleLang()">中文</button>
+    </div>
+    <button class="nav__hamburger" id="hamburger" onclick="toggleMenu()">
+      <span></span><span></span><span></span>
+    </button>
+  </nav>
+
+  <!-- ===== HERO ===== -->
+  <section class="hero" id="hero">
+    <div class="hero__badge">
+      <span class="en">Open Source · MIT License</span>
+      <span class="zh">开源项目 · MIT 协议</span>
+    </div>
+    <h1 class="hero__title">
+      <span class="en">Where Alphas<br>Are <span class="gradient-text">Forged</span></span>
+      <span class="zh">Alpha 锻造之地<br><span class="gradient-text">QuantPits</span></span>
+    </h1>
+    <p class="hero__subtitle">
+      <span class="en">A production-ready quantitative trading system built on Microsoft Qlib. End-to-end pipeline with
+        ensemble modeling, GPU-accelerated backtesting, workspace isolation, and interactive dashboards.</span>
+      <span class="zh">基于 Microsoft Qlib 构建的生产级量化交易系统。提供端到端的完整流水线，涵盖多模型融合、GPU 加速穷举回测、工作区隔离及交互式分析面板。</span>
+    </p>
+    <div class="hero__actions">
+      <a href="https://github.com/DarkLink/QuantPits" target="_blank" class="btn btn--primary">
+        <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+          <path
+            d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+        </svg>
+        <span class="en">View on GitHub</span><span class="zh">查看 GitHub</span>
+      </a>
+      <a href="#quickstart" class="btn btn--secondary">
+        <span class="en">Quick Start →</span><span class="zh">快速开始 →</span>
+      </a>
+    </div>
+    <div class="hero__stats">
+      <div>
+        <div class="hero__stat-value">5+</div>
+        <div class="hero__stat-label">
+          <span class="en">ML Models</span><span class="zh">ML 模型</span>
+        </div>
+      </div>
+      <div>
+        <div class="hero__stat-value">GPU</div>
+        <div class="hero__stat-label">
+          <span class="en">Accelerated</span><span class="zh">加速运算</span>
+        </div>
+      </div>
+      <div>
+        <div class="hero__stat-value">E2E</div>
+        <div class="hero__stat-label">
+          <span class="en">Pipeline</span><span class="zh">端到端流水线</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== FEATURES ===== -->
+  <section class="section reveal" id="features">
+    <div class="section__label">
+      <span class="en">Features</span><span class="zh">核心特性</span>
+    </div>
+    <h2 class="section__title">
+      <span class="en">Everything you need to trade systematically</span>
+      <span class="zh">体系化量化交易的完整解决方案</span>
+    </h2>
+    <p class="section__desc">
+      <span class="en">From data ingestion to order execution, QuantPits covers the full lifecycle with production-grade
+        reliability.</span>
+      <span class="zh">从数据接入到订单执行，QuantPits 以生产级的可靠性覆盖量化交易全生命周期。</span>
+    </p>
+    <div class="features-grid">
+      <!-- Card 1 -->
+      <div class="feature-card">
+        <div class="feature-card__icon feature-card__icon--cyan">🏗️</div>
+        <h3 class="feature-card__title">
+          <span class="en">Multi-Workspace Isolation</span>
+          <span class="zh">多工作区级隔离</span>
+        </h3>
+        <p class="feature-card__desc">
+          <span class="en">Spin up independent "Pits" for different markets or configs — CSI300, CSI500, or your custom
+            universe — without duplicating any code.</span>
+          <span class="zh">为不同市场或策略配置拉起独立的"交易控制台"——沪深300、中证500或自定义标的池——无需复制任何底层代码。</span>
+        </p>
+      </div>
+      <!-- Card 2 -->
+      <div class="feature-card">
+        <div class="feature-card__icon feature-card__icon--purple">⚡</div>
+        <h3 class="feature-card__title">
+          <span class="en">GPU-Accelerated Ensemble</span>
+          <span class="zh">GPU 加速穷举融合</span>
+        </h3>
+        <p class="feature-card__desc">
+          <span class="en">CuPy-powered brute force combination search across thousands of model permutations with
+            intelligent signal fusion for optimal alpha blending.</span>
+          <span class="zh">基于 CuPy 加速的高性能组合穷举搜索，跨数千种模型排列实现智能信号融合与最优 Alpha 混合。</span>
+        </p>
+      </div>
+      <!-- Card 3 -->
+      <div class="feature-card">
+        <div class="feature-card__icon feature-card__icon--pink">📊</div>
+        <h3 class="feature-card__title">
+          <span class="en">Interactive Dashboards</span>
+          <span class="zh">交互式分析面板</span>
+        </h3>
+        <p class="feature-card__desc">
+          <span class="en">Two built-in Streamlit dashboards for macro portfolio analytics and micro rolling health
+            monitoring with real-time drill-downs.</span>
+          <span class="zh">内置两大 Streamlit 数据面板，分别用于宏观资产组合分析和微观滚动策略健康监控，支持实时下钻分析。</span>
+        </p>
+      </div>
+      <!-- Card 4 -->
+      <div class="feature-card">
+        <div class="feature-card__icon feature-card__icon--green">🔁</div>
+        <h3 class="feature-card__title">
+          <span class="en">Component-Based Pipeline</span>
+          <span class="zh">组件化流水线</span>
+        </h3>
+        <p class="feature-card__desc">
+          <span class="en">Modular stages — Train, Predict, Ensemble, Post-Trade, Order Gen — all orchestrable via
+            one-liner Makefile targets or individual scripts.</span>
+          <span class="zh">模块化的流水线步骤——训练、预测、融合、盘后处理、订单生成——均可通过 Makefile 一键调度或单独脚本触发。</span>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== ARCHITECTURE ===== -->
+  <section class="section reveal" id="architecture">
+    <div class="section__label">
+      <span class="en">Architecture</span><span class="zh">系统架构</span>
+    </div>
+    <h2 class="section__title">
+      <span class="en">Engine and Workspace, cleanly separated</span>
+      <span class="zh">引擎与工作区，彻底物理解耦</span>
+    </h2>
+    <p class="section__desc">
+      <span class="en">Code stays code. Data stays data. Spin up as many independent trading pits as you need.</span>
+      <span class="zh">代码归代码，数据归数据。按需拉起任意数量的独立实盘控制台。</span>
+    </p>
+    <div class="arch-terminal">
+      <div class="arch-terminal__bar">
+        <div class="arch-terminal__dot arch-terminal__dot--red"></div>
+        <div class="arch-terminal__dot arch-terminal__dot--yellow"></div>
+        <div class="arch-terminal__dot arch-terminal__dot--green"></div>
+        <div class="arch-terminal__title">~/QuantPits</div>
+      </div>
+      <pre class="arch-terminal__code"><span class="dir">QuantPits/</span>
+├── <span class="dir">docs/</span>              <span class="comment"># System manuals (00-08)</span>
+├── <span class="dir">ui/</span>                <span class="comment"># Streamlit dashboards</span>
+│   ├── <span class="file">dashboard.py</span>     <span class="comment"># Portfolio performance</span>
+│   └── <span class="file">rolling_dashboard.py</span>
+├── <span class="dir">quantpits/</span>         <span class="comment"># Core engine &amp; scripts</span>
+│   └── <span class="dir">scripts/</span>          <span class="comment"># Pipeline execution</span>
+│
+└── <span class="dir">workspaces/</span>        <span class="comment"># Isolated trading pits</span>
+    └── <span class="dir">Demo_Workspace/</span>
+        ├── <span class="dir">config/</span>      <span class="comment"># Bounds, registry, cashflow</span>
+        ├── <span class="dir">data/</span>        <span class="comment"># Orders, holdings, amounts</span>
+        ├── <span class="dir">output/</span>      <span class="comment"># Predictions, fusion, reports</span>
+        ├── <span class="dir">mlruns/</span>      <span class="comment"># MLflow tracking</span>
+        └── <span class="file">run_env.sh</span>   <span class="comment"># Workspace activation</span></pre>
+    </div>
+  </section>
+
+  <!-- ===== PIPELINE ===== -->
+  <section class="section reveal" id="pipeline">
+    <div class="section__label">
+      <span class="en">Pipeline</span><span class="zh">流水线</span>
+    </div>
+    <h2 class="section__title">
+      <span class="en">From raw data to actionable orders</span>
+      <span class="zh">从原始数据到可执行订单</span>
+    </h2>
+    <p class="section__desc">
+      <span class="en">A five-stage production loop that runs daily or weekly — fully automated with a single Makefile
+        target.</span>
+      <span class="zh">五阶段生产循环，支持日频或周频运行——通过 Makefile 单一命令完全自动化。</span>
+    </p>
+    <div class="pipeline">
+      <div class="pipeline-step">
+        <div class="pipeline-step__circle">🧠</div>
+        <div class="pipeline-step__label">
+          <span class="en">Train</span><span class="zh">训练</span>
+        </div>
+        <div class="pipeline-step__desc">
+          <span class="en">LSTM, GRU, Transformer, LightGBM, GATs</span>
+          <span class="zh">LSTM、GRU、Transformer、LightGBM、GATs</span>
+        </div>
+      </div>
+      <div class="pipeline-connector">
+        <div class="pipeline-connector__line"></div>
+      </div>
+      <div class="pipeline-step">
+        <div class="pipeline-step__circle">🔮</div>
+        <div class="pipeline-step__label">
+          <span class="en">Predict</span><span class="zh">预测</span>
+        </div>
+        <div class="pipeline-step__desc">
+          <span class="en">Multi-model inference</span>
+          <span class="zh">多模型并行推断</span>
+        </div>
+      </div>
+      <div class="pipeline-connector">
+        <div class="pipeline-connector__line"></div>
+      </div>
+      <div class="pipeline-step">
+        <div class="pipeline-step__circle">🔀</div>
+        <div class="pipeline-step__label">
+          <span class="en">Ensemble</span><span class="zh">融合</span>
+        </div>
+        <div class="pipeline-step__desc">
+          <span class="en">Brute force + fusion</span>
+          <span class="zh">穷举搜索 + 信号融合</span>
+        </div>
+      </div>
+      <div class="pipeline-connector">
+        <div class="pipeline-connector__line"></div>
+      </div>
+      <div class="pipeline-step">
+        <div class="pipeline-step__circle">📋</div>
+        <div class="pipeline-step__label">
+          <span class="en">Post-Trade</span><span class="zh">盘后处理</span>
+        </div>
+        <div class="pipeline-step__desc">
+          <span class="en">Execution analysis</span>
+          <span class="zh">执行归因分析</span>
+        </div>
+      </div>
+      <div class="pipeline-connector">
+        <div class="pipeline-connector__line"></div>
+      </div>
+      <div class="pipeline-step">
+        <div class="pipeline-step__circle">📈</div>
+        <div class="pipeline-step__label">
+          <span class="en">Orders</span><span class="zh">订单</span>
+        </div>
+        <div class="pipeline-step__desc">
+          <span class="en">TopK/DropN signals</span>
+          <span class="zh">TopK/DropN 信号生成</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== QUICKSTART ===== -->
+  <section class="section reveal" id="quickstart">
+    <div class="section__label">
+      <span class="en">Get Started</span><span class="zh">快速开始</span>
+    </div>
+    <h2 class="section__title">
+      <span class="en">Up and running in minutes</span>
+      <span class="zh">数分钟内启动运行</span>
+    </h2>
+    <p class="section__desc">
+      <span class="en">Clone, install, activate a workspace, and run your first pipeline.</span>
+      <span class="zh">克隆、安装、激活工作区，运行您的第一条流水线。</span>
+    </p>
+    <div class="quickstart-code">
+      <div class="quickstart-code__tabs">
+        <button class="quickstart-code__tab active" onclick="switchTab(event, 'tab-install')">
+          <span class="en">Install</span><span class="zh">安装</span>
+        </button>
+        <button class="quickstart-code__tab" onclick="switchTab(event, 'tab-activate')">
+          <span class="en">Activate</span><span class="zh">激活</span>
+        </button>
+        <button class="quickstart-code__tab" onclick="switchTab(event, 'tab-run')">
+          <span class="en">Run</span><span class="zh">运行</span>
+        </button>
+      </div>
+      <div class="quickstart-code__panel active" id="tab-install">
+        <span class="cmt"># Clone the repository</span>
+        <span class="prompt">$ </span><span class="cmd">git clone</span> https://github.com/DarkLink/QuantPits.git
+        <span class="prompt">$ </span><span class="cmd">cd</span> QuantPits
+
+        <span class="cmt"># Install dependencies</span>
+        <span class="prompt">$ </span><span class="cmd">pip install</span> <span class="flag">-r</span> requirements.txt
+        <span class="prompt">$ </span><span class="cmd">pip install</span> <span class="flag">-e</span> .
+
+        <span class="cmt"># (Optional) GPU acceleration</span>
+        <span class="prompt">$ </span><span class="cmd">pip install</span> cupy-cuda12x
+      </div>
+      <div class="quickstart-code__panel" id="tab-activate">
+        <span class="cmt"># Activate a workspace</span>
+        <span class="prompt">$ </span><span class="cmd">source</span> workspaces/Demo_Workspace/run_env.sh
+
+        <span class="cmt"># Or create a new one</span>
+        <span class="prompt">$ </span><span class="cmd">python</span> <span class="flag">-m</span>
+        quantpits.scripts.init_workspace \
+        <span class="flag">--source</span> workspaces/Demo_Workspace \
+        <span class="flag">--target</span> workspaces/CSI500_Base
+      </div>
+      <div class="quickstart-code__panel" id="tab-run">
+        <span class="cmt"># Run the full pipeline with one command</span>
+        <span class="prompt">$ </span><span class="cmd">make</span> run-daily-pipeline
+
+        <span class="cmt"># Or step by step</span>
+        <span class="prompt">$ </span><span class="cmd">python</span> <span class="flag">-m</span>
+        quantpits.scripts.prod_train_predict
+        <span class="prompt">$ </span><span class="cmd">python</span> <span class="flag">-m</span>
+        quantpits.scripts.prod_predict_only <span class="flag">--all-enabled</span>
+        <span class="prompt">$ </span><span class="cmd">python</span> <span class="flag">-m</span>
+        quantpits.scripts.ensemble_fusion <span class="flag">--from-config-all</span>
+        <span class="prompt">$ </span><span class="cmd">python</span> <span class="flag">-m</span>
+        quantpits.scripts.order_gen
+
+        <span class="cmt"># Launch dashboards</span>
+        <span class="prompt">$ </span><span class="cmd">streamlit run</span> ui/dashboard.py
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== CTA ===== -->
+  <section class="cta reveal">
+    <div class="cta__box">
+      <h2 class="cta__title">
+        <span class="en">Ready to forge your alpha?</span>
+        <span class="zh">准备好锻造你的 Alpha 了吗？</span>
+      </h2>
+      <p class="cta__desc">
+        <span class="en">QuantPits is open source, free to use, and built for traders who take their edge
+          seriously.</span>
+        <span class="zh">QuantPits 完全开源免费，专为认真对待交易优势的量化交易者打造。</span>
+      </p>
+      <a href="https://github.com/DarkLink/QuantPits" target="_blank" class="btn btn--primary">
+        <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+          <path
+            d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+        </svg>
+        <span class="en">Get Started on GitHub</span>
+        <span class="zh">前往 GitHub 开始</span>
+      </a>
+    </div>
+  </section>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="footer">
+    <div class="footer__links">
+      <a href="https://github.com/DarkLink/QuantPits" target="_blank">GitHub</a>
+      <a href="https://github.com/DarkLink/QuantPits/tree/main/docs" target="_blank">
+        <span class="en">Documentation</span><span class="zh">文档</span>
+      </a>
+      <a href="https://github.com/microsoft/qlib" target="_blank">
+        <span class="en">Powered by Qlib</span><span class="zh">基于 Qlib 构建</span>
+      </a>
+    </div>
+    <p>
+      <span class="en">© 2024-2026 QuantPits · MIT License</span>
+      <span class="zh">© 2024-2026 QuantPits · MIT 开源协议</span>
+    </p>
+  </footer>
+
+  <!-- ===== SCRIPTS ===== -->
+  <script>
+    // Language toggle
+    function toggleLang() {
+      const body = document.body;
+      const btn = document.getElementById('langToggle');
+      if (body.dataset.lang === 'en') {
+        body.dataset.lang = 'zh';
+        btn.textContent = 'EN';
+        document.documentElement.lang = 'zh-CN';
+      } else {
+        body.dataset.lang = 'en';
+        btn.textContent = '中文';
+        document.documentElement.lang = 'en';
+      }
+    }
+
+    // Mobile menu
+    function toggleMenu() {
+      document.getElementById('navLinks').classList.toggle('open');
+    }
+
+    // Close mobile menu on link click
+    document.querySelectorAll('.nav__links a').forEach(link => {
+      link.addEventListener('click', () => {
+        document.getElementById('navLinks').classList.remove('open');
+      });
+    });
+
+    // Quickstart tabs
+    function switchTab(e, panelId) {
+      document.querySelectorAll('.quickstart-code__tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.quickstart-code__panel').forEach(p => p.classList.remove('active'));
+      e.currentTarget.classList.add('active');
+      document.getElementById(panelId).classList.add('active');
+    }
+
+    // Scroll reveal
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+    // Nav background on scroll
+    window.addEventListener('scroll', () => {
+      const nav = document.getElementById('nav');
+      if (window.scrollY > 20) {
+        nav.style.background = 'rgba(6, 8, 15, 0.92)';
+      } else {
+        nav.style.background = 'rgba(6, 8, 15, 0.7)';
+      }
+    });
+  </script>
+</body>
+
+</html>
