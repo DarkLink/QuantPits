@@ -30,6 +30,9 @@ from decimal import Decimal
 
 import pandas as pd
 
+from quantpits.scripts.brokers import get_adapter
+from quantpits.scripts.brokers.base import SELL_TYPES, BUY_TYPES, INTEREST_TYPES
+
 import env
 os.chdir(env.ROOT_DIR)
 
@@ -44,15 +47,6 @@ TRADE_LOG_FILE = os.path.join(DATA_DIR, "trade_log_full.csv")
 HOLDING_LOG_FILE = os.path.join(DATA_DIR, "holding_log_full.csv")
 DAILY_LOG_FILE = os.path.join(DATA_DIR, "daily_amount_log_full.csv")
 EMPTY_TRADE_FILE = os.path.join(DATA_DIR, "emp-table.xlsx")
-
-# 买卖交易类别
-SELL_TYPES = ["上海A股普通股票竞价卖出", "深圳A股普通股票竞价卖出"]
-BUY_TYPES = ["上海A股普通股票竞价买入", "深圳A股普通股票竞价买入"]
-INTEREST_TYPES = [
-    "上海A股红利入账", "深圳A股红利入账",
-    "上海A股红利税补缴", "深圳A股红利税补缴",
-    "利息归本",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -174,24 +168,16 @@ def add_prefix(instrument):
     return instrument
 
 
-def load_trade_file(date_string, model):
-    """加载交易文件，如不存在则使用空模板"""
+def load_trade_file(date_string, model, adapter):
+    """加载交易文件，如不存在则使用空模板。使用具体的券商适配器进行读取。"""
     file_path = os.path.join(DATA_DIR, f"{date_string}-table.xlsx")
     if not os.path.exists(file_path):
         file_path = EMPTY_TRADE_FILE
 
-    try:
-        df = pd.read_excel(
-            file_path, sheet_name="Sheet1", skiprows=5, dtype={"证券代码": str}
-        )
-        for col in df.columns:
-            if df[col].dtype == "object":
-                df[col] = df[col].astype(str).str.lstrip("\t")
+    df = adapter.read_settlement(file_path)
+    if not df.empty:
         df["model"] = model
-        return df
-    except Exception as e:
-        print(f"  [WARN] Error loading {file_path}: {e}")
-        return pd.DataFrame()
+    return df
 
 
 def to_decimal_columns(df, columns):
@@ -206,7 +192,7 @@ def to_decimal_columns(df, columns):
 # ---------------------------------------------------------------------------
 def process_single_day(current_date_string, current_cash, current_holding,
                        model, market, benchmark, cashflow_today,
-                       verbose=False):
+                       adapter, verbose=False):
     """处理单日交易数据。
 
     Args:
@@ -217,6 +203,7 @@ def process_single_day(current_date_string, current_cash, current_holding,
         market: 市场
         benchmark: 基准指数代码
         cashflow_today: 当日 cashflow 金额 (Decimal)
+        adapter: 券商适配器实例
         verbose: 是否详细输出
 
     Returns:
@@ -232,7 +219,7 @@ def process_single_day(current_date_string, current_cash, current_holding,
     print(f"{'='*50}")
 
     # --- 加载交易文件 ---
-    trade_detail = load_trade_file(current_date_string, model)
+    trade_detail = load_trade_file(current_date_string, model, adapter)
 
     if not trade_detail.empty and "证券代码" in trade_detail.columns:
         trade_detail["证券代码"] = trade_detail["证券代码"].apply(add_prefix)
@@ -567,6 +554,12 @@ Cashflow 配置 (config/cashflow.json):
         help="仅打印处理计划，不写入任何文件",
     )
     parser.add_argument(
+        "--broker",
+        type=str,
+        default=None,
+        help="券商标识 (默认优先读取 prod_config.json 中的 broker，兜底为 gtja)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="详细输出每日交易明细",
@@ -593,6 +586,15 @@ def main():
     model = config.get("model", "GATs")
     market = config.get("market", "csi300")
     benchmark = config.get("benchmark", "SH000300")
+    
+    # 确定券商适配器
+    broker_name = args.broker or config.get("broker", "gtja")
+    try:
+        adapter = get_adapter(broker_name)
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+    print(f"Using broker adapter: {adapter.name} ({broker_name})")
 
     current_cash = Decimal(str(config["current_cash"]))
     current_holding = config["current_holding"]
@@ -652,6 +654,7 @@ def main():
             market=market,
             benchmark=benchmark,
             cashflow_today=cashflow_today,
+            adapter=adapter,
             verbose=args.verbose,
         )
 

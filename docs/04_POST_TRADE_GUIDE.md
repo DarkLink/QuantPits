@@ -92,6 +92,9 @@ cd QuantPits
 # 正常运行：处理上次处理日到今天的所有交易日
 python quantpits/scripts/prod_post_trade.py
 
+# 指定券商进行处理 (默认读取 prod_config.json 中的配置，兜底为 gtja)
+python quantpits/scripts/prod_post_trade.py --broker gtja
+
 # 仅预览：查看会处理哪些日期和 cashflow，不写入任何文件
 python quantpits/scripts/prod_post_trade.py --dry-run
 
@@ -138,14 +141,18 @@ cash_after = cash_before + 卖出收入 - 买入支出 + 红利利息 + cashflow
 | `daily_amount_log_full.csv` | 每日资金汇总 | 追加 + 去重 |
 | `trade_detail_*.csv` | 单日交易详情 | 每日覆写 |
 
-### 券商交割单数据约定 (以国泰君安为例)
+### 券商交割单适配器 (Broker Adapter)
 
-系统直接通过 pandas 原生读取 `YYYY-MM-DD-table.xlsx`，由于各家券商导出的表头结构不尽相同，目前的处理逻辑高度适配**国泰君安交割单导出格式**。
-核心代码读取行为：
-*   **Sheet 名称**：默认读取 `Sheet1`
-*   **前置跳过**：默认跳过前 5 行无用表头 (`skiprows=5`)
-*   **关键列保留**：为了防止代码转数字后丢失前导零，程序强制将 `证券代码` 列读取为 String 格式，并剥离掉可能附带的 `\t` 等制表符。
-*   **行为识别**：程序内定 `上海A股普通股票竞价卖出`, `深圳A股普通股票竞价卖出` 为系统合法 `SELL_TYPES`；而 `...买入` 为合法 `BUY_TYPES`。红利和税务扣款也有专门的字段映射（详见代码顶部的 `INTEREST_TYPES`）。
+系统采用 **Broker Adapter** 架构处理不同券商由于导出的 Excel/CSV 表头和格式不同的问题。核心处理逻辑要求内部有一套标准化 Schema（包含 `证券代码`, `交易类别`, `资金发生数` 等标准中文字段）。
+
+**内置适配器 (`brokers/`)：**
+* `gtja`: 国泰君安交割单适配器（默认）。它负责处理前5行无用表头、剥离内部字符串的 `\t`，并直接沿用了原有的中文字段。
+
+如果你需要接入新的券商，只需：
+1. 在 `quantpits/scripts/brokers/` 下创建一个继承自 `BaseBrokerAdapter` 的新适配器类。
+2. 在该类的 `read_settlement` 方法中将该券商的特有格式映射成系统要求的内部标准 DataFrame，并将诸如"证券卖出"这样的券商自有交易行为映射成系统的标准常量（如 `SELL_TYPES`, `BUY_TYPES`）。
+3. 在 `brokers/__init__.py` 的 `BROKER_REGISTRY` 中注册你的适配器。
+4. 运行时加上 `--broker your_broker_name` 或在 `prod_config.json` 中配置 `"broker": "your_broker_name"`。
 
 ---
 
@@ -195,6 +202,7 @@ python quantpits/scripts/prod_post_trade.py --help
 可选参数:
   --end-date TEXT   结束日期 (YYYY-MM-DD)，默认为今天
   --dry-run         仅打印处理计划，不写入任何文件
+  --broker TEXT     券商标识 (默认优先读取 prod_config.json 中的 broker，兜底为 gtja)
   --verbose         详细输出每日交易明细
 ```
 

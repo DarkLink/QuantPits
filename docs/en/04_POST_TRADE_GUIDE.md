@@ -92,6 +92,9 @@ cd QuantPits
 # Standard Operation: Processes the backlog from the previous sync date up against today's bounds.
 python quantpits/scripts/prod_post_trade.py
 
+# Override targeted Broker via CLI flag (defaults to config JSON setting, falls back to `gtja`)
+python quantpits/scripts/prod_post_trade.py --broker gtja
+
 # Preview Mode: Previews what dates and cashflows will trigger chronologically, bypassing IO writes.
 python quantpits/scripts/prod_post_trade.py --dry-run
 
@@ -138,14 +141,18 @@ cash_after = cash_before + Total_Sell_Value - Total_Buy_Gross + Dividends_Intere
 | `daily_amount_log_full.csv` | Aggregate account capitalization tracking | Append + Deduplication |
 | `trade_detail_*.csv` | Discrete slice of single day trade logs | Daily Full Overwrite |
 
-### Broker Export Data Conventions (e.g. Guotai Junan Securities)
+### Broker Adapters Framework
 
-The system directly utilizes native pandas to read `YYYY-MM-DD-table.xlsx`. Because the header structure of exported files varies across different brokers, the current processing logic is highly tailored to the **Guotai Junan Securities (国泰君安) delivery order export format**.
-Core code reading behaviors:
-*   **Sheet Name**: Defaults to reading `Sheet1`.
-*   **Header Skip**: Defaults to skipping the first 5 rows of useless headers (`skiprows=5`).
-*   **Crucial Column Retention**: To prevent leading zeros from being lost when the code converts them to numbers, the program forces the `证券代码` (Stock Code) column to be read as a String format, stripping off any attached tab characters like `\t`.
-*   **Action Recognition**: The program natively defines "上海A股普通股票竞价卖出" and "深圳A股普通股票竞价卖出" as legal system `SELL_TYPES`; whereas "...买入" are legal `BUY_TYPES`. Dividends and tax deductions also have dedicated field mappings (detailed at the top of the code in `INTEREST_TYPES`).
+The system utilizes a **Broker Adapter** architecture to seamlessly handle formatting deviations (differing headers/rows) originating from alternate broker terminal exports. The central engine standardizes inputs by normalizing datasets into a rigid sequence using unified Schema arrays (enforcing Chinese nomenclature constraints downstream).
+
+**Built-In Options (`brokers/`)：**
+* `gtja`: Guotai Junan Securities adapter (Default behavior). Skips empty header prefixes, strips escape tabs, and maintains alignment against expected core schema variables.
+
+To natively tether a new broker into the overarching pipeline:
+1. Initialize a discrete driver under `quantpits/scripts/brokers/` extending `BaseBrokerAdapter`.
+2. Encapsulate localization conversion logic inside `read_settlement` forcing the respective broker's outputs to mirror system `SELL_TYPES`, `BUY_TYPES`, and required column footprints.
+3. Import and map the newly forged adapter inside `BROKER_REGISTRY` mapped via `brokers/__init__.py`.
+4. Trigger workflow sequences utilizing `--broker <your_broker_name>` flags, or bind it persistently inside `prod_config.json`.
 
 ---
 
@@ -195,6 +202,7 @@ python quantpits/scripts/prod_post_trade.py --help
 Optional Overrides:
   --end-date TEXT   Override cursor target date (YYYY-MM-DD); bypasses fetching current day
   --dry-run         Print sequence bounds solely; completely suspends JSON/CSV modification mutations
+  --broker TEXT     Override target Broker sequence behavior mappings
   --verbose         Elevate log thresholds emitting discrete stock purchase actions per slice
 ```
 
