@@ -136,6 +136,7 @@ python -m quantpits.scripts.init_workspace \
 ## 📖 深度说明文档
 
 如需从零剖析具体各个计算节点以及架构组件的底层原理与完整参数，请前往 `docs/` 阅读系统手册：
+- **`70_WALKTHROUGH.md` (端到端实战操作手册 — 推荐从此开始！)**
 - `00_SYSTEM_OVERVIEW.md` (系统架构部署与流水线总览)
 - `01_TRAINING_GUIDE.md` (全量训练及模型配置向导)
 - `02_BRUTE_FORCE_GUIDE.md` (穷举回测及GPU加速矩阵操作向导)

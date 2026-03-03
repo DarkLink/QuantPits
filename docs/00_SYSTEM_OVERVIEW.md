@@ -398,6 +398,7 @@ python quantpits/scripts/ensemble_fusion.py \
 | 06 | [ORDER_GEN_GUIDE](06_ORDER_GEN_GUIDE.md) | 订单生成、买卖建议输出 |
 | 07 | [SIGNAL_RANKING_GUIDE](07_SIGNAL_RANKING_GUIDE.md) | 信号排名 Top N 推荐 |
 | 08 | [ANALYSIS_GUIDE](08_ANALYSIS_GUIDE.md) | 单模型质量、融合相关性、执行滑点成本及多维组合风险综合评测 |
+| 70 | [WALKTHROUGH](70_WALKTHROUGH.md) | **端到端实战操作手册（从这里开始！）** |
 
 ---
 

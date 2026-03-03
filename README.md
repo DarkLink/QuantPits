@@ -136,11 +136,14 @@ This will cleanly clone the configuration files and generate empty `data/`, `out
 ## 📖 Documentation
 
 For a deep dive into each module, refer to the documentation in `docs/`:
+- **`70_WALKTHROUGH.md` (End-to-End Walkthrough — Start Here!)**
 - `00_SYSTEM_OVERVIEW.md` (System Architecture & Workflows)
 - `01_TRAINING_GUIDE.md`
 - `02_BRUTE_FORCE_GUIDE.md`
 - `03_ENSEMBLE_FUSION_GUIDE.md`
 - ...and more.
+
+All documentation is available in both Chinese and English (`docs/en/`).
 
 ## 📜 License
 MIT License.

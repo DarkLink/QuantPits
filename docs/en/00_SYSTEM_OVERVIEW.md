@@ -396,6 +396,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | 06 | [ORDER_GEN_GUIDE](06_ORDER_GEN_GUIDE.md) | Order generation, outputting buy/sell suggestions |
 | 07 | [SIGNAL_RANKING_GUIDE](07_SIGNAL_RANKING_GUIDE.md) | Top N signal recommendation |
 | 08 | [ANALYSIS_GUIDE](08_ANALYSIS_GUIDE.md) | Single model quality, fusion correlations, slippage costs and comprehensive multi-factor risk assessments |
+| 70 | [WALKTHROUGH](70_WALKTHROUGH.md) | **End-to-End Hands-On Walkthrough (Start Here!)** |
 
 ---
 
