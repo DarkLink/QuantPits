@@ -1,0 +1,31 @@
+# -----------------------------------------------------------------------------
+# 策略配置 (Strategy Configuration)
+# 
+# 本文件定义了 Qlib 回测引擎和订单生成器(Order Generator) 所使用的共享配置。
+# 使用 Strategy Provider (strategy.py) 模块可以在不改动代码的情况下切换策略。
+# -----------------------------------------------------------------------------
+
+strategy:
+  # 启用的策略名称，必须在 strategy.py 的 STRATEGY_REGISTRY 中注册
+  name: topk_dropout
+  
+  # 策略具体参数
+  # 注意：这些参数同时用于 Qlib 的回测引擎 (Backtest) 和订单生成逻辑 (OrderGen)
+  params:
+    topk: 20
+    n_drop: 3
+    only_tradable: true
+    buy_suggestion_factor: 2   # order_gen 专用参数：买入建议倍数
+
+# -----------------------------------------------------------------------------
+# 回测引擎专属配置 (Backtest Configuration)
+# 这些参数仅供 qlib.backtest.executor 时使用
+# -----------------------------------------------------------------------------
+backtest:
+  account: 100000000           # 初始资金: 1亿
+  exchange_kwargs:
+    limit_threshold: 0.095     # 涨跌停限制
+    deal_price: close          # 成交价格：收盘价
+    open_cost: 0.0005          # 开仓手续费 (万五)
+    close_cost: 0.0015         # 平仓手续费 (千1.5)
+    min_cost: 5                # 最低手续费 5 元

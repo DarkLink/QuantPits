@@ -70,17 +70,7 @@ sys.path.append(SCRIPT_DIR)
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
-BACKTEST_CONFIG = {
-    "account": 100_000_000,
-    "exchange_kwargs": {
-        "freq": "day",
-        "limit_threshold": 0.095,
-        "deal_price": "close",
-        "open_cost": 0.0005,
-        "close_cost": 0.0015,
-        "min_cost": 5,
-    },
-}
+# BACKTEST_CONFIG has been migrated to strategy provider `config/strategy_config.yaml`
 
 
 # ============================================================================
@@ -566,11 +556,16 @@ def extract_report_df(metrics):
     return metrics
 
 
-def run_backtest(final_score, top_k, drop_n, benchmark, freq):
+def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt_config=None):
     """运行回测"""
     from qlib.backtest import backtest
     from qlib.backtest.executor import SimulatorExecutor
-    from qlib.contrib.strategy import TopkDropoutStrategy
+    import strategy
+
+    if st_config is None:
+        st_config = strategy.load_strategy_config()
+    if bt_config is None:
+        bt_config = strategy.get_backtest_config(st_config)
 
     bt_start = str(final_score.index.get_level_values(0).min().date())
     bt_end = str(final_score.index.get_level_values(0).max().date())
@@ -579,14 +574,9 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq):
     print("Stage 6: 回测")
     print(f"{'='*60}")
     print(f"Backtest Range: {bt_start} ~ {bt_end}")
-    print(f"Freq: {freq}, TopK={top_k}, DropN={drop_n}")
+    print(f"Freq: {freq}")
 
-    strategy = TopkDropoutStrategy(
-        signal=final_score,
-        topk=top_k,
-        n_drop=drop_n,
-        only_tradable=True
-    )
+    strategy_inst = strategy.create_backtest_strategy(final_score, st_config)
 
     executor_obj = SimulatorExecutor(
         time_per_step=freq,
@@ -597,18 +587,18 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq):
     print(f"\n开始回测...")
     raw_portfolio_metrics, raw_indicators = backtest(
         executor=executor_obj,
-        strategy=strategy,
+        strategy=strategy_inst,
         start_time=bt_start,
         end_time=bt_end,
-        account=BACKTEST_CONFIG['account'],
+        account=bt_config['account'],
         benchmark=benchmark,
-        exchange_kwargs=BACKTEST_CONFIG['exchange_kwargs']
+        exchange_kwargs=bt_config['exchange_kwargs']
     )
 
     report_df = extract_report_df(raw_portfolio_metrics)
 
     if report_df is not None:
-        initial_cash = BACKTEST_CONFIG['account']
+        initial_cash = bt_config['account']
         final_nav = report_df.iloc[-1]['account']
         ann_scaler = 52 if freq == 'week' else 252
         annualized_return = report_df['return'].mean() * ann_scaler
@@ -1225,7 +1215,9 @@ def main():
         print(f"  权重模式 : {result['method']}")
         print(f"  预测文件 : {result['pred_file']}")
         if result.get('report_df') is not None:
-            initial_cash = BACKTEST_CONFIG['account']
+            import strategy
+            bt_config = strategy.get_backtest_config()
+            initial_cash = bt_config['account']
             final_nav = result['report_df'].iloc[-1]['account']
             total_return = (final_nav - initial_cash) / initial_cash
             print(f"  策略收益 : {total_return*100:.2f}%")

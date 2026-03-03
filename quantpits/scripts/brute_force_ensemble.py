@@ -62,17 +62,7 @@ ROOT_DIR = env.ROOT_DIR
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
-BACKTEST_CONFIG = {
-    "account": 100_000_000,
-    "exchange_kwargs": {
-        "freq": "day",
-        "limit_threshold": 0.095,
-        "deal_price": "close",
-        "open_cost": 0.0005,
-        "close_cost": 0.0015,
-        "min_cost": 5,
-    },
-}
+# BACKTEST_CONFIG has been migrated to strategy provider `config/strategy_config.yaml`
 
 # ---------------------------------------------------------------------------
 # 全局中断标志 & 信号处理
@@ -378,21 +368,26 @@ def extract_report_df(metrics):
 
 def run_single_backtest(
     combo_models, norm_df, top_k, drop_n, benchmark, freq,
-    trade_exchange, bt_start, bt_end
+    trade_exchange, bt_start, bt_end, st_config=None, bt_config=None
 ):
     """对指定的模型组合进行回测，返回指标字典或 None"""
     from qlib.backtest import backtest_loop
     from qlib.backtest.executor import SimulatorExecutor
     from qlib.backtest.utils import CommonInfrastructure
     from qlib.backtest.account import Account
-    from qlib.contrib.strategy import TopkDropoutStrategy
+    import strategy
+
+    if st_config is None:
+        st_config = strategy.load_strategy_config()
+    if bt_config is None:
+        bt_config = strategy.get_backtest_config(st_config)
 
     # 1. 合成信号 (等权均值，归一化后的)
     combo_score = norm_df[list(combo_models)].mean(axis=1)
 
     # 2. 准备组件
     # 注意: Account 必须每次新建，不能复用 (状态会累积)
-    trade_account = Account(init_cash=BACKTEST_CONFIG["account"])
+    trade_account = Account(init_cash=bt_config["account"])
     
     # CommonInfrastructure 组合: 新 Account + 共享 Exchange
     common_infra = CommonInfrastructure(
@@ -400,11 +395,9 @@ def run_single_backtest(
         trade_exchange=trade_exchange
     )
 
-    strategy = TopkDropoutStrategy(
-        signal=combo_score, topk=top_k, n_drop=drop_n, only_tradable=True
-    )
+    strategy_inst = strategy.create_backtest_strategy(combo_score, st_config)
     # 策略需要关联 infra
-    strategy.reset_common_infra(common_infra)
+    strategy_inst.reset_common_infra(common_infra)
 
     executor_obj = SimulatorExecutor(
         time_per_step=freq,
@@ -419,14 +412,14 @@ def run_single_backtest(
         raw_portfolio_metrics, _ = backtest_loop(
             start_time=bt_start,
             end_time=bt_end,
-            trade_strategy=strategy,
+            trade_strategy=strategy_inst,
             trade_executor=executor_obj,
         )
 
         # 4. 提取结果
         report = extract_report_df(raw_portfolio_metrics)
 
-        initial_cash = BACKTEST_CONFIG["account"]
+        initial_cash = bt_config["account"]
         final_nav = report.iloc[-1]["account"]
         ann_scaler = 52 if freq == "week" else 252
         ann_ret = report["return"].mean() * ann_scaler
@@ -504,7 +497,11 @@ def brute_force_backtest(
     bt_end = str(norm_df.index.get_level_values(0).max().date())
     all_codes = sorted(norm_df.index.get_level_values(1).unique().tolist())
 
-    exchange_kwargs = BACKTEST_CONFIG["exchange_kwargs"].copy()
+    import strategy
+    st_config = strategy.load_strategy_config()
+    bt_config = strategy.get_backtest_config(st_config)
+    
+    exchange_kwargs = bt_config["exchange_kwargs"].copy()
     exchange_freq = exchange_kwargs.pop("freq", "day")
 
     trade_exchange = Exchange(
@@ -608,8 +605,17 @@ def brute_force_backtest(
                     future_to_combo = {
                         executor.submit(
                             run_single_backtest,
-                            combo, norm_df, top_k, drop_n, benchmark, freq,
-                            trade_exchange, bt_start, bt_end
+                            combo,
+                            norm_df,
+                            top_k,
+                            drop_n,
+                            benchmark,
+                            freq,
+                            trade_exchange,
+                            bt_start,
+                            bt_end,
+                            st_config,
+                            bt_config
                         ): combo
                         for combo in batch
                     }
@@ -1342,13 +1348,17 @@ def main():
             
             top_combos = results_df.head(args.auto_test_top)["models"].tolist()
             
-            # Init OOS Exchange
             from qlib.backtest.exchange import Exchange
+            import strategy
+            
+            st_config = strategy.load_strategy_config()
+            bt_config = strategy.get_backtest_config(st_config)
+            
             bt_start_oos = str(oos_norm_df.index.get_level_values(0).min().date())
             bt_end_oos = str(oos_norm_df.index.get_level_values(0).max().date())
             all_codes_oos = sorted(oos_norm_df.index.get_level_values(1).unique().tolist())
             
-            exchange_kwargs = BACKTEST_CONFIG["exchange_kwargs"].copy()
+            exchange_kwargs = bt_config["exchange_kwargs"].copy()
             exchange_freq = exchange_kwargs.pop("freq", "day")
             
             trade_exchange_oos = Exchange(
@@ -1364,7 +1374,8 @@ def main():
                 combo = combo_str.split(",")
                 res = run_single_backtest(
                     combo, oos_norm_df, top_k, drop_n, benchmark, args.freq,
-                    trade_exchange_oos, bt_start_oos, bt_end_oos
+                    trade_exchange_oos, bt_start_oos, bt_end_oos,
+                    st_config, bt_config
                 )
                 if res:
                     oos_results.append(res)

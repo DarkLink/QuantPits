@@ -33,6 +33,31 @@ def init_workspace(source, target):
         print(f"Warning: No config directory found in {source}. Creating empty config.")
         os.makedirs(target_config)
         
+    # 1.5 Generate strategy_config.yaml if missing
+    target_strategy_yaml = os.path.join(target_config, "strategy_config.yaml")
+    if not os.path.exists(target_strategy_yaml):
+        print(f"Generating default strategy_config.yaml at {target_strategy_yaml}")
+        default_yaml = '''# Strategy Provider Configuration
+strategy:
+  name: topk_dropout
+  params:
+    topk: 20
+    n_drop: 3
+    only_tradable: true
+    buy_suggestion_factor: 2
+
+backtest:
+  account: 100000000
+  exchange_kwargs:
+    limit_threshold: 0.095
+    deal_price: close
+    open_cost: 0.0005
+    close_cost: 0.0015
+    min_cost: 5
+'''
+        with open(target_strategy_yaml, "w") as f:
+            f.write(default_yaml)
+            
     # 2. Create empty data, output, archive directories
     for d in ["data", "output", "archive", "mlruns"]:
         dir_path = os.path.join(target, d)

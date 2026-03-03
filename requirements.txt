@@ -9,3 +9,8 @@ streamlit>=1.10.0
 plotly>=5.9.0
 # cupy-cuda12x>=11.0.0 (Optional: For ultra-fast Brute Force combinatorial screening if using NVIDIA GPU)
 # qlib (Assuming Qlib is already installed in the environment)
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0

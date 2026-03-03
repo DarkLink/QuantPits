@@ -226,151 +226,8 @@ def get_price_data(anchor_date, market):
 # ============================================================================
 # Stage 3: 排序与持仓分析
 # ============================================================================
-def analyze_positions(pred_df, price_df, current_holding, top_k, drop_n,
-                      buy_suggestion_factor):
-    """
-    按 score 排名，确定继续持有/卖出/买入候选。
-
-    Args:
-        pred_df: 预测数据
-        price_df: 价格数据
-        current_holding: 当前持仓列表
-        top_k: 目标持仓数
-        drop_n: 每期卖出数
-        buy_suggestion_factor: 买入候选倍数
-
-    Returns:
-        hold_final: 继续持有的 DataFrame
-        sell_candidates: 卖出候选的 DataFrame
-        buy_candidates: 买入候选的 DataFrame
-        merged_df: 合并后的完整排名 DataFrame
-    """
-    # 取预测数据最新一天
-    latest_date = pred_df.index.get_level_values('datetime').max()
-    if len(pred_df.index.get_level_values('datetime').unique()) > 1:
-        daily_pred = pred_df.xs(latest_date, level='datetime')
-    else:
-        daily_pred = pred_df
-
-    # daily_pred 可能有 datetime 在 index level 也可能没有
-    if 'instrument' in daily_pred.columns:
-        pred_reset = daily_pred
-    else:
-        pred_reset = daily_pred.reset_index()
-
-    price_reset = price_df.reset_index()
-
-    # 合并预测与价格
-    merged_df = pd.merge(
-        pred_reset, price_reset,
-        on='instrument', how='inner'
-    )
-
-    # 排序
-    sorted_df = merged_df.sort_values(by='score', ascending=False).set_index('instrument')
-
-    # 当前持仓 instrument 列表
-    current_holding_instruments = [h['instrument'] for h in current_holding]
-
-    # Top K + buffer
-    top_k_candidates = sorted_df.head(top_k + drop_n * buy_suggestion_factor)
-
-    # 继续持有：在 Top K buffer 中的当前持仓
-    hold_candidates = top_k_candidates[
-        top_k_candidates.index.isin(current_holding_instruments)
-    ]
-
-    # 当前持仓中需要卖出的（不在 Top K buffer 中的持仓，取排名最低的 drop_n 个）
-    current_holding_in_df = sorted_df[sorted_df.index.isin(current_holding_instruments)]
-    sell_candidates = current_holding_in_df[
-        ~current_holding_in_df.index.isin(hold_candidates.index)
-    ].tail(drop_n)
-
-    # 实际持有 = 当前持仓 - 卖出
-    hold_final = current_holding_in_df[
-        ~current_holding_in_df.index.isin(sell_candidates.index)
-    ]
-
-    # 买入候选：需要买入的数量 = TopK - 持有数
-    buy_count = top_k - len(hold_final)
-    buy_candidates = top_k_candidates[
-        ~top_k_candidates.index.isin(hold_final.index)
-    ].head(max(0, buy_count * buy_suggestion_factor))
-
-    return hold_final, sell_candidates, buy_candidates, sorted_df, buy_count
-
-
-# ============================================================================
-# Stage 4: 卖出订单生成
-# ============================================================================
-def generate_sell_orders(sell_candidates, current_holding, next_trade_date_string):
-    """
-    生成卖出订单。
-
-    Args:
-        sell_candidates: 卖出候选 DataFrame
-        current_holding: 当前持仓列表
-        next_trade_date_string: 下一交易日字符串
-
-    Returns:
-        sell_orders: list of dict
-        sell_amount: float, 预估卖出总金额
-    """
-    holdings_dict = {h['instrument']: float(h['value']) for h in current_holding}
-    sell_orders = []
-    sell_amount = 0
-
-    for instrument, row in sell_candidates.iterrows():
-        if instrument in holdings_dict:
-            value = holdings_dict[instrument]
-            amount = value * row['possible_min']
-            sell_amount += amount
-            sell_orders.append({
-                'instrument': instrument,
-                'datetime': next_trade_date_string,
-                'value': int(value),
-                'estimated_amount': round(amount, 2),
-                'score': round(row['score'], 6),
-                'current_close': round(row['current_close'], 2),
-            })
-
-    return sell_orders, sell_amount
-
-
-# ============================================================================
-# Stage 5: 买入订单生成
-# ============================================================================
-def generate_buy_orders(buy_candidates, buy_count, available_cash,
-                        next_trade_date_string):
-    """
-    生成买入订单（所有 N×factor 个备选）。
-
-    Args:
-        buy_candidates: 买入候选 DataFrame（已按 score 降序）
-        buy_count: 实际需要买入的数量
-        available_cash: 可用现金
-        next_trade_date_string: 下一交易日字符串
-
-    Returns:
-        buy_orders: list of dict
-    """
-    avg_cash = available_cash / buy_count if buy_count > 0 else 0
-
-    buy_orders = []
-    for instrument, row in buy_candidates.iterrows():
-        value = int(np.floor(avg_cash / row['possible_max'] / 100) * 100)
-        if value >= 100:
-            amount = value * row['possible_max']
-            buy_orders.append({
-                'instrument': instrument,
-                'datetime': next_trade_date_string,
-                'value': value,
-                'estimated_amount': round(amount, 2),
-                'score': round(row['score'], 6),
-                'current_close': round(row['current_close'], 2),
-            })
-
-    return buy_orders
+# Note: analyze_positions, generate_sell_orders, and generate_buy_orders
+# have been extracted to quantpits/scripts/strategy.py to decouple strategy logic.
 
 
 # ============================================================================
@@ -762,10 +619,17 @@ def main():
     anchor_date = get_anchor_date()
     config, cashflow_config = load_configs()
 
-    # 读取参数
-    top_k = config.get('TopK', 22)
-    drop_n = config.get('DropN', 3)
-    buy_suggestion_factor = config.get('buy_suggestion_factor', 3)
+    import strategy
+    strategy_config = strategy.load_strategy_config()
+    order_gen = strategy.create_order_generator(strategy_config)
+    
+    # 策略参数（由 Strategy Provider 统一管理）
+    st_params = strategy.get_strategy_params(strategy_config)
+    top_k = st_params.get('topk', 20)
+    drop_n = st_params.get('n_drop', 3)
+    buy_suggestion_factor = st_params.get('buy_suggestion_factor', 2)
+
+    # 运行时状态变量（来自 prod_config）
     market = config.get('market', 'csi300')
     current_cash = float(config.get('current_cash', 0))
     current_holding = config.get('current_holding', [])
@@ -827,9 +691,8 @@ def main():
     print("Stage 3: 排序与持仓分析")
     print(f"{'='*60}")
 
-    hold_final, sell_candidates, buy_candidates, sorted_df, buy_count = analyze_positions(
-        pred_df, price_df, current_holding,
-        top_k, drop_n, buy_suggestion_factor
+    hold_final, sell_candidates, buy_candidates, sorted_df, buy_count = order_gen.analyze_positions(
+        pred_df, price_df, current_holding
     )
 
     print(f"继续持有   : {len(hold_final)} 个")
@@ -885,7 +748,7 @@ def main():
     print("Stage 4: 生成卖出订单")
     print(f"{'='*60}")
 
-    sell_orders, sell_amount = generate_sell_orders(
+    sell_orders, sell_amount = order_gen.generate_sell_orders(
         sell_candidates, current_holding, next_trade_date_string
     )
 
@@ -911,7 +774,7 @@ def main():
     if buy_count > 0:
         print(f"每股预算   : {available_cash / buy_count:,.2f}")
 
-    buy_orders = generate_buy_orders(
+    buy_orders = order_gen.generate_buy_orders(
         buy_candidates, buy_count, available_cash, next_trade_date_string
     )
 

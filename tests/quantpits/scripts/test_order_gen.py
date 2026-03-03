@@ -18,15 +18,16 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env, order_gen
+    from quantpits.scripts import env, order_gen, strategy
     import importlib
     importlib.reload(env)
     importlib.reload(order_gen)
+    importlib.reload(strategy)
     
-    yield order_gen, workspace
+    yield order_gen, strategy, workspace
 
 def test_get_cashflow_today(mock_env):
-    order_gen, _ = mock_env
+    order_gen, strategy, _ = mock_env
     
     # Test new format
     cashflow_config_new = {"cashflows": {"2026-03-01": 50000, "2026-03-02": -20000}}
@@ -42,7 +43,9 @@ def test_get_cashflow_today(mock_env):
     assert order_gen.get_cashflow_today({}, "2026-03-01") == 0.0
 
 def test_analyze_positions(mock_env):
-    order_gen, _ = mock_env
+    order_gen, strategy, _ = mock_env
+    
+    order_generator = strategy.TopkDropoutOrderGenerator(topk=2, n_drop=1, buy_suggestion_factor=2)
     
     # Mock Predictions (sorted by score)
     pred_data = {
@@ -75,8 +78,8 @@ def test_analyze_positions(mock_env):
     # Buy candidates = non-held in TopK buffer -> [000001, 000002, 000004]
     # We need 1 * factor(2) = 2 buy candidates -> [000001, 000002]
     
-    hold_final, sell_cand, buy_cand, merged_df, buy_count = order_gen.analyze_positions(
-        pred_df, price_df, current_holding, top_k=2, drop_n=1, buy_suggestion_factor=2
+    hold_final, sell_cand, buy_cand, merged_df, buy_count = order_generator.analyze_positions(
+        pred_df, price_df, current_holding
     )
     
     assert len(hold_final) == 1
@@ -92,7 +95,9 @@ def test_analyze_positions(mock_env):
     assert len(merged_df) == 6
 
 def test_generate_orders(mock_env):
-    order_gen, _ = mock_env
+    order_gen, strategy, _ = mock_env
+    
+    order_generator = strategy.TopkDropoutOrderGenerator(topk=2, n_drop=1, buy_suggestion_factor=2)
     
     # Generate Sell Orders
     sell_candidates = pd.DataFrame({
@@ -104,7 +109,7 @@ def test_generate_orders(mock_env):
     
     current_holding = [{'instrument': '000006', 'value': 200}]
     
-    sells, sell_amount = order_gen.generate_sell_orders(sell_candidates, current_holding, "2026-03-02")
+    sells, sell_amount = order_generator.generate_sell_orders(sell_candidates, current_holding, "2026-03-02")
     
     assert len(sells) == 1
     assert sells[0]['instrument'] == '000006'
@@ -120,7 +125,7 @@ def test_generate_orders(mock_env):
         'current_close': [10.0]
     }).set_index('instrument')
     
-    buys = order_gen.generate_buy_orders(buy_candidates, buy_count=1, available_cash=1500, next_trade_date_string="2026-03-02")
+    buys = order_generator.generate_buy_orders(buy_candidates, buy_count=1, available_cash=1500, next_trade_date_string="2026-03-02")
     
     assert len(buys) == 1
     assert buys[0]['instrument'] == '000001'

@@ -161,20 +161,13 @@ def inject_config(yaml_path, params):
         segs['test'] = [params['test_start_time'], params['test_end_time']]
 
     if 'port_analysis_config' in config:
-        pa = config['port_analysis_config']
-        if 'strategy' in pa and 'kwargs' in pa['strategy']:
-            pa['strategy']['kwargs']['topk'] = params['topk']
-            pa['strategy']['kwargs']['n_drop'] = params['n_drop']
-        
-        # 2. 注入 Executor time_per_step
-        if 'executor' in pa and 'kwargs' in pa['executor']:
-            pa['executor']['kwargs']['time_per_step'] = freq
-
-        if 'backtest' in pa:
-            pa['backtest']['start_time'] = params['test_start_time']
-            pa['backtest']['end_time'] = params['test_end_time']
-            pa['backtest']['account'] = params['account']
-            pa['backtest']['benchmark'] = params['benchmark']
+        import strategy
+        pa = strategy.generate_port_analysis_config(freq=freq)
+        pa['backtest']['start_time'] = params['test_start_time']
+        pa['backtest']['end_time'] = params['test_end_time']
+        pa['backtest']['account'] = params.get('account', pa['backtest']['account'])
+        pa['backtest']['benchmark'] = params['benchmark']
+        config['port_analysis_config'] = pa
 
     # 3. 注入 SigAnaRecord ann_scaler
     if 'task' in config and 'record' in config['task']:
