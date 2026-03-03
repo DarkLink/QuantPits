@@ -58,7 +58,7 @@ python quantpits/scripts/brute_force_ensemble.py --use-groups --group-config con
 | `--record-file` | `latest_train_records.json` | Train records pointer targeting model manifests. |
 | `--max-combo-size` | `0` (All) | Upper limit of combined models (Or clusters if grouped). |
 | `--min-combo-size` | `1` | Lower limit of combined models (Or clusters if grouped). |
-| `--freq` | `None` | Backtest frequency (`day` / `week`). Default: read from `model_config.json` |
+| `--freq` | `None` | Backtest frequency (`day` / `week`). Default: read from `strategy_config.yaml` |
 | `--top-n` | `50` | Scale N target for Top/Bottom analysis metrics. |
 | `--output-dir` | `output/brute_force` | Directory bounds. |
 | `--resume` | - | Ingest target logic for crash recovery execution. |

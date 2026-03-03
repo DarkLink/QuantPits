@@ -58,7 +58,7 @@ python quantpits/scripts/brute_force_ensemble.py --use-groups --group-config con
 | `--record-file` | `latest_train_records.json` | 训练记录文件 |
 | `--max-combo-size` | `0` (全部) | 最大组合模型数（分组模式下指选几个组） |
 | `--min-combo-size` | `1` | 最小组合模型数（分组模式下指选几个组） |
-| `--freq` | `None` | 回测交易频率 (`day` / `week`)，默认从 `model_config.json` 读取 |
+| `--freq` | `None` | 回测交易频率 (`day` / `week`)，默认从 `strategy_config.yaml` 读取 |
 | `--top-n` | `50` | 分析时 Top/Bottom N |
 | `--output-dir` | `output/brute_force` | 输出目录 |
 | `--resume` | - | 从已有 CSV 继续（支持崩溃/中断后恢复） |

@@ -212,7 +212,8 @@ python quantpits/scripts/ensemble_fusion.py \
 | `incremental_train.py` | 按名称/算法/标签等选择性训练 | **增量合并** `latest_train_records.json` |
 
 - 模型通过 `config/model_registry.yaml` 统一注册管理
-- 日期参数及频次（`week`/`day`）由 `config/model_config.json` 控制
+- 日期参数由 `config/model_config.json` 控制
+- 回测策略参数（含基准、交易频率、资金量）由 `config/strategy_config.yaml` 控制
 - 训练记录修改前自动备份到 `data/history/`
 - 增量训练支持 `--resume`（断点续训）和 `--dry-run`（预览）
 
@@ -301,7 +302,7 @@ python quantpits/scripts/ensemble_fusion.py \
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      配置层                                      │
-│  model_registry.yaml    model_config.json    prod_config.json    │
+│  model_registry.yaml    model_config.json    prod_config.json    strategy_config.yaml    │
 │  cashflow.json          ensemble_config.json                     │
 └────────────┬──────────────────┬──────────────────┬──────────────┘
              │                  │                  │
@@ -345,6 +346,7 @@ python quantpits/scripts/ensemble_fusion.py \
 |------|------|----------|
 | `model_registry.yaml` | 模型注册表：定义模型名、算法、数据集、标签 | 训练、预测 |
 | `model_config.json` | 日期参数：训练窗口、滑动/固定模式 | 训练、预测 |
+| `strategy_config.yaml` | 策略参数：订单生成规则 (TopK等)，回测环境配置 | 订单生成、回测组合 |
 | `prod_config.json` | 实盘状态：当前持仓、现金余额、处理日期 | Post-Trade、订单生成 |
 | `cashflow.json` | 出入金记录：按日期的出入金 | Post-Trade |
 | `ensemble_config.json` | 多组合融合配置：combo 定义、权重、default | 融合预测、订单生成、信号排名 |

@@ -227,6 +227,7 @@ python quantpits/scripts/order_gen.py
 > 本脚本需要以下前置条件：
 > 1. `output/predictions/` 中存在预测文件（来自训练/融合脚本）
 > 2. `config/prod_config.json` 中的持仓和现金已更新（来自 post-trade 脚本）
+> 3. `config/strategy_config.yaml` 已定义 TopK 和 DropN 等策略参数。
 
 > [!TIP]
 > 建议在正式运行前先用 `--dry-run --verbose` 确认订单计划。

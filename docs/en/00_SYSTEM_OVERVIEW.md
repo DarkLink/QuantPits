@@ -210,7 +210,8 @@ python quantpits/scripts/ensemble_fusion.py \
 | `incremental_train.py` | Selective training by name/algo/tags | **Incremental Merge** to `latest_train_records.json` |
 
 - Models are uniformly managed in `config/model_registry.yaml`
-- Date parameters and frequency (`week`/`day`) are controlled by `config/model_config.json`
+- Date parameters are controlled by `config/model_config.json`
+- Backtest strategy parameters (benchmark, frequency, capital) are controlled by `config/strategy_config.yaml` (preview)
 - Training records are auto-backed up to `data/history/` before modifying
 - Incremental training supports `--resume` (resume from breakpoint) and `--dry-run` (preview)
 
@@ -299,7 +300,7 @@ python quantpits/scripts/ensemble_fusion.py \
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Configuration Layer                        │
-│  model_registry.yaml    model_config.json    prod_config.json   │
+│  model_registry.yaml    model_config.json    prod_config.json    strategy_config.yaml   │
 │  cashflow.json          ensemble_config.json                    │
 └────────────┬──────────────────┬──────────────────┬──────────────┘
              │                  │                  │
@@ -343,6 +344,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 |------|------|----------|
 | `model_registry.yaml` | Model Registry: Defines model names, algorithms, datasets, labels | Train, Predict |
 | `model_config.json` | Date Params: Training windows, sliding/fixed mode | Train, Predict |
+| `strategy_config.yaml` | Strategy Params: Order generation boundaries (TopK, etc.), Backtest environment config | Order Gen, Backtesting |
 | `prod_config.json` | Live State: Current holdings, cash balance, processed date | Post-Trade, Order Gen |
 | `cashflow.json` | Cashflow Records: Deposits/Withdrawals by date | Post-Trade |
 | `ensemble_config.json` | Multi-combo Config: Combo definitions, weights, defaults | Fusion, Order Gen, Ranking |

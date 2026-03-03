@@ -37,7 +37,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 | `--combo` | 无 | 运行指定名称的 combo |
 | `--method` | `equal` | 权重模式: `equal` / `icir_weighted` / `manual` / `dynamic` |
 | `--weights` | 无 | 手动权重，如 `"gru:0.6,linear_Alpha158:0.4"` |
-| `--freq` | `None` | 回测频率: `day` / `week` (默认从 `model_config.json` 读取) |
+| `--freq` | `None` | 回测频率: `day` / `week` (默认从 `strategy_config.yaml` 读取) |
 | `--record-file` | `latest_train_records.json` | 训练记录文件 |
 | `--output-dir` | `output/ensemble` | 输出目录 |
 | `--no-backtest` | false | 跳过回测 |

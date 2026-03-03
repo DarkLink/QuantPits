@@ -184,6 +184,7 @@ Optional Overrides:
 > The engine mandates adherence strictly following:
 > 1. Accessible `.csv` vectors inside `output/predictions/` tracing upstream generator algorithms (Fusion/Prediction mappings).
 > 2. Synchronized array variables referencing native parameters scaling inside `config/prod_config.json` denoting absolute capital + asset boundaries explicitly synced (Managed via `post-trade`).
+> 3. `config/strategy_config.yaml` stores native topk/n_drop strategy limit bounds explicitly mapping to execution definitions.
 
 > [!TIP]
 > Executing `--dry-run --verbose` is heavily advocated preventing critical misallocations prior to actual execution orders mapping.

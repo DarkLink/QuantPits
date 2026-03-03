@@ -37,7 +37,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 | `--combo` | None | Runs a specifically named combo |
 | `--method` | `equal` | Weighting mode: `equal` / `icir_weighted` / `manual` / `dynamic` |
 | `--weights` | None | Manual weights string, e.g., `"gru:0.6,linear_Alpha158:0.4"` |
-| `--freq` | `None` | Backtest frequency: `day` / `week` (Default: read from `model_config.json`) |
+| `--freq` | `None` | Backtest frequency: `day` / `week` (Default: read from `strategy_config.yaml`) |
 | `--record-file` | `latest_train_records.json` | Train records pointer |
 | `--output-dir` | `output/ensemble` | Output directory bounds |
 | `--no-backtest` | false | Skip backtesting execution |
