@@ -181,3 +181,127 @@ def test_save_orders_normal(mock_env):
     buy_df = pd.read_csv(buy_file)
     assert len(sell_df) == 1
     assert len(buy_df) == 1
+
+def test_load_configs(mock_env):
+    import json
+    order_gen, strategy, workspace = mock_env
+    
+    config_file = workspace / "config" / "prod_config.json"
+    cashflow_file = workspace / "config" / "cashflow.json"
+    
+    with open(config_file, "w") as f:
+        json.dump({"market": "csi300"}, f)
+        
+    with open(cashflow_file, "w") as f:
+        json.dump({"cash_flow_today": 123}, f)
+        
+    config, cf_config = order_gen.load_configs()
+    assert config == {"market": "csi300"}
+    assert cf_config == {"cash_flow_today": 123}
+
+@patch('qlib.data.D', create=True)
+def test_get_anchor_date(mock_D, mock_env):
+    order_gen, strategy, _ = mock_env
+    mock_D.calendar.return_value = [pd.Timestamp("2020-01-01")]
+    res = order_gen.get_anchor_date()
+    assert res == "2020-01-01"
+
+def test_load_predictions(mock_env):
+    order_gen, strategy, workspace = mock_env
+    
+    pred_dir = workspace / "output" / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 1. specify file
+    spec_file = pred_dir / "spec.csv"
+    pd.DataFrame({"score": [1.0]}).to_csv(spec_file)
+    df, desc = order_gen.load_predictions(prediction_file=str(spec_file))
+    assert len(df) == 1
+    assert "指定文件" in desc
+    
+    # 2. model name
+    model_file = pred_dir / "gru_2020.csv"
+    pd.DataFrame({"score": [1.0]}).to_csv(model_file)
+    df, desc = order_gen.load_predictions(model_name="gru")
+    assert "gru" in desc
+    
+    # 3. ensemble default
+    ens_file = pred_dir / "ensemble_2020.csv"
+    pd.DataFrame({"score": [1.0]}).to_csv(ens_file)
+    
+    ens_dir = workspace / "output" / "ensemble"
+    ens_dir.mkdir(parents=True, exist_ok=True)
+    ens_cfg = ens_dir / "ensemble_fusion_config_2020.json"
+    import json
+    with open(ens_cfg, "w") as f:
+        json.dump({"weight_mode": "equal", "models_used": ["gru"]}, f)
+        
+    df, desc = order_gen.load_predictions()
+    assert "Ensemble 融合" in desc
+    assert "gru" in desc
+
+def test_load_pred_latest_day(mock_env):
+    order_gen, strategy, workspace = mock_env
+    
+    dates = pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-02"])
+    df = pd.DataFrame({"score": [1, 2, 3], "instrument": ["a", "b", "c"], "datetime": dates})
+    
+    spec_file = str(workspace / "test.csv")
+    df.to_csv(spec_file, index=False)
+    
+    # from csv
+    res = order_gen._load_pred_latest_day(spec_file, 'model')
+    assert len(res) == 2
+    assert set(res.index) == {"b", "c"}
+    
+    # from df (model_pkl)
+    df_multi = df.set_index(["instrument", "datetime"])
+    res2 = order_gen._load_pred_latest_day(df_multi, 'model_pkl')
+    assert len(res2) == 2
+
+@patch('qlib.data.D', create=True)
+@patch('qlib.data.ops.Feature', create=True)
+def test_get_price_data(mock_Feature, mock_D, mock_env):
+    order_gen, strategy, _ = mock_env
+    mock_D.instruments.return_value = ['000001']
+    
+    mock_df = pd.DataFrame({
+        'Div($close,$factor)': [10.0],
+        'Mul(Div($close,$factor),1.1)': [11.0],
+        'Mul(Div($close,$factor),0.9)': [9.0]
+    })
+    mock_D.features.return_value = mock_df
+    
+    price_df = order_gen.get_price_data('2020-01-01', 'csi300')
+    assert list(price_df.columns) == ['current_close', 'possible_max', 'possible_min']
+    assert price_df.iloc[0]['current_close'] == 10.0
+
+def test_generate_model_opinions(mock_env, tmp_path):
+    order_gen, strategy, workspace = mock_env
+    
+    focus_instruments = ["A", "B", "C"]
+    holding_instruments = ["B"]
+    sorted_df = pd.DataFrame({"score": [0.9, 0.8, 0.7]}, index=["A", "B", "C"])
+    
+    # Setup dummy predictions to trigger multiple source paths
+    pred_dir = workspace / "output" / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"score": [0.9, 0.8, 0.7], "instrument": ["A", "B", "C"]}).to_csv(pred_dir / "ensemble_test_2020.csv", index=False)
+    pd.DataFrame({"score": [0.9, 0.8, 0.7], "instrument": ["A", "B", "C"]}).to_csv(pred_dir / "gru_2020.csv", index=False)
+    
+    # Write dummy ensemble config
+    with open(order_gen.ENSEMBLE_CONFIG_FILE, "w") as f:
+        import json
+        json.dump({"combos": {"test": {"models": ["gru"]}}}, f)
+    
+    opinions_df, combo_info = order_gen.generate_model_opinions(
+        focus_instruments, holding_instruments,
+        top_k=2, drop_n=1, buy_suggestion_factor=1,
+        sorted_df=sorted_df, output_dir=str(tmp_path), next_trade_date_string="2020-01-01"
+    )
+    
+    assert opinions_df is not None
+    assert len(opinions_df) == 3
+    assert "order_basis" in opinions_df.columns
+    assert list(opinions_df.loc["B"].values) == ["HOLD (2)", "HOLD (2)", "HOLD (2)"]
+    assert list(opinions_df.loc["A"].values) == ["BUY (1)", "BUY (1)", "BUY (1)"]

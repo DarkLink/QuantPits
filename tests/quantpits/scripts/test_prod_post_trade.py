@@ -231,3 +231,54 @@ def test_save_prod_config(mock_env):
         saved = json.load(f)
     assert saved["current_cash"] == 99999.0
     assert saved["current_holding"] == []
+
+@patch('qlib.data.D', create=True)
+def test_get_trade_dates(mock_D, mock_env):
+    post_trade, workspace = mock_env
+    mock_D.calendar.return_value = [pd.Timestamp("2026-03-01"), pd.Timestamp("2026-03-02")]
+    res = post_trade.get_trade_dates("2026-03-01", "2026-03-02")
+    assert res == ["2026-03-01", "2026-03-02"]
+    
+    mock_D.calendar.side_effect = Exception("error")
+    assert post_trade.get_trade_dates("2026-03-01", "2026-03-02") == []
+
+def test_load_trade_file(mock_env):
+    post_trade, workspace = mock_env
+    
+    mock_adapter = MagicMock()
+    mock_adapter.read_settlement.return_value = pd.DataFrame({"a": [1]})
+    
+    df = post_trade.load_trade_file("2026-03-01", "modelA", mock_adapter)
+    assert df["model"].iloc[0] == "modelA"
+    assert "a" in df.columns
+
+@patch('quantpits.scripts.prod_post_trade.get_trade_dates')
+def test_main_dry_run(mock_get_dates, mock_env):
+    post_trade, workspace = mock_env
+    mock_get_dates.return_value = ["2026-03-02"]
+    
+    import sys
+    with patch.object(sys, 'argv', ['prod_post_trade.py', '--dry-run']):
+        post_trade.main()
+
+@patch('quantpits.scripts.prod_post_trade.get_trade_dates')
+@patch('quantpits.scripts.prod_post_trade.process_single_day')
+@patch('quantpits.scripts.prod_post_trade.save_prod_config')
+@patch('quantpits.scripts.brokers.get_adapter')
+@patch('quantpits.scripts.analysis.trade_classifier.classify_trades')
+@patch('quantpits.scripts.analysis.trade_classifier.save_classification')
+def test_main(mock_save_class, mock_classify, mock_adapter, mock_save, mock_process, mock_get_dates, mock_env):
+    post_trade, workspace = mock_env
+    
+    mock_get_dates.return_value = ["2026-03-02"]
+    mock_process.return_value = (Decimal("10000.0"), [])
+    mock_classify.return_value = pd.DataFrame({"trades": [1]})
+    
+    import sys
+    with patch.object(sys, 'argv', ['prod_post_trade.py', '--end-date', '2026-03-02']):
+        post_trade.main()
+        
+    mock_process.assert_called_once()
+    mock_save.assert_called_once()
+    mock_classify.assert_called_once()
+    mock_save_class.assert_called_once()
