@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 import gc
 import traceback
 
-from quantpits.scripts import env
+import env
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
@@ -168,6 +168,15 @@ def inject_config(yaml_path, params):
         pa['backtest']['account'] = params.get('account', pa['backtest']['account'])
         pa['backtest']['benchmark'] = params['benchmark']
         config['port_analysis_config'] = pa
+
+        # YAML anchors (*port_analysis_config) are resolved at parse time,
+        # so PortAnaRecord's config kwarg still points to the original empty {}.
+        # Patch it directly to use the generated config.
+        if 'task' in config and 'record' in config['task']:
+            for r_cfg in config['task']['record']:
+                if r_cfg.get('class') == 'PortAnaRecord':
+                    if 'kwargs' in r_cfg and 'config' in r_cfg['kwargs']:
+                        r_cfg['kwargs']['config'] = pa
 
     # 3. 注入 SigAnaRecord ann_scaler
     if 'task' in config and 'record' in config['task']:

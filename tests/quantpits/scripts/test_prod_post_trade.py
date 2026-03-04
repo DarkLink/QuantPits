@@ -178,3 +178,56 @@ def test_process_single_day_with_buy_sell(mock_env):
     assert holding_after[0]["instrument"] == "SZ000002"
     assert holding_after[0]["value"] == "200.0"
     assert holding_after[0]["amount"] == "4000.0"
+
+
+# ── Supplementary tests for previously uncovered functions ───────────────
+
+def test_add_prefix(mock_env):
+    post_trade, _ = mock_env
+    assert post_trade.add_prefix("600001") == "SH600001"
+    assert post_trade.add_prefix("000001") == "SZ000001"
+    assert post_trade.add_prefix("300123") == "SZ300123"
+    assert post_trade.add_prefix("800999") == "800999"  # Unknown prefix
+    assert pd.isna(post_trade.add_prefix(pd.NA))
+
+
+def test_to_decimal_columns(mock_env):
+    post_trade, _ = mock_env
+    df = pd.DataFrame({
+        "成交价格": [10.5, 20.1],
+        "成交金额": [1050.0, 4020.0],
+        "备注": ["foo", "bar"]
+    })
+    post_trade.to_decimal_columns(df, ["成交价格", "成交金额", "不存在的列"])
+    assert isinstance(df["成交价格"].iloc[0], Decimal)
+    assert isinstance(df["成交金额"].iloc[0], Decimal)
+    assert df["备注"].iloc[0] == "foo"  # Unchanged
+
+
+def test_archive_cashflows_new_format(mock_env):
+    post_trade, workspace = mock_env
+    cashflow_config = {
+        "cashflows": {"2026-03-02": 50000, "2026-03-03": -10000},
+        "processed": {}
+    }
+    post_trade.archive_cashflows(cashflow_config)
+    assert cashflow_config["cashflows"] == {}
+    assert cashflow_config["processed"]["2026-03-02"] == 50000
+    assert cashflow_config["processed"]["2026-03-03"] == -10000
+
+
+def test_archive_cashflows_old_format(mock_env):
+    post_trade, workspace = mock_env
+    cashflow_config = {"cash_flow_today": 12345}
+    post_trade.archive_cashflows(cashflow_config)
+    assert cashflow_config["cash_flow_today"] == 0
+
+
+def test_save_prod_config(mock_env):
+    post_trade, workspace = mock_env
+    new_config = {"current_cash": 99999.0, "current_holding": []}
+    post_trade.save_prod_config(new_config)
+    with open(workspace / "config" / "prod_config.json") as f:
+        saved = json.load(f)
+    assert saved["current_cash"] == 99999.0
+    assert saved["current_holding"] == []

@@ -1,3 +1,4 @@
+import os
 import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
@@ -132,3 +133,51 @@ def test_generate_orders(mock_env):
     # Cash/buy_count = 1500. 1500 / 11.0 = 136.36 -> floor to 100 shares
     assert buys[0]['value'] == 100
     assert buys[0]['estimated_amount'] == 100 * 11.0
+
+
+# ── Supplementary tests for save_orders ──────────────────────────────────
+
+def test_save_orders_dry_run(mock_env, capsys):
+    order_gen, _, workspace = mock_env
+    sell_orders = [{"instrument": "000001", "datetime": "2026-03-02", "value": 100}]
+    buy_orders = [{"instrument": "000002", "datetime": "2026-03-02", "value": 200}]
+
+    sell_file, buy_file = order_gen.save_orders(
+        sell_orders, buy_orders,
+        next_trade_date_string="2026-03-02",
+        output_dir=str(workspace / "output"),
+        source_label="ensemble",
+        dry_run=True
+    )
+
+    assert "sell_suggestion" in sell_file
+    assert "buy_suggestion" in buy_file
+    # In dry-run mode, files should NOT be written
+    assert not os.path.exists(sell_file)
+    assert not os.path.exists(buy_file)
+
+    captured = capsys.readouterr()
+    assert "DRY-RUN" in captured.out
+
+
+def test_save_orders_normal(mock_env):
+    import os
+    order_gen, _, workspace = mock_env
+    sell_orders = [{"instrument": "000001", "datetime": "2026-03-02", "value": 100}]
+    buy_orders = [{"instrument": "000002", "datetime": "2026-03-02", "value": 200}]
+
+    sell_file, buy_file = order_gen.save_orders(
+        sell_orders, buy_orders,
+        next_trade_date_string="2026-03-02",
+        output_dir=str(workspace / "output"),
+        source_label="ensemble",
+        dry_run=False
+    )
+
+    assert os.path.exists(sell_file)
+    assert os.path.exists(buy_file)
+
+    sell_df = pd.read_csv(sell_file)
+    buy_df = pd.read_csv(buy_file)
+    assert len(sell_df) == 1
+    assert len(buy_df) == 1
