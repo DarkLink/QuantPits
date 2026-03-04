@@ -3,6 +3,8 @@
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Qlib](https://img.shields.io/badge/Tech_Stack-Qlib-brightgreen.svg)
+[![Unit Tests](https://github.com/DarkLink/QuantPits/actions/workflows/pytest.yml/badge.svg)](https://github.com/DarkLink/QuantPits/actions/workflows/pytest.yml)
+[![codecov](https://codecov.io/github/DarkLink/QuantPits/graph/badge.svg?token=QSTRWOI4LN)](https://codecov.io/github/DarkLink/QuantPits)
 
 基于 [Microsoft Qlib](https://github.com/microsoft/qlib) 构建的先进、生产级别的量化交易系统。本系统提供了一个用于支持周频及日频交易的完整端到端流水道，核心特点包括高度模块化架构、多实例隔离运行（Workspace 机制）、模型融合（Ensemble）、执行归因分析以及全交互式的可视化数据面板。
 

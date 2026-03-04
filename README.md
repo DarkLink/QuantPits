@@ -3,6 +3,8 @@
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Qlib](https://img.shields.io/badge/Tech_Stack-Qlib-brightgreen.svg)
+[![Unit Tests](https://github.com/DarkLink/QuantPits/actions/workflows/pytest.yml/badge.svg)](https://github.com/DarkLink/QuantPits/actions/workflows/pytest.yml)
+[![codecov](https://codecov.io/github/DarkLink/QuantPits/graph/badge.svg?token=QSTRWOI4LN)](https://codecov.io/github/DarkLink/QuantPits)
 
 An advanced, production-ready quantitative trading system built on top of [Microsoft Qlib](https://github.com/microsoft/qlib). This system provides a complete end-to-end pipeline for weekly and daily frequency trading, featuring modular architecture, multi-instance isolation (Workspaces), ensemble modeling, execution analytics, and interactive dashboards.
 
