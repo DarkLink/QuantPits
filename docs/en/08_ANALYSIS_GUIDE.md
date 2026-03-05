@@ -94,6 +94,20 @@ This routine triggers bounding output mapped specifically generating `output/rol
 2. **Moving Average Deviances (Alpha Decay)**: Calculates utilizing 5-day explicit short intervals identifying immediate Idio Alpha collapses beneath 60-day Idio matrices explicitly mapping native algorithm degradation identifiers indicating total baseline component failure scaling trajectories directly mapped explicitly.
 3. **Threshold Boundary Ruptures (Factor Drift)**: Diagnostic routines evaluating discrete stylistic matrices like exact Size representations bounding against explicit trailing historical representations mapping exact highest bounds evaluating explicit constraint triggers identifying native market structure anomalies dynamically indicating explicit neutral mapping extraction imperatives dynamically.
 
+### 6. Generating a Shareable Report
+
+If you need to share the analysis report with external partners or present it publicly, use the `--shareable` flag. This option automatically redacts sensitive data.
+
+```bash
+python quantpits/scripts/run_analysis.py --models gru_Alpha158 --shareable --output output/shareable_report.md
+```
+
+**Redaction Logic**:
+- **Amount Redaction**: Hides all absolute RMB values (e.g., transaction amounts, absolute slippage loss, total fees).
+- **Metric Replacement**: "Total Amount" in the classification table is replaced by "Amount Pct"; Dividend amounts are replaced by "Dividend Offset as % of Total Slippage".
+- **Detail Removal**: Individual stock codes, specific trade dates, and manual operation details are removed or replaced by a redaction notice.
+- **Preserved Metrics**: All percentage-based metrics (CAGR, Sharpe, Rank IC, etc.) are kept as they do not reveal absolute capital scale.
+
 ---
 
 ## III. Diagnostic Interpretation & Corrective Execution Constraints

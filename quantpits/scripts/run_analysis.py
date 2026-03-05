@@ -28,6 +28,7 @@ def main():
     parser.add_argument('--start-date', type=str, help="Start date (YYYY-MM-DD)")
     parser.add_argument('--end-date', type=str, help="End date (YYYY-MM-DD)")
     parser.add_argument('--output', type=str, default="output/analysis_report.md", help="Output markdown file path")
+    parser.add_argument('--shareable', action='store_true', help="Redact monetary amounts and individual stock details for sharing")
     args = parser.parse_args()
 
     print("Initializing Qlib...")
@@ -37,7 +38,8 @@ def main():
     market, benchmark = load_market_config()
     print(f"Market: {market}, Benchmark: {benchmark}")
     
-    report = [f"# Comprehensive Analysis Report ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"]
+    title_suffix = " (Shareable)" if args.shareable else ""
+    report = [f"# Comprehensive Analysis Report{title_suffix} ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"]
     report.append("\n## Analysis Scope")
     report.append(f"- Models: {args.models if args.models else 'None (Portfolio/Execution Only)'}")
     report.append(f"- Date Range: {args.start_date or 'Auto'} to {args.end_date or 'Auto'}")
@@ -146,7 +148,7 @@ def main():
         report.append(f"  - Vol-Weighted Delay Cost (Signal Close -> Exec Open): {weighted_avg(buy_slip, 'Delay_Cost'):.4%}")
         report.append(f"  - Vol-Weighted Exec Slippage (Exec Open -> Exec): {weighted_avg(buy_slip, 'Exec_Slippage'):.4%}")
         report.append(f"  - Vol-Weighted Total Friction (Buy): {weighted_avg(buy_slip, 'Total_Friction'):.4%}")
-        if 'Absolute_Slippage_Amount' in buy_slip.columns:
+        if 'Absolute_Slippage_Amount' in buy_slip.columns and not args.shareable:
             abs_slip_buy = buy_slip['Absolute_Slippage_Amount'].sum()
             report.append(f"  - Absolute Slippage Amount: {abs_slip_buy:.2f}")
         if 'ADV_Participation_Rate' in buy_slip.columns:
@@ -158,7 +160,7 @@ def main():
         report.append(f"  - Vol-Weighted Delay Cost (Signal Close -> Exec Open): {weighted_avg(sell_slip, 'Delay_Cost'):.4%}")
         report.append(f"  - Vol-Weighted Exec Slippage (Exec Open -> Exec): {weighted_avg(sell_slip, 'Exec_Slippage'):.4%}")
         report.append(f"  - Vol-Weighted Total Friction (Sell): {weighted_avg(sell_slip, 'Total_Friction'):.4%}")
-        if 'Absolute_Slippage_Amount' in sell_slip.columns:
+        if 'Absolute_Slippage_Amount' in sell_slip.columns and not args.shareable:
             abs_slip_sell = sell_slip['Absolute_Slippage_Amount'].sum()
             report.append(f"  - Absolute Slippage Amount: {abs_slip_sell:.2f}")
         if 'ADV_Participation_Rate' in sell_slip.columns:
@@ -168,8 +170,22 @@ def main():
 
     if explicit_costs:
         report.append("\n### Explicit Trading Costs & Dividends")
-        report.append(f"- **Avg Transaction Fee Rate**: {explicit_costs.get('fee_ratio', 0):.4%} (Total explicit fees amount: {explicit_costs.get('total_fees', 0):.2f})")
-        report.append(f"- **Total Dividend Accumulation (net)**: {explicit_costs.get('total_dividend', 0):.2f}")
+        fee_str = f" (Total explicit fees amount: {explicit_costs.get('total_fees', 0):.2f})" if not args.shareable else ""
+        report.append(f"- **Avg Transaction Fee Rate**: {explicit_costs.get('fee_ratio', 0):.4%}{fee_str}")
+        
+        div_val = explicit_costs.get('total_dividend', 0)
+        if args.shareable:
+            # Show dividend as offset percentage of total slippage if slippage is available
+            abs_slip_buy = quant_slip_df[quant_slip_df['交易类别'].str.contains('买入', na=False)]['Absolute_Slippage_Amount'].sum() if 'Absolute_Slippage_Amount' in quant_slip_df.columns else 0
+            abs_slip_sell = quant_slip_df[quant_slip_df['交易类别'].str.contains('卖出', na=False)]['Absolute_Slippage_Amount'].sum() if 'Absolute_Slippage_Amount' in quant_slip_df.columns else 0
+            total_abs_slip = abs_slip_buy + abs_slip_sell
+            if total_abs_slip > 0:
+                offset_pct = div_val / total_abs_slip
+                report.append(f"- **Dividend Offset as % of Total Slippage**: {offset_pct:.2%}")
+            else:
+                report.append(f"- **Dividend Impact**: *Positive (Redacted)*")
+        else:
+            report.append(f"- **Total Dividend Accumulation (net)**: {div_val:.2f}")
         
     if discrepancy:
         report.append("\n### Order Suggestion vs Actual Discrepancy (Buys)")
@@ -274,20 +290,26 @@ def main():
         
         # Classification Distribution
         report.append("\n### Classification Distribution")
-        report.append("| Class | Count | Pct | Total Amount |")
+        col_name = "Amount Pct" if args.shareable else "Total Amount"
+        report.append(f"| Class | Count | Pct | {col_name} |")
         report.append("|-------|-------|-----|--------------|")
         
         # We need the full trade log to get amounts
         trade_log = exec_a.trade_log
         if not trade_log.empty and 'trade_class' in trade_log.columns:
             total_trades = len(trade_log)
+            total_amt_all = trade_log['成交金额'].sum() if '成交金额' in trade_log.columns else 1.0
             if total_trades > 0:
                 for cls, label in [('S', 'SIGNAL'), ('A', 'SUBSTITUTE'), ('M', 'MANUAL')]:
                     subset = trade_log[trade_log['trade_class'] == cls]
                     count = len(subset)
                     pct = count / total_trades
                     amt = subset['成交金额'].sum() if '成交金额' in subset.columns else 0.0
-                    report.append(f"| {label} | {count} | {pct:.1%} | ¥{amt:,.0f} |")
+                    if args.shareable:
+                        amt_str = f"{amt / total_amt_all:.1%}" if total_amt_all > 0 else "0.0%"
+                    else:
+                        amt_str = f"¥{amt:,.0f}"
+                    report.append(f"| {label} | {count} | {pct:.1%} | {amt_str} |")
                     
         # Quantitative Performance
         quant_cagr_str = "N/A (Rigorous separation coming in v2)"
@@ -295,28 +317,31 @@ def main():
         report.append(f"- Quant CAGR: {quant_cagr_str}")
         
         # Manual Trade Details
-        manual_buys = class_returns['manual_buys']
-        manual_sells = class_returns['manual_sells']
-        
         report.append("\n### Manual Trade Details")
-        if manual_buys.empty and manual_sells.empty:
-            report.append("*No manual trades recorded in this period.*")
+        if args.shareable:
+            report.append("*Manual trade details redacted for privacy.*")
         else:
-            report.append("| Date | Instrument | Direction | Amount |")
-            report.append("|------|-----------|-----------|--------|")
+            manual_buys = class_returns['manual_buys']
+            manual_sells = class_returns['manual_sells']
             
-            # Combine buys and sells for display
-            manual_all = pd.concat([manual_buys, manual_sells])
-            if not manual_all.empty:
-                manual_all = manual_all.sort_values('成交日期')
-                for _, row in manual_all.iterrows():
-                    date_val = row['成交日期'].strftime('%Y-%m-%d') if pd.notna(row['成交日期']) else ""
-                    inst = row.get('证券代码', '')
-                    direction = "BUY" if '买入' in str(row.get('交易类别', '')) else "SELL"
-                    amt = row.get('成交金额', 0)
-                    report.append(f"| {date_val} | {inst} | {direction} | ¥{amt:,.0f} |")
-                    
-            report.append("\n*(Detailed manual trade PnL tracking and T+5 returns require dual-ledger system integration)*")
+            if manual_buys.empty and manual_sells.empty:
+                report.append("*No manual trades recorded in this period.*")
+            else:
+                report.append("| Date | Instrument | Direction | Amount |")
+                report.append("|------|-----------|-----------|--------|")
+                
+                # Combine buys and sells for display
+                manual_all = pd.concat([manual_buys, manual_sells])
+                if not manual_all.empty:
+                    manual_all = manual_all.sort_values('成交日期')
+                    for _, row in manual_all.iterrows():
+                        date_val = row['成交日期'].strftime('%Y-%m-%d') if pd.notna(row['成交日期']) else ""
+                        inst = row.get('证券代码', '')
+                        direction = "BUY" if '买入' in str(row.get('交易类别', '')) else "SELL"
+                        amt = row.get('成交金额', 0)
+                        report.append(f"| {date_val} | {inst} | {direction} | ¥{amt:,.0f} |")
+                        
+                report.append("\n*(Detailed manual trade PnL tracking and T+5 returns require dual-ledger system integration)*")
             
     # Write report
     report_text = "\n".join(report)

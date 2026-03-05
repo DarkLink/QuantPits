@@ -93,6 +93,20 @@ python quantpits/scripts/run_rolling_health_report.py
 2. **均线死叉断层 (Alpha Decay)**：利用最近 5 天平滑的短期 Idio Alph 下穿 60 日 Idio Alpha（死跌入水下），定性判断底层模型的纯净选股能力是否正在面临彻底失效与断层衰减。
 3. **极小/极大历史分位突破 (Factor Drift)**：判断最新的诸如 Size (市值)、Momentum 因子 Beta 的值，是否突破了这台策略一年历史环境以来的 5% 深水重灾极点。如果触及极高极低边界，会提出强制风格因子中性化的抢救建议。
 
+### 6. 生成可分享报告 (Generating a Shareable Report)
+
+如果你需要将分析报告分享给外部合作伙伴或在公开场合展示，可以使用 `--shareable` 参数。该选项会自动对敏感数据进行脱敏处理。
+
+```bash
+python quantpits/scripts/run_analysis.py --models gru_Alpha158 --shareable --output output/shareable_report.md
+```
+
+**脱敏逻辑说明**：
+- **金额隐藏**：隐藏所有绝对人民币数值（如成交金额、绝对滑点损耗、总费用等）。
+- **指标替换**：分类表中的"成交金额"会被替换为"成交金额占比"；分红金额会被替换为"分红对摩擦的抵消比例"。
+- **细节脱敏**：个股代码、具体的交易日期和手动操作明细将被移除或替换为 redacted 提示。
+- **保留项**：所有百分比指标（CAGR、Sharpe、Rank IC 等）均予以保留。
+
 ---
 
 ## 三、报告解读与行动建议
