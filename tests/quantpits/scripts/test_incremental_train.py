@@ -92,7 +92,7 @@ def test_resolve_target_models_filter(mock_env):
 @patch('train_utils.save_run_state')
 @patch('train_utils.print_model_table')
 @patch('quantpits.scripts.incremental_train.resolve_target_models')
-@patch('quantpits.scripts.train_utils.calculate_dates')
+@patch('train_utils.calculate_dates')
 def test_run_incremental_train_failed(mock_dates, mock_resolve, mock_print_tbl, mock_save, mock_train, mock_init, mock_env):
     it, workspace = mock_env
     args = MagicMock()
