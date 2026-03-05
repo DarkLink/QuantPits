@@ -184,7 +184,7 @@ def compute_rolling_metrics(windows=[60, 20], sub_window=20, market='csi300'):
         results_df.to_csv(out_file)
         print(f"Successfully wrote {window}-day rolling analysis to {out_file}")
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Generate rolling metrics for dashboard visualization.")
     parser.add_argument('--windows', type=int, nargs='+', default=[20, 60], help="List of rolling window sizes (days), e.g., --windows 20 60 120")
     parser.add_argument('--sub-window', type=int, default=20, help="Sub-window size for feature generation, default 20.")
@@ -193,3 +193,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     compute_rolling_metrics(windows=args.windows, sub_window=args.sub_window, market=args.market)
+
+if __name__ == "__main__":
+    main()

@@ -1,21 +1,31 @@
 import pytest
+import os
+import json
 from unittest.mock import patch, MagicMock
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch, tmp_path):
     workspace = tmp_path / "MockWorkspace"
     workspace.mkdir()
+    (workspace / "config").mkdir()
+    (workspace / "output").mkdir()
     
     import sys
+    import importlib
+    script_dir = os.path.join(os.getcwd(), "quantpits/scripts")
+    if script_dir not in sys.path:
+        sys.path.append(script_dir)
+        
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env, prod_predict_only
-    import importlib
-    importlib.reload(env)
-    importlib.reload(prod_predict_only)
-    
-    yield prod_predict_only
+    # Reload all possible names to ensure they pick up the new QLIB_WORKSPACE_DIR
+    for mod_name in ['env', 'quantpits.scripts.env', 'prod_predict_only', 'quantpits.scripts.prod_predict_only']:
+        if mod_name in sys.modules:
+            importlib.reload(sys.modules[mod_name])
+            
+    from quantpits.scripts import prod_predict_only as ppo
+    yield ppo
 
 @patch('train_utils.get_models_by_names')
 @patch('train_utils.get_enabled_models')
@@ -261,6 +271,62 @@ def test_run_predict_only_dry_run(mock_table, mock_merge_perf, mock_merge_rec,
 
     ppo.run_predict_only(args)
     mock_dates.assert_not_called()
+
+@patch('quantpits.scripts.prod_predict_only.init_qlib', create=True)
+@patch('train_utils.calculate_dates')
+@patch('train_utils.merge_train_records')
+@patch('train_utils.merge_performance_file')
+@patch('quantpits.scripts.prod_predict_only.predict_single_model')
+@patch('quantpits.scripts.prod_predict_only.resolve_target_models')
+@patch('train_utils.print_model_table')
+def test_run_predict_only_success(mock_table, mock_resolve, mock_predict, 
+                                  mock_merge_perf, mock_merge_rec,
+                                  mock_dates, mock_init, mock_env, tmp_path):
+    import json
+    ppo = mock_env
+    source_file = tmp_path / 'records.json'
+    with open(source_file, 'w') as f:
+        json.dump({"models": {"m1": "rid1"}, "experiment_name": "train", "anchor_date": "2020-01-01"}, f)
+
+    mock_resolve.return_value = {"m1": {}}
+    mock_dates.return_value = {"anchor_date": "2020-01-08", "freq": "week"}
+    mock_predict.return_value = {"success": True, "record_id": "new_rid", "performance": {"IC_Mean": 0.05}}
+
+    args = MagicMock()
+    args.models = "m1"
+    args.dry_run = False
+    args.source_records = str(source_file)
+    args.experiment_name = "Prod_Predict"
+
+    ppo.run_predict_only(args)
+    mock_predict.assert_called_once()
+    mock_merge_rec.assert_called_once()
+    mock_merge_perf.assert_called_once()
+
+@patch('quantpits.scripts.prod_predict_only.init_qlib', create=True)
+@patch('train_utils.calculate_dates')
+@patch('quantpits.scripts.prod_predict_only.predict_single_model')
+@patch('quantpits.scripts.prod_predict_only.resolve_target_models')
+def test_run_predict_only_failed_model(mock_resolve, mock_predict, 
+                                       mock_dates, mock_init, mock_env, tmp_path):
+    import json
+    ppo = mock_env
+    source_file = tmp_path / 'records.json'
+    with open(source_file, 'w') as f:
+        json.dump({"models": {"m1": "rid1"}}, f)
+
+    mock_resolve.return_value = {"m1": {}}
+    mock_dates.return_value = {"anchor_date": "2020-01-08"}
+    mock_predict.return_value = {"success": False, "error": "Prediction timeout"}
+
+    args = MagicMock()
+    args.models = "m1"
+    args.dry_run = False
+    args.source_records = str(source_file)
+    args.experiment_name = "Prod_Predict"
+
+    ppo.run_predict_only(args)
+    mock_predict.assert_called_once()
 
 def test_main_no_selection(mock_env):
     ppo = mock_env

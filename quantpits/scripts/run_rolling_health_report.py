@@ -5,7 +5,10 @@ import numpy as np
 from datetime import datetime
 import argparse
 
-import env
+try:
+    from quantpits.scripts import env
+except ImportError:
+    import env
 os.chdir(env.ROOT_DIR)
 
 def evaluate_health():
@@ -16,18 +19,25 @@ def evaluate_health():
     file_60 = os.path.join(output_dir, "rolling_metrics_60.csv")
     
     if not os.path.exists(file_20) or not os.path.exists(file_60):
-        print("Required rolling metrics CSVs not found! Please run `run_rolling_analysis.py --windows 20 60` first.")
+        print(f"FAILED: CSVs not found. 20: {os.path.exists(file_20)}, 60: {os.path.exists(file_60)}")
+        print(f"Path 20: {file_20}")
         return
         
     df_20 = pd.read_csv(file_20, parse_dates=['Date']).set_index('Date').sort_index()
     df_60 = pd.read_csv(file_60, parse_dates=['Date']).set_index('Date').sort_index()
     
+    print(f"DEBUG: len(df_20)={len(df_20)}, len(df_60)={len(df_60)}")
+    
     # Need at least 60 days of data
     if len(df_60) < 60:
-        print("Not enough history in 60-day metrics to generate health report.")
+        print(f"DEBUG: Too short: {len(df_60)}")
         return
         
     last_date = df_20.index[-1]
+    
+    # Initialize metrics with defaults to avoid NameError
+    curr_wr, prev_wr, wr_trend = 0.0, 0.0, "➡️"
+    pr_curr, pr_prev = 0.0, 0.0
     
     alerts = []
     recommendations = []
@@ -70,6 +80,8 @@ def evaluate_health():
     # Evaluate 1-year historical percentiles for Barra exposures
     past_year_60 = df_60.last("252D").dropna(subset=['Exposure_Size', 'Exposure_Momentum', 'Exposure_Volatility'])
     
+    print(f"DEBUG: len(past_year_60)={len(past_year_60)}")
+    
     if not past_year_60.empty:
         curr_size = past_year_60['Exposure_Size'].iloc[-1]
         size_5th = past_year_60['Exposure_Size'].quantile(0.05)
@@ -91,8 +103,10 @@ def evaluate_health():
              if curr_wr > prev_wr + 0.02: wr_trend = "📈 上升"
              elif curr_wr < prev_wr - 0.02: wr_trend = "📉 下降"
              
-             pr_curr = df_20['Payoff_Ratio'].dropna().iloc[-1]
-             pr_prev = df_20['Payoff_Ratio'].dropna().iloc[-20]
+             past_20_pr = df_20['Payoff_Ratio'].dropna()
+             if len(past_20_pr) >= 20:
+                  pr_curr = past_20_pr.iloc[-1]
+                  pr_prev = past_20_pr.iloc[-20]
              
              top_holdings = ""
              if "Holdings_Top1_Concentration" in df_20.columns: # Placeholder logic if holding feature expands

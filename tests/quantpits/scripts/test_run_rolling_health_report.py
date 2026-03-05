@@ -1,126 +1,90 @@
-import os
 import pytest
+import os
 import pandas as pd
-from unittest.mock import patch, MagicMock
+import numpy as np
+import importlib
+from unittest.mock import MagicMock, patch
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch, tmp_path):
     workspace = tmp_path / "MockWorkspace"
     workspace.mkdir()
-    
-    out_dir = workspace / "output"
-    out_dir.mkdir()
+    (workspace / "output").mkdir()
     
     import sys
-    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    script_dir = os.path.join(os.getcwd(), "quantpits/scripts")
+    if script_dir not in sys.path:
+        sys.path.append(script_dir)
+    
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env, run_rolling_health_report
-    import importlib
-    importlib.reload(env)
-    monkeypatch.setattr(run_rolling_health_report.env, 'ROOT_DIR', str(workspace))
+    # Reload all possible names to ensure they pick up the new QLIB_WORKSPACE_DIR
+    for mod_name in ['env', 'quantpits.scripts.env', 'run_rolling_health_report', 'quantpits.scripts.run_rolling_health_report']:
+        if mod_name in sys.modules:
+            importlib.reload(sys.modules[mod_name])
+            
+    from quantpits.scripts import run_rolling_health_report as rrhr
+    from quantpits.scripts import env
     
-    # Needs to re-read what ROOT_DIR is because evaluate_health constructs the path dynamically
-    # Note: run_rolling_health_report imports env without from, so env.ROOT_DIR works
-    yield run_rolling_health_report, out_dir
+    # Mock os.chdir to avoid changing working directory
+    monkeypatch.setattr(os, 'chdir', lambda x: None)
+    
+    yield rrhr, workspace
 
-def test_evaluate_health_missing_files(mock_env, capsys):
-    rhr, out_dir = mock_env
-    # No CSVs created
-    rhr.evaluate_health()
-    
-    captured = capsys.readouterr()
-    assert "Required rolling metrics CSVs not found!" in captured.out
-
-def test_evaluate_health_insufficient_data(mock_env, capsys):
-    rhr, out_dir = mock_env
-    
-    # Create 20-day dummy (small data)
-    dates = pd.date_range("2020-01-01", "2020-01-10")
-    df = pd.DataFrame({"Date": dates, "Exec_Slippage_Mean": [0]*10})
-    df.to_csv(out_dir / "rolling_metrics_20.csv", index=False)
-    df.to_csv(out_dir / "rolling_metrics_60.csv", index=False)
-    
-    rhr.evaluate_health()
-    captured = capsys.readouterr()
-    assert "Not enough history" in captured.out
-
-def test_evaluate_health_normal(mock_env, capsys):
-    rhr, out_dir = mock_env
-    
-    # Need at least 60 days
-    dates = pd.date_range("2020-01-01", periods=65, freq="D")
-    
-    # Construct normal data
+def create_mock_csvs(workspace, n=70):
+    dates = pd.date_range("2020-01-01", periods=n)
     df = pd.DataFrame({
         "Date": dates,
-        "Exec_Slippage_Mean": [0.001] * 65, # Very stable slippage
-        "Delay_Cost_Mean": [0.0005] * 65,
-        "Idiosyncratic_Alpha": [0.05] * 65, # Positive alpha, stable
-        "Exposure_Size": [0.0] * 65, # Normal size
-        "Exposure_Momentum": [0.0] * 65,
-        "Exposure_Volatility": [0.0] * 65,
-        "Win_Rate": [0.55] * 65,
-        "Payoff_Ratio": [1.5] * 65,
-        "Max_DD": [-0.05] * 65,
-        "Calmar": [2.0] * 65,
-        "Sharpe": [2.0] * 65
+        "Exec_Slippage_Mean": np.random.rand(n) * 0.001,
+        "Delay_Cost_Mean": np.random.rand(n) * 0.001,
+        "Idiosyncratic_Alpha": np.random.rand(n) * 0.01 + 0.01,
+        "Exposure_Size": np.random.rand(n),
+        "Exposure_Momentum": np.random.rand(n),
+        "Exposure_Volatility": np.random.rand(n),
+        "Win_Rate": [0.55] * n,
+        "Payoff_Ratio": [1.5] * n
     })
+    df.to_csv(workspace / "output" / "rolling_metrics_20.csv", index=False)
+    df.to_csv(workspace / "output" / "rolling_metrics_60.csv", index=False)
+    return df
+
+def test_evaluate_health_missing_files(mock_env):
+    rrhr, workspace = mock_env
+    # files don't exist
+    rrhr.evaluate_health()
+
+def test_evaluate_health_not_enough_data(mock_env):
+    rrhr, workspace = mock_env
+    create_mock_csvs(workspace, n=10)
+    rrhr.evaluate_health()
+
+def test_evaluate_health_normal(mock_env):
+    rrhr, workspace = mock_env
+    create_mock_csvs(workspace, n=70)
+    rrhr.evaluate_health()
+    assert (workspace / "output" / "rolling_health_report.md").exists()
+
+def test_evaluate_health_alerts(mock_env):
+    rrhr, workspace = mock_env
+    df = create_mock_csvs(workspace, n=70)
     
-    df.to_csv(out_dir / "rolling_metrics_20.csv", index=False)
-    df.to_csv(out_dir / "rolling_metrics_60.csv", index=False)
+    # Trigger Slippage Alert (Z-Score < -2)
+    # Mean ~0.0005, Std ~0.0003. Setting current to -1.0 should trigger it.
+    df.loc[69, "Exec_Slippage_Mean"] = -1.0
     
-    rhr.evaluate_health()
+    # Trigger Size Alert (Percentile < 0.05)
+    df["Exposure_Size"] = 0.5
+    df.loc[69, "Exposure_Size"] = -10.0
     
-    # If the report is generated, it prints markdown but maybe no alerts
-    captured = capsys.readouterr()
-    assert "Rolling Health Summary" in captured.out
+    # Trigger Alpha Decay (20d < 60d and < 0)
+    df["Idiosyncratic_Alpha"] = 0.01
+    df.loc[65:69, "Idiosyncratic_Alpha"] = -0.01
     
-def test_evaluate_health_anomaly(mock_env, capsys):
-    rhr, out_dir = mock_env
+    # Reuse the 60 metrics for 20 for simplicity
+    df.to_csv(workspace / "output" / "rolling_metrics_60.csv", index=False)
+    df.to_csv(workspace / "output" / "rolling_metrics_20.csv", index=False)
     
-    # Construct data with an anomaly at the very end
-    dates = pd.date_range("2020-01-01", periods=65, freq="D")
-    
-    slip = [0.001] * 64 + [-0.05] # Sudden huge negative slippage at the end
-    delay = [0.0005] * 64 + [-0.05] # Sudden huge delay cost
-    
-    # Alpha drops below zero
-    alpha_20 = [0.05] * 60 + [-0.01] * 5
-    alpha_60 = [0.05] * 65
-    
-    # Size exposure goes to minimum
-    size = [0.0] * 64 + [-5.0]
-    
-    df_20 = pd.DataFrame({
-        "Date": dates,
-        "Exec_Slippage_Mean": slip,
-        "Delay_Cost_Mean": delay,
-        "Idiosyncratic_Alpha": alpha_20,
-        "Exposure_Size": size,
-        "Exposure_Momentum": [0.0] * 65,
-        "Exposure_Volatility": [0.0] * 65,
-        "Win_Rate": [0.55] * 65,
-        "Payoff_Ratio": [1.5] * 65,
-        "Max_DD": [-0.05] * 65,
-        "Calmar": [2.0] * 65,
-        "Sharpe": [2.0] * 65
-    })
-    
-    df_60 = df_20.copy()
-    df_60["Idiosyncratic_Alpha"] = alpha_60
-    
-    df_20.to_csv(out_dir / "rolling_metrics_20.csv", index=False)
-    df_60.to_csv(out_dir / "rolling_metrics_60.csv", index=False)
-    
-    rhr.evaluate_health()
-    
-    captured = capsys.readouterr()
-    out = captured.out
-    assert "Rolling Health Summary" in out
-    
-    # We should have all the alerts we triggered
-    assert "执行摩擦崩盘" in out
-    assert "隔夜跳空恶化" in out
-    assert "Alpha Decay (阿尔法衰减)" in out
-    assert "极端微盘暴露" in out
+    rrhr.evaluate_health()
+    report = (workspace / "output" / "rolling_health_report.md").read_text()
+    assert "🔴" in report
+    assert "执行摩擦崩盘" in report

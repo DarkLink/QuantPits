@@ -311,17 +311,24 @@ def test_analyze_results_basic(mock_R, mock_env, tmp_path):
     idx = pd.MultiIndex.from_arrays([dates, ["A", "B"]], names=["datetime", "instrument"])
     norm_df = pd.DataFrame({"m1": [1.0, 2.0], "m2": [1.5, 2.5]}, index=idx)
 
-    mock_R.get_recorder.side_effect = Exception("skip cluster")
+    mock_recorder = MagicMock()
+    mock_report = pd.DataFrame({
+        "return": [0.01, 0.02],
+        "bench": [0.005, 0.005]
+    }, index=dates)
+    mock_recorder.load_object.return_value = mock_report
+    mock_R.get_recorder.return_value = mock_recorder
 
-    bfe.analyze_results(
-        results_df=results_df,
-        corr_matrix=corr_matrix,
-        norm_df=norm_df,
-        train_records={"experiment_name": "exp", "models": {"m1": "r1", "m2": "r2"}},
-        output_dir=out_dir,
-        anchor_date="2020-01-01",
-        top_n=2,
-    )
+    with patch('matplotlib.pyplot.savefig'):
+        bfe.analyze_results(
+            results_df=results_df,
+            corr_matrix=corr_matrix,
+            norm_df=norm_df,
+            train_records={"experiment_name": "exp", "models": {"m1": "r1", "m2": "r2"}},
+            output_dir=out_dir,
+            anchor_date="2020-01-01",
+            top_n=2
+        )
 
     assert os.path.exists(os.path.join(out_dir, "analysis_report_2020-01-01.txt"))
     assert os.path.exists(os.path.join(out_dir, "model_attribution_2020-01-01.csv"))
@@ -345,5 +352,96 @@ def test_parse_args(mock_env):
         args = parser.parse_args()
     assert args.max_combo_size == 3
     assert args.analysis_only is True
+
+from unittest.mock import patch, MagicMock
+
+@patch('qlib.backtest.backtest_loop')
+@patch('qlib.backtest.account.Account')
+@patch('qlib.backtest.executor.SimulatorExecutor')
+@patch('strategy.create_backtest_strategy')
+def test_run_single_backtest_success(mock_create_strat, mock_executor, mock_account, mock_bt_loop, mock_env):
+    bfe, _ = mock_env
+    
+    # Setup mocks
+    mock_strat = MagicMock()
+    mock_create_strat.return_value = mock_strat
+    
+    # Mock report from backtest_loop
+    mock_report = pd.DataFrame({
+        "account": [100.0, 110.0],
+        "return": [0.0, 0.1],
+        "bench": [100.0, 105.0]
+    }, index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
+    mock_bt_loop.return_value = ({"fold1": (mock_report, "other")}, None)
+    
+    norm_df = pd.DataFrame({"m1": [0.5, 0.6]}, index=pd.MultiIndex.from_tuples([
+        (pd.to_datetime("2020-01-01"), "A"), (pd.to_datetime("2020-01-02"), "A")
+    ], names=["datetime", "instrument"]))
+    
+    res = bfe.run_single_backtest(
+        combo_models=["m1"], norm_df=norm_df, top_k=1, drop_n=0, 
+        benchmark="SH000300", freq="day", trade_exchange=MagicMock(),
+        bt_start="2020-01-01", bt_end="2020-01-02"
+    )
+    
+    assert res is not None
+    assert res["Ann_Ret"] > 0
+    assert "m1" in res["models"]
+
+@patch('qlib.backtest.exchange.Exchange', create=True)
+@patch('quantpits.scripts.brute_force_ensemble.run_single_backtest')
+def test_brute_force_backtest_basic(mock_run_bt, mock_exchange, mock_env, tmp_path):
+    bfe, _ = mock_env
+    
+    # Mock norm_df
+    idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A", "B"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5, 0.6], "m2": [0.4, 0.7]}, index=idx)
+    
+    # Mock run_single_backtest to return valid metrics
+    mock_run_bt.side_effect = lambda combo, *args, **kwargs: {
+        "models": ",".join(combo), "n_models": len(combo), "Ann_Ret": 0.1, "Max_DD": -0.05,
+        "Excess_Ret": 0.05, "Ann_Excess": 0.05, "Total_Ret": 0.1, "Final_NAV": 110000, "Calmar": 2.0
+    }
+    
+    out_dir = str(tmp_path / "output")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    results = bfe.brute_force_backtest(
+        norm_df=norm_df, top_k=1, drop_n=0, benchmark="SH000300", freq="day",
+        min_combo_size=1, max_combo_size=1, output_dir=out_dir, anchor_date="2020-01-01",
+        n_jobs=1
+    )
+    
+    assert len(results) == 2 # m1 and m2
+    assert os.path.exists(os.path.join(out_dir, "brute_force_results_2020-01-01.csv"))
+
+@patch('quantpits.scripts.brute_force_ensemble.init_qlib')
+@patch('quantpits.scripts.brute_force_ensemble.load_config')
+@patch('quantpits.scripts.brute_force_ensemble.load_predictions')
+@patch('quantpits.scripts.brute_force_ensemble.correlation_analysis')
+@patch('quantpits.scripts.brute_force_ensemble.brute_force_backtest')
+@patch('quantpits.scripts.brute_force_ensemble.analyze_results')
+@patch('quantpits.scripts.env.safeguard')
+def test_main_full(mock_safeguard, mock_analyze, mock_bf, mock_corr, mock_load_pred, mock_load_cfg, mock_init, mock_env, tmp_path):
+    bfe, _ = mock_env
+    
+    mock_load_cfg.return_value = ({"models": {"m1": "r1"}, "anchor_date": "2020-01-01"}, {"TopK": 1})
+    
+    idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
+    mock_load_pred.return_value = (norm_df, {"m1": 0.05})
+    
+    mock_corr.return_value = pd.DataFrame([[1.0]], index=["m1"], columns=["m1"])
+    mock_bf.return_value = pd.DataFrame({"models": ["m1"], "Ann_Excess": [0.1]})
+    
+    import sys
+    out_dir = str(tmp_path / "output")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    with patch.object(sys, 'argv', ['script.py', '--output-dir', out_dir]):
+        bfe.main()
+    
+    mock_bf.assert_called_once()
+    mock_analyze.assert_called_once()
 
 

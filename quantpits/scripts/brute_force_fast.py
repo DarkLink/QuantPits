@@ -527,7 +527,11 @@ def _vectorized_topk_backtest_single(
     # 预计算每天的 TopK（仅在调仓日计算，节省 argpartition 开销）
     rebalance_indices = xp.arange(0, T, rebalance_freq)
     combo_score_reb = combo_score_np[rebalance_indices]
-    topk_reb = xp.argpartition(-combo_score_reb, k, axis=1)[:, :k]
+    
+    if k < N:
+        topk_reb = xp.argpartition(-combo_score_reb, k, axis=1)[:, :k]
+    else:
+        topk_reb = xp.tile(xp.arange(N), (len(rebalance_indices), 1))
 
     # 将调仓日的持仓广播到每一天: day_to_reb_idx 将 [0..T-1] 映射到相应的调仓期索引
     day_to_reb_idx = xp.arange(T) // rebalance_freq

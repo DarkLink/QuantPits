@@ -6,15 +6,33 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 
 @pytest.fixture(autouse=True)
-def mock_env_constants(tmp_path):
+def mock_env(monkeypatch, tmp_path):
     workspace = tmp_path / "MockWorkspace"
     workspace.mkdir()
+    (workspace / "config").mkdir()
+    (workspace / "output").mkdir()
     
-    with patch.dict(os.environ, {"QLIB_WORKSPACE_DIR": str(workspace)}):
-        import quantpits.scripts.env as env
-        with patch('quantpits.scripts.env.ROOT_DIR', str(workspace)):
-            import quantpits.scripts.ensemble_fusion as ef
-            yield ef, workspace
+    import sys
+    import importlib
+    script_dir = os.path.join(os.getcwd(), "quantpits/scripts")
+    if script_dir not in sys.path:
+        sys.path.append(script_dir)
+        
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    
+    # Reload to pick up new env
+    for mod_name in ['env', 'quantpits.scripts.env', 'ensemble_fusion', 'quantpits.scripts.ensemble_fusion']:
+        if mod_name in sys.modules:
+            importlib.reload(sys.modules[mod_name])
+            
+    from quantpits.scripts import ensemble_fusion as ef
+    
+    # Global mocks for side-effect-heavy functions
+    monkeypatch.setattr('quantpits.scripts.env.safeguard', lambda x: None)
+    monkeypatch.setattr('quantpits.scripts.env.init_qlib', lambda: None)
+    
+    yield ef, workspace
 
 def test_parse_ensemble_config():
     import quantpits.scripts.ensemble_fusion as ef
@@ -84,8 +102,8 @@ def test_zscore_norm():
     assert norm.loc[("2020-01-02", "B")] == 0.0
 
 @patch('qlib.workflow.R')
-def test_load_selected_predictions(mock_R, mock_env_constants):
-    ef, workspace = mock_env_constants
+def test_load_selected_predictions(mock_R, mock_env):
+    ef, workspace = mock_env
     
     train_records = {
         "experiment_name": "Exp1",
@@ -186,8 +204,8 @@ def test_generate_ensemble_signal():
 @patch('quantpits.scripts.strategy.create_backtest_strategy')
 @patch('qlib.backtest.executor.SimulatorExecutor')
 @patch('qlib.backtest.backtest')
-def test_run_backtest(mock_bt, mock_executor, mock_create_strat, mock_get_bt_cfg, mock_load_st_cfg, mock_env_constants):
-    ef, workspace = mock_env_constants
+def test_run_backtest(mock_bt, mock_executor, mock_create_strat, mock_get_bt_cfg, mock_load_st_cfg, mock_env):
+    ef, workspace = mock_env
     
     # Mock strategy dependencies
     mock_load_st_cfg.return_value = {}
@@ -214,8 +232,8 @@ def test_run_backtest(mock_bt, mock_executor, mock_create_strat, mock_get_bt_cfg
     assert "nav" in report_df.columns
     assert report_df.iloc[-1]["nav"] == 110000
 
-def test_save_predictions(mock_env_constants, tmp_path):
-    ef, workspace = mock_env_constants
+def test_save_predictions(mock_env, tmp_path):
+    ef, workspace = mock_env
     
     dates = pd.to_datetime(["2020-01-01"])
     idx = pd.MultiIndex.from_product([dates, ["InstA"]], names=['datetime', 'instrument'])
@@ -375,3 +393,124 @@ def test_compare_combos(mock_load_st, mock_get_bt, tmp_path):
     assert comp_df.iloc[0]['total_return'] == 5.0
     assert (out_dir / "combo_comparison_2020-01-01.csv").exists()
     assert (out_dir / "combo_comparison_2020-01-01.png").exists()
+
+@patch('qlib.workflow.R')
+def test_risk_analysis_and_leaderboard(mock_R, mock_env, tmp_path):
+    ef, workspace = mock_env
+    out_dir = tmp_path / "output"
+    
+    report_df = pd.DataFrame({
+        'account': [100.0, 110.0],
+        'bench': [100.0, 105.0],
+        'return': [0.0, 0.1]
+    }, index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
+    
+    train_records = {"experiment_name": "Exp1", "models": {"M1": "rid1"}}
+    
+    mock_recorder = MagicMock()
+    mock_recorder.load_object.return_value = report_df
+    mock_R.get_recorder.return_value = mock_recorder
+    
+    with patch('quantpits.scripts.ensemble_fusion.calculate_safe_risk') as mock_risk:
+        mock_risk.return_value = {"annualized_return": 0.5}
+        reports, lb = ef.risk_analysis_and_leaderboard(
+            report_df, None, train_records, ["M1"], "day", str(out_dir), "2020-01-01"
+        )
+        
+    assert "Ensemble" in reports
+    assert "M1" in reports
+    assert len(lb) == 2
+    assert (out_dir / "leaderboard_2020-01-01.csv").exists()
+
+def test_generate_charts(mock_env, tmp_path):
+    ef, workspace = mock_env
+    out_dir = tmp_path / "charts"
+    
+    report_df = pd.DataFrame({'return': [0.01], 'bench': [0.005]}, index=[pd.Timestamp("2020-01-01")])
+    all_reports = {"Ensemble": report_df}
+    
+    final_weights = pd.DataFrame({"M1": [0.6], "M2": [0.4]}, index=[pd.Timestamp("2020-01-01")])
+    
+    with patch('matplotlib.pyplot.savefig') as mock_savefig:
+        ef.generate_charts(all_reports, report_df, final_weights, True, "day", "2020-01-01", str(out_dir))
+    
+    assert mock_savefig.called
+
+@patch('quantpits.scripts.ensemble_fusion.init_qlib', create=True)
+@patch('quantpits.scripts.ensemble_fusion.load_config')
+@patch('quantpits.scripts.ensemble_fusion.load_selected_predictions')
+@patch('quantpits.scripts.ensemble_fusion.run_single_combo')
+def test_main_from_config_all(mock_run_combo, mock_load_pred, mock_load_cfg, mock_init, mock_env):
+    ef, workspace = mock_env
+    mock_load_cfg.return_value = (
+        {"experiment_name": "Exp1", "models": {"m1": "rid1", "m2": "rid2"}, "anchor_date": "2020-01-01"},
+        {"freq": "day"},
+        {"combos": {"c1": {"models": ["m1"]}, "c2": {"models": ["m2"]}}}
+    )
+    idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5], "m2": [0.6]}, index=idx)
+    mock_load_pred.return_value = (norm_df, {}, ["m1", "m2"])
+    mock_run_combo.return_value = {'name': 'c1', 'models': ['m1'], 'method': 'equal', 'is_default': False, 'pred_file': 'x.csv', 'report_df': None}
+
+    import sys
+    with patch.object(sys, 'argv', ['script.py', '--from-config-all']):
+        ef.main()
+    assert mock_run_combo.call_count == 2
+
+@patch('quantpits.scripts.ensemble_fusion.init_qlib', create=True)
+@patch('quantpits.scripts.ensemble_fusion.load_config')
+@patch('quantpits.scripts.ensemble_fusion.load_selected_predictions')
+@patch('quantpits.scripts.ensemble_fusion.run_single_combo')
+def test_main_combo_specified(mock_run_combo, mock_load_pred, mock_load_cfg, mock_init, mock_env):
+    ef, workspace = mock_env
+    mock_load_cfg.return_value = (
+        {"experiment_name": "Exp1", "models": {"m1": "rid1"}, "anchor_date": "2020-01-01"},
+        {"freq": "day"},
+        {"combos": {"c1": {"models": ["m1"]}}}
+    )
+    idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
+    mock_load_pred.return_value = (norm_df, {}, ["m1"])
+    mock_run_combo.return_value = {'name': 'c1', 'models': ['m1'], 'method': 'equal', 'is_default': False, 'pred_file': 'x.csv', 'report_df': None}
+
+    import sys
+    with patch.object(sys, 'argv', ['script.py', '--combo', 'c1']):
+        ef.main()
+    mock_run_combo.assert_called_once()
+
+@patch('quantpits.scripts.ensemble_fusion.correlation_analysis')
+@patch('quantpits.scripts.ensemble_fusion.calculate_weights')
+@patch('quantpits.scripts.ensemble_fusion.generate_ensemble_signal')
+@patch('quantpits.scripts.ensemble_fusion.save_predictions')
+@patch('quantpits.scripts.ensemble_fusion.run_backtest')
+@patch('quantpits.scripts.ensemble_fusion.risk_analysis_and_leaderboard')
+@patch('quantpits.scripts.ensemble_fusion.generate_charts')
+def test_run_single_combo_pipeline(mock_charts, mock_risk, mock_bt, mock_save, mock_signal, mock_weights, mock_corr, mock_env):
+    ef, workspace = mock_env
+    
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")]))
+    mock_weights.return_value = (None, {"m1": 1.0}, False)
+    mock_signal.return_value = pd.Series([0.5])
+    mock_save.return_value = "pred.csv"
+    mock_bt.return_value = pd.DataFrame({"account": [100]})
+    mock_risk.return_value = ({"Ensemble": pd.DataFrame()}, pd.DataFrame())
+    
+    args = MagicMock()
+    args.output_dir = "out"
+    args.no_backtest = False
+    args.no_charts = False
+    args.freq = "day"
+    
+    res = ef.run_single_combo(
+        "c1", ["m1"], "equal", None, norm_df, {"m1": 0.1}, ["m1"],
+        {"experiment_name": "exp"}, {"TopK": 20}, {}, "2020-01-01", "exp", args
+    )
+    
+    assert res['name'] == "c1"
+    assert mock_corr.called
+    assert mock_weights.called
+    assert mock_signal.called
+    assert mock_save.called
+    assert mock_bt.called
+    assert mock_risk.called
+    assert mock_charts.called
