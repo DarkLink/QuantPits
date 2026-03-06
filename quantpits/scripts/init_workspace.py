@@ -5,6 +5,7 @@ Usage: python quantpits/scripts/init_workspace.py --source workspaces/Demo_Works
 """
 import argparse
 import os
+import platform
 import shutil
 import stat
 
@@ -63,24 +64,57 @@ backtest:
         dir_path = os.path.join(target, d)
         print(f"Creating empty directory: {dir_path}")
         os.makedirs(dir_path)
-        
+    # 3. Create activation script
+    is_windows = platform.system() == "Windows"
+    script_ext = ".ps1" if is_windows else ".sh"
+    script_name = "run_env" + script_ext
+    run_env_path = os.path.join(target, script_name)
+
+    with open(run_env_path, "w", encoding="utf-8") as f:
+        if is_windows:
+            f.write("# run this file to activate the workspace\n\n")
+            f.write('$env:QLIB_WORKSPACE_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path\n')
+            f.write("# Uncomment and modify to use a custom Qlib data directory:\n")
+            f.write('# $env:QLIB_DATA_DIR = "D:\\data\\cn_data"\n')
+            f.write('# $env:QLIB_REGION = "cn"\n\n')
+            f.write('Write-Host "Workspace activated: $env:QLIB_WORKSPACE_DIR"\n')
+        else:
+            f.write("#!/bin/bash\n")
+            f.write("# Source this file to activate the workspace\n")
+            f.write('export QLIB_WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n')
+            f.write("# Uncomment and modify to use a custom Qlib data directory:\n")
+            f.write('# export QLIB_DATA_DIR="~/.qlib/qlib_data/cn_data"\n')
+            f.write('# export QLIB_REGION="cn"\n')
+            f.write('echo "Workspace activated: $QLIB_WORKSPACE_DIR"\n')
+
+    # Make it executable for Linux/macOS
+    if not is_windows:
+        os.chmod(run_env_path, os.stat(run_env_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    print("\nWorkspace initialization complete!")
+    if is_windows:
+        print(f"To use this workspace, run: .\\{script_name}")
+        print(f"Or in PowerShell: $env:QLIB_WORKSPACE_DIR='{target}'; python ...")
+    else:
+        print(f"To use this workspace, run: source {run_env_path}")
+        print(f"Or prepend commands with: QLIB_WORKSPACE_DIR={target} python ...")
     # 3. Create run_env.sh
-    run_env_path = os.path.join(target, "run_env.sh")
-    with open(run_env_path, "w") as f:
-        f.write("#!/bin/bash\n")
-        f.write("# Source this file to activate the workspace\n")
-        f.write('export QLIB_WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n')
-        f.write("# Uncomment and modify to use a custom Qlib data directory:\n")
-        f.write('# export QLIB_DATA_DIR="~/.qlib/qlib_data/cn_data"\n')
-        f.write('# export QLIB_REGION="cn"\n')
-        f.write("echo \"Workspace activated: $QLIB_WORKSPACE_DIR\"\n")
+    # run_env_path = os.path.join(target, "run_env.sh")
+    # with open(run_env_path, "w") as f:
+    #     f.write("#!/bin/bash\n")
+    #     f.write("# Source this file to activate the workspace\n")
+    #     f.write('export QLIB_WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n')
+    #     f.write("# Uncomment and modify to use a custom Qlib data directory:\n")
+    #     f.write('# export QLIB_DATA_DIR="~/.qlib/qlib_data/cn_data"\n')
+    #     f.write('# export QLIB_REGION="cn"\n')
+    #     f.write("echo \"Workspace activated: $QLIB_WORKSPACE_DIR\"\n")
         
     # Make it executable just in case, though it should be sourced
-    os.chmod(run_env_path, os.stat(run_env_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    # os.chmod(run_env_path, os.stat(run_env_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     
-    print("\\nWorkspace initialization complete!")
-    print(f"To use this workspace, run: source {run_env_path}")
-    print(f"Or prepend commands with: QLIB_WORKSPACE_DIR={target} python ...")
+    # print("\\nWorkspace initialization complete!")
+    # print(f"To use this workspace, run: source {run_env_path}")
+    # print(f"Or prepend commands with: QLIB_WORKSPACE_DIR={target} python ...")
 
 def main():
     parser = argparse.ArgumentParser(description="Initialize a new Qlib Workspace")
