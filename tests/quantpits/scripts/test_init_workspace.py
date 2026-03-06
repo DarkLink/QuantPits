@@ -18,7 +18,9 @@ def test_init_workspace_success(tmp_path):
 
     target = tmp_path / "NewWorkspace"
 
-    init_workspace(str(source), str(target))
+    # Mock Linux behavior to ensure run_env.sh is tested here
+    with patch("platform.system", return_value="Linux"):
+        init_workspace(str(source), str(target))
 
     # Verify directory structure
     assert target.exists()
@@ -37,8 +39,9 @@ def test_init_workspace_success(tmp_path):
     assert run_env.exists()
     content = run_env.read_text()
     assert "QLIB_WORKSPACE_DIR" in content
-    # Should have executable permission
-    assert os.stat(run_env).st_mode & stat.S_IXUSR
+    # Should have executable permission (only check on non-windows)
+    if os.name != 'nt':
+        assert os.stat(run_env).st_mode & stat.S_IXUSR
 
 
 def test_init_workspace_strategy_yaml_generated(tmp_path):
@@ -97,8 +100,49 @@ def test_init_workspace_no_source_config(tmp_path, capsys):
     assert "Warning" in captured.out
     assert (target / "config").exists()
 
+
+def test_init_workspace_windows_script(tmp_path):
+    """Should generate run_env.ps1 when running on Windows."""
+    source = tmp_path / "Source"
+    source.mkdir()
+    (source / "config").mkdir()
+    target = tmp_path / "NewWorkspacePS"
+
+    with patch("platform.system", return_value="Windows"):
+        init_workspace(str(source), str(target))
+
+    run_env = target / "run_env.ps1"
+    assert run_env.exists()
+    content = run_env.read_text(encoding="utf-8")
+    assert "$env:QLIB_WORKSPACE_DIR" in content
+    assert "run_env.sh" not in [f.name for f in target.iterdir() if f.is_file() and f.suffix == ".sh"]
+
+
+def test_init_workspace_linux_script(tmp_path):
+    """Should generate run_env.sh when running on Linux."""
+    source = tmp_path / "Source"
+    source.mkdir()
+    (source / "config").mkdir()
+    target = tmp_path / "NewWorkspaceSH"
+
+    with patch("platform.system", return_value="Linux"):
+        init_workspace(str(source), str(target))
+
+    run_env = target / "run_env.sh"
+    assert run_env.exists()
+    content = run_env.read_text()
+    assert "export QLIB_WORKSPACE_DIR" in content
+    # Should have executable permission (only check on non-windows)
+    if os.name != 'nt':
+        assert os.stat(run_env).st_mode & stat.S_IXUSR
+
+
 def test_main(tmp_path, monkeypatch):
     from quantpits.scripts import init_workspace as iw
+    import platform
+    is_windows = platform.system() == "Windows"
+    script_name = "run_env.ps1" if is_windows else "run_env.sh"
+
     source = tmp_path / "Source"
     source.mkdir()
     (source / "config").mkdir()
@@ -109,4 +153,4 @@ def test_main(tmp_path, monkeypatch):
         iw.main()
         
     assert target.exists()
-    assert (target / "run_env.sh").exists()
+    assert (target / script_name).exists()
