@@ -424,11 +424,15 @@ def main():
         # We need the full trade log to get amounts
         trade_log = exec_a.trade_log
         if not trade_log.empty and 'trade_class' in trade_log.columns:
-            total_trades = len(trade_log)
+            # Only count actual trades (excluding dividends, fees, etc.)
+            real_trades = trade_log[trade_log['交易类别'].str.contains('买入|卖出', na=False)]
+            total_trades = len(real_trades)
             if total_trades > 0:
-                for cls, label in [('S', 'SIGNAL'), ('A', 'SUBSTITUTE'), ('M', 'MANUAL')]:
-                    subset = trade_log[trade_log['trade_class'] == cls]
+                for cls, label in [('S', 'SIGNAL'), ('A', 'SUBSTITUTE'), ('M', 'MANUAL'), ('U', 'UNCLASSIFIED')]:
+                    subset = real_trades[real_trades['trade_class'] == cls]
                     count = len(subset)
+                    if count == 0 and cls == 'U':
+                        continue  # Hide UNCLASSIFIED if 0
                     pct = count / total_trades
                     amt = subset['成交金额'].sum() if '成交金额' in subset.columns else 0.0
                     if args.shareable:
