@@ -45,6 +45,8 @@ Ensemble Fusion - 对用户选定的模型组合进行融合预测、回测和�
   --output-dir        输出目录 (默认 output/ensemble)
   --no-backtest       跳过回测
   --no-charts         跳过图表生成
+  --detailed-analysis 生成详尽的回测分析报告（类似实盘分析）
+  --verbose-backtest  开启 Qlib 回测的详细模式
 """
 
 import os
@@ -556,7 +558,7 @@ def extract_report_df(metrics):
     return metrics
 
 
-def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt_config=None):
+def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt_config=None, verbose=False):
     """运行回测"""
     from qlib.backtest import backtest
     from qlib.backtest.executor import SimulatorExecutor
@@ -575,13 +577,14 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt
     print(f"{'='*60}")
     print(f"Backtest Range: {bt_start} ~ {bt_end}")
     print(f"Freq: {freq}")
+    print(f"Verbose: {verbose}")
 
     strategy_inst = strategy.create_backtest_strategy(final_score, st_config)
 
     executor_obj = SimulatorExecutor(
         time_per_step=freq,
         generate_portfolio_metrics=True,
-        verbose=False
+        verbose=verbose
     )
 
     print(f"\n开始回测...")
@@ -598,34 +601,277 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt
     report_df = extract_report_df(raw_portfolio_metrics)
 
     if report_df is not None:
+        # Use PortfolioAnalyzer for consistent summary metrics
+        from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+        
+        # Prepare daily_amount_df (Standardize and convert returns to NAV before up-sampling)
+        da_df = pd.DataFrame(index=report_df.index)
+        da_df['收盘价值'] = report_df['account']
+        da_df[benchmark] = (1 + report_df['bench']).cumprod()
+        if not isinstance(da_df.index, pd.DatetimeIndex):
+            da_df.index = pd.to_datetime(da_df.index)
+        da_df.index.name = '成交日期'
+        
+        # Up-sample to daily frequency to ensure PortfolioAnalyzer's day-counting is correct
+        from qlib.data import D
+        bt_start_dt = da_df.index.min()
+        bt_end_dt = da_df.index.max()
+        daily_dates = D.calendar(start_time=bt_start_dt, end_time=bt_end_dt, freq='day')
+        da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
+        da_df = da_df.reset_index().rename(columns={'index': '成交日期'})
+        
+        pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col=benchmark, freq=freq)
+        metrics = pa.calculate_traditional_metrics()
+        
+        annualized_return = metrics.get('CAGR', 0)
+        max_drawdown = metrics.get('Max_Drawdown', 0)
+        bench_cum_ret = metrics.get('Benchmark_Absolute_Return', 0)
+        total_return = metrics.get('Absolute_Return', 0)
+        calmar = metrics.get('Calmar', 0)
+
         initial_cash = bt_config['account']
         final_nav = report_df.iloc[-1]['account']
-        ann_scaler = 52 if freq == 'week' else 252
-        annualized_return = report_df['return'].mean() * ann_scaler
-
-        report_df['nav'] = report_df['account']
-        report_df['max_nav'] = report_df['nav'].cummax()
-        report_df['drawdown'] = (report_df['nav'] - report_df['max_nav']) / report_df['max_nav']
-        max_drawdown = report_df['drawdown'].min()
-
-        bench_ret = (report_df.iloc[-1]['bench'] - report_df.iloc[0]['bench']) / report_df.iloc[0]['bench']
-        total_return = (final_nav / initial_cash) - 1
 
         print(f'\n{"="*20} 回测绩效报告 {"="*20}')
         print(f'回测区间     : {bt_start} ~ {bt_end}')
         print(f'初始资金     : {initial_cash:,.2f}')
         print(f'最终净值     : {final_nav:,.2f}')
         print(f'策略累计收益 : {total_return*100:.2f}%')
-        print(f'基准累计收益 : {bench_ret*100:.2f}% (超额: {(total_return-bench_ret)*100:.2f}%)')
+        print(f'基准累计收益 : {bench_cum_ret*100:.2f}% (超额: {(total_return-bench_cum_ret)*100:.2f}%)')
         print(f'年化收益率   : {annualized_return*100:.2f}%')
         print(f'最大回撤     : {max_drawdown*100:.2f}%')
-        if max_drawdown != 0:
-            print(f'Calmar Ratio : {annualized_return / abs(max_drawdown):.4f}')
+        if not pd.isna(calmar):
+            print(f'Calmar Ratio : {calmar:.4f}')
+
+        # Standardize report output (Account object gives 'account' column)
+        report_df['nav'] = report_df['account']
     else:
         print("【错误】未能提取回测数据")
 
-    return report_df
+    return report_df, executor_obj
 
+def run_detailed_backtest_analysis(executor_obj, combo_name, anchor_date, output_dir, freq, benchmark='SH000300'):
+    """
+    运行详尽的回测分析报告（复用 PortfolioAnalyzer 等组件）
+    """
+    import pandas as pd
+    import numpy as np
+    from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+    # Note: ExecutionAnalyzer requires trade_log_full.csv which we reconstruct here
+    
+    print(f"\n{'='*60}")
+    print("详尽回测分析")
+    print(f"{'='*60}")
+    
+    ta = executor_obj.trade_account
+    pm_tuple = ta.get_portfolio_metrics()
+    if not pm_tuple or len(pm_tuple) < 1:
+        print("Error: No portfolio metrics found.")
+        return None
+
+    # 1. 构造 daily_amount_df
+    # Explicitly convert returns to NAV before up-sampling
+    source_df = pm_tuple[0].copy()
+    daily_amount_df = pd.DataFrame(index=source_df.index)
+    daily_amount_df['收盘价值'] = source_df['account']
+    daily_amount_df[benchmark] = (1 + source_df['bench']).cumprod()
+    
+    # Ensure index is datetime
+    daily_amount_df.index = pd.to_datetime(daily_amount_df.index)
+    
+    # Up-sample to daily frequency to ensure PortfolioAnalyzer's day-counting is correct
+    from qlib.data import D
+    bt_start = daily_amount_df.index.min()
+    bt_end = daily_amount_df.index.max()
+    daily_dates = D.calendar(start_time=bt_start, end_time=bt_end, freq='day')
+    daily_amount_df = daily_amount_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
+    daily_amount_df.index.name = '成交日期'
+    daily_amount_df = daily_amount_df.reset_index()
+    
+    # 2. 构造 holding_log_df 和 trade_log_df
+    hist_pos = ta.get_hist_positions()
+    holding_data = []
+    trades = []
+    prev_pos_counts = {}
+    
+    sorted_dates = sorted(hist_pos.keys())
+    for date in sorted_dates:
+        pos_obj = hist_pos[date]
+        dt = pd.to_datetime(date)
+        
+        curr_pos_counts = {}
+        for inst, unit in pos_obj.position.items():
+            try:
+                if hasattr(unit, 'count'):
+                    count = unit.count
+                    price = unit.price
+                else:
+                    count = unit
+                    price = 1.0 if inst == 'CASH' else 0.0
+                
+                # Defensive handling for unexpected types (Series, dict, etc.)
+                if hasattr(count, 'iloc'): count = count.iloc[-1]
+                if isinstance(count, dict): count = next(iter(count.values())) if count else 0.0
+                if hasattr(price, 'iloc'): price = price.iloc[-1]
+                if isinstance(price, dict): price = next(iter(price.values())) if price else 0.0
+                
+                count = float(count)
+                price = float(price)
+            except Exception as e:
+                print(f"  [DEBUG] Error extracting {inst}: {e}, unit type: {type(unit)}")
+                count = 0.0
+                price = 0.0
+
+            holding_data.append({
+                '成交日期': dt,
+                '证券代码': inst,
+                '当前持仓': count,
+                '收盘价值': (count * price) if inst != 'CASH' else count
+            })
+            if inst != 'CASH':
+                curr_pos_counts[inst] = count
+        
+        # Simple trade reconstruction by comparing day-to-day holdings
+        # Note: This doesn't capture intra-day round trips, but Qlib basic backtest is end-of-day
+        all_insts = set(prev_pos_counts.keys()) | set(curr_pos_counts.keys())
+        for inst in all_insts:
+            prev_n = prev_pos_counts.get(inst, 0)
+            curr_n = curr_pos_counts.get(inst, 0)
+            if curr_n > prev_n:
+                # Buy
+                u = pos_obj.position.get(inst)
+                price = u.price if hasattr(u, 'price') else 0
+                trades.append({
+                    '成交日期': dt,
+                    '证券代码': inst,
+                    '交易类别': '买入',
+                    '成交数量': curr_n - prev_n,
+                    '成交金额': (curr_n - prev_n) * price
+                })
+            elif curr_n < prev_n:
+                # Sell
+                u = pos_obj.position.get(inst)
+                if hasattr(u, 'price'):
+                    price = u.price
+                else:
+                    # If not in current position (full sell), we might not have the close price here
+                    # In Qlib Account, we could potentially get it from elsewhere, but for now 0 is safer than crashing
+                    price = 0.0
+                
+                trades.append({
+                    '成交日期': dt,
+                    '证券代码': inst,
+                    '交易类别': '卖出',
+                    '成交数量': prev_n - curr_n,
+                    '成交金额': (prev_n - curr_n) * price
+                })
+        prev_pos_counts = curr_pos_counts
+
+    holding_log_df = pd.DataFrame(holding_data)
+    trade_log_df = pd.DataFrame(trades)
+    
+    # 3. 运行分析组件
+    pa = PortfolioAnalyzer(
+        daily_amount_df=daily_amount_df, 
+        trade_log_df=trade_log_df, 
+        holding_log_df=holding_log_df,
+        benchmark_col=benchmark,
+        freq=freq
+    )
+    
+    # Get time range from daily_amount_df
+    bt_start = daily_amount_df['成交日期'].min().strftime('%Y-%m-%d')
+    bt_end = daily_amount_df['成交日期'].max().strftime('%Y-%m-%d')
+    
+    # 4. 生成报告 (Markdown)
+    report = []
+    report.append(f"# Backtest Detailed Analysis Report - {combo_name if combo_name else 'Ensemble'}")
+    report.append(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report.append(f"\n## Analysis Scope")
+    report.append(f"- **Combo**: {combo_name}")
+    report.append(f"- **Anchor Date**: {anchor_date}")
+    report.append(f"- **Backtest Period**: {bt_start} to {bt_end}")
+    report.append(f"- **Benchmark**: {benchmark}")
+    report.append(f"- **Frequency**: {freq}")
+    
+    # Actually run metrics now
+    metrics = pa.calculate_traditional_metrics()
+    exposure = pa.calculate_factor_exposure()
+    style_exp = pa.calculate_style_exposures()
+    holding_metrics = pa.calculate_holding_metrics()
+    
+    report.append(f"\n## 1. Portfolio Strategy & Returns")
+    
+    if holding_metrics:
+        report.append("### Holding Analytics")
+        report.append(f"- **Avg Daily Holdings Count**: {holding_metrics.get('Avg_Daily_Holdings_Count', 0):.1f}")
+        report.append(f"- **Avg Top 1 Concentration**: {holding_metrics.get('Avg_Top1_Concentration', 0):.2%}")
+        if not pd.isna(holding_metrics.get('Avg_Floating_Return')):
+            report.append(f"- **Avg Floating Return**: {holding_metrics.get('Avg_Floating_Return', 0):.2%}")
+        if not pd.isna(holding_metrics.get('Daily_Holding_Win_Rate')):
+            report.append(f"- **Daily Holding Win Rate**: {holding_metrics.get('Daily_Holding_Win_Rate', 0):.2%}")
+
+    report.append("\n### Traditional Return & Risk")
+    if metrics:
+        report.append(f"- **Absolute Return**: {metrics.get('Absolute_Return', 0):.2%}")
+        report.append(f"- **Benchmark Absolute Return**: {metrics.get('Benchmark_Absolute_Return', 0):.2%}")
+        report.append(f"- **CAGR**: {metrics.get('CAGR', 0):.2%}")
+        report.append(f"- **Benchmark CAGR**: {metrics.get('Benchmark_CAGR', 0):.2%}")
+        report.append(f"- **Excess Return CAGR**: {metrics.get('Excess_Return_CAGR', 0):.2%}")
+        report.append(f"- **Volatility**: {metrics.get('Volatility', 0):.2%}")
+        report.append(f"- **Benchmark Volatility**: {metrics.get('Benchmark_Volatility', 0):.2%}")
+        report.append(f"- **Tracking Error**: {metrics.get('Tracking_Error', 0):.2%}")
+        report.append(f"- **Sharpe**: {metrics.get('Sharpe', 0):.4f}")
+        report.append(f"- **Benchmark Sharpe**: {metrics.get('Benchmark_Sharpe', 0):.4f}")
+        report.append(f"- **Information Ratio**: {metrics.get('Information_Ratio', 0):.4f}")
+        report.append(f"- **Max Drawdown**: {metrics.get('Max_Drawdown', 0):.2%}")
+        report.append(f"- **Benchmark Max Drawdown**: {metrics.get('Benchmark_Max_Drawdown', 0):.2%}")
+        report.append(f"- **Turnover Rate Annual**: {metrics.get('Turnover_Rate_Annual', 0):.2f}x")
+
+    if exposure:
+        report.append(f"\n### Factor Exposure")
+        report.append(f"- **Beta (Market)**: {exposure.get('Beta_Market', 0):.4f}")
+        report.append(f"- **Annualized Alpha**: {exposure.get('Annualized_Alpha', 0):.2%}")
+        report.append(f"- **R-Squared**: {exposure.get('R_Squared', 0):.4f}")
+        if style_exp:
+            report.append(f"- **Multi-Factor Beta**: {style_exp.get('Multi_Factor_Beta', 0):.4f}")
+            report.append(f"- **Barra Size Exposure**: {style_exp.get('Barra_Size_Exp', 0):.4f}")
+            report.append(f"- **Barra Momentum Exposure**: {style_exp.get('Barra_Momentum_Exp', 0):.4f}")
+            report.append(f"- **Barra Volatility Exposure**: {style_exp.get('Barra_Volatility_Exp', 0):.4f}")
+            report.append(f"- **Style R-Squared**: {style_exp.get('Barra_Style_R_Squared', 0):.4f}")
+
+    if metrics and style_exp:
+        cagr = metrics.get('CAGR', 0)
+        bench_cagr = metrics.get('Benchmark_CAGR', 0)
+        beta = exposure.get('Beta_Market', 0)
+        factor_ann = style_exp.get('Factor_Annualized', {})
+        
+        beta_ret = beta * bench_cagr
+        style_ret = 0.0
+        if 'size' in factor_ann and 'momentum' in factor_ann and 'volatility' in factor_ann:
+            style_ret += style_exp.get('Barra_Size_Exp', 0) * factor_ann['size']
+            style_ret += style_exp.get('Barra_Momentum_Exp', 0) * factor_ann['momentum']
+            style_ret += style_exp.get('Barra_Volatility_Exp', 0) * factor_ann['volatility']
+            
+        idio_alpha = style_exp.get('Multi_Factor_Intercept', 0)
+        arithmetic_total = beta_ret + style_ret + idio_alpha
+        cagr_gap = cagr - arithmetic_total
+        
+        report.append("\n### Performance Attribution")
+        report.append(f"- **Total Strategy CAGR**: {cagr:.2%}")
+        report.append(f"  - **Beta Return (Market Exposure)**: {beta_ret:.2%}")
+        report.append(f"  - **Style Alpha (Risk Factors)**: {style_ret:.2%}")
+        report.append(f"  - **Idiosyncratic Alpha (Selection/Timing)**: {idio_alpha:.2%}")
+        report.append(f"  - **Compounding Gap (Residual)**: {cagr_gap:.2%}")
+
+    content = "\n".join(report)
+    suffix = f"_{combo_name}" if combo_name else ""
+    report_file = os.path.join(output_dir, f"backtest_analysis_report{suffix}_{anchor_date}.md")
+    with open(report_file, 'w', encoding='utf-8') as f:
+        f.write(content)
+    
+    print(f"详细回测分析报告已生成: {report_file}")
+    return report_file
 
 # ============================================================================
 # Stage 7: 风险分析 & 排行榜
@@ -666,13 +912,58 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
 
     if report_df is not None:
         print(">>> Ensemble 模型风险分析:")
+        from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+        import strategy
+        st_config = strategy.load_strategy_config()
+        benchmark = st_config.get('benchmark', 'SH000300')
+        
+        # Explicitly convert returns to NAV before up-sampling
+        da_df = pd.DataFrame(index=report_df.index)
+        da_df['收盘价值'] = report_df['account']
+        da_df[benchmark] = (1 + report_df['bench']).cumprod()
+        if not isinstance(da_df.index, pd.DatetimeIndex):
+            da_df.index = pd.to_datetime(da_df.index)
+        
+        # Consistent Up-sampling for correct duration (252-day basis)
+        from qlib.data import D
+        bt_start_dt = da_df.index.min()
+        bt_end_dt = da_df.index.max()
+        daily_dates = D.calendar(start_time=bt_start_dt, end_time=bt_end_dt, freq='day')
+        da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
+        da_df.index.name = '成交日期'
+        da_df = da_df.reset_index()
+        
+        pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col=benchmark, freq=freq)
+        metrics = pa.calculate_traditional_metrics()
+        
+        # We still want the detailed breakdown for Ensemble in the log
+        # But we'll use our internal logic for consistency
         r_strat = report_df['return']
         r_bench = report_df['bench']
         r_excess = r_strat - r_bench
-
-        risk_strat = pd.Series(calculate_safe_risk(r_strat, freq))
-        risk_bench = pd.Series(calculate_safe_risk(r_bench, freq))
-        risk_excess = pd.Series(calculate_safe_risk(r_excess, freq))
+        
+        risk_strat = pd.Series({
+            'mean': r_strat.mean(),
+            'std': r_strat.std(),
+            'annualized_return': metrics.get('CAGR', 0),
+            'information_ratio': metrics.get('Sharpe', 0), # Using Sharpe for IR here as proxy
+            'max_drawdown': metrics.get('Max_Drawdown', 0)
+        })
+        risk_bench = pd.Series({
+            'mean': r_bench.mean(),
+            'std': r_bench.std(),
+            'annualized_return': metrics.get('Benchmark_CAGR', 0),
+            'information_ratio': metrics.get('Benchmark_Sharpe', 0),
+            'max_drawdown': metrics.get('Benchmark_Max_Drawdown', 0)
+        })
+        risk_excess = pd.Series({
+            'mean': r_excess.mean(),
+            'std': r_excess.std(),
+            'annualized_return': metrics.get('Excess_Return_CAGR', 0),
+            'information_ratio': metrics.get('Information_Ratio', 0),
+            'max_drawdown': (report_df['account']/report_df['account'].cummax() - (1+r_bench).cumprod()/((1+r_bench).cumprod().cummax())).min() # rough proxy
+        })
+        # Note: excess max drawdown is harder, but the core ones are annualized_return and IR
 
         ensemble_wide_df = pd.concat(
             [risk_strat, risk_bench, risk_excess],
@@ -681,10 +972,9 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
         print(ensemble_wide_df)
 
         # 添加到排行榜
-        metrics = risk_strat.to_dict()
-        metrics = {k: v for k, v in metrics.items() if not isinstance(v, dict)}
-        metrics['name'] = 'Ensemble'
-        leaderboard_data.append(metrics)
+        metrics_for_lb = risk_strat.to_dict()
+        metrics_for_lb['name'] = 'Ensemble'
+        leaderboard_data.append(metrics_for_lb)
         all_reports['Ensemble'] = report_df
 
     # 2. 子模型排行榜
@@ -703,9 +993,32 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
             all_reports[model_name] = hist_report
 
             if 'return' in hist_report.columns:
-                metrics = calculate_safe_risk(hist_report['return'], freq=freq)
-                metrics = {k: v for k, v in metrics.items() if not isinstance(v, dict)}
-                metrics['name'] = model_name
+                # Up-sample sub-model report for consistent metric calculation
+                sub_da_df = pd.DataFrame(index=hist_report.index)
+                sub_da_df['收盘价值'] = hist_report['account']
+                sub_da_df[benchmark] = (1 + hist_report['bench']).cumprod()
+                if not isinstance(sub_da_df.index, pd.DatetimeIndex):
+                    sub_da_df.index = pd.to_datetime(sub_da_df.index)
+                
+                # Use the same daily_dates for alignment
+                from qlib.data import D
+                sub_bt_start = sub_da_df.index.min()
+                sub_bt_end = sub_da_df.index.max()
+                sub_daily_dates = D.calendar(start_time=sub_bt_start, end_time=sub_bt_end, freq='day')
+                
+                sub_da_df = sub_da_df.reindex(sub_daily_dates, method='ffill').dropna(subset=['收盘价值'])
+                sub_da_df.index.name = '成交日期'
+                sub_da_df = sub_da_df.reset_index()
+                
+                sub_pa = PortfolioAnalyzer(daily_amount_df=sub_da_df, benchmark_col=benchmark, freq=freq)
+                sub_metrics_pa = sub_pa.calculate_traditional_metrics()
+                
+                metrics = {
+                    'name': model_name,
+                    'annualized_return': sub_metrics_pa.get('CAGR', 0),
+                    'information_ratio': sub_metrics_pa.get('Sharpe', 0),
+                    'max_drawdown': sub_metrics_pa.get('Max_Drawdown', 0)
+                }
                 leaderboard_data.append(metrics)
         except Exception as e:
             print(f"  [跳过] {model_name}: {e}")
@@ -830,29 +1143,36 @@ def compare_combos(combo_results, anchor_date, output_dir, freq):
         }
         report_df = result.get('report_df')
         if report_df is not None:
+            from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
             import strategy
             st_config = strategy.load_strategy_config()
-            bt_config = strategy.get_backtest_config(st_config)
-            initial_cash = bt_config['account']
-            final_nav = report_df.iloc[-1]['account']
-            total_return = (final_nav - initial_cash) / initial_cash
-            ann_scaler = 52 if freq == 'week' else 252
-            ann_return = report_df['return'].mean() * ann_scaler
-
-            report_df = report_df.copy()
-            report_df['nav'] = report_df['account']
-            report_df['max_nav'] = report_df['nav'].cummax()
-            report_df['drawdown'] = (report_df['nav'] - report_df['max_nav']) / report_df['max_nav']
-            max_dd = report_df['drawdown'].min()
-
-            bench_ret = (report_df.iloc[-1]['bench'] - report_df.iloc[0]['bench']) / report_df.iloc[0]['bench']
-
+            benchmark = st_config.get('benchmark', 'SH000300')
+            
+            # Prepare daily_amount_df (Standardize and convert returns to NAV before up-sampling)
+            da_df = pd.DataFrame(index=report_df.index)
+            da_df['收盘价值'] = report_df['account']
+            da_df[benchmark] = (1 + report_df['bench']).cumprod()
+            if not isinstance(da_df.index, pd.DatetimeIndex):
+                da_df.index = pd.to_datetime(da_df.index)
+            da_df.index.name = '成交日期'
+            
+            # Up-sample to daily frequency to ensure PortfolioAnalyzer's day-counting is correct
+            from qlib.data import D
+            bt_start_dt = da_df.index.min()
+            bt_end_dt = da_df.index.max()
+            daily_dates = D.calendar(start_time=bt_start_dt, end_time=bt_end_dt, freq='day')
+            da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
+            da_df = da_df.reset_index().rename(columns={'index': '成交日期'})
+            
+            pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col=benchmark, freq=freq)
+            metrics = pa.calculate_traditional_metrics()
+            
             row.update({
-                'total_return': round(total_return * 100, 2),
-                'annualized_return': round(ann_return * 100, 2),
-                'max_drawdown': round(max_dd * 100, 2),
-                'calmar_ratio': round(ann_return / abs(max_dd), 4) if max_dd != 0 else None,
-                'excess_return': round((total_return - bench_ret) * 100, 2),
+                'total_return': round(metrics.get('Absolute_Return', 0) * 100, 2),
+                'annualized_return': round(metrics.get('CAGR', 0) * 100, 2),
+                'max_drawdown': round(metrics.get('Max_Drawdown', 0) * 100, 2),
+                'calmar_ratio': round(metrics.get('Calmar', 1.0) if not pd.isna(metrics.get('Calmar')) else 0.0, 4),
+                'excess_return': round(metrics.get('Absolute_Return', 0) * 100 - metrics.get('Benchmark_Absolute_Return', 0) * 100, 2),
             })
         comparison_data.append(row)
 
@@ -972,8 +1292,18 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
 
     # ---- Stage 6: 回测 ----
     report_df = None
+    executor_obj = None
     if not args.no_backtest:
-        report_df = run_backtest(final_score, top_k, drop_n, benchmark, args.freq)
+        report_df, executor_obj = run_backtest(
+            final_score, top_k, drop_n, benchmark, args.freq, 
+            verbose=args.verbose_backtest
+        )
+        
+        if args.detailed_analysis and executor_obj is not None:
+            run_detailed_backtest_analysis(
+                executor_obj, combo_name, anchor_date, combo_output_dir, args.freq,
+                benchmark=benchmark
+            )
 
     # ---- Stage 7: 风险分析 ----
     all_reports = {}
@@ -1062,6 +1392,10 @@ def main():
                         help='仅使用最后 N 年的预测数据 (作为 OOS 测试集)')
     parser.add_argument('--only-last-months', type=int, default=0,
                         help='仅使用最后 N 个月的预测数据 (作为 OOS 测试集)')
+    parser.add_argument('--detailed-analysis', action='store_true',
+                        help='生成详尽的回测分析报告（类似实盘分析）')
+    parser.add_argument('--verbose-backtest', action='store_true',
+                        help='开启 Qlib 回测的详细模式')
     args = parser.parse_args()
 
     import env

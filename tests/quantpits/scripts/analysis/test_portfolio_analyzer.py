@@ -199,3 +199,37 @@ def test_calculate_classified_returns(tmp_path):
     assert result['manual_buys_count'] == 1  # SZ000001 buy on 01-09 is Manual
     assert result['manual_sells_count'] == 0 # SZ000002 sell on 01-10 is System (S), SZ000001 sell on 01-14 is missing class -> 'U' => not 'M'
 
+
+def test_calculate_annualization_basis():
+    # 252 days of 0.1% return each. 
+    # Total return = (1.001)^252 - 1 = 0.2863 (28.63%)
+    dates = pd.date_range(start="2025-01-01", periods=252, freq='D')
+    # Qlib reconstructions usually have NAV. 
+    nav = [100000.0 * (1.001**i) for i in range(252)]
+    bench_returns = [0.0005] * 252 # 0.05% bench return daily
+    bench_nav = (1 + pd.Series(bench_returns)).cumprod()
+    
+    da_df = pd.DataFrame({
+        "成交日期": dates,
+        "收盘价值": nav,
+        "CASHFLOW": 0.0,
+        "SH000300": bench_nav
+    })
+    
+    # PortfolioAnalyzer with daily data
+    pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col="SH000300")
+    metrics = pa.calculate_traditional_metrics()
+    
+    # Absolute return is based on the full series
+    abs_ret_expected = (1.001**251 - 1.0) # 251 steps for 252 rows
+    assert np.isclose(metrics['Absolute_Return'], abs_ret_expected, atol=1e-5)
+    
+    # CAGR should be (1 + abs_ret)^(1 / (252/252)) - 1 = abs_ret
+    # Wait, PA uses years = len(returns) / 252.0. returns has 252 rows.
+    # So years = 1.0.
+    assert np.isclose(metrics['CAGR'], abs_ret_expected, atol=1e-5)
+    
+    # Benchmark checks
+    bench_abs_ret_expected = (1.0005**251 - 1.0)
+    assert np.isclose(metrics['Benchmark_Absolute_Return'], bench_abs_ret_expected, atol=1e-5)
+    assert np.isclose(metrics['Benchmark_CAGR'], bench_abs_ret_expected, atol=1e-5)

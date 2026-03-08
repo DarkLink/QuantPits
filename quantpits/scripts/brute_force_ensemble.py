@@ -424,37 +424,40 @@ def run_single_backtest(
                 trade_executor=executor_obj,
             )
 
-        # 4. 提取结果
+        # 4. Standardize for PortfolioAnalyzer
         report = extract_report_df(raw_portfolio_metrics)
-
-        initial_cash = bt_config["account"]
-        final_nav = report.iloc[-1]["account"]
-        ann_scaler = 52 if freq == "week" else 252
-        ann_ret = report["return"].mean() * ann_scaler
-
-        report["nav"] = report["account"]
-        report["max_nav"] = report["nav"].cummax()
-        report["drawdown"] = (report["nav"] - report["max_nav"]) / report["max_nav"]
-        max_dd = report["drawdown"].min()
-
-        total_ret = (final_nav / initial_cash) - 1
-        bench_ret = (
-            (report.iloc[-1]["bench"] - report.iloc[0]["bench"])
-            / report.iloc[0]["bench"]
-        )
-        excess_ret = total_ret - bench_ret
-        ann_excess = ann_ret - (report["bench"].mean() * ann_scaler)
+        import strategy
+        st_config_inner = strategy.load_strategy_config()
+        benchmark_col = st_config_inner.get('benchmark', 'SH000300')
+        
+        # Prepare daily_amount_df (Standardize and convert returns to NAV before up-sampling)
+        da_df = pd.DataFrame(index=report.index)
+        da_df['收盘价值'] = report['account']
+        da_df[benchmark_col] = (1 + report['bench']).cumprod()
+        if not isinstance(da_df.index, pd.DatetimeIndex):
+            da_df.index = pd.to_datetime(da_df.index)
+        da_df.index.name = '成交日期'
+        
+        # Up-sample to daily frequency to ensure PortfolioAnalyzer's day-counting is correct
+        # Use the dates from norm_df to get the exact trading day index
+        daily_dates = norm_df.index.get_level_values('datetime').unique().sort_values()
+        da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
+        da_df = da_df.reset_index().rename(columns={'index': '成交日期', 'datetime': '成交日期'})
+        
+        from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+        pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col=benchmark_col, freq=freq)
+        metrics = pa.calculate_traditional_metrics()
 
         return {
             "models": ",".join(combo_models),
             "n_models": len(combo_models),
-            "Ann_Ret": ann_ret,
-            "Max_DD": max_dd,
-            "Excess_Ret": excess_ret,
-            "Ann_Excess": ann_excess,
-            "Total_Ret": total_ret,
-            "Final_NAV": final_nav,
-            "Calmar": ann_ret / abs(max_dd) if max_dd != 0 else 0,
+            "Ann_Ret": metrics.get("CAGR", 0),
+            "Max_DD": metrics.get("Max_Drawdown", 0),
+            "Excess_Ret": metrics.get("Absolute_Return", 0) - metrics.get("Benchmark_Absolute_Return", 0),
+            "Ann_Excess": metrics.get("Excess_Return_CAGR", 0),
+            "Total_Ret": metrics.get("Absolute_Return", 0),
+            "Final_NAV": report.iloc[-1]["account"],
+            "Calmar": metrics.get("Calmar", 0) if not pd.isna(metrics.get("Calmar")) else 0,
         }
     except Exception as e:
         print(f"  [ERROR] Combo {combo_models} failed: {e}")

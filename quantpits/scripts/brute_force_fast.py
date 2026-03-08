@@ -604,16 +604,21 @@ def compute_metrics(net_returns, bench_returns_np, freq="day"):
     Returns:
         dict: 指标字典
     """
-    # 收益率序列始终是日频，用 252 年化
-    periods = 252
+    # 收益率序列始终是日频，计算年数时始终使用 252
+    periods_per_year = 252
+    days = len(net_returns)
+    if days == 0:
+        return {}
 
     # 净值曲线
     nav = np.cumprod(1 + net_returns)
-    final_nav = nav[-1] if len(nav) > 0 else 1.0
+    final_nav = nav[-1]
     total_ret = final_nav - 1.0
 
-    # 年化收益
-    ann_ret = np.mean(net_returns) * periods
+    # 几何年化收益 (CAGR)
+    years = days / periods_per_year
+    ann_ret = (final_nav ** (1 / years)) - 1 if final_nav > 0 else -1.0
+    
 
     # 最大回撤
     running_max = np.maximum.accumulate(nav)
@@ -621,16 +626,20 @@ def compute_metrics(net_returns, bench_returns_np, freq="day"):
     max_dd = np.min(drawdown)
 
     # 基准收益
-    bench_ret_total = np.prod(1 + bench_returns_np) - 1.0
+    bench_nav = np.cumprod(1 + bench_returns_np)
+    bench_final_nav = bench_nav[-1] if len(bench_nav) > 0 else 1.0
+    bench_ret_total = bench_final_nav - 1.0
+    bench_cagr = (bench_final_nav ** (1 / years)) - 1 if bench_final_nav > 0 else -1.0
 
-    # 超额
+    # 超额 (几何总超额 vs 几何年化超额)
     excess_ret = total_ret - bench_ret_total
-    ann_excess = ann_ret - (np.mean(bench_returns_np) * periods)
+    ann_excess = ann_ret - bench_cagr
 
     # Calmar
     calmar = ann_ret / abs(max_dd) if max_dd != 0 else 0
 
-    # Sharpe (简化版)
+    # Sharpe (简化版，维持日频波动率年化)
+    periods = 252 # 波动率计算通常用日频基准
     if np.std(net_returns) > 0:
         sharpe = np.mean(net_returns) / np.std(net_returns) * np.sqrt(periods)
     else:

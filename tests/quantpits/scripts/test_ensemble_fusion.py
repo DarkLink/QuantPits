@@ -31,6 +31,10 @@ def mock_env(monkeypatch, tmp_path):
     # Global mocks for side-effect-heavy functions
     monkeypatch.setattr('quantpits.scripts.env.safeguard', lambda x: None)
     monkeypatch.setattr('quantpits.scripts.env.init_qlib', lambda: None)
+    import qlib.data
+    mock_D = MagicMock()
+    mock_D.calendar.return_value = pd.date_range("2020-01-01", periods=10, freq="D")
+    monkeypatch.setattr(qlib.data, 'D', mock_D)
     
     yield ef, workspace
 
@@ -225,9 +229,10 @@ def test_run_backtest(mock_bt, mock_executor, mock_create_strat, mock_get_bt_cfg
     
     mock_bt.return_value = (mock_report, None)
     
-    report_df = ef.run_backtest(final_score, top_k=50, drop_n=0, benchmark="SH000300", freq="day")
+    report_df, executor = ef.run_backtest(final_score, top_k=50, drop_n=0, benchmark="SH000300", freq="day")
     
     assert report_df is not None
+    assert executor is not None
     assert len(report_df) == 3
     assert "nav" in report_df.columns
     assert report_df.iloc[-1]["nav"] == 110000
@@ -374,8 +379,8 @@ def test_compare_combos(mock_load_st, mock_get_bt, tmp_path):
     report_df = pd.DataFrame({
         'account': [100000.0, 105000.0],
         'return': [0.0, 0.05],
-        'bench': [1.0, 1.02]
-    })
+        'bench': [0.0, 0.02]
+    }, index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
     
     combo_results = [{
         'name': 'combo1',
@@ -401,7 +406,7 @@ def test_risk_analysis_and_leaderboard(mock_R, mock_env, tmp_path):
     
     report_df = pd.DataFrame({
         'account': [100.0, 110.0],
-        'bench': [100.0, 105.0],
+        'bench': [0.0, 0.05],
         'return': [0.0, 0.1]
     }, index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
     
@@ -492,7 +497,7 @@ def test_run_single_combo_pipeline(mock_charts, mock_risk, mock_bt, mock_save, m
     mock_weights.return_value = (None, {"m1": 1.0}, False)
     mock_signal.return_value = pd.Series([0.5])
     mock_save.return_value = "pred.csv"
-    mock_bt.return_value = pd.DataFrame({"account": [100]})
+    mock_bt.return_value = (pd.DataFrame({"account": [100]}), MagicMock())
     mock_risk.return_value = ({"Ensemble": pd.DataFrame()}, pd.DataFrame())
     
     args = MagicMock()
@@ -500,6 +505,8 @@ def test_run_single_combo_pipeline(mock_charts, mock_risk, mock_bt, mock_save, m
     args.no_backtest = False
     args.no_charts = False
     args.freq = "day"
+    args.verbose_backtest = False
+    args.detailed_analysis = False
     
     res = ef.run_single_combo(
         "c1", ["m1"], "equal", None, norm_df, {"m1": 0.1}, ["m1"],
@@ -514,3 +521,62 @@ def test_run_single_combo_pipeline(mock_charts, mock_risk, mock_bt, mock_save, m
     assert mock_bt.called
     assert mock_risk.called
     assert mock_charts.called
+
+@patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer')
+def test_run_detailed_backtest_analysis(mock_pa, tmp_path):
+    from quantpits.scripts import ensemble_fusion as ef
+    
+    mock_executor = MagicMock()
+    mock_ta = MagicMock()
+    mock_executor.trade_account = mock_ta
+    
+    # Mock portfolio metrics
+    idx = pd.to_datetime(["2020-01-01", "2020-01-02"])
+    pm_df = pd.DataFrame({
+        'account': [100.0, 110.0],
+        'bench': [0.0, 0.05]
+    }, index=idx)
+    mock_ta.get_portfolio_metrics.return_value = (pm_df,)
+    
+    # Mock positions
+    mock_pos_obj = MagicMock()
+    # Fixed count and price
+    mock_unit = MagicMock()
+    mock_unit.count = 10
+    mock_unit.price = 5.0
+    mock_pos_obj.position = {"M1": mock_unit}
+    mock_ta.get_hist_positions.return_value = {pd.Timestamp("2020-01-01"): mock_pos_obj}
+    
+    # Mock PA results
+    mock_pa_inst = mock_pa.return_value
+    mock_pa_inst.calculate_traditional_metrics.return_value = {"CAGR": 0.5}
+    mock_pa_inst.calculate_factor_exposure.return_value = {"Beta_Market": 1.1}
+    mock_pa_inst.calculate_style_exposures.return_value = {"Barra_Size_Exp": 0.1}
+    mock_pa_inst.calculate_holding_metrics.return_value = {
+        "Avg_Daily_Holdings_Count": 5,
+        "Avg_Top1_Concentration": 0.1,
+        "Avg_Floating_Return": 0.01,
+        "Daily_Holding_Win_Rate": 0.6
+    }
+    
+    out_dir = tmp_path / "detailed"
+    out_dir.mkdir()
+    
+    report_file = ef.run_detailed_backtest_analysis(
+        mock_executor, "test_combo", "2020-01-01", str(out_dir), "day"
+    )
+    
+    assert report_file is not None
+    assert os.path.exists(report_file)
+    with open(report_file, 'r') as f:
+        content = f.read()
+        assert "CAGR" in content
+        assert "Beta (Market)" in content
+        assert "Performance Attribution" in content
+        assert "Beta Return" in content
+        assert "Style Alpha" in content
+        assert "Idiosyncratic Alpha" in content
+        assert "### Holding Analytics" in content
+        assert "Avg Floating Return" in content
+        assert "Backtest Period" in content
+        assert "Benchmark**: SH000300" in content

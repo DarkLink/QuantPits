@@ -4,19 +4,31 @@ import statsmodels.api as sm
 from .utils import load_daily_amount, get_daily_features, load_holding_log, load_market_config
 
 class PortfolioAnalyzer:
-    def __init__(self, daily_amount_df=None, trade_log_df=None, holding_log_df=None, start_date=None, end_date=None):
+    def __init__(self, daily_amount_df=None, trade_log_df=None, holding_log_df=None, start_date=None, end_date=None, benchmark_col='CSI300', freq='day'):
         self.start_date = None
         self.end_date = None
+        self.benchmark_col = benchmark_col
+        self.freq = freq
+        self.periods_per_year = 252 if freq == 'day' else 52
         if daily_amount_df is None:
             daily_amount_df = load_daily_amount()
         if not daily_amount_df.empty:
-            self.daily_amount = daily_amount_df.sort_values('成交日期').set_index('成交日期')
+            self.daily_amount = daily_amount_df.copy().sort_values('成交日期').set_index('成交日期')
+            
+            # Ensure benchmark is NAV (Value/Price) internally.
+            # If values start near 0, they are returns.
+            if self.benchmark_col in self.daily_amount.columns:
+                if abs(self.daily_amount[self.benchmark_col].iloc[0]) < 0.5:
+                    # Convert Returns to cumulative NAV
+                    self.daily_amount[self.benchmark_col] = (1 + self.daily_amount[self.benchmark_col].fillna(0)).cumprod()
+                    # Ensure baseline is 1.0
+                    if not self.daily_amount.empty:
+                        self.daily_amount.iloc[0, self.daily_amount.columns.get_loc(self.benchmark_col)] = 1.0
+
             if start_date:
                 self.start_date = pd.to_datetime(start_date)
             if end_date:
                 self.end_date = pd.to_datetime(end_date)
-            # DO NOT FILTER DATES IN __init__ to preserve history for shifting
-            # We will filter it AFTER shifting in calculate_daily_returns
         else:
             self.daily_amount = pd.DataFrame()
             
@@ -93,19 +105,24 @@ class PortfolioAnalyzer:
         drawdowns = cum_ret / rolling_max - 1.0
         max_dd = drawdowns.min()
         
+        abs_ret = float(cum_ret.iloc[-1] - 1.0) if cum_ret.iloc[-1] > 0 else 0.0
+        
         days = len(returns)
         if days < 2:
             return {}
+        
+        # Consistent with project's '252-day basis' philosophy:
+        # years are calculated based on the number of trading days.
+        # We always expect daily frequency for the records internally.
         years = days / 252.0
         
-        abs_ret = float(cum_ret.iloc[-1] - 1.0) if cum_ret.iloc[-1] > 0 else 0.0
         cagr = (cum_ret.iloc[-1]) ** (1 / years) - 1 if cum_ret.iloc[-1] > 0 else -1
         
         benchmark_cagr = np.nan
         excess_cagr = np.nan
         tracking_error = np.nan
         information_ratio = np.nan
-        rf_daily = 0.0135 / 252
+        rf_daily = 0.0135 / self.periods_per_year
         benchmark_abs_ret = np.nan
         benchmark_volatility = np.nan
         benchmark_sharpe = np.nan
@@ -114,21 +131,26 @@ class PortfolioAnalyzer:
         benchmark_max_tuw = np.nan
         benchmark_avg_tuw = np.nan
         
-        if 'CSI300' in self.daily_amount.columns:
-            market_close = self.daily_amount['CSI300'].astype(float)
+        if self.benchmark_col in self.daily_amount.columns:
+            market_close = self.daily_amount[self.benchmark_col].astype(float)
             market_close = market_close.loc[returns.index].dropna()
             if len(market_close) >= 2:
+                # Use NAV directly to avoid double-compounding bugs
+                bench_cum = market_close / market_close.iloc[0]
+                benchmark_abs_ret = float(bench_cum.iloc[-1] - 1)
+                
+                # Use returns only for volatility/Sharpe
                 bench_ret = market_close.pct_change().fillna(0)
-                bench_cum = (1.0 + bench_ret).cumprod()
+                
                 benchmark_cagr = (bench_cum.iloc[-1]) ** (1 / years) - 1 if bench_cum.iloc[-1] > 0 else -1
                 excess_cagr = ((1 + cagr) / (1 + benchmark_cagr)) - 1 if benchmark_cagr != -1 else np.nan
                 
                 # Active return = Portfolio return - Benchmark return
                 active_return_daily = returns - bench_ret
-                tracking_error = float(active_return_daily.std() * np.sqrt(252))
+                tracking_error = float(active_return_daily.std() * np.sqrt(self.periods_per_year))
                 if tracking_error != 0 and not pd.isna(tracking_error):
                     # IR = annualized active return mean / tracking error
-                    information_ratio = float((active_return_daily.mean() * 252) / tracking_error)
+                    information_ratio = float((active_return_daily.mean() * self.periods_per_year) / tracking_error)
                     
                 # Calculate Benchmark Metrics
                 benchmark_abs_ret = float(bench_cum.iloc[-1] - 1.0) if bench_cum.iloc[-1] > 0 else 0.0
@@ -137,8 +159,8 @@ class PortfolioAnalyzer:
                 bench_drawdowns = bench_cum / bench_rolling_max - 1.0
                 benchmark_max_dd = bench_drawdowns.min()
                 
-                benchmark_volatility = bench_ret.std() * np.sqrt(252)
-                benchmark_sharpe = ((bench_ret.mean() - rf_daily) / bench_ret.std()) * np.sqrt(252) if bench_ret.std() != 0 else 0
+                benchmark_volatility = bench_ret.std() * np.sqrt(self.periods_per_year)
+                benchmark_sharpe = ((bench_ret.mean() - rf_daily) / bench_ret.std()) * np.sqrt(self.periods_per_year) if bench_ret.std() != 0 else 0
                 benchmark_calmar = benchmark_cagr / abs(benchmark_max_dd) if benchmark_max_dd < 0 and benchmark_max_dd != 0 else np.nan
                 
                 bench_is_under_water = bench_drawdowns < 0
@@ -150,12 +172,12 @@ class PortfolioAnalyzer:
                 benchmark_avg_tuw = float(bench_under_water_only.mean()) if not bench_under_water_only.empty else 0
         
 
-        volatility = returns.std() * np.sqrt(252)
-        sharpe = ((returns.mean() - rf_daily) / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
+        volatility = returns.std() * np.sqrt(self.periods_per_year)
+        sharpe = ((returns.mean() - rf_daily) / returns.std()) * np.sqrt(self.periods_per_year) if returns.std() != 0 else 0
         calmar = cagr / abs(max_dd) if max_dd < 0 and max_dd != 0 else np.nan
         
         downside = returns[returns < 0]
-        sortino = ((returns.mean() - rf_daily) / downside.std()) * np.sqrt(252) if not downside.empty and downside.std() != 0 else 0
+        sortino = ((returns.mean() - rf_daily) / downside.std()) * np.sqrt(self.periods_per_year) if not downside.empty and downside.std() != 0 else 0
         
         win_rate = (returns > 0).mean()
         
@@ -201,7 +223,7 @@ class PortfolioAnalyzer:
                 # Avoid div by zero
                 aligned['NAV'] = aligned['NAV'].replace(0, 1e-9)
                 daily_turnover = (aligned['Trade_Amount'] / 2) / aligned['NAV']
-                turnover_annual = float(daily_turnover.mean() * 252)
+                turnover_annual = float(daily_turnover.mean() * self.periods_per_year)
         
         return {
             'Absolute_Return': abs_ret,
@@ -245,12 +267,15 @@ class PortfolioAnalyzer:
         min_date = returns.index.min().strftime('%Y-%m-%d')
         max_date = returns.index.max().strftime('%Y-%m-%d')
         
-        # Priority: use pre-existing 'CSI300' in daily_amount to guarantee correct date alignment
-        if 'CSI300' in self.daily_amount.columns:
-            market_close = self.daily_amount['CSI300'].astype(float)
+        # Priority: use pre-existing benchmark in daily_amount to guarantee correct date alignment
+        if self.benchmark_col in self.daily_amount.columns:
+            market_close = self.daily_amount[self.benchmark_col].astype(float)
             # align to our returns index specifically
             market_close = market_close.loc[returns.index].dropna()
-            market_return = market_close.pct_change().fillna(0)
+            if market_close.abs().max() < 2.0:
+                market_return = market_close
+            else:
+                market_return = market_close.pct_change().fillna(0)
             aligned = pd.concat([returns, market_return], axis=1).dropna()
             aligned.columns = ['Portfolio', 'Market']
         else:
@@ -279,7 +304,9 @@ class PortfolioAnalyzer:
         X = sm.add_constant(aligned['Market'])
         model = sm.OLS(aligned['Portfolio'], X).fit()
         
-        alpha = (1.0 + model.params['const']) ** 252 - 1.0
+        # Use period-based years for consistency with metrics
+        years = len(aligned) / self.periods_per_year
+        alpha = (1.0 + model.params['const']) ** self.periods_per_year - 1.0
         beta = model.params['Market']
         
         return {
@@ -351,13 +378,16 @@ class PortfolioAnalyzer:
         # We must use arithmetic annualized returns (mean daily return * 252) mathematically.
         factor_annualized = {}
         for col in factor_df.columns:
-            factor_annualized[col] = float(factor_df[col].mean() * 252)
+            factor_annualized[col] = float(factor_df[col].mean() * self.periods_per_year)
         
         # We need Market Return. 
-        if 'CSI300' in self.daily_amount.columns:
-            market_close = self.daily_amount['CSI300'].astype(float)
+        if self.benchmark_col in self.daily_amount.columns:
+            market_close = self.daily_amount[self.benchmark_col].astype(float)
             market_close = market_close.loc[returns.index].dropna()
-            market_return = market_close.pct_change().fillna(0)
+            if market_close.abs().max() < 2.0:
+                market_return = market_close
+            else:
+                market_return = market_close.pct_change().fillna(0)
         else:
             market_return = features.groupby('datetime')['ret'].mean()
             
@@ -371,14 +401,14 @@ class PortfolioAnalyzer:
         model = sm.OLS(aligned.iloc[:, 0], X).fit()
         
         return {
-            'Multi_Factor_Intercept': float(model.params.get('const', 0)) * 252,
+            'Multi_Factor_Intercept': float(model.params.get('const', 0)) * self.periods_per_year,
             'Multi_Factor_Beta': float(model.params.get('Market', 0)),
             'Barra_Size_Exp': float(model.params.get('size', 0)),
             'Barra_Momentum_Exp': float(model.params.get('momentum', 0)),
             'Barra_Volatility_Exp': float(model.params.get('volatility', 0)),
             'Barra_Style_R_Squared': float(model.rsquared),
             'Factor_Annualized': factor_annualized,
-            'Market_Annualized': float(aligned['Market'].mean() * 252)
+            'Market_Annualized': float(aligned['Market'].mean() * self.periods_per_year)
         }
 
     def calculate_holding_metrics(self):
