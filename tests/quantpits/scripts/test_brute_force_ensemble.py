@@ -14,8 +14,14 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env, brute_force_ensemble
     import importlib
+    import qlib.data
+    from quantpits.scripts import env, brute_force_ensemble
+    
+    mock_D = MagicMock()
+    mock_D.calendar.return_value = pd.date_range("2020-01-01", periods=10, freq="D")
+    monkeypatch.setattr(qlib.data, 'D', mock_D)
+    
     importlib.reload(env)
     importlib.reload(brute_force_ensemble)
     
