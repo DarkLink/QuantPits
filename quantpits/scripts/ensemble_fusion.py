@@ -620,7 +620,13 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt
         da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
         da_df = da_df.reset_index().rename(columns={'index': '成交日期'})
         
-        pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col=benchmark, freq=freq)
+        pa = PortfolioAnalyzer(
+            daily_amount_df=da_df, 
+            trade_log_df=pd.DataFrame(), 
+            holding_log_df=pd.DataFrame(),
+            benchmark_col=benchmark, 
+            freq=freq
+        )
         metrics = pa.calculate_traditional_metrics()
         
         annualized_return = metrics.get('CAGR', 0)
@@ -933,7 +939,13 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
         da_df.index.name = '成交日期'
         da_df = da_df.reset_index()
         
-        pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col=benchmark, freq=freq)
+        pa = PortfolioAnalyzer(
+            daily_amount_df=da_df, 
+            trade_log_df=pd.DataFrame(), 
+            holding_log_df=pd.DataFrame(),
+            benchmark_col=benchmark, 
+            freq=freq
+        )
         metrics = pa.calculate_traditional_metrics()
         
         # We still want the detailed breakdown for Ensemble in the log
@@ -1011,7 +1023,13 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
                 sub_da_df.index.name = '成交日期'
                 sub_da_df = sub_da_df.reset_index()
                 
-                sub_pa = PortfolioAnalyzer(daily_amount_df=sub_da_df, benchmark_col=benchmark, freq=freq)
+                sub_pa = PortfolioAnalyzer(
+                    daily_amount_df=sub_da_df, 
+                    trade_log_df=pd.DataFrame(), 
+                    holding_log_df=pd.DataFrame(),
+                    benchmark_col=benchmark, 
+                    freq=freq
+                )
                 sub_metrics_pa = sub_pa.calculate_traditional_metrics()
                 
                 metrics = {
@@ -1166,7 +1184,13 @@ def compare_combos(combo_results, anchor_date, output_dir, freq):
             da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
             da_df = da_df.reset_index().rename(columns={'index': '成交日期'})
             
-            pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col=benchmark, freq=freq)
+            pa = PortfolioAnalyzer(
+                daily_amount_df=da_df, 
+                trade_log_df=pd.DataFrame(), 
+                holding_log_df=pd.DataFrame(),
+                benchmark_col=benchmark, 
+                freq=freq
+            )
             metrics = pa.calculate_traditional_metrics()
             
             row.update({

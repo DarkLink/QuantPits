@@ -448,7 +448,13 @@ def run_single_backtest(
         da_df = da_df.reset_index().rename(columns={'index': '成交日期', 'datetime': '成交日期'})
         
         from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
-        pa = PortfolioAnalyzer(daily_amount_df=da_df, benchmark_col=benchmark_col, freq=freq)
+        pa = PortfolioAnalyzer(
+            daily_amount_df=da_df, 
+            trade_log_df=pd.DataFrame(), 
+            holding_log_df=pd.DataFrame(),
+            benchmark_col=benchmark_col, 
+            freq=freq
+        )
         metrics = pa.calculate_traditional_metrics()
 
         return {
