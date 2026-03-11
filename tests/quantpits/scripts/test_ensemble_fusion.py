@@ -4,6 +4,8 @@ import pytest
 import pandas as pd
 import numpy as np
 from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+from datetime import datetime
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch, tmp_path):
@@ -586,3 +588,383 @@ def test_run_detailed_backtest_analysis(mock_pa, tmp_path):
         assert "Avg Floating Return" in content
         assert "Backtest Period" in content
         assert "Benchmark**: SH000300" in content
+
+
+# --- Stage 0: Initialization & Config ---
+
+def test_init_qlib(mock_env):
+    ef, _ = mock_env
+    # Line 83: ef.init_qlib() calls env.init_qlib()
+    ef.init_qlib()
+
+def test_load_config_no_file(mock_env):
+    ef, _ = mock_env
+    # Line 93: record_file does not exist
+    with patch("config_loader.load_workspace_config") as mock_load_ws:
+        mock_load_ws.return_value = {}
+        tr, mc, ec = ef.load_config("non_existent_records.json")
+        assert tr == {"models": {}, "experiment_name": "unknown"}
+
+def test_parse_ensemble_config_empty(mock_env):
+    ef, _ = mock_env
+    # Line 140: empty ensemble_config
+    combos, global_cfg = ef.parse_ensemble_config({})
+    assert combos == {}
+    assert global_cfg == {}
+
+def test_get_default_combo_none(mock_env):
+    ef, _ = mock_env
+    # Line 152: combos is empty
+    name, cfg = ef.get_default_combo({})
+    assert name is None
+    assert cfg is None
+
+# --- Stage 1: Load Predictions ---
+
+@patch('qlib.workflow.R')
+def test_load_selected_predictions_failure_exception(mock_R, mock_env):
+    ef, _ = mock_env
+    # Lines 224-225: recorder.load_object failure
+    train_records = {"experiment_name": "Exp1", "models": {"m1": "rid1"}}
+    mock_recorder = MagicMock()
+    mock_recorder.load_object.side_effect = Exception("Load fail")
+    mock_R.get_recorder.return_value = mock_recorder
+    
+    # Line 230: raise ValueError if no models loaded
+    with pytest.raises(ValueError, match="未加载到任何预测数据"):
+        ef.load_selected_predictions(train_records, ["m1"])
+
+def test_filter_norm_df_by_args_last_years_months(mock_env):
+    ef, _ = mock_env
+    # Lines 257, 259: only_last_years / only_last_months
+    dates = pd.date_range("2010-01-01", "2020-01-01", freq="YS")
+    idx = pd.MultiIndex.from_arrays([dates, ["A"]*len(dates)], names=["datetime", "instrument"])
+    df = pd.DataFrame({"M1": range(len(dates))}, index=idx)
+    
+    args = SimpleNamespace(start_date=None, end_date=None, only_last_years=1, only_last_months=0)
+    filtered = ef.filter_norm_df_by_args(df, args)
+    assert len(filtered.index.get_level_values("datetime").unique()) == 1
+    
+    args = SimpleNamespace(start_date=None, end_date=None, only_last_years=0, only_last_months=24)
+    filtered = ef.filter_norm_df_by_args(df, args)
+    assert len(filtered.index.get_level_values("datetime").unique()) == 2
+
+def test_filter_norm_df_by_args_empty_result(mock_env):
+    ef, _ = mock_env
+    # Line 276: filtered_df is empty
+    dates = pd.date_range("2010-01-01", "2010-01-05", freq="D")
+    idx = pd.MultiIndex.from_arrays([dates, ["A"]*len(dates)], names=["datetime", "instrument"])
+    df = pd.DataFrame({"M1": range(len(dates))}, index=idx)
+    
+    args = SimpleNamespace(start_date="2020-01-01", end_date="2020-01-05")
+    filtered = ef.filter_norm_df_by_args(df, args)
+    assert filtered.empty
+
+# --- Stage 3: Weight Calculation ---
+
+@patch('qlib.data.D')
+def test_calculate_weights_dynamic_missing_dates(mock_D, mock_env):
+    ef, _ = mock_env
+    # Lines 370-372: date not in eval_df
+    dates = pd.date_range("2020-01-01", periods=5, freq="D")
+    idx = pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"M1": [1.0]*5}, index=idx)
+    
+    # Mock D.features to return data for only one date
+    label_df = pd.DataFrame({"label": [0.1]}, index=idx[:1])
+    mock_D.features.return_value = label_df
+    
+    # This should trigger lines 370-372 for other dates
+    with patch('builtins.print'):
+        ef.calculate_weights(norm_df, {}, "dynamic", {"TopK": 1}, {})
+
+def test_calculate_weights_icir_weighted_invalid(mock_env):
+    ef, _ = mock_env
+    # Lines 404-405: no valid ICIR
+    idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")])
+    norm_df = pd.DataFrame({"M1": [0.5]}, index=idx)
+    model_metrics = {"M1": 0.001} # < min_ic=0.01
+    
+    with patch('builtins.print'):
+        res, static, is_dyn = ef.calculate_weights(norm_df, model_metrics, "icir_weighted", {}, {"min_model_ic": 0.01})
+        assert static["M1"] == 1.0
+
+def test_calculate_weights_manual_config(mock_env):
+    ef, _ = mock_env
+    # Line 425: manual_weights in ensemble_config
+    idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")])
+    norm_df = pd.DataFrame({"M1": [0.5]}, index=idx)
+    ensemble_cfg = {"manual_weights": {"M1": 0.8}}
+    
+    with patch('builtins.print'):
+        res, static, is_dyn = ef.calculate_weights(norm_df, {}, "manual", {}, ensemble_cfg)
+        assert static["M1"] == 1.0
+
+def test_calculate_weights_manual_sum_zero(mock_env):
+    ef, _ = mock_env
+    # Lines 429-430: fatal manual weights (sum to 0)
+    idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")])
+    norm_df = pd.DataFrame({"M1": [0.5]}, index=idx)
+    ensemble_cfg = {"manual_weights": {"M1": 0.0}}
+    
+    with patch('builtins.print'):
+        res, static, is_dyn = ef.calculate_weights(norm_df, {}, "manual", {}, ensemble_cfg)
+        assert static["M1"] == 1.0
+
+# --- Stage 4: Signal Fusion ---
+
+def test_generate_ensemble_signal_dynamic(mock_env):
+    ef, _ = mock_env
+    # Lines 465-468: is_dynamic application
+    dates = pd.to_datetime(["2020-01-01", "2020-01-02"])
+    idx = pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"M1": [1.0, 2.0]}, index=idx)
+    final_weights = pd.DataFrame({"M1": [0.5, 0.5]}, index=dates)
+    
+    signal = ef.generate_ensemble_signal(norm_df, final_weights, None, True)
+    assert signal.iloc[0] == 0.5
+    assert signal.iloc[1] == 1.0
+
+def test_generate_ensemble_signal_zero_std(mock_env, capsys):
+    ef, _ = mock_env
+    # Line 482: final_score.std() == 0
+    idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01", "2020-01-02"]), ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"M1": [1.0, 1.0]}, index=idx)
+    static_w = {"M1": 1.0}
+    
+    ef.generate_ensemble_signal(norm_df, None, static_w, False)
+    captured = capsys.readouterr()
+    assert "加权可能失败" in captured.out
+
+# --- Stage 5: Save Predictions ---
+
+def test_save_predictions_combo_and_default(mock_env, tmp_path):
+    ef, workspace = mock_env
+    # Lines 508, 518-520, 533-534
+    idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")])
+    final_score = pd.Series([1.0], index=idx)
+    
+    os.makedirs("output/predictions", exist_ok=True)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    
+    ef.save_predictions(
+        final_score, "2020-01-01", "exp1", "equal", ["M1"], 
+        {"M1": 0.5}, {"M1": 1.0}, False, str(out_dir), 
+        combo_name="my_combo", is_default=True
+    )
+    
+    assert os.path.exists("output/predictions/ensemble_my_combo_2020-01-01.csv")
+    assert os.path.exists("output/predictions/ensemble_2020-01-01.csv")
+    
+    with open(out_dir / "ensemble_fusion_config_my_combo_2020-01-01.json") as f:
+        cfg = json.load(f)
+        assert cfg["combo_name"] == "my_combo"
+
+# --- Stage 6: Backtest & Analysis ---
+
+def test_extract_report_df_default(mock_env):
+    ef, _ = mock_env
+    # Line 561: default return
+    assert ef.extract_report_df(None) is None
+    assert ef.extract_report_df("string") == "string"
+
+@patch('qlib.backtest.backtest')
+@patch('qlib.backtest.executor.SimulatorExecutor')
+@patch('strategy.create_backtest_strategy')
+@patch('strategy.load_strategy_config')
+@patch('strategy.get_backtest_config')
+def test_run_backtest_non_datetime_idx(mock_get_bt, mock_load_st, mock_strat, mock_exec, mock_bt, mock_env):
+    ef, _ = mock_env
+    # Line 616: non datetime index
+    dates = ["2020-01-01", "2020-01-02"]
+    idx = pd.MultiIndex.from_product([pd.to_datetime(dates), ["A"]], names=["datetime", "instrument"])
+    final_score = pd.Series([1.0, 1.0], index=idx)
+    
+    report_df = pd.DataFrame({
+        "account": [100.0, 101.0],
+        "bench": [0.0, 0.01]
+    }, index=dates)
+    
+    mock_bt.return_value = (report_df, None)
+    mock_load_st.return_value = {}
+    mock_get_bt.return_value = {"account": 100.0, "exchange_kwargs": {}}
+    
+    with patch('qlib.data.D.calendar', return_value=pd.to_datetime(dates)):
+        with patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer') as mock_pa:
+            pa_inst = MagicMock()
+            pa_inst.calculate_traditional_metrics.return_value = {"Calmar": 2.0}
+            mock_pa.return_value = pa_inst
+            
+            with patch('builtins.print') as mock_p:
+                ef.run_backtest(final_score, 1, 0, "SH000300", "day")
+                assert any("Calmar Ratio" in str(c) for c in mock_p.call_args_list)
+
+def test_run_detailed_backtest_analysis_metrics_calc(mock_env, tmp_path):
+    ef, _ = mock_env
+    # Lines 862-864: style_ret calculation
+    executor = MagicMock()
+    ta = MagicMock()
+    executor.trade_account = ta
+    
+    dates = pd.date_range("2020-01-01", periods=2, freq="D")
+    report_df = pd.DataFrame({"account": [100.0, 105.0], "bench": [0.0, 0.01]}, index=dates)
+    ta.get_portfolio_metrics.return_value = (report_df,)
+    
+    pos_obj = MagicMock()
+    pos_obj.position = {"CASH": 100.0}
+    ta.get_hist_positions.return_value = {d: pos_obj for d in dates}
+    
+    out_dir = tmp_path / "detailed_metrics"
+    out_dir.mkdir()
+    
+    with patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer') as mock_pa:
+        pa_inst = MagicMock()
+        pa_inst.calculate_traditional_metrics.return_value = {"CAGR": 0.1, "Benchmark_CAGR": 0.05}
+        pa_inst.calculate_factor_exposure.return_value = {"Beta_Market": 1.0}
+        pa_inst.calculate_style_exposures.return_value = {
+            "Barra_Size_Exp": 0.1, "Barra_Momentum_Exp": 0.2, "Barra_Volatility_Exp": 0.3,
+            "Factor_Annualized": {"size": 0.01, "momentum": 0.02, "volatility": 0.03},
+            "Multi_Factor_Intercept": 0.01
+        }
+        pa_inst.calculate_holding_metrics.return_value = {"Avg_Daily_Holdings_Count": 1}
+        mock_pa.return_value = pa_inst
+        
+        with patch('qlib.data.D.calendar', return_value=dates):
+            ef.run_detailed_backtest_analysis(executor, "c", "date", str(out_dir), "day")
+
+# --- Stage 7: Risk Analysis & Leaderboard ---
+
+@patch('qlib.workflow.R')
+def test_risk_analysis_and_leaderboard_submodel_skip(mock_R, mock_env):
+    ef, _ = mock_env
+    # Lines 1010, 1054-1055
+    report_df = pd.DataFrame({"account": [100.0], "bench": [0.0], "return": [0.0]}, index=pd.to_datetime(["2020-01-01"]))
+    norm_df = pd.DataFrame({"M1": [0.5]}, index=pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")], names=["datetime", "instrument"]))
+    train_records = {"experiment_name": "E", "models": {"M1": "rid1", "M2": None}}
+    
+    mock_recorder = MagicMock()
+    mock_recorder.load_object.return_value = pd.DataFrame({"account": [100.0], "bench": [0.0], "return": [0.0]}, index=pd.to_datetime(["2020-01-01"]))
+    mock_R.get_recorder.side_effect = [mock_recorder, Exception("Recorder fail")]
+    
+    with patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer'):
+        with patch('strategy.load_strategy_config', return_value={}):
+            with patch('qlib.data.D.calendar', return_value=pd.to_datetime(["2020-01-01"])):
+                with patch('builtins.print') as mock_p:
+                    ef.risk_analysis_and_leaderboard(report_df, norm_df, train_records, ["M1", "M1"], "day", "out", "date")
+                    assert any("[跳过]" in str(c) for c in mock_p.call_args_list)
+
+def test_risk_analysis_and_leaderboard_display_cols(mock_env):
+    ef, _ = mock_env
+    # Line 1071: fallback print
+    report_df = pd.DataFrame({"account": [100.0], "bench": [0.0], "return": [0.0]}, index=pd.to_datetime(["2020-01-01"]))
+    norm_df = pd.DataFrame({"M1": [0.5]}, index=pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")], names=["datetime", "instrument"]))
+    
+    with patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer') as mock_pa:
+        pa_inst = MagicMock()
+        pa_inst.calculate_traditional_metrics.return_value = {"SomethingElse": 1.0}
+        mock_pa.return_value = pa_inst
+        with patch('strategy.load_strategy_config', return_value={}):
+            with patch('qlib.data.D.calendar', return_value=pd.to_datetime(["2020-01-01"])):
+                with patch('builtins.print') as mock_p:
+                    ef.risk_analysis_and_leaderboard(report_df, norm_df, {"experiment_name":"E", "models":{"M1":"r1"}}, ["M1"], "day", "out", "date")
+
+# --- Main & Others ---
+
+def test_main_arg_error(mock_env):
+    ef, _ = mock_env
+    # Line 1444: no args
+    import sys
+    with patch.object(sys, 'argv', ['ensemble_fusion.py']):
+        with pytest.raises(SystemExit):
+            ef.main()
+
+def test_main_manual_models_missing(mock_env):
+    ef, _ = mock_env
+    # Lines 1471-1479, 1531
+    train_records = {"experiment_name": "E", "models": {"m1": "r1"}}
+    with patch('quantpits.scripts.ensemble_fusion.load_config', return_value=(train_records, {}, {})):
+        with patch('sys.argv', ['ensemble_fusion.py', '--models', 'm1,m2']):
+            norm_df = pd.DataFrame({"m1":[0.5]}, index=pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"),"A")], names=["datetime", "instrument"]))
+            with patch('quantpits.scripts.ensemble_fusion.load_selected_predictions', return_value=(norm_df, {"m1": 0.1}, ["m1"])):
+                with patch('quantpits.scripts.ensemble_fusion.filter_norm_df_by_args', return_value=norm_df):
+                    report_df = pd.DataFrame({"account": [100.0, 110.0]}, index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
+                    res = {'name': 'c1', 'models': ['m1'], 'method': 'equal', 'is_default': True, 'pred_file': 'f.csv', 'report_df': report_df}
+                    with patch('quantpits.scripts.ensemble_fusion.run_single_combo', return_value=res):
+                        with patch('strategy.get_backtest_config', return_value={'account': 100.0}):
+                            with patch('builtins.print', side_effect=lambda *a, **k: None):
+                                ef.main()
+
+def test_main_combo_skip_no_models(mock_env):
+    ef, _ = mock_env
+    # Lines 1301-1302, 1557-1558
+    train_records = {"experiment_name": "E", "models": {"m1": "r1", "m2": "r2"}}
+    ec = {"combos": {"c1": {"models": ["m2"]}}}
+    
+    with patch('quantpits.scripts.ensemble_fusion.load_config', return_value=(train_records, {}, ec)):
+        with patch('sys.argv', ['ensemble_fusion.py', '--from-config-all']):
+             norm_df = pd.DataFrame({"m1":[0.5]}, index=pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"),"A")], names=["datetime", "instrument"]))
+             with patch('quantpits.scripts.ensemble_fusion.load_selected_predictions', return_value=(norm_df, {"m1": 0.1}, ["m1"])):
+                 with patch('quantpits.scripts.ensemble_fusion.filter_norm_df_by_args', return_value=norm_df):
+                    with patch('builtins.print', side_effect=lambda *a, **k: None) as mock_p:
+                        ef.main()
+                        assert any("没有有效模型，跳过" in str(arg) for call in mock_p.call_args_list for arg in call[0])
+
+
+def test_main_combo_missing_and_empty(mock_env):
+    ef, _ = mock_env
+    # Lines 1485-1487, 1497-1498
+    train_records = {"experiment_name": "E", "models": {"m1": "r1"}}
+    ec_empty = {"combos": {}}
+    ec_missing = {"combos": {"c1": {"models": ["m1"]}}}
+    
+    with patch('quantpits.scripts.ensemble_fusion.load_config', return_value=(train_records, {}, ec_empty)):
+        with patch('sys.argv', ['ensemble_fusion.py', '--from-config-all']):
+            with pytest.raises(SystemExit):
+                ef.main()
+                
+    with patch('quantpits.scripts.ensemble_fusion.load_config', return_value=(train_records, {}, ec_missing)):
+        with patch('sys.argv', ['ensemble_fusion.py', '--combo', 'non_existent']):
+            with pytest.raises(SystemExit):
+                ef.main()
+
+def test_main_no_valid_models(mock_env):
+    ef, _ = mock_env
+    # Line 1535-1536
+    train_records = {"experiment_name": "E", "models": {"m1": "r1"}}
+    with patch('quantpits.scripts.ensemble_fusion.load_config', return_value=(train_records, {}, {})):
+        with patch('sys.argv', ['ensemble_fusion.py', '--models', 'm2']):
+            with pytest.raises(SystemExit):
+                ef.main()
+
+def test_main_empty_norm_df_after_filter(mock_env):
+    ef, _ = mock_env
+    # Line 1548-1549
+    train_records = {"experiment_name": "E", "models": {"m1": "r1"}}
+    idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"),"A")], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1":[0.5]}, index=idx)
+    with patch('quantpits.scripts.ensemble_fusion.load_config', return_value=(train_records, {}, {})):
+        with patch('sys.argv', ['ensemble_fusion.py', '--models', 'm1']):
+            with patch('quantpits.scripts.ensemble_fusion.load_selected_predictions', return_value=(norm_df, {"m1": 0.1}, ["m1"])):
+                with patch('quantpits.scripts.ensemble_fusion.filter_norm_df_by_args', return_value=pd.DataFrame()):
+                    with pytest.raises(SystemExit):
+                        ef.main()
+
+def test_main_final_prints(mock_env):
+    ef, _ = mock_env
+    # Lines 1593-1598
+    train_records = {"experiment_name": "E", "models": {"m1": "r1"}}
+    report_df = pd.DataFrame({"account": [100.0, 110.0]}, index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
+    res = {'name': 'c1', 'models': ['m1'], 'method': 'equal', 'is_default': True, 'pred_file': 'f.csv', 'report_df': report_df}
+    
+    with patch('quantpits.scripts.ensemble_fusion.load_config', return_value=(train_records, {}, {})):
+        with patch('sys.argv', ['ensemble_fusion.py', '--models', 'm1']):
+            idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"),"A")], names=["datetime", "instrument"])
+            norm_df = pd.DataFrame({"m1":[0.5]}, index=idx)
+            with patch('quantpits.scripts.ensemble_fusion.load_selected_predictions', return_value=(norm_df, {"m1": 0.1}, ["m1"])):
+                with patch('quantpits.scripts.ensemble_fusion.filter_norm_df_by_args', return_value=norm_df):
+                    with patch('quantpits.scripts.ensemble_fusion.run_single_combo', return_value=res):
+                        with patch('strategy.get_backtest_config', return_value={'account': 100.0}):
+                            with patch('builtins.print', side_effect=lambda *a, **k: None) as mock_p:
+                                ef.main()
+                                assert mock_p.call_count > 5

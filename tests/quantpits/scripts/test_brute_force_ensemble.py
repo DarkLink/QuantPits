@@ -3,12 +3,19 @@ import os
 import pandas as pd
 import numpy as np
 import yaml
-from unittest.mock import MagicMock
+import json
+import sys
+import gc
+import signal
+from unittest.mock import MagicMock, patch, mock_open
+from io import StringIO
+from datetime import datetime
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch, tmp_path):
     workspace = tmp_path / "MockWorkspace"
     workspace.mkdir()
+    (workspace / "config").mkdir()
     
     import sys
     monkeypatch.setattr(sys, 'argv', ['script.py'])
@@ -38,6 +45,12 @@ def test_zscore_norm(mock_env):
     normed = bfe.zscore_norm(series)
     assert np.isclose(normed.xs("2020-01-01", level="datetime").mean(), 0)
     assert np.isclose(normed.xs("2020-01-01", level="datetime").std(), 1)
+    
+    # Zero std case (lines 138-139)
+    zero_series = pd.Series([1.0, 1.0, 1.0], index=pd.MultiIndex.from_arrays([
+        pd.to_datetime(["2020-01-01"]*3), ["A", "B", "C"]
+    ], names=["datetime", "instrument"]))
+    assert np.all(bfe.zscore_norm(zero_series) == 0.0)
 
 # ── load_combo_groups ────────────────────────────────────────────────────
 def test_load_combo_groups(mock_env):
@@ -64,6 +77,15 @@ def test_load_combo_groups_empty(mock_env):
     
     with pytest.raises(ValueError, match="为空"):
         bfe.load_combo_groups(str(cfg_path), available_models=["m1"])
+
+def test_load_combo_groups_warnings(mock_env, tmp_path):
+    bfe, _ = mock_env
+    cfg_path = tmp_path / "groups_warn.yaml"
+    cfg_path.write_text(yaml.dump({"groups": {"G1": ["m_missing"]}}))
+    with patch('builtins.print') as mock_print:
+        groups = bfe.load_combo_groups(str(cfg_path), ["m1"])
+        assert "G1" not in groups
+        assert any("组 [G1] 无有效模型，已跳过" in str(call) for call in mock_print.call_args_list)
 
 # ── generate_grouped_combinations ────────────────────────────────────────
 def test_generate_grouped_combinations(mock_env):
@@ -138,6 +160,10 @@ def test_extract_report_df(mock_env):
     assert bfe.extract_report_df(metrics_tuple).equals(df)
     
     assert bfe.extract_report_df(df).equals(df)
+    
+    # Case: metrics is a tuple, first element is a tuple (lines 368-370)
+    metrics_nested = ((df, "extra"),)
+    assert bfe.extract_report_df(metrics_nested) is df
 
 # ── load_config ──────────────────────────────────────────────────────────
 def test_load_config(mock_env, tmp_path):
@@ -154,6 +180,10 @@ def test_load_config(mock_env, tmp_path):
         
     assert records["models"]["m1"] == "r1"
     assert model_config["TopK"] == 20
+    
+    # No file case (line 122)
+    tr, mc = bfe.load_config("non_existent_records.json")
+    assert tr == {"models": {}, "experiment_name": "unknown"}
 
 # ── correlation_analysis ─────────────────────────────────────────────────
 def test_correlation_analysis(mock_env, tmp_path):
@@ -185,8 +215,16 @@ def test_signal_handler_sets_shutdown(mock_env):
     bfe, _ = mock_env
     import quantpits.scripts.brute_force_ensemble as bfe_mod
     bfe_mod._shutdown = False
-    bfe._signal_handler(2, None)  # SIGINT = 2
-    assert bfe_mod._shutdown is True
+    
+    with patch('builtins.print') as mock_print:
+        bfe._signal_handler(2, None)  # SIGINT = 2
+        assert bfe_mod._shutdown is True
+        assert any("安全退出" in str(call) for call in mock_print.call_args_list)
+
+    # Second call exits (lines 81-82)
+    with patch('sys.exit') as mock_exit:
+        bfe._signal_handler(2, None)
+        mock_exit.assert_called_with(1)
 
 # ── _append_results_to_csv ───────────────────────────────────────────────
 def test_append_results_to_csv(mock_env, tmp_path):
@@ -653,5 +691,168 @@ def test_main_full(mock_safeguard, mock_analyze, mock_bf, mock_corr, mock_load_p
         bfe.main()
     mock_bf.assert_called_once()
     mock_analyze.assert_called_once()
+
+@patch('qlib.backtest.account.Account')
+@patch('qlib.backtest.executor.SimulatorExecutor')
+@patch('qlib.backtest.utils.CommonInfrastructure')
+@patch('qlib.backtest.backtest_loop')
+@patch('quantpits.scripts.strategy.load_strategy_config')
+@patch('quantpits.scripts.strategy.get_backtest_config')
+@patch('quantpits.scripts.strategy.create_backtest_strategy')
+@patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer')
+def test_run_single_backtest_non_datetime_index(mock_pa, mock_st_create, mock_bt_cfg, mock_st_cfg, mock_bt_loop, mock_infra, mock_executor, mock_account, mock_env):
+    bfe, _ = mock_env
+    dates = ["2020-01-01", "2020-01-02"]
+    report = pd.DataFrame({
+        "account": [100000, 101000],
+        "bench": [0.001, 0.002]
+    }, index=dates) # String index
+    
+    mock_st_cfg.return_value = {"benchmark": "SH000300"}
+    mock_bt_cfg.return_value = {"account": 1000000}
+    mock_bt_loop.return_value = (report, None)
+    
+    mock_pa_inst = MagicMock()
+    mock_pa_inst.calculate_traditional_metrics.return_value = {"CAGR": 0.1}
+    mock_pa.return_value = mock_pa_inst
+    
+    idx = pd.MultiIndex.from_product([pd.to_datetime(dates), ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5, 0.6]}, index=idx)
+    
+    with patch('qlib.data.D') as mock_D_inst:
+        mock_D_inst.calendar.return_value = pd.to_datetime(dates)
+        res = bfe.run_single_backtest(["m1"], norm_df, 1, 0, "SH000300", "day", MagicMock(), "2020-01-01", "2020-01-02")
+        assert res["Ann_Ret"] == 0.1
+
+def test_analyze_results_clustering_and_opt_fails(mock_env, tmp_path):
+    bfe, _ = mock_env
+    out_dir = tmp_path / "complex_fail"
+    out_dir.mkdir()
+    results_df = pd.DataFrame({
+        "models": ["m1", "m2"], 
+        "n_models": [1, 1], 
+        "Ann_Excess": [0.1, 0.12], 
+        "Calmar": [1.0, 1.2], 
+        "Ann_Ret": [0.15, 0.16], 
+        "Max_DD": [-0.1, -0.1]
+    })
+    results_df["diversity_bonus"] = [0.01, 0.02]
+    
+    with patch('qlib.workflow.R') as mock_R_inst:
+        mock_R_inst.get_recorder.return_value.load_object.side_effect = Exception("Load fail")
+        with patch('builtins.print') as mock_print:
+            bfe.analyze_results(results_df, pd.DataFrame(), pd.DataFrame(), {"experiment_name": "exp", "models": {"m1": "r1"}}, str(out_dir), "test")
+            assert any("[跳过] m1: Load fail" in str(call) for call in mock_print.call_args_list)
+
+@patch('quantpits.scripts.brute_force_ensemble.run_single_backtest')
+@patch('quantpits.scripts.brute_force_ensemble.load_config')
+def test_main_oos_validation_stage5(mock_load_cfg, mock_run, mock_env, tmp_path):
+    bfe, _ = mock_env
+    out_dir = tmp_path / "oos_stage5"
+    out_dir.mkdir()
+    
+    res_df = pd.DataFrame({"models": ["m1"], "Ann_Excess": [0.1]})
+    res_df.to_csv(out_dir / "brute_force_results_test.csv", index=False)
+    
+    idx = pd.MultiIndex.from_product([pd.to_datetime(["2021-01-01"]), ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
+    
+    mock_load_cfg.return_value = ({"anchor_date": "test", "experiment_name": "exp", "models": {"m1": "r1"}}, {"TopK": 1})
+    mock_run.return_value = {"models": "m1", "Ann_Ret": 0.1, "Max_DD": -0.05, "Ann_Excess": 0.05, "Calmar": 2.0}
+
+    with patch('sys.argv', ['script.py', '--auto-test-top', '1', '--output-dir', str(out_dir)]):
+        with patch('quantpits.scripts.brute_force_ensemble.load_predictions', return_value=(norm_df, {})):
+            with patch('quantpits.scripts.brute_force_ensemble.split_is_oos_by_args', return_value=(norm_df, norm_df)):
+                with patch('quantpits.scripts.brute_force_ensemble.brute_force_backtest', return_value=res_df):
+                    with patch('quantpits.scripts.brute_force_ensemble.analyze_results'):
+                        with patch('qlib.backtest.exchange.Exchange'):
+                            with patch('builtins.print'):
+                                bfe.main()
+                        assert os.path.exists(out_dir / "oos_validation_test.csv")
+
+@patch('qlib.backtest.exchange.Exchange')
+def test_brute_force_backtest_grouped_and_no_pending(mock_exch, mock_env, tmp_path):
+    bfe, _ = mock_env
+    out_dir = tmp_path / "bfe_out"
+    out_dir.mkdir()
+    idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5], "m2": [0.6]}, index=idx)
+    
+    # 1. Test no pending tasks (lines 584-588)
+    csv_path = out_dir / "brute_force_results_test.csv"
+    pd.DataFrame({"models": ["m1", "m2"], "Ann_Excess": [0.1, 0.2]}).to_csv(csv_path, index=False)
+    
+    with patch('builtins.print') as mock_print:
+        res = bfe.brute_force_backtest(norm_df, 1, 0, "BENCH", "day", 1, 1, str(out_dir), "test", resume=True)
+        assert len(res) == 2
+        assert any("所有组合已完成！" in str(call) for call in mock_print.call_args_list)
+
+@patch('quantpits.scripts.brute_force_ensemble.run_single_backtest', return_value=None)
+@patch('qlib.backtest.exchange.Exchange')
+def test_brute_force_backtest_no_results(mock_exch, mock_run, mock_env, tmp_path):
+    bfe, _ = mock_env
+    out_dir = tmp_path / "no_res"
+    out_dir.mkdir()
+    idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
+    
+    with patch('builtins.print') as mock_print:
+        bfe.brute_force_backtest(norm_df, 1, 0, "BENCH", "day", 1, 1, str(out_dir), "no_res")
+        assert any("警告: 无有效回测结果" in str(call) for call in mock_print.call_args_list)
+
+@patch('qlib.workflow.R')
+def test_analyze_results_plot_fails(mock_R, mock_env, tmp_path):
+    bfe, _ = mock_env
+    out_dir = tmp_path / "plot_fail"
+    out_dir.mkdir()
+    results_df = pd.DataFrame({"models": ["m1"], "n_models": [1], "Ann_Excess": [0.1], "Calmar": [1.0], "Ann_Ret": [0.15], "Max_DD": [-0.1]})
+    results_df["diversity_bonus"] = [0.0]
+    mock_R.get_recorder.return_value.load_object.side_effect = Exception("Skip cluster")
+
+    with patch('matplotlib.pyplot.savefig', side_effect=Exception("Save fail")):
+        with patch('builtins.print') as mock_print:
+            bfe.analyze_results(results_df, pd.DataFrame(), pd.DataFrame(), {"experiment_name": "exp", "models": {"m1": "r1"}}, str(out_dir), "test")
+            assert any("归因图绘制失败: Save fail" in str(call) for call in mock_print.call_args_list)
+
+def test_main_empty_is_exit(mock_env):
+    bfe, _ = mock_env
+    with patch('quantpits.scripts.brute_force_ensemble.load_predictions', return_value=(pd.DataFrame(), {})):
+        with patch('quantpits.scripts.brute_force_ensemble.split_is_oos_by_args', return_value=(pd.DataFrame(), pd.DataFrame())):
+            with patch('builtins.print'):
+                with pytest.raises(SystemExit) as e:
+                    bfe.main()
+                assert e.value.code == 1
+
+def test_main_analysis_only_glob(mock_env, tmp_path):
+    bfe, _ = mock_env
+    out_dir = tmp_path / "glob_test"
+    out_dir.mkdir()
+    pd.DataFrame({"models": ["m1"], "Ann_Excess": [0.1]}).to_csv(out_dir / "brute_force_results_2020.csv", index=False)
+    idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
+
+    with patch('sys.argv', ['script.py', '--analysis-only', '--output-dir', str(out_dir)]):
+        with patch('quantpits.scripts.brute_force_ensemble.load_predictions', return_value=(norm_df, {})):
+            with patch('quantpits.scripts.brute_force_ensemble.split_is_oos_by_args', return_value=(norm_df, pd.DataFrame())):
+                with patch('builtins.print') as mock_print:
+                    with patch('quantpits.scripts.brute_force_ensemble.analyze_results'):
+                        bfe.main()
+                        assert any("使用最新结果文件" in str(call) for call in mock_print.call_args_list)
+
+@patch('quantpits.scripts.brute_force_ensemble.load_config')
+def test_main_oos_validation_no_data(mock_load_cfg, mock_env, tmp_path):
+    bfe, _ = mock_env
+    out_dir = tmp_path / "oos_no_data"
+    out_dir.mkdir()
+    mock_load_cfg.return_value = ({"anchor_date": "test", "experiment_name": "exp", "models": {"m1": "r1"}}, {"TopK": 1})
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=pd.MultiIndex.from_product([pd.to_datetime(["2021-01-01"]), ["A"]], names=["datetime", "instrument"]))
+    with patch('sys.argv', ['script.py', '--auto-test-top', '1', '--output-dir', str(out_dir)]):
+        with patch('quantpits.scripts.brute_force_ensemble.load_predictions', return_value=(norm_df, {})):
+            with patch('quantpits.scripts.brute_force_ensemble.split_is_oos_by_args', return_value=(norm_df, pd.DataFrame())):
+                with patch('quantpits.scripts.brute_force_ensemble.brute_force_backtest', return_value=pd.DataFrame({"models": ["m1"], "Ann_Excess": [0.1]})):
+                    with patch('quantpits.scripts.brute_force_ensemble.analyze_results'):
+                        with patch('builtins.print') as mock_print:
+                            bfe.main()
+                            assert any("无法进行 OOS 验证：无 OOS 数据" in str(call) for call in mock_print.call_args_list)
 
 

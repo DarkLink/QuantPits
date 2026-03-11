@@ -4,7 +4,10 @@ import pandas as pd
 import numpy as np
 import json
 import yaml
-from unittest.mock import MagicMock, patch
+import sys
+import gc
+from unittest.mock import MagicMock, patch, mock_open
+from io import StringIO
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch, tmp_path):
@@ -246,6 +249,232 @@ def test_to_numpy(mock_env):
     mock_cp.ndarray = np.ndarray # simplify
     with patch.dict('sys.modules', {'cupy': mock_cp}):
         bff._to_numpy(arr)
+
+
+# ============================================================================
+# Coverage Improvement Tests (Error Handling & Edge Cases)
+# ============================================================================
+
+def test_init_gpu_success(mock_env):
+    bff, _ = mock_env
+    mock_cp = MagicMock()
+    mock_cp.array.return_value = True
+    mock_cp.cuda.Device.return_value.id = 0
+    mock_cp.cuda.Device.return_value.mem_info = [0, 8*1024**3]
+    
+    with patch.dict('sys.modules', {'cupy': mock_cp}):
+        with patch('builtins.print'):
+            bff._init_gpu(force_gpu=True)
+            assert bff._USE_GPU == True
+            assert bff.xp == mock_cp
+
+def test_init_qlib_call(mock_env):
+    bff, _ = mock_env
+    with patch('quantpits.scripts.brute_force_fast.env.init_qlib') as mock_init:
+        bff.init_qlib()
+        mock_init.assert_called_once()
+
+def test_load_config_no_file(mock_env):
+    bff, _ = mock_env
+    with patch('config_loader.load_workspace_config') as mock_load:
+        mock_load.return_value = {}
+        # Use a non-existent file to trigger line 141
+        tr, mc = bff.load_config("non_existent_records.json")
+        assert tr == {"models": {}, "experiment_name": "unknown"}
+
+def test_zscore_norm_zero_std(mock_env):
+    bff, _ = mock_env
+    dates = pd.to_datetime(["2020-01-01"]*3)
+    idx = pd.MultiIndex.from_arrays([dates, ["A", "B", "C"]], names=["datetime", "instrument"])
+    # All same values -> std is 0. Triggers line 157
+    series = pd.Series([1.0, 1.0, 1.0], index=idx)
+    normed = bff.zscore_norm(series)
+    assert np.all(normed == 0.0)
+
+@patch('qlib.workflow.R')
+def test_load_predictions_fail_and_empty(mock_R, mock_env):
+    bff, _ = mock_env
+    # Fail one model (207-208)
+    train_records = {"experiment_name": "Exp1", "models": {"m1": "rid1"}}
+    mock_R.get_recorder.side_effect = Exception("Load fail")
+    
+    with patch('builtins.print'):
+        with pytest.raises(ValueError, match="未加载到任何预测数据"): # 213
+            bff.load_predictions(train_records)
+
+def test_split_is_oos_empty_is(mock_env):
+    bff, _ = mock_env
+    dates = pd.to_datetime(["2020-01-01"])
+    idx = pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"])
+    df = pd.DataFrame({"m1": [0.5]}, index=idx)
+    
+    args = MagicMock(start_date="2021-01-01", end_date="2021-12-31", exclude_last_years=0, exclude_last_months=0)
+    with patch('builtins.print'):
+        is_df, oos_df = bff.split_is_oos_by_args(df, args)
+        assert is_df.empty # Triggers 385
+
+def test_load_combo_groups_warnings(mock_env, tmp_path):
+    bff, _ = mock_env
+    cfg_path = tmp_path / "groups_warn.yaml"
+    # Empty groups (437)
+    cfg_path.write_text(yaml.dump({"groups": {}}))
+    with pytest.raises(ValueError, match="分组配置为空"):
+        bff.load_combo_groups(str(cfg_path), ["m1"])
+    
+    # Invalid models (447-448) and empty group after filtering (452, 455)
+    cfg_path.write_text(yaml.dump({
+        "groups": {
+            "G1": ["m_missing"],
+            "G2": ["m1", "m_missing"]
+        }
+    }))
+    with patch('builtins.print'):
+        groups = bff.load_combo_groups(str(cfg_path), ["m1"])
+        assert "G1" not in groups # G1 skipped (452)
+        assert groups["G2"] == ["m1"] # m_missing skipped (447)
+
+def test_compute_metrics_empty(mock_env):
+    bff, _ = mock_env
+    metrics = bff.compute_metrics(np.array([]), np.array([])) # 614
+    assert metrics == {}
+
+def test_brute_force_fast_backtest_gc_coverage(mock_env, tmp_path):
+    bff, _ = mock_env
+    # Set batch_size small enough and total pending large enough to trigger GC collect every 10 batches (768)
+    model_names = [f"m{i}" for i in range(25)]
+    scores_np = {m: np.zeros((2, 1), dtype=np.float32) for m in model_names}
+    returns_np = np.zeros((2, 1), dtype=np.float32)
+    bench_ret = np.zeros(2, dtype=np.float32)
+    
+    with patch('gc.collect') as mock_gc:
+        bff.brute_force_fast_backtest(
+            scores_np, returns_np, model_names, bench_ret,
+            top_k=1, freq="day", cost_rate=0.0, batch_size=2, # total 13 batches
+            min_combo_size=1, max_combo_size=1, output_dir=str(tmp_path), anchor_date="test"
+        )
+        # 13 batches, should trigger at batch index 10 (batch_start = 20)
+        assert mock_gc.called
+
+def test_analyze_results_empty_and_error_paths(mock_env, tmp_path):
+    bff, _ = mock_env
+    out_dir = str(tmp_path / "analysis_err")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    # Empty Results (814-815)
+    with patch('builtins.print') as mock_print:
+        bff.analyze_results(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, out_dir, "test")
+        mock_print.assert_any_call("无数据可分析！")
+
+    # Mock Plotting
+    results_df = pd.DataFrame({
+        "models": ["m1", "m2", "m1,m2"],
+        "n_models": [1, 1, 2],
+        "Ann_Ret": [0.15, 0.12, 0.18],
+        "Max_DD": [-0.05, -0.08, -0.04],
+        "Ann_Excess": [0.10, 0.07, 0.13],
+        "Calmar": [3.0, 1.5, 4.5],
+    })
+    dates = pd.to_datetime(["2020-01-01", "2020-01-02"])
+    norm_df = pd.DataFrame({"m1": [0.1, 0.2], "m2": [0.2, 0.3]}, index=pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"]))
+    corr_matrix = norm_df.corr()
+    
+    # Mock Plotting Success to cover 986-1021
+    with patch('matplotlib.pyplot.subplots') as mock_subs:
+        mock_fig = MagicMock()
+        mock_ax1 = MagicMock()
+        mock_ax2 = MagicMock()
+        mock_subs.return_value = (mock_fig, [mock_ax1, mock_ax2])
+        with patch('matplotlib.pyplot.savefig'):
+            with patch('builtins.print'):
+                # Calmar is 4.5, which should be above quantile(0.9)
+                bff.analyze_results(results_df, corr_matrix, norm_df, {"models": {"m1": "r1", "m2": "r2"}}, out_dir, "test")
+
+def test_analyze_results_optimization_fail(mock_env, tmp_path):
+    bff, _ = mock_env
+    out_dir = str(tmp_path / "opt_fail")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    results_df = pd.DataFrame({
+        "models": ["m1", "m2"],
+        "n_models": [1, 1],
+        "Ann_Ret": [0.1, 0.1],
+        "Max_DD": [-0.05, -0.05],
+        "Ann_Excess": [0.05, 0.05],
+        "Calmar": [2.0, 2.0],
+    })
+    dates = pd.to_datetime(["2020-01-01"])
+    norm_df = pd.DataFrame({"m1": [0.1], "m2": [0.2]}, index=pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"]))
+
+    with patch('scipy.optimize.minimize', side_effect=Exception("Opt fail")):
+        with patch('builtins.print') as mock_print:
+            bff.analyze_results(results_df, pd.DataFrame(), norm_df, {"models": {"m1": "r1", "m2": "r2"}}, out_dir, "test")
+            # Should hit 1122
+
+def test_main_is_empty_exit(mock_env):
+    bff, _ = mock_env
+    dates = pd.to_datetime(["2020-01-01"])
+    idx = pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
+    
+    with patch('quantpits.scripts.brute_force_fast.load_predictions', return_value=(norm_df, {"m1": 0.05})):
+        with patch('quantpits.scripts.brute_force_fast.split_is_oos_by_args', return_value=(pd.DataFrame(), pd.DataFrame())):
+            with patch('builtins.print'):
+                with pytest.raises(SystemExit): # 1312
+                    bff.main()
+
+def test_main_analysis_only_no_file(mock_env, tmp_path):
+    bff, _ = mock_env
+    dates = pd.to_datetime(["2020-01-01"])
+    idx = pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
+    
+    with patch('sys.argv', ['script.py', '--analysis-only', '--output-dir', str(tmp_path)]):
+        with patch('quantpits.scripts.brute_force_fast.load_predictions', return_value=(norm_df, {})):
+            with patch('builtins.print'):
+                with pytest.raises(SystemExit): # 1370
+                    bff.main()
+
+def test_main_analysis_only_glob_missing_anchor(mock_env, tmp_path):
+    bff, _ = mock_env
+    anchor = "missing_anchor"
+    other_anchor = "existing_anchor"
+    # Create another result file to trigger 1366
+    csv_path = tmp_path / f"brute_force_fast_results_{other_anchor}.csv"
+    pd.DataFrame({"models": ["m1"], "Ann_Excess": [0.1]}).to_csv(csv_path)
+    
+    dates = pd.to_datetime(["2020-01-01"])
+    idx = pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
+
+    with patch('sys.argv', ['script.py', '--analysis-only', '--output-dir', str(tmp_path)]):
+        with patch('quantpits.scripts.brute_force_fast.load_config', return_value=({"anchor_date": anchor, "models": {"m1": "r1"}}, {})):
+            with patch('quantpits.scripts.brute_force_fast.load_predictions', return_value=(norm_df, {})):
+                with patch('quantpits.scripts.brute_force_fast.analyze_results'):
+                     with patch('builtins.print'):
+                        bff.main() # Hits 1362-1367 (glob fallback)
+
+def test_main_oos_validation(mock_env, tmp_path):
+    bff, _ = mock_env
+    # Mocking IS and OOS data for stage 5 (1388-1447)
+    dates = pd.to_datetime(pd.date_range("2020-01-01", periods=10))
+    idx = pd.MultiIndex.from_product([dates, ["A"]], names=["datetime", "instrument"])
+    norm_df = pd.DataFrame({"m1": np.random.rand(10)}, index=idx)
+    
+    # split_is_oos...
+    is_df = norm_df.iloc[:5]
+    oos_df = norm_df.iloc[5:]
+    
+    returns_wide = pd.DataFrame({"A": np.random.rand(10)}, index=dates)
+    bench_returns = pd.Series(np.random.rand(10), index=dates)
+    
+    with patch('sys.argv', ['script.py', '--auto-test-top', '1', '--output-dir', str(tmp_path)]):
+        with patch('quantpits.scripts.brute_force_fast.load_config', return_value=({"anchor_date": "test", "models": {"m1": "r1"}}, {"TopK": 1})):
+            with patch('quantpits.scripts.brute_force_fast.load_predictions', return_value=(norm_df, {"m1": 0.05})):
+                with patch('quantpits.scripts.brute_force_fast.split_is_oos_by_args', return_value=(is_df, oos_df)):
+                    with patch('quantpits.scripts.brute_force_fast.load_returns_matrix', return_value=(returns_wide, bench_returns, dates, ["A"])):
+                        with patch('quantpits.scripts.brute_force_fast.analyze_results'):
+                            with patch('builtins.print'):
+                                bff.main()
 def test_load_config_real(mock_env, tmp_path):
     bff, workspace = mock_env
     rec_file = workspace / "records.json"
