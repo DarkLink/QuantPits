@@ -375,10 +375,9 @@ class TestPretrainManagement:
     @patch('quantpits.scripts.train_utils._get_inner_model')
     @patch('quantpits.scripts.train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain_dir')
     @patch('os.makedirs')
-    @patch('torch.save')
     @patch('shutil.copy2')
     @patch('builtins.open', new_callable=mock_open)
-    def test_save_pretrained_model(self, mock_file, mock_copy, mock_save, mock_makedirs, mock_get_inner):
+    def test_save_pretrained_model(self, mock_file, mock_copy, mock_makedirs, mock_get_inner):
         from quantpits.scripts.train_utils import save_pretrained_model
         
         # Mock model
@@ -386,13 +385,16 @@ class TestPretrainManagement:
         mock_inner.state_dict.return_value = {"weight": [1, 2, 3]}
         mock_get_inner.return_value = mock_inner
         
-        saved_path = save_pretrained_model(
-            MagicMock(), "lstm_Alpha158", "2026-03-01", 
-            d_feat=20, hidden_size=64, num_layers=2
-        )
+        # Use patch.dict to mock torch in sys.modules so 'import torch' and 'torch.save' work
+        mock_torch = MagicMock()
+        with patch.dict('sys.modules', {'torch': mock_torch}):
+            saved_path = save_pretrained_model(
+                MagicMock(), "lstm_Alpha158", "2026-03-01", 
+                d_feat=20, hidden_size=64, num_layers=2
+            )
         
         assert saved_path == "/tmp/mock_pretrain_dir/lstm_Alpha158_2026-03-01.pkl"
-        mock_save.assert_called_once_with({"weight": [1, 2, 3]}, saved_path)
+        mock_torch.save.assert_called_once_with({"weight": [1, 2, 3]}, saved_path)
         
         # Verify JSON writing
         mock_file.assert_any_call("/tmp/mock_pretrain_dir/lstm_Alpha158_2026-03-01.json", 'w')

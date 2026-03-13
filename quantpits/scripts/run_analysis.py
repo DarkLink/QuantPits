@@ -181,6 +181,7 @@ def main():
     discrepancy = exec_a.analyze_order_discrepancies(order_dir, market="all")
     
     report.append("\n## 3. Execution Friction & Path Dependency")
+    quant_slip_df = pd.DataFrame() # Initialize to avoid UnboundLocalError
     if not slip_df.empty:
         # Drop NaNs across all components simultaneously so denominators exactly match
         slip_df = slip_df.dropna(subset=['Delay_Cost', 'Exec_Slippage', 'Total_Friction', '成交金额'])
@@ -209,7 +210,7 @@ def main():
         if 'Absolute_Slippage_Amount' in buy_slip.columns and not args.shareable:
             abs_slip_buy = buy_slip['Absolute_Slippage_Amount'].sum()
             report.append(f"  - Absolute Slippage Amount: {abs_slip_buy:.2f}")
-        if 'ADV_Participation_Rate' in buy_slip.columns and not args.shareable:
+        if 'ADV_Participation_Rate' in buy_slip.columns:
             buy_adv = buy_slip['ADV_Participation_Rate'].dropna()
             if not buy_adv.empty:
                 report.append(f"  - ADV Participation Rate (Mean / Max): {format_adv(buy_adv.mean())} / {format_adv(buy_adv.max())}")
@@ -225,7 +226,7 @@ def main():
         if 'Absolute_Slippage_Amount' in sell_slip.columns and not args.shareable:
             abs_slip_sell = sell_slip['Absolute_Slippage_Amount'].sum()
             report.append(f"  - Absolute Slippage Amount: {abs_slip_sell:.2f}")
-        if 'ADV_Participation_Rate' in sell_slip.columns and not args.shareable:
+        if 'ADV_Participation_Rate' in sell_slip.columns:
             sell_adv = sell_slip['ADV_Participation_Rate'].dropna()
             if not sell_adv.empty:
                 report.append(f"  - ADV Participation Rate (Mean / Max): {format_adv(sell_adv.mean())} / {format_adv(sell_adv.max())}")
