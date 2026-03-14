@@ -50,6 +50,10 @@ flowchart TB
         IT["incremental_train.py<br/>增量训练"]
     end
 
+    subgraph ROLLING["⑨ 滚动训练（按需）"]
+        RT["rolling_train.py<br/>冷启动/日常/预测"]
+    end
+
     subgraph PREDICT["② 预测（每次）"]
         PO["prod_predict_only.py<br/>仅预测"]
     end
@@ -81,15 +85,20 @@ flowchart TB
 
     REG["model_registry.yaml<br/>模型注册表"]
     LTR["latest_train_records.json<br/>训练记录"]
+    LRR["latest_rolling_records.json<br/>滚动训练记录"]
     PRED_CSV["output/predictions/<br/>预测 CSV"]
     WC["prod_config.json<br/>持仓/现金"]
 
     REG --> TRAIN
     REG --> PREDICT
+    REG --> ROLLING
     TRAIN --> LTR
     PREDICT --> LTR
+    ROLLING --> LRR
     LTR --> BRUTEFORCE
     LTR --> FUSION
+    LRR -.->|--record-file| BRUTEFORCE
+    LRR -.->|--record-file| FUSION
     FUSION --> PRED_CSV
     PREDICT --> PRED_CSV
     PRED_CSV --> ORDERGEN
@@ -198,6 +207,24 @@ python quantpits/scripts/ensemble_fusion.py \
 # ⑤⑥ 同上
 ```
 
+### 场景 E：滚动训练（适应市场风格漂移）
+
+当静态模型预测质量因市场风格变化而衰减时，使用滚动训练让模型持续适应。
+
+```bash
+# ⑨ 冷启动：首次滚动训练
+python quantpits/scripts/rolling_train.py --cold-start --all-enabled
+
+# ③④ 穷举 + 融合（使用滚动预测）
+python quantpits/scripts/brute_force_fast.py --record-file latest_rolling_records.json
+python quantpits/scripts/ensemble_fusion.py \
+  --from-config --record-file latest_rolling_records.json
+
+# ⑤⑥ Post-Trade + 订单生成（同其他场景）
+```
+
+> 日常运行只需：`python quantpits/scripts/rolling_train.py --all-enabled`（自动判断训练/预测）
+
 ---
 
 ## 模块速查
@@ -216,6 +243,19 @@ python quantpits/scripts/ensemble_fusion.py \
 - 回测策略参数（含基准、交易频率、资金量）由 `config/strategy_config.yaml` 控制
 - 训练记录修改前自动备份到 `data/history/`
 - 增量训练支持 `--resume`（断点续训）和 `--dry-run`（预览）
+
+### ⑨ 滚动训练模块
+
+> 详见 [30_ROLLING_TRAINING_GUIDE.md](30_ROLLING_TRAINING_GUIDE.md)
+
+| 脚本 | 用途 | 保存语义 |
+|------|------|----------|
+| `rolling_train.py` | 滑动窗口训练 + 预测拼接 | **独立** `latest_rolling_records.json` |
+
+- 与静态训练完全独立，共存于同一 Workspace
+- 支持冷启动、日常模式（自动判断训练/预测）、仅预测、断点恢复
+- 下游通过 `--record-file latest_rolling_records.json` 无缝切换数据源
+- 配置文件：`config/rolling_config.yaml`（起点、训练年数、验证年数、步长）
 
 ### ② 预测模块
 
@@ -350,6 +390,7 @@ python quantpits/scripts/ensemble_fusion.py \
 | `prod_config.json` | 实盘与状态层：持仓、现金、处理时间 | Post-Trade、订单生成 |
 | `cashflow.json` | 出入金记录：按日期的出入金 | Post-Trade |
 | `ensemble_config.json` | 多组合融合配置：combo 定义、权重、default | 融合预测、订单生成、信号排名 |
+| `rolling_config.yaml` | 滚动训练参数：起点、训练/验证年数、步长 | 滚动训练 |
 | `workflow_config_*.yaml` | Qlib 工作流：各模型的训练配置 | 训练 |
 
 ### 输出文件 (`output/`)
@@ -357,6 +398,7 @@ python quantpits/scripts/ensemble_fusion.py \
 | 目录/文件 | 用途 |
 |-----------|------|
 | `predictions/*.csv` | 各模型和 ensemble 的预测结果（多 combo 带组合名） |
+| `predictions/rolling/` | 滚动训练预测（per-window CSV + 拼接 CSV） |
 | `brute_force/` | 暴力穷举精确回测结果和分析报告 |
 | `brute_force_fast/` | 快速穷举结果 |
 | `ensemble/` | 融合配置、排行榜、图表、跨组合对比 |
@@ -373,6 +415,8 @@ python quantpits/scripts/ensemble_fusion.py \
 | `history/` | 自动备份的历史文件 |
 | `order_history/` | 历史订单建议、交易明细、交易软件导出表（由归档脚本管理） |
 | `run_state.json` | 增量训练运行状态（支持断点续跑） |
+| `rolling_state.json` | 滚动训练状态（断点恢复用） |
+| `latest_rolling_records.json` | 滚动训练记录（下游 `--record-file` 使用） |
 | `trade_log_full.csv` | 累计交易日志（含买入和卖出） |
 | `holding_log_full.csv` | 累计持仓日志 |
 | `daily_amount_log_full.csv` | 每日资金汇总 |
@@ -398,6 +442,7 @@ python quantpits/scripts/ensemble_fusion.py \
 | 06 | [ORDER_GEN_GUIDE](06_ORDER_GEN_GUIDE.md) | 订单生成、买卖建议输出 |
 | 07 | [SIGNAL_RANKING_GUIDE](07_SIGNAL_RANKING_GUIDE.md) | 信号排名 Top N 推荐 |
 | 08 | [ANALYSIS_GUIDE](08_ANALYSIS_GUIDE.md) | 单模型质量、融合相关性、执行滑点成本及多维组合风险综合评测 |
+| **30** | **[ROLLING_TRAINING_GUIDE](30_ROLLING_TRAINING_GUIDE.md)** | **滚动训练：时间窗口滑动训练、冷启动、断点恢复** |
 | 70 | [WALKTHROUGH](70_WALKTHROUGH.md) | **端到端实战操作手册（从这里开始！）** |
 
 ---

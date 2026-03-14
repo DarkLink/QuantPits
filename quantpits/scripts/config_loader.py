@@ -63,6 +63,49 @@ def load_workspace_config(workspace_path):
     
     return config
 
+def load_rolling_config(workspace_path):
+    """
+    Load rolling training configuration from config/rolling_config.yaml.
+
+    Returns:
+        dict with keys: rolling_start (str), train_years (int), valid_years (int),
+                        test_step (str e.g. '3M'), test_step_months (int)
+        None if file doesn't exist
+    """
+    from dateutil.relativedelta import relativedelta
+
+    workspace_path = Path(workspace_path)
+    rolling_cfg_path = workspace_path / "config" / "rolling_config.yaml"
+
+    if not rolling_cfg_path.exists():
+        return None
+
+    with open(rolling_cfg_path, 'r') as f:
+        cfg = yaml.safe_load(f)
+
+    if not cfg:
+        return None
+
+    # Parse test_step: "3M" -> 3 months, "1Y" -> 12 months
+    step_str = str(cfg.get('test_step', '3M')).strip().upper()
+    if step_str.endswith('M'):
+        step_months = int(step_str[:-1])
+    elif step_str.endswith('Y'):
+        step_months = int(step_str[:-1]) * 12
+    else:
+        raise ValueError(f"Invalid test_step format: '{cfg['test_step']}'. "
+                         f"Expected integer months (e.g. 3M) or years (e.g. 1Y)")
+
+    result = {
+        'rolling_start': str(cfg['rolling_start']),
+        'train_years': int(cfg['train_years']),
+        'valid_years': int(cfg['valid_years']),
+        'test_step': step_str,
+        'test_step_months': step_months,
+    }
+    return result
+
+
 if __name__ == "__main__":
     # Test loading
     import sys

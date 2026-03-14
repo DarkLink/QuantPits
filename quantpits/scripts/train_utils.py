@@ -37,8 +37,11 @@ MODEL_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "model_config.json")
 PROD_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "prod_config.json")
 RECORD_OUTPUT_FILE = os.path.join(ROOT_DIR, "latest_train_records.json")
 PREDICTION_OUTPUT_DIR = os.path.join(ROOT_DIR, "output", "predictions")
+ROLLING_PREDICTION_DIR = os.path.join(ROOT_DIR, "output", "predictions", "rolling")
 HISTORY_DIR = os.path.join(ROOT_DIR, "data", "history")
 RUN_STATE_FILE = os.path.join(ROOT_DIR, "data", "run_state.json")
+ROLLING_STATE_FILE = os.path.join(ROOT_DIR, "data", "rolling_state.json")
+ROLLING_RECORD_FILE = os.path.join(ROOT_DIR, "latest_rolling_records.json")
 PRETRAINED_DIR = os.path.join(ROOT_DIR, "data", "pretrained")
 
 

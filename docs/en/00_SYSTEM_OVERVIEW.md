@@ -48,6 +48,10 @@ flowchart TB
         IT["incremental_train.py<br/>Incremental Train"]
     end
 
+    subgraph ROLLING["⑨ Rolling Train (On-demand)"]
+        RT["rolling_train.py<br/>Cold Start/Daily/Predict"]
+    end
+
     subgraph PREDICT["② Predict (Every time)"]
         PO["prod_predict_only.py<br/>Predict Only"]
     end
@@ -79,15 +83,20 @@ flowchart TB
 
     REG["model_registry.yaml<br/>Model Registry"]
     LTR["latest_train_records.json<br/>Train Records"]
+    LRR["latest_rolling_records.json<br/>Rolling Records"]
     PRED_CSV["output/predictions/<br/>Prediction CSVs"]
     WC["prod_config.json<br/>Holdings/Cash"]
 
     REG --> TRAIN
     REG --> PREDICT
+    REG --> ROLLING
     TRAIN --> LTR
     PREDICT --> LTR
+    ROLLING --> LRR
     LTR --> BRUTEFORCE
     LTR --> FUSION
+    LRR -.->|--record-file| BRUTEFORCE
+    LRR -.->|--record-file| FUSION
     FUSION --> PRED_CSV
     PREDICT --> PRED_CSV
     PRED_CSV --> ORDERGEN
@@ -196,6 +205,24 @@ python quantpits/scripts/ensemble_fusion.py \
 # ⑤⑥ Post-Trade + Order Gen (As above)
 ```
 
+### Scenario E: Rolling Training (Adapting to Market Regime Shifts)
+
+When static model predictions degrade due to market regime changes, use rolling training to keep models continuously adapted.
+
+```bash
+# ⑨ Cold start: first-time rolling training
+python quantpits/scripts/rolling_train.py --cold-start --all-enabled
+
+# ③④ Brute force + Fusion (using rolling predictions)
+python quantpits/scripts/brute_force_fast.py --record-file latest_rolling_records.json
+python quantpits/scripts/ensemble_fusion.py \
+  --from-config --record-file latest_rolling_records.json
+
+# ⑤⑥ Post-Trade + Order Gen (Same as other scenarios)
+```
+
+> For daily operation, simply run: `python quantpits/scripts/rolling_train.py --all-enabled` (auto-detects whether to train or predict)
+
 ---
 
 ## Module Cheat Sheet
@@ -214,6 +241,19 @@ python quantpits/scripts/ensemble_fusion.py \
 - Backtest strategy parameters (benchmark, frequency, capital) are controlled by `config/strategy_config.yaml` (preview)
 - Training records are auto-backed up to `data/history/` before modifying
 - Incremental training supports `--resume` (resume from breakpoint) and `--dry-run` (preview)
+
+### ⑨ Rolling Training Module
+
+> See details in [30_ROLLING_TRAINING_GUIDE.md](30_ROLLING_TRAINING_GUIDE.md)
+
+| Script | Purpose | Save Semantics |
+|------|------|----------|
+| `rolling_train.py` | Sliding window training + prediction stitching | **Independent** `latest_rolling_records.json` |
+
+- Fully independent from static training, coexists in the same Workspace
+- Supports cold start, daily mode (auto-detect train vs predict), predict-only, crash recovery
+- Downstream scripts switch data source via `--record-file latest_rolling_records.json`
+- Config: `config/rolling_config.yaml` (start date, train years, valid years, step size)
 
 ### ② Prediction Module
 
@@ -348,6 +388,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | `prod_config.json` | Live State: Holdings, Cash, Processing state | Post-Trade, Order Gen |
 | `cashflow.json` | Cashflow Records: Deposits/Withdrawals by date | Post-Trade |
 | `ensemble_config.json` | Multi-combo Config: Combo definitions, weights, defaults | Fusion, Order Gen, Ranking |
+| `rolling_config.yaml` | Rolling Training Params: Start date, train/valid years, step size | Rolling Train |
 | `workflow_config_*.yaml` | Qlib Workflows: Training configurations for each model | Train |
 
 ### Output Files (`output/`)
@@ -355,6 +396,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | Dir/File | Purpose |
 |-----------|------|
 | `predictions/*.csv` | Prediction results for models and ensembles (multi-combo includes combo name) |
+| `predictions/rolling/` | Rolling training predictions (per-window CSV + stitched CSV) |
 | `brute_force/` | Exact brute force backtest results and analytical reports |
 | `brute_force_fast/` | Fast brute force screening results |
 | `ensemble/` | Fusion configs, leaderboards, charts, inter-combo comparisons |
@@ -371,6 +413,8 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | `history/` | Auto-backed up historical files |
 | `order_history/` | Historical order suggestions, trade details, exported brokerage Excel files (supervised by archiver) |
 | `run_state.json` | State tracker for incremental training (Resume functionality) |
+| `rolling_state.json` | Rolling training state tracker (crash recovery) |
+| `latest_rolling_records.json` | Rolling training records (downstream `--record-file` usage) |
 | `trade_log_full.csv` | Cumulative trade log (both buys and sells) |
 | `holding_log_full.csv` | Cumulative holdings log |
 | `daily_amount_log_full.csv` | Daily capital summary |
@@ -396,6 +440,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | 06 | [ORDER_GEN_GUIDE](06_ORDER_GEN_GUIDE.md) | Order generation, outputting buy/sell suggestions |
 | 07 | [SIGNAL_RANKING_GUIDE](07_SIGNAL_RANKING_GUIDE.md) | Top N signal recommendation |
 | 08 | [ANALYSIS_GUIDE](08_ANALYSIS_GUIDE.md) | Single model quality, fusion correlations, slippage costs and comprehensive multi-factor risk assessments |
+| **30** | **[ROLLING_TRAINING_GUIDE](30_ROLLING_TRAINING_GUIDE.md)** | **Rolling training: sliding windows, cold start, crash recovery** |
 | 70 | [WALKTHROUGH](70_WALKTHROUGH.md) | **End-to-End Hands-On Walkthrough (Start Here!)** |
 
 ---

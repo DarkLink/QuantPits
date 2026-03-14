@@ -29,7 +29,7 @@ The system strictly decouples the **Engine (Code)** from the **Workspace (Config
 
 ```text
 QuantPits/
-├── docs/                   # Detailed system manuals (00-08)
+├── docs/                   # Detailed system manuals (00-08, 30+, 70)
 ├── ui/                     # Streamlit interactive dashboards
 │   ├── dashboard.py        # Macro performance app
 │   └── rolling_dashboard.py# Temporal strategy health app
@@ -143,6 +143,7 @@ For a deep dive into each module, refer to the documentation in `docs/`:
 - `01_TRAINING_GUIDE.md`
 - `02_BRUTE_FORCE_GUIDE.md`
 - `03_ENSEMBLE_FUSION_GUIDE.md`
+- `30_ROLLING_TRAINING_GUIDE.md` (Rolling Training: Sliding Window Training)
 - ...and more.
 
 All documentation is available in both Chinese and English (`docs/en/`).
