@@ -585,6 +585,12 @@ def parse_args():
                       help='仅使用最新模型预测，不训练')
     mode.add_argument('--resume', action='store_true',
                       help='从断点恢复训练')
+    mode.add_argument('--merge', action='store_true',
+                      help='合并冷启动：在已有 rolling 状态基础上追加新模型')
+    mode.add_argument('--backtest', action='store_true',
+                      help='训练拼接完成后，对产出的合成预测进行全量回测')
+    mode.add_argument('--backtest-only', action='store_true',
+                      help='仅对 latest_rolling_records.json 中的模型进行回测 (跳过训练预测)')
 
     select = parser.add_argument_group('模型选择')
     select.add_argument('--models', type=str,
@@ -712,10 +718,14 @@ def run_cold_start(args, targets, rolling_cfg):
 
     # 初始化状态
     state = RollingState()
-    if not args.resume:
+    if getattr(args, 'resume', False) is not True and getattr(args, 'merge', False) is not True:
         state.init_run(rolling_cfg, anchor_date, len(windows))
     else:
-        print("⏩ Resume 模式：跳过已完成的 window×model")
+        if not state.anchor_date:
+            print("❌ 无 rolling 状态可恢复，将新建状态")
+            state.init_run(rolling_cfg, anchor_date, len(windows))
+        else:
+            print(f"⏩ {'Merge' if getattr(args, 'merge', False) is True else 'Resume'} 模式：跳过已完成窗格")
 
     rolling_exp_name = f"Rolling_Windows_{freq}"
     combined_exp_name = f"Rolling_Combined_{freq}"
@@ -753,13 +763,23 @@ def run_cold_start(args, targets, rolling_cfg):
                 print(f"❌ {model_name} W{widx} 训练失败: {result.get('error', 'Unknown')}")
 
     # 拼接预测
-    model_names = list(targets.keys())
+    if getattr(args, 'merge', False) is True:
+        completed = state.get_all_completed_windows()
+        all_models = set(targets.keys())
+        for win, models in completed.items():
+            all_models.update(models.keys())
+        model_names = list(all_models)
+    else:
+        model_names = list(targets.keys())
+
     combined_records = concatenate_rolling_predictions(
         state, model_names, rolling_exp_name, combined_exp_name, anchor_date
     )
 
     if combined_records:
         save_rolling_records(combined_records, combined_exp_name, anchor_date)
+        if getattr(args, 'backtest', False) is True:
+            run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
 
     # 完成
     print(f"\n{'='*60}")
@@ -843,6 +863,8 @@ def run_daily(args, targets, rolling_cfg):
         )
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name, anchor_date)
+            if getattr(args, 'backtest', False) is True:
+                run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
 
         print(f"\n✅ Rolling 滚动更新完成 (新训练 {len(new_windows)} 个 windows)")
 
@@ -854,6 +876,193 @@ def run_daily(args, targets, rolling_cfg):
                 model_name, model_info, state,
                 rolling_exp_name, params_base, anchor_date
             )
+
+
+def run_combined_backtest(model_names, combined_records, combined_exp_name, params_base):
+    """
+    对合并后的预测执行回测，并将回测结果的 port_analysis 等指标保存追加回相应的记录。
+    """
+    from qlib.workflow import R
+    from qlib.backtest import backtest
+    from qlib.backtest.executor import SimulatorExecutor
+    import strategy
+    import numpy as np
+    import warnings
+    
+    print(f"\n{'='*60}")
+    print("📈 运行 Rolling 合并预测的回测")
+    print(f"{'='*60}")
+    
+    st_config = strategy.load_strategy_config()
+    bt_config = strategy.get_backtest_config(st_config)
+    
+    for model_name in model_names:
+        if model_name not in combined_records:
+            continue
+            
+        record_id = combined_records[model_name]
+        print(f"\n  [{model_name}] 提取合并预测以进行回测 (Record: {record_id})...")
+        
+        try:
+            rec = R.get_recorder(recorder_id=record_id, experiment_name=combined_exp_name)
+            pred = rec.load_object("pred.pkl")
+            
+            if pred is None or pred.empty:
+                print(f"  [{model_name}] 预测为空，跳过回测。")
+                continue
+                
+            bt_start = str(pred.index.get_level_values(0).min().date())
+            bt_end = str(pred.index.get_level_values(0).max().date())
+            
+            print(f"  [{model_name}] Backtest Range: {bt_start} ~ {bt_end}")
+            
+            # Create Strategy
+            strategy_inst = strategy.create_backtest_strategy(pred, st_config)
+            
+            # Create Executor
+            executor_obj = SimulatorExecutor(
+                time_per_step=params_base['freq'],
+                generate_portfolio_metrics=True,
+                verbose=False
+            )
+            
+            print(f"  [{model_name}] 执行回测...")
+            with np.errstate(divide='ignore', invalid='ignore'), warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                raw_portfolio_metrics, raw_indicators = backtest(
+                    executor=executor_obj,
+                    strategy=strategy_inst,
+                    start_time=bt_start,
+                    end_time=bt_end,
+                    account=bt_config['account'],
+                    benchmark=params_base['benchmark'],
+                    exchange_kwargs=bt_config['exchange_kwargs']
+                )
+            
+            # Use PortfolioAnalyzer to get traditional metrics
+            from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+            import pandas as pd
+            from qlib.data import D
+            
+            def extract_report_df(metrics):
+                if isinstance(metrics, dict):
+                    val = list(metrics.values())[0]
+                    return val[0] if isinstance(val, tuple) else val
+                elif isinstance(metrics, tuple):
+                    first = metrics[0]
+                    if isinstance(first, pd.DataFrame):
+                        return first
+                    elif isinstance(first, tuple) and len(first) >= 1:
+                        return first[0]
+                    return metrics
+                return metrics
+                
+            report_df = extract_report_df(raw_portfolio_metrics)
+            if report_df is None or report_df.empty:
+                 print(f"  [{model_name}] 提取回测结果失败。")
+                 continue
+                 
+            # Format report DataFrame
+            da_df = pd.DataFrame(index=report_df.index)
+            da_df['收盘价值'] = report_df['account']
+            da_df[params_base['benchmark']] = (1 + report_df['bench']).cumprod()
+            if not isinstance(da_df.index, pd.DatetimeIndex):
+                da_df.index = pd.to_datetime(da_df.index)
+            
+            bt_start_dt = da_df.index.min()
+            bt_end_dt = da_df.index.max()
+            daily_dates = D.calendar(start_time=bt_start_dt, end_time=bt_end_dt, freq='day')
+            da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
+            da_df = da_df.reset_index().rename(columns={'index': '成交日期', 'datetime': '成交日期'})
+            
+            pa = PortfolioAnalyzer(
+                daily_amount_df=da_df, 
+                trade_log_df=pd.DataFrame(), 
+                holding_log_df=pd.DataFrame(),
+                benchmark_col=params_base['benchmark'], 
+                freq=params_base['freq']
+            )
+            metrics = pa.calculate_traditional_metrics()
+            
+            ann_ret = metrics.get('CAGR', 0)
+            max_dd = metrics.get('Max_Drawdown', 0)
+            excess = metrics.get('Excess_Return_CAGR', 0)
+            ir = metrics.get('Information_Ratio', 0)
+            calmar = metrics.get('Calmar', 0)
+            
+            print(f"  [{model_name}] 回测完成! Ann_Ret: {ann_ret:.2%}, Excess: {excess:.2%}, Max_DD: {max_dd:.2%}, IR: {ir:.3f}")
+            
+            # Save objects back to the same recorder
+            # By calling methods directly on the existing `rec` object
+            try:
+                rec.log_metrics(
+                    Ann_Ret=ann_ret,
+                    Max_DD=max_dd,
+                    Excess_Return=excess,
+                    Information_Ratio=ir,
+                    Calmar=calmar
+                )
+                
+                # 严格按照 Qlib PortAnaRecord 的保存格式，把报告分离并保存到 portfolio_analysis 子目录下
+                port_ana_objs = {}
+                if isinstance(raw_portfolio_metrics, dict):
+                    for freq_key, metrics_tuple in raw_portfolio_metrics.items():
+                        if isinstance(metrics_tuple, tuple) and len(metrics_tuple) >= 2:
+                            port_ana_objs[f"report_normal_{freq_key}.pkl"] = metrics_tuple[0]
+                            port_ana_objs[f"positions_normal_{freq_key}.pkl"] = metrics_tuple[1]
+                        elif isinstance(metrics_tuple, tuple) and len(metrics_tuple) == 1:
+                            port_ana_objs[f"report_normal_{freq_key}.pkl"] = metrics_tuple[0]
+
+                if port_ana_objs:
+                    rec.save_objects(artifact_path="portfolio_analysis", **port_ana_objs)
+                
+                # 指标分析保存到 sig_analysis 子目录（依照 SigAnaRecord）或者根目录
+                rec.save_objects(artifact_path="sig_analysis", **{
+                    f"indicator_analysis_{params_base['freq']}.pkl": raw_indicators
+                })
+            except Exception as log_e:
+                print(f"  [{model_name}] MLflow 记录失败，可能已存在同名 metric: {log_e}")
+                
+        except Exception as e:
+            print(f"  [{model_name}] 回测过程失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+def run_backtest_only(args, targets):
+    """仅回测模式：读取 latest_rolling_records.json 直接运行"""
+    import os, json
+    from train_utils import ROLLING_RECORD_FILE
+    env.init_qlib()
+    params_base = get_base_params()
+    
+    if os.path.exists(ROLLING_RECORD_FILE):
+        with open(ROLLING_RECORD_FILE, 'r') as f:
+            records = json.load(f)
+    else:
+        records = None
+        
+    if not records or "models" not in records:
+        print("❌ 找不到有效的 latest_rolling_records.json 或内容为空。")
+        return
+        
+    combined_exp_name = records.get("experiment_name")
+    if not combined_exp_name:
+        freq = params_base['freq'].upper()
+        combined_exp_name = f"Rolling_Combined_{freq}"
+        
+    combined_records = records["models"]
+    model_names = []
+    
+    for m in targets.keys():
+        if m in combined_records:
+            model_names.append(m)
+            
+    if not model_names:
+        print("❌ 选定的模型中没有找到历史滚动预测记录。")
+        return
+        
+    run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
 
 
 def run_predict_only(args, targets, rolling_cfg):
@@ -909,21 +1118,21 @@ def main():
         args.tag, args.all_enabled
     ])
 
-    if not has_selection and not args.resume:
+    if getattr(args, 'resume', False) is True or getattr(args, 'merge', False) is True or getattr(args, 'backtest_only', False) is True:
+        if not has_selection:
+            args.all_enabled = True
+            has_selection = True
+
+    if not has_selection:
         print("❌ 请指定要训练的模型")
         print("   使用 --models, --algorithm, --dataset, --tag, 或 --all-enabled")
         return
 
-    if args.resume:
-        # Resume 模式: 从状态中恢复
+    if getattr(args, 'resume', False) is True or getattr(args, 'merge', False) is True:
         state = RollingState()
-        if not state.anchor_date:
+        if not state.anchor_date and getattr(args, 'resume', False) is True:
             print("❌ 无 rolling 状态可恢复")
             return
-
-        if not has_selection:
-            # 没有指定模型，使用 --all-enabled
-            args.all_enabled = True
 
     targets = resolve_target_models(args)
     if targets is None or not targets:
@@ -931,9 +1140,11 @@ def main():
         return
 
     # 选择运行模式
-    if args.predict_only:
+    if getattr(args, 'backtest_only', False) is True:
+        run_backtest_only(args, targets)
+    elif args.predict_only:
         run_predict_only(args, targets, rolling_cfg)
-    elif args.cold_start or args.resume:
+    elif args.cold_start or getattr(args, 'resume', False) is True or getattr(args, 'merge', False) is True:
         run_cold_start(args, targets, rolling_cfg)
     else:
         run_daily(args, targets, rolling_cfg)

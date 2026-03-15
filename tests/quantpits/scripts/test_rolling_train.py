@@ -830,3 +830,213 @@ class TestMainFlows:
             assert len(recs) == 2
         finally:
             os.unlink(state_file)
+
+
+class TestMainFlowsExtended:
+    """Extra flows for new arguments"""
+
+    def test_main_merge(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.show_state = False
+        args.clear_state = False
+        args.merge = True
+        args.cold_start = False
+        args.resume = False
+        args.predict_only = False
+        args.backtest_only = False
+        args.backtest = False
+
+        mock_patch_cfg = {
+            'rolling_start': '2020-01-01',
+            'train_years': 3,
+            'valid_years': 1,
+            'test_step': '3M',
+            'test_step_months': 3
+        }
+
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
+             mock.patch('config_loader.load_rolling_config', return_value=mock_patch_cfg), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.run_cold_start') as mock_run:
+            
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = "2024-01-01"
+            
+            rt.main()
+            mock_run.assert_called_once()
+
+    def test_main_backtest_only(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.show_state = False
+        args.clear_state = False
+        args.backtest_only = True
+        args.predict_only = False
+        args.cold_start = False
+        args.resume = False
+        args.merge = False
+
+        mock_patch_cfg = {
+            'rolling_start': '2020-01-01',
+            'train_years': 3,
+            'valid_years': 1,
+            'test_step': '3M',
+            'test_step_months': 3
+        }
+
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
+             mock.patch('config_loader.load_rolling_config', return_value=mock_patch_cfg), \
+             mock.patch('rolling_train.run_backtest_only') as mock_run:
+            
+            rt.main()
+            mock_run.assert_called_once()
+
+
+class TestRunModesExtra:
+    """Test the newly added run modes directly"""
+
+    def test_run_backtest_only_success(self, mock_env):
+        rt, workspace = mock_env
+        args = mock.MagicMock()
+        targets = {'m1': {}}
+        
+        # Create dummy record file
+        rec_file = workspace / "latest_rolling_records.json"
+        rec_file.write_text(json.dumps({
+            "experiment_name": "Exp",
+            "models": {"m1": "rec123"}
+        }))
+
+        with mock.patch('quantpits.scripts.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.run_combined_backtest') as mock_run_bt:
+            
+            mock_base.return_value = {'freq': 'week', 'benchmark': 'SH000300'}
+            # Note: run_backtest_only imports ROLLING_RECORD_FILE from train_utils
+            # Our mock_env already reloads rolling_train which should pick up the mocked workspace path if train_utils was patched correctly.
+            # But ROLLING_RECORD_FILE might be bound at import time.
+            # In mock_env: monkeypatch.setattr(train_utils, 'ROLLING_PREDICTION_DIR', ...)
+            # Let's ensure ROLLING_RECORD_FILE is also mocked.
+            import train_utils
+            with mock.patch.object(train_utils, 'ROLLING_RECORD_FILE', str(rec_file)):
+                rt.run_backtest_only(args, targets)
+                mock_run_bt.assert_called_once()
+
+    def test_run_combined_backtest_full(self, mock_env):
+        rt, _ = mock_env
+        model_names = ['m1']
+        combined_records = {'m1': 'rec1'}
+        combined_exp_name = "Exp"
+        params_base = {'freq': 'week', 'benchmark': 'SH000300'}
+
+        with mock.patch('qlib.workflow.R', create=True) as mock_r, \
+             mock.patch('qlib.backtest.backtest') as mock_bt, \
+             mock.patch('strategy.create_backtest_strategy'), \
+             mock.patch('strategy.load_strategy_config'), \
+             mock.patch('strategy.get_backtest_config') as mock_get_bt_cfg, \
+             mock.patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer') as mock_pa_cls, \
+             mock.patch('qlib.data.D', create=True) as mock_d:
+            
+            mock_recorder = mock.MagicMock()
+            mock_r.get_recorder.return_value = mock_recorder
+            
+            # Mock pred data
+            dates = pd.date_range('2024-01-01', periods=5)
+            pred_df = pd.DataFrame({'score': [0.5]*5}, index=pd.MultiIndex.from_product([dates, ['S1']], names=['datetime', 'instrument']))
+            mock_recorder.load_object.return_value = pred_df
+            
+            # Mock backtest return
+            report_df = pd.DataFrame({'account': [1e8]*5, 'bench': [0]*5}, index=dates)
+            mock_bt.return_value = ({'1week': (report_df, pd.DataFrame())}, {'1week': (pd.DataFrame(), {})})
+            
+            mock_get_bt_cfg.return_value = {'account': 1e8, 'exchange_kwargs': {}}
+            mock_d.calendar.return_value = dates
+            
+            mock_pa = mock_pa_cls.return_value
+            mock_pa.calculate_traditional_metrics.return_value = {
+                'CAGR': 0.1, 'Max_Drawdown': -0.05, 'Excess_Return_CAGR': 0.05, 'Information_Ratio': 1.2, 'Calmar': 2.0
+            }
+
+            rt.run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
+            
+            # Verify save_objects was called with correct structure
+            mock_recorder.save_objects.assert_called()
+            # check the logic of calling with artifact_path
+            calls = mock_recorder.save_objects.call_args_list
+            # One call for portfolio_analysis, one for sig_analysis
+            assert any(c.kwargs.get('artifact_path') == 'portfolio_analysis' for c in calls)
+            assert any(c.kwargs.get('artifact_path') == 'sig_analysis' for c in calls)
+
+    def test_run_predict_only(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        targets = {'m1': {}}
+        cfg = {}
+        
+        with mock.patch('quantpits.scripts.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.predict_with_latest_model') as mock_predict:
+            
+            mock_base.return_value = {'anchor_date': '2024-01-01', 'freq': 'week'}
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = '2023-12-31'
+            
+            rt.run_predict_only(args, targets, cfg)
+            mock_predict.assert_called_once()
+
+    def test_main_resume_no_state(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.show_state = False
+        args.clear_state = False
+        args.resume = True
+        args.all_enabled = True
+
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.resolve_target_models') as mock_resolve:
+            
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = None # No state
+            
+            rt.main()
+            # Should return early without calling resolve_target_models
+            mock_resolve.assert_not_called()
+
+    def test_main_no_targets(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.show_state = False
+        args.clear_state = False
+        args.cold_start = True
+        args.all_enabled = True
+
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('rolling_train.resolve_target_models', return_value={}):
+            
+            rt.main()
+            # Should print "⚠️ 没有匹配的模型" and return
+
+    def test_run_predict_only_no_state(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        targets = {'m1': {}}
+        cfg = {}
+        
+        with mock.patch('quantpits.scripts.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.RollingState') as mock_state_cls:
+            
+            mock_base.return_value = {'anchor_date': '2024-01-01', 'freq': 'week'}
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = None # No state
+            
+            rt.run_predict_only(args, targets, cfg)
+            # Should return early
+
+
+
