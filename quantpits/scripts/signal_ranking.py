@@ -22,13 +22,12 @@ Signal Ranking - 生成股票信号评分排名（独立于订单生成）
   # 自定义 TopN
   python quantpits/scripts/signal_ranking.py --top-n 500
 
-  # 指定预测文件
-  python quantpits/scripts/signal_ranking.py --prediction-file output/predictions/ensemble_2026-02-13.csv
+  # 自定义 TopN
+  python quantpits/scripts/signal_ranking.py --top-n 500
 
 参数：
   --combo             指定 combo 名称
   --all-combos        为所有 combo 各生成一份
-  --prediction-file   直接指定预测文件路径
   --top-n             输出 Top N 个标的 (默认 300)
   --output-dir        输出目录 (默认 output/ranking)
   --dry-run           仅打印，不写入文件
@@ -204,14 +203,10 @@ def main():
                         help='指定 combo 名称')
     parser.add_argument('--all-combos', action='store_true',
                         help='为所有 combo 各生成一份')
-    parser.add_argument('--prediction-file', type=str,
-                        help='直接指定预测文件路径')
     parser.add_argument('--top-n', type=int, default=300,
                         help='输出 Top N 个标的 (默认 300)')
     parser.add_argument('--output-dir', type=str, default='output/ranking',
                         help='输出目录 (默认 output/ranking)')
-    parser.add_argument('--prediction-dir', type=str, default=None,
-                        help='预测文件搜索目录 (默认 output/predictions)')
     parser.add_argument('--dry-run', action='store_true',
                         help='仅打印，不写入文件')
     args = parser.parse_args()
@@ -231,39 +226,31 @@ def main():
     # 每个任务: (label, pred_df, source_desc)
     tasks = []
 
-    if args.prediction_file:
-        if not os.path.exists(args.prediction_file):
-            print(f"Error: 指定的预测文件不存在: {args.prediction_file}")
+    if args.all_combos:
+        combos = parse_ensemble_config()
+        if not combos:
+            print("Error: ensemble_config.json 中没有 combos")
             sys.exit(1)
-        pred_df = pd.read_csv(args.prediction_file, index_col=[0, 1], parse_dates=[1])
-        tasks.append(('custom', pred_df, args.prediction_file))
+        for name, cfg in combos.items():
+            try:
+                pred_df, rid = get_prediction_from_recorder(combo_name=name)
+                tasks.append((name, pred_df, f"recorder {rid}"))
+            except FileNotFoundError as e:
+                print(f"Warning: {e}")
+
+        if not tasks:
+            print("Error: 没有找到任何 combo 的预测记录")
+            sys.exit(1)
+        print(f"\n多组合模式: 共 {len(tasks)} 个 combo")
+
+    elif args.combo:
+        pred_df, rid = get_prediction_from_recorder(combo_name=args.combo)
+        tasks.append((args.combo, pred_df, f"recorder {rid}"))
 
     else:
-        if args.all_combos:
-            combos = parse_ensemble_config()
-            if not combos:
-                print("Error: ensemble_config.json 中没有 combos")
-                sys.exit(1)
-            for name, cfg in combos.items():
-                try:
-                    pred_df, rid = get_prediction_from_recorder(combo_name=name)
-                    tasks.append((name, pred_df, f"recorder {rid}"))
-                except FileNotFoundError as e:
-                    print(f"Warning: {e}")
-
-            if not tasks:
-                print("Error: 没有找到任何 combo 的预测记录")
-                sys.exit(1)
-            print(f"\n多组合模式: 共 {len(tasks)} 个 combo")
-
-        elif args.combo:
-            pred_df, rid = get_prediction_from_recorder(combo_name=args.combo)
-            tasks.append((args.combo, pred_df, f"recorder {rid}"))
-
-        else:
-            # Default: 使用最新 ensemble 预测
-            pred_df, rid = get_prediction_from_recorder()
-            tasks.append(('default', pred_df, f"recorder {rid}"))
+        # Default: 使用最新 ensemble 预测
+        pred_df, rid = get_prediction_from_recorder()
+        tasks.append(('default', pred_df, f"recorder {rid}"))
 
     # ---- 逐任务处理 ----
     generated_files = []

@@ -22,8 +22,7 @@ Order Generation - 基于融合/单模型预测生成买卖订单
   python quantpits/scripts/order_gen.py --dry-run
 
 参数：
-  --model            使用单模型预测（从 output/predictions/{model}_{date}.csv 加载）
-  --prediction-file  直接指定预测文件路径
+  --model            使用单模型预测（从 Qlib 记录加载）
   --output-dir       输出目录 (默认 output)
   --dry-run          仅打印订单计划，不写入文件
   --verbose          显示详细的排名和价格信息
@@ -96,19 +95,12 @@ def get_cashflow_today(cashflow_config, anchor_date):
 # ============================================================================
 # Stage 1: 加载预测数据
 # ============================================================================
-def load_predictions(prediction_file=None, model_name=None, anchor_date=None,
-                     prediction_dir=None, record_file=None, combo_name=None):
+def load_predictions(model_name=None, anchor_date=None, record_file=None, combo_name=None):
     """
     加载预测数据。
 
-    优先级: prediction_file > model_name > 自动搜索 ensemble 记录
+    优先级: model_name > 自动搜索 ensemble 记录
     """
-    if prediction_file:
-        if not os.path.exists(prediction_file):
-            raise FileNotFoundError(f"指定的预测文件不存在: {prediction_file}")
-        pred_df = pd.read_csv(prediction_file, index_col=[0, 1], parse_dates=[1])
-        return pred_df, f"指定文件: {prediction_file}"
-
     from qlib.workflow import R
     
     if model_name:
@@ -208,29 +200,18 @@ def get_price_data(anchor_date, market, instruments=None):
 # ============================================================================
 # Stage 3.5: 多模型判断表
 # ============================================================================
-def _load_pred_latest_day(pred_source, source_type, valid_instruments=None):
+def _load_pred_latest_day(df, valid_instruments=None):
     """
-    统一加载预测数据并返回最新一天的 DataFrame（按 score 降序，index=instrument）。
+    统一过滤预测数据并返回最新一天的 DataFrame（按 score 降序，index=instrument）。
 
     支持:
-      - CSV 文件 (score 列 或 列名为 '0')
       - Qlib Recorder pkl DataFrame
 
     Args:
-        pred_source: 文件路径或 DataFrame
-        source_type: 'model', 'combo', 'model_pkl'
+        df: DataFrame
         valid_instruments: set, 可选, 仅保留这些标的
     """
-    if source_type == 'model_pkl':
-        df = pred_source.copy()
-    else:
-        df = pd.read_csv(pred_source)
-        # 统一列名: 单模型 CSV 的预测列可能叫 '0'
-        if '0' in df.columns and 'score' not in df.columns:
-            df = df.rename(columns={'0': 'score'})
-        # 设置 multi-index
-        if 'instrument' in df.columns and 'datetime' in df.columns:
-            df = df.set_index(['instrument', 'datetime'])
+    df = df.copy()
 
     # 确保有 score 列
     if 'score' not in df.columns:
@@ -267,8 +248,7 @@ def _load_pred_latest_day(pred_source, source_type, valid_instruments=None):
 def generate_model_opinions(focus_instruments, current_holding_instruments,
                             top_k, drop_n, buy_suggestion_factor,
                             sorted_df, output_dir, next_trade_date_string,
-                            dry_run=False, record_file=None,
-                            prediction_dir=None):
+                            dry_run=False, record_file=None):
     """
     加载所有 combo 和单一模型的预测，对每个标的生成判断。
 
@@ -387,7 +367,7 @@ def generate_model_opinions(focus_instruments, current_holding_instruments,
             continue
         try:
             pred_cache[label] = _load_pred_latest_day(
-                pred_source, source_type, valid_instruments=valid_instruments
+                pred_source, valid_instruments=valid_instruments
             )
         except Exception:
             pred_cache[label] = None
@@ -566,22 +546,12 @@ def main():
 
   # 使用单模型预测（不融合）
   python quantpits/scripts/order_gen.py --model gru
-
-  # 指定预测文件
-  python quantpits/scripts/order_gen.py --prediction-file output/predictions/ensemble_2026-02-06.csv
-
-  # 仅预览
-  python quantpits/scripts/order_gen.py --dry-run
 """
     )
     parser.add_argument('--model', type=str,
-                        help='使用单模型预测（从 output/predictions/{model}_{date}.csv 加载）')
-    parser.add_argument('--prediction-file', type=str,
-                        help='直接指定预测文件路径')
+                        help='使用单模型预测（从 Qlib 记录加载）')
     parser.add_argument('--output-dir', type=str, default='output',
                         help='输出目录 (默认 output)')
-    parser.add_argument('--prediction-dir', type=str, default=None,
-                        help='预测文件搜索目录 (默认 output/predictions)')
     parser.add_argument('--record-file', type=str, default=None,
                         help='训练记录文件，用于加载单模型 PKL 预测 '
                              '(默认 config/latest_train_records.json)')
@@ -640,10 +610,8 @@ def main():
     print(f"{'='*60}")
 
     pred_df, source_desc = load_predictions(
-        prediction_file=args.prediction_file,
         model_name=args.model,
         anchor_date=anchor_date,
-        prediction_dir=args.prediction_dir,
         record_file=args.record_file
     )
 
@@ -726,7 +694,7 @@ def main():
         focus_instruments, current_holding_instruments,
         top_k, drop_n, buy_suggestion_factor,
         sorted_df, args.output_dir, next_trade_date_string, dry_run=args.dry_run,
-        record_file=args.record_file, prediction_dir=args.prediction_dir
+        record_file=args.record_file
     )
 
     if opinions_df is not None and not opinions_df.empty and args.verbose:
@@ -797,8 +765,6 @@ def main():
     # 确定文件命名标签
     if args.model:
         source_label = args.model
-    elif args.prediction_file:
-        source_label = "custom"
     else:
         source_label = "ensemble"
 

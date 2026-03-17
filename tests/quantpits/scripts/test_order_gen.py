@@ -255,18 +255,11 @@ def test_load_pred_latest_day(mock_env):
     dates = pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-02"])
     df = pd.DataFrame({"score": [1, 2, 3], "instrument": ["a", "b", "c"], "datetime": dates})
     
-    spec_file = str(workspace / "test.csv")
-    df.to_csv(spec_file, index=False)
-    
-    # from csv
-    res = order_gen._load_pred_latest_day(spec_file, 'model')
-    assert len(res) == 2
-    assert set(res.index) == {"b", "c"}
-    
     # from df (model_pkl)
     df_multi = df.set_index(["instrument", "datetime"])
-    res2 = order_gen._load_pred_latest_day(df_multi, 'model_pkl')
-    assert len(res2) == 2
+    res2 = order_gen._load_pred_latest_day(df_multi, valid_instruments=['a', 'b'])
+    assert len(res2) == 1
+    assert set(res2.index) == {"b"}
 
 @patch('qlib.data.D', create=True)
 @patch('qlib.data.ops.Feature', create=True)
@@ -477,8 +470,7 @@ def test_main_dry_run_full(mock_D, mock_safeguard, mock_price, mock_pred, mock_c
     mock_D.calendar.return_value = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
     
     import sys
-    with patch.object(sys, 'argv', ['script.py', '--dry-run', '--verbose',
-                                    '--prediction-dir', str(workspace / "output" / "predictions")]):
+    with patch.object(sys, 'argv', ['script.py', '--dry-run', '--verbose']):
         order_gen.main()
     
     # Check if a few key print messages were hit (via capsys if we had it, but mostly we want coverage)

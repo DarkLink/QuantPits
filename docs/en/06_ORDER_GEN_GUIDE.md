@@ -55,9 +55,8 @@ The processing pipeline prioritizes prediction sources via a hierarchical tier:
 
 | Priority | Parameter | Source | Description |
 |:---:|------|------|------|
-| 1 | `--prediction-file` | Arbitrary CSV | Explicitly passes any prediction trajectory file |
-| 2 | `--model` | Single Model CSV | Automatically locates newest version in `output/predictions/{model}_*.csv` |
-| 3 | *(Default)* | Ensemble CSV | Prioritizes `ensemble_YYYY-MM-DD.csv` (default combo wrapper), fallback to `ensemble_default_*.csv`, then any `ensemble_*.csv` |
+| 1 | `--model` | Single Model | Auto-loads target native Qlib prediction record |
+| 2 | *(Default)* | Ensemble | Loads active `ensemble_records.json` default combo bounds |
 
 ### Scenario 1: Nominal Routine Process
 
@@ -69,13 +68,7 @@ python quantpits/scripts/order_gen.py --model gru
 python quantpits/scripts/order_gen.py --model lightgbm_Alpha158
 ```
 
-### Specifying Absolute Override File
 
-```bash
-python quantpits/scripts/order_gen.py --prediction-file output/predictions/ensemble_2026-02-06.csv
-```
-
----
 
 ## Execution Logic
 
@@ -184,8 +177,7 @@ output/
 python quantpits/scripts/order_gen.py --help
 
 Optional Overrides:
-  --model TEXT             Utilize explicitly defined algorithm (Bypass fusing mechanics)
-  --prediction-file TEXT   Explicit CSV trace overrides targeting external sources
+  --model TEXT             Utilize explicitly defined algorithm (Loaded from Qlib records)
   --output-dir TEXT        Output targets (Default output)
   --dry-run               Terminal outputs solely bypassing file execution
   --verbose               Activate heavy debug/trace components exhibiting rank lists
@@ -201,7 +193,7 @@ The script now scans all instruments identified within the prediction data and *
 
 > [!IMPORTANT]
 > The engine mandates adherence strictly following:
-> 1. Accessible `.csv` vectors inside `output/predictions/` tracing upstream generator algorithms (Fusion/Prediction mappings).
+> 1. Accessible Qlib record IDs tracing upstream generator algorithms (Fusion/Prediction mappings).
 > 2. Synchronized array variables referencing native parameters scaling inside `config/prod_config.json` denoting absolute capital + asset boundaries explicitly synced (Managed via `post-trade`).
 > 3. `config/strategy_config.yaml` stores native topk/n_drop strategy limit bounds explicitly mapping to execution definitions.
 

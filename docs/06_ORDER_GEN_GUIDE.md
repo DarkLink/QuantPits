@@ -55,9 +55,8 @@ python quantpits/scripts/order_gen.py --verbose
 
 | 优先级 | 参数 | 来源 | 说明 |
 |:---:|------|------|------|
-| 1 | `--prediction-file` | 任意 CSV | 直接指定预测文件路径 |
-| 2 | `--model` | 单模型 CSV | 从 `output/predictions/{model}_*.csv` 加载最新 |
-| 3 | _(默认)_ | Ensemble CSV | 优先 `ensemble_YYYY-MM-DD.csv` (default combo 副本)，次选 `ensemble_default_*.csv`，最后任意 `ensemble_*.csv` |
+| 1 | `--model` | 单模型 | 从 Qlib 记录加载相关模型的最新预测 |
+| 2 | _(默认)_ | Ensemble | 主动加载 `ensemble_records.json` 里的融合记录 |
 
 ### 使用单模型（不融合）
 
@@ -69,13 +68,7 @@ python quantpits/scripts/order_gen.py --model gru
 python quantpits/scripts/order_gen.py --model lightgbm_Alpha158
 ```
 
-### 指定预测文件
 
-```bash
-python quantpits/scripts/order_gen.py --prediction-file output/predictions/ensemble_2026-02-06.csv
-```
-
----
 
 ## 处理逻辑
 
@@ -184,8 +177,7 @@ output/
 python quantpits/scripts/order_gen.py --help
 
 可选参数:
-  --model TEXT             使用单模型预测（不融合）
-  --prediction-file TEXT   直接指定预测文件路径
+  --model TEXT             使用单模型预测（从 Qlib 记录加载）
   --output-dir TEXT        输出目录 (默认 output)
   --dry-run               仅打印订单计划，不写入文件
   --verbose               显示详细的排名和价格信息

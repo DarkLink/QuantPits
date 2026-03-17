@@ -27,9 +27,7 @@ python quantpits/scripts/signal_ranking.py --combo combo_A
 # 4. Filter explicitly utilizing custom Target bounds
 python quantpits/scripts/signal_ranking.py --top-n 500
 
-# 5. Native explicit file overrides parsing custom directories
-python quantpits/scripts/signal_ranking.py --prediction-file output/predictions/ensemble_2026-02-13.csv
-```
+
 
 ---
 
@@ -39,7 +37,6 @@ python quantpits/scripts/signal_ranking.py --prediction-file output/predictions/
 |------|-------|------|
 | `--combo` | None | Strict explicit named target string |
 | `--all-combos` | false | Activates loop parsing spanning identical execution over all tracked combinations |
-| `--prediction-file` | None | Direct targeted CSV bounds override |
 | `--top-n` | 300 | Extracted bounds index constraint |
 | `--output-dir` | `output/ranking` | Directory bounds outputs |
 | `--dry-run` | false | Engages stdout processing solely bypassing sequence IO writes |
@@ -82,7 +79,7 @@ output/ranking/
 
 > [!IMPORTANT]
 > Operations strictly mandate sequential outputs produced directly via prior `ensemble_fusion.py` processing loops.
-> Trace dependencies natively traverse boundaries located within the `output/predictions/` scope.
+> Trace dependencies inherently reside natively inside the unified Qlib records.
 
 ---
 
@@ -90,6 +87,6 @@ output/ranking/
 
 | Component Focus | Internal Usage Bounds | Parameter Source | Trace Output |
 |------|------|------|------|
-| `ensemble_fusion.py` | Compounded Backtesting Checks | Selected Logic Combinations | Merged Multi-Predict CSVs |
+| `ensemble_fusion.py` | Compounded Backtesting Checks | Selected Logic Combinations | Merged Multi-Predict Qlib Records |
 | **`signal_ranking.py`** | **Explicit Ranking Matrices** | **Predictive Fusions** | **Top N Scaled Output Metrics** |
 | `order_gen.py` | Action Allocations Target Generation | Predictive Fusions + Live Holdings | Buy/Sell Execution Manifests |

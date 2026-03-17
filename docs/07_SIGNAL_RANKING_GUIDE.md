@@ -27,9 +27,7 @@ python quantpits/scripts/signal_ranking.py --combo combo_A
 # 4. 自定义 Top N
 python quantpits/scripts/signal_ranking.py --top-n 500
 
-# 5. 指定预测文件
-python quantpits/scripts/signal_ranking.py --prediction-file output/predictions/ensemble_2026-02-13.csv
-```
+
 
 ---
 
@@ -39,7 +37,6 @@ python quantpits/scripts/signal_ranking.py --prediction-file output/predictions/
 |------|-------|------|
 | `--combo` | 无 | 指定 combo 名称 |
 | `--all-combos` | false | 为所有 combo 各生成一份 |
-| `--prediction-file` | 无 | 直接指定预测文件路径 |
 | `--top-n` | 300 | 输出 Top N 个标的 |
 | `--output-dir` | `output/ranking` | 输出目录 |
 | `--dry-run` | false | 仅打印，不写入文件 |
@@ -49,7 +46,7 @@ python quantpits/scripts/signal_ranking.py --prediction-file output/predictions/
 ## 信号评分逻辑
 
 ```
-1. 加载融合预测 CSV（score 列）
+1. 加载融合预测 Qlib 记录（score 列）
 2. 取最新日期数据
 3. 归一化: signal = (score - min) / (max - min) * 200 - 100
    → 分数范围: -100（最弱）~ +100（最强）
@@ -95,8 +92,8 @@ ls output/ranking/
 ## 前置条件
 
 > [!IMPORTANT]
-> 需要先运行 `ensemble_fusion.py` 生成融合预测 CSV。
-> 预测文件应位于 `output/predictions/` 目录。
+> 需要先运行 `ensemble_fusion.py` 生成融合预测记录。
+> 预测数据将自动从 `config/ensemble_records.json` 中配置的 Qlib 实验记录直接读取。
 
 ---
 
@@ -104,6 +101,6 @@ ls output/ranking/
 
 | 脚本 | 用途 | 输入 | 输出 |
 |------|------|------|------|
-| `ensemble_fusion.py` | 融合回测 | 选定模型 | 融合预测 CSV |
+| `ensemble_fusion.py` | 融合回测 | 选定模型 | 融合预测记录 (Qlib Recorder) |
 | **`signal_ranking.py`** | **信号排名** | **融合预测** | **Top N 排名 CSV** |
 | `order_gen.py` | 生成订单 | 融合预测 + 持仓 | 买卖建议 |

@@ -225,20 +225,7 @@ def test_main_dry_run(mock_init_qlib, mock_get_pred, mock_env, tmp_path):
         files = list(ranking_dir.glob("*.csv"))
         assert len(files) == 0
 
-@patch('quantpits.scripts.signal_ranking.env.init_qlib')
-def test_main_prediction_file(mock_init_qlib, mock_env, tmp_path):
-    sr, workspace = mock_env
-    custom_file = tmp_path / "custom.csv"
-    df = pd.DataFrame({"score": [0.5]}, index=pd.MultiIndex.from_tuples([("A", "2026-01-01")], names=["instrument", "datetime"]))
-    df.to_csv(custom_file)
-    
-    import sys
-    with patch.object(sys, 'argv', ['script.py', '--prediction-file', str(custom_file), '--output-dir', str(workspace / "output" / "ranking")]):
-        sr.main()
-        
-    ranking_dir = workspace / "output" / "ranking"
-    files = list(ranking_dir.glob("Signal_custom_*.csv"))
-    assert len(files) == 1
+
 
 @patch('quantpits.scripts.signal_ranking.get_prediction_from_recorder')
 @patch('quantpits.scripts.signal_ranking.env.init_qlib')
@@ -328,13 +315,7 @@ def test_main_all_combos_none_found(mock_env, tmp_path):
             sr.main()
         assert e.value.code == 1
 
-def test_main_exit_not_found(mock_env):
-    sr, _ = mock_env
-    import sys
-    with patch.object(sys, 'argv', ['script.py', '--prediction-file', 'nonexistent.csv']):
-        with pytest.raises(SystemExit) as e:
-            sr.main()
-        assert e.value.code == 1
+
 
 def test_main_all_combos_no_config(mock_env, tmp_path):
     sr, workspace = mock_env
