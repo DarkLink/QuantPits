@@ -46,7 +46,7 @@ from collections import Counter
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 import pandas as pd
@@ -114,7 +114,7 @@ def init_qlib():
 
 def load_config(record_file="latest_train_records.json"):
     """使用 config_loader 加载统一配置"""
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
     if os.path.exists(record_file):
         with open(record_file, "r") as f:
             train_records = json.load(f)
@@ -380,7 +380,7 @@ def run_single_backtest(
     from qlib.backtest.executor import SimulatorExecutor
     from qlib.backtest.utils import CommonInfrastructure
     from qlib.backtest.account import Account
-    import strategy
+    from quantpits.utils import strategy
 
     if st_config is None:
         st_config = strategy.load_strategy_config()
@@ -430,7 +430,7 @@ def run_single_backtest(
 
         # 4. Standardize for PortfolioAnalyzer
         report = extract_report_df(raw_portfolio_metrics)
-        import strategy
+        from quantpits.utils import strategy
         st_config_inner = strategy.load_strategy_config()
         benchmark_col = st_config_inner.get('benchmark', 'SH000300')
         
@@ -521,7 +521,7 @@ def brute_force_backtest(
     bt_end = str(norm_df.index.get_level_values(0).max().date())
     all_codes = sorted(norm_df.index.get_level_values(1).unique().tolist())
 
-    import strategy
+    from quantpits.utils import strategy
     st_config = strategy.load_strategy_config()
     bt_config = strategy.get_backtest_config(st_config)
     
@@ -1181,7 +1181,7 @@ def analyze_results(
 # ============================================================================
 
 def main():
-    import env
+    from quantpits.utils import env
     env.safeguard("Brute Force Ensemble")
     parser = argparse.ArgumentParser(
         description="暴力穷举模型组合回测 + 结果分析",
@@ -1373,7 +1373,7 @@ def main():
             top_combos = results_df.head(args.auto_test_top)["models"].tolist()
             
             from qlib.backtest.exchange import Exchange
-            import strategy
+            from quantpits.utils import strategy
             
             st_config = strategy.load_strategy_config()
             bt_config = strategy.get_backtest_config(st_config)

@@ -130,7 +130,7 @@ python quantpits/scripts/order_gen.py --verbose --dry-run
 
 可使用 `plot_model_opinions.py` 快速绘制出各标的在各个模型中的排名折线图：
 ```bash
-python quantpits/scripts/plot_model_opinions.py
+python quantpits/tools/plot_model_opinions.py
 # 默认自动查找最新生成的 csv，或指定文件：--input output/model_opinions_2026-02-24.csv
 ```
 

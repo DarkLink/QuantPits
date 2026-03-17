@@ -18,7 +18,8 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     
-    from quantpits.scripts import env, run_rolling_analysis
+    from quantpits.utils import env
+    from quantpits.scripts import run_rolling_analysis
     import importlib
     importlib.reload(env)
     importlib.reload(run_rolling_analysis)

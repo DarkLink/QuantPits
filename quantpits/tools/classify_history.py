@@ -21,7 +21,7 @@ import argparse
 # Setup path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 # Project root (where quantpits package is) is the parent of SCRIPT_DIR's parent

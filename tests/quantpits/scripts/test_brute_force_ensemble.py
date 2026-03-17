@@ -23,7 +23,8 @@ def mock_env(monkeypatch, tmp_path):
     
     import importlib
     import qlib.data
-    from quantpits.scripts import env, brute_force_ensemble
+    from quantpits.utils import env
+    from quantpits.scripts import brute_force_ensemble
     
     mock_D = MagicMock()
     mock_D.calendar.return_value = pd.date_range("2020-01-01", periods=10, freq="D")
@@ -174,7 +175,7 @@ def test_load_config(mock_env, tmp_path):
     with open(record_file, "w") as f:
         json.dump({"models": {"m1": "r1"}}, f)
 
-    with patch('config_loader.load_workspace_config') as mock_load:
+    with patch('quantpits.utils.config_loader.load_workspace_config') as mock_load:
         mock_load.return_value = {"TopK": 20}
         records, model_config = bfe.load_config(str(record_file))
         
@@ -443,7 +444,7 @@ from unittest.mock import patch, MagicMock
 @patch('qlib.backtest.backtest_loop')
 @patch('qlib.backtest.account.Account')
 @patch('qlib.backtest.executor.SimulatorExecutor')
-@patch('strategy.create_backtest_strategy')
+@patch('quantpits.utils.strategy.create_backtest_strategy')
 def test_run_single_backtest_success(mock_create_strat, mock_executor, mock_account, mock_bt_loop, mock_env):
     bfe, _ = mock_env
     
@@ -473,12 +474,12 @@ def test_run_single_backtest_success(mock_create_strat, mock_executor, mock_acco
     assert res["Ann_Ret"] > 0
     assert "m1" in res["models"]
 
-@patch('strategy.get_backtest_config')
-@patch('strategy.load_strategy_config')
+@patch('quantpits.utils.strategy.get_backtest_config')
+@patch('quantpits.utils.strategy.load_strategy_config')
 @patch('qlib.backtest.backtest_loop')
 @patch('qlib.backtest.account.Account')
 @patch('qlib.backtest.executor.SimulatorExecutor')
-@patch('strategy.create_backtest_strategy')
+@patch('quantpits.utils.strategy.create_backtest_strategy')
 def test_run_single_backtest_with_config(mock_create_strat, mock_executor, mock_account, mock_bt_loop, mock_load_st, mock_get_bt, mock_env):
     bfe, _ = mock_env
     # Setup configs
@@ -518,7 +519,7 @@ def test_run_single_backtest_with_config(mock_create_strat, mock_executor, mock_
 @patch('qlib.backtest.backtest_loop')
 @patch('qlib.backtest.account.Account')
 @patch('qlib.backtest.executor.SimulatorExecutor')
-@patch('strategy.create_backtest_strategy')
+@patch('quantpits.utils.strategy.create_backtest_strategy')
 def test_run_single_backtest_exception(mock_create_strat, mock_executor, mock_account, mock_bt_loop, mock_env):
     bfe, _ = mock_env
     
@@ -643,7 +644,7 @@ def test_brute_force_backtest_shutdown_signal(mock_run_bt, mock_exchange, mock_e
 @patch('quantpits.scripts.brute_force_ensemble.correlation_analysis')
 @patch('quantpits.scripts.brute_force_ensemble.brute_force_backtest')
 @patch('quantpits.scripts.brute_force_ensemble.analyze_results')
-@patch('quantpits.scripts.env.safeguard')
+@patch('quantpits.utils.env.safeguard')
 def test_main_full(mock_safeguard, mock_analyze, mock_bf, mock_corr, mock_load_pred, mock_load_cfg, mock_init, mock_env, tmp_path):
     bfe, _ = mock_env
     
@@ -696,9 +697,9 @@ def test_main_full(mock_safeguard, mock_analyze, mock_bf, mock_corr, mock_load_p
 @patch('qlib.backtest.executor.SimulatorExecutor')
 @patch('qlib.backtest.utils.CommonInfrastructure')
 @patch('qlib.backtest.backtest_loop')
-@patch('quantpits.scripts.strategy.load_strategy_config')
-@patch('quantpits.scripts.strategy.get_backtest_config')
-@patch('quantpits.scripts.strategy.create_backtest_strategy')
+@patch('quantpits.utils.strategy.load_strategy_config')
+@patch('quantpits.utils.strategy.get_backtest_config')
+@patch('quantpits.utils.strategy.create_backtest_strategy')
 @patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer')
 def test_run_single_backtest_non_datetime_index(mock_pa, mock_st_create, mock_bt_cfg, mock_st_cfg, mock_bt_loop, mock_infra, mock_executor, mock_account, mock_env):
     bfe, _ = mock_env
@@ -708,7 +709,7 @@ def test_run_single_backtest_non_datetime_index(mock_pa, mock_st_create, mock_bt
         "bench": [0.001, 0.002]
     }, index=dates) # String index
     
-    mock_st_cfg.return_value = {"benchmark": "SH000300"}
+    mock_st_cfg.return_value = {"benchmark": "SH000300", "strategy": {"params": {}}}
     mock_bt_cfg.return_value = {"account": 1000000}
     mock_bt_loop.return_value = (report, None)
     

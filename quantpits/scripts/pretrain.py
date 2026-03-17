@@ -36,7 +36,7 @@ import json
 import argparse
 from datetime import datetime
 
-import env
+from quantpits.utils import env
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
@@ -87,7 +87,7 @@ def parse_args():
 
 def show_list():
     """列出所有可预训练的基础模型"""
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         load_model_registry,
         get_models_by_filter,
         print_model_table,
@@ -112,7 +112,7 @@ def show_list():
 
 def show_pretrained():
     """显示已有预训练文件"""
-    from train_utils import PRETRAINED_DIR
+    from quantpits.utils.train_utils import PRETRAINED_DIR
 
     if not os.path.exists(PRETRAINED_DIR):
         print(f"📂 预训练目录不存在: {PRETRAINED_DIR}")
@@ -156,7 +156,7 @@ def pretrain_for_upper_model(upper_model_name, params, experiment_name):
     
     使用上层模型的 dataset 配置 + 基础模型的 model 架构。
     """
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         load_model_registry,
         inject_config,
         save_pretrained_model,
@@ -250,7 +250,7 @@ def pretrain_for_upper_model(upper_model_name, params, experiment_name):
 
 def pretrain_base_model(model_name, model_info, params, experiment_name):
     """预训练单个基础模型（使用自己的 YAML 配置）"""
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         inject_config,
         save_pretrained_model,
     )
@@ -306,7 +306,7 @@ def pretrain_base_model(model_name, model_info, params, experiment_name):
 
 def run_pretrain(args):
     """执行预训练流程"""
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         calculate_dates,
         load_model_registry,
         get_models_by_filter,

@@ -4,7 +4,7 @@ import pytest
 import yaml
 from unittest.mock import patch
 
-from quantpits.scripts.init_workspace import init_workspace
+from quantpits.tools.init_workspace import init_workspace
 
 
 def test_init_workspace_success(tmp_path):
@@ -138,7 +138,7 @@ def test_init_workspace_linux_script(tmp_path):
 
 
 def test_main(tmp_path, monkeypatch):
-    from quantpits.scripts import init_workspace as iw
+    from quantpits.tools import init_workspace as iw
     import platform
     is_windows = platform.system() == "Windows"
     script_name = "run_env.ps1" if is_windows else "run_env.sh"

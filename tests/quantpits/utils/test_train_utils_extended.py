@@ -20,10 +20,10 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
 
-    from quantpits.scripts import env
+    from quantpits.utils import env
     importlib.reload(env)
 
-    from quantpits.scripts import train_utils
+    from quantpits.utils import train_utils
     importlib.reload(train_utils)
 
     # Patch module-level path constants to use tmp_path

@@ -24,15 +24,15 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     
     # Reload to pick up new env
-    for mod_name in ['env', 'quantpits.scripts.env', 'ensemble_fusion', 'quantpits.scripts.ensemble_fusion']:
+    for mod_name in ['env', 'quantpits.utils.env', 'ensemble_fusion', 'quantpits.scripts.ensemble_fusion']:
         if mod_name in sys.modules:
             importlib.reload(sys.modules[mod_name])
             
     from quantpits.scripts import ensemble_fusion as ef
     
     # Global mocks for side-effect-heavy functions
-    monkeypatch.setattr('quantpits.scripts.env.safeguard', lambda x: None)
-    monkeypatch.setattr('quantpits.scripts.env.init_qlib', lambda: None)
+    monkeypatch.setattr('quantpits.utils.env.safeguard', lambda x: None)
+    monkeypatch.setattr('quantpits.utils.env.init_qlib', lambda: None)
     import qlib.data
     mock_D = MagicMock()
     mock_D.calendar.return_value = pd.date_range("2020-01-01", periods=10, freq="D")
@@ -205,9 +205,9 @@ def test_generate_ensemble_signal():
     
     assert final.loc[("2020-01-01", "A")] == (10.0 * 0.4 + 20.0 * 0.6)
 
-@patch('quantpits.scripts.strategy.load_strategy_config')
-@patch('quantpits.scripts.strategy.get_backtest_config')
-@patch('quantpits.scripts.strategy.create_backtest_strategy')
+@patch('quantpits.utils.strategy.load_strategy_config')
+@patch('quantpits.utils.strategy.get_backtest_config')
+@patch('quantpits.utils.strategy.create_backtest_strategy')
 @patch('qlib.backtest.executor.SimulatorExecutor')
 @patch('qlib.backtest.backtest')
 def test_run_backtest(mock_bt, mock_executor, mock_create_strat, mock_get_bt_cfg, mock_load_st_cfg, mock_env):
@@ -280,7 +280,7 @@ def test_load_config(mock_exists, mock_open):
     
     mock_exists.return_value = True
     
-    with patch("config_loader.load_workspace_config") as mock_load_workspace:
+    with patch("quantpits.utils.config_loader.load_workspace_config") as mock_load_workspace:
         mock_load_workspace.return_value = {"model": "config"}
         
         with patch("quantpits.scripts.ensemble_fusion.json.load") as mock_json_load:
@@ -373,8 +373,8 @@ def test_calculate_safe_risk(mock_risk):
     res3 = ef.calculate_safe_risk(pd.Series([0.01]), 'day')
     assert res3 == {}
 
-@patch('strategy.get_backtest_config')
-@patch('strategy.load_strategy_config')
+@patch('quantpits.utils.strategy.get_backtest_config')
+@patch('quantpits.utils.strategy.load_strategy_config')
 def test_compare_combos(mock_load_st, mock_get_bt, tmp_path):
     import quantpits.scripts.ensemble_fusion as ef
     
@@ -600,7 +600,7 @@ def test_init_qlib(mock_env):
 def test_load_config_no_file(mock_env):
     ef, _ = mock_env
     # Line 93: record_file does not exist
-    with patch("config_loader.load_workspace_config") as mock_load_ws:
+    with patch("quantpits.utils.config_loader.load_workspace_config") as mock_load_ws:
         mock_load_ws.return_value = {}
         tr, mc, ec = ef.load_config("non_existent_records.json")
         assert tr == {"models": {}, "experiment_name": "unknown"}
@@ -771,9 +771,9 @@ def test_extract_report_df_default(mock_env):
 
 @patch('qlib.backtest.backtest')
 @patch('qlib.backtest.executor.SimulatorExecutor')
-@patch('strategy.create_backtest_strategy')
-@patch('strategy.load_strategy_config')
-@patch('strategy.get_backtest_config')
+@patch('quantpits.utils.strategy.create_backtest_strategy')
+@patch('quantpits.utils.strategy.load_strategy_config')
+@patch('quantpits.utils.strategy.get_backtest_config')
 def test_run_backtest_non_datetime_idx(mock_get_bt, mock_load_st, mock_strat, mock_exec, mock_bt, mock_env):
     ef, _ = mock_env
     # Line 616: non datetime index
@@ -848,7 +848,7 @@ def test_risk_analysis_and_leaderboard_submodel_skip(mock_R, mock_env):
     mock_R.get_recorder.side_effect = [mock_recorder, Exception("Recorder fail")]
     
     with patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer'):
-        with patch('strategy.load_strategy_config', return_value={}):
+        with patch('quantpits.utils.strategy.load_strategy_config', return_value={}):
             with patch('qlib.data.D.calendar', return_value=pd.to_datetime(["2020-01-01"])):
                 with patch('builtins.print') as mock_p:
                     ef.risk_analysis_and_leaderboard(report_df, norm_df, train_records, ["M1", "M1"], "day", "out", "date")
@@ -864,7 +864,7 @@ def test_risk_analysis_and_leaderboard_display_cols(mock_env):
         pa_inst = MagicMock()
         pa_inst.calculate_traditional_metrics.return_value = {"SomethingElse": 1.0}
         mock_pa.return_value = pa_inst
-        with patch('strategy.load_strategy_config', return_value={}):
+        with patch('quantpits.utils.strategy.load_strategy_config', return_value={}):
             with patch('qlib.data.D.calendar', return_value=pd.to_datetime(["2020-01-01"])):
                 with patch('builtins.print') as mock_p:
                     ef.risk_analysis_and_leaderboard(report_df, norm_df, {"experiment_name":"E", "models":{"M1":"r1"}}, ["M1"], "day", "out", "date")
@@ -891,7 +891,7 @@ def test_main_manual_models_missing(mock_env):
                     report_df = pd.DataFrame({"account": [100.0, 110.0]}, index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
                     res = {'name': 'c1', 'models': ['m1'], 'method': 'equal', 'is_default': True, 'pred_file': 'f.csv', 'report_df': report_df}
                     with patch('quantpits.scripts.ensemble_fusion.run_single_combo', return_value=res):
-                        with patch('strategy.get_backtest_config', return_value={'account': 100.0}):
+                        with patch('quantpits.utils.strategy.get_backtest_config', return_value={'account': 100.0}):
                             with patch('builtins.print', side_effect=lambda *a, **k: None):
                                 ef.main()
 
@@ -964,7 +964,7 @@ def test_main_final_prints(mock_env):
             with patch('quantpits.scripts.ensemble_fusion.load_selected_predictions', return_value=(norm_df, {"m1": 0.1}, ["m1"])):
                 with patch('quantpits.scripts.ensemble_fusion.filter_norm_df_by_args', return_value=norm_df):
                     with patch('quantpits.scripts.ensemble_fusion.run_single_combo', return_value=res):
-                        with patch('strategy.get_backtest_config', return_value={'account': 100.0}):
+                        with patch('quantpits.utils.strategy.get_backtest_config', return_value={'account': 100.0}):
                             with patch('builtins.print', side_effect=lambda *a, **k: None) as mock_p:
                                 ef.main()
                                 assert mock_p.call_count > 5

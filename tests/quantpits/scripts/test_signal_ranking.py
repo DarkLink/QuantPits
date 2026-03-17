@@ -23,7 +23,8 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env, signal_ranking
+    from quantpits.utils import env
+    from quantpits.scripts import signal_ranking
     import importlib
     importlib.reload(env)
     

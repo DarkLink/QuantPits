@@ -19,7 +19,8 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env, brute_force_fast
+    from quantpits.utils import env
+    from quantpits.scripts import brute_force_fast
     import importlib
     importlib.reload(env)
     importlib.reload(brute_force_fast)
@@ -95,7 +96,7 @@ def test_load_returns_matrix(mock_D, mock_env):
 @patch('quantpits.scripts.brute_force_fast.load_predictions')
 @patch('quantpits.scripts.brute_force_fast.load_returns_matrix')
 @patch('quantpits.scripts.brute_force_fast.brute_force_fast_backtest')
-@patch('quantpits.scripts.env.safeguard')
+@patch('quantpits.utils.env.safeguard')
 def test_main_full(mock_safeguard, mock_bf, mock_load_ret, mock_load_pred, mock_load_cfg, mock_init, mock_env, tmp_path):
     bff, _ = mock_env
     
@@ -276,7 +277,7 @@ def test_init_qlib_call(mock_env):
 
 def test_load_config_no_file(mock_env):
     bff, _ = mock_env
-    with patch('config_loader.load_workspace_config') as mock_load:
+    with patch('quantpits.utils.config_loader.load_workspace_config') as mock_load:
         mock_load.return_value = {}
         # Use a non-existent file to trigger line 141
         tr, mc = bff.load_config("non_existent_records.json")
@@ -481,7 +482,7 @@ def test_load_config_real(mock_env, tmp_path):
     with open(rec_file, "w") as f:
         json.dump({"experiment_name": "Exp1", "models": {"m1": "r1"}}, f)
     
-    with patch('config_loader.load_workspace_config') as mock_load:
+    with patch('quantpits.utils.config_loader.load_workspace_config') as mock_load:
         mock_load.return_value = {"TopK": 50}
         tr, mc = bff.load_config(str(rec_file))
         

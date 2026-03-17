@@ -308,10 +308,10 @@ To ensure all YAML workflow files meet the production frequency criteria (e.g., 
 
 ```bash
 # Validate that all workflow_config_*.yaml conform to production parameters (day/week)
-python quantpits/scripts/check_workflow_yaml.py
+python quantpits/tools/check_workflow_yaml.py
 
 # Attempt to automatically fix all malformed YAMLs (converts params to production requirements)
-python quantpits/scripts/check_workflow_yaml.py --fix
+python quantpits/tools/check_workflow_yaml.py --fix
 ```
 
 ---

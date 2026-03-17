@@ -10,7 +10,7 @@ import argparse
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 # 尝试导入 seaborn 优化样式

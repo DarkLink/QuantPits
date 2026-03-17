@@ -25,14 +25,13 @@ def mock_env(monkeypatch, tmp_path):
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
 
-    from quantpits.scripts import env
+    from quantpits.utils import env
     importlib.reload(env)
 
     # Also reload bare `env` module used by strategy.py via `import env`
-    import env as bare_env
-    importlib.reload(bare_env)
+    
 
-    from quantpits.scripts import strategy
+    from quantpits.utils import strategy
     importlib.reload(strategy)
 
     yield strategy, workspace, config_dir
@@ -78,7 +77,7 @@ def test_load_strategy_config_fallback_legacy(mock_env):
     """When no YAML but legacy JSONs exist, should fallback to those (now handled fully via mock for isolation)."""
     strategy, workspace, config_dir = mock_env
 
-    with patch('config_loader.load_workspace_config') as mock_load:
+    with patch('quantpits.utils.config_loader.load_workspace_config') as mock_load:
         mock_load.return_value = {
             "TopK": 15,
             "DropN": 5,

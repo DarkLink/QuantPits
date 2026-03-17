@@ -43,7 +43,7 @@ import argparse
 from datetime import datetime
 
 # 设置工作目录
-import env
+from quantpits.utils import env
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
@@ -122,7 +122,7 @@ def resolve_target_models(args):
     Returns:
         dict: {model_name: model_info}
     """
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         load_model_registry,
         get_enabled_models,
         get_models_by_filter,
@@ -162,7 +162,7 @@ def resolve_target_models(args):
 
 def run_incremental_train(args):
     """执行增量训练"""
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         calculate_dates,
         train_single_model,
         merge_train_records,
@@ -328,7 +328,7 @@ def run_incremental_train(args):
 
 def show_list(args):
     """列出模型注册表"""
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         load_model_registry,
         get_models_by_filter,
         print_model_table,
@@ -370,7 +370,7 @@ def show_list(args):
 
 def show_state():
     """显示运行状态"""
-    from train_utils import load_run_state
+    from quantpits.utils.train_utils import load_run_state
     
     state = load_run_state()
     if state is None:
@@ -412,7 +412,7 @@ def main():
         return
     
     if args.clear_state:
-        from train_utils import clear_run_state
+        from quantpits.utils.train_utils import clear_run_state
         clear_run_state()
         return
     

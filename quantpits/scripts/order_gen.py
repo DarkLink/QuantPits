@@ -35,7 +35,7 @@ import json
 import glob
 import argparse
 from datetime import datetime
-from quantpits.scripts import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 import numpy as np
@@ -71,7 +71,7 @@ def get_anchor_date():
 
 def load_configs():
     """使用 config_loader 加载统一配置并读取 cashflow.json"""
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
     config = load_workspace_config(ROOT_DIR)
 
     cashflow_config = {}
@@ -580,7 +580,7 @@ def save_orders(sell_orders, buy_orders, next_trade_date_string, output_dir,
 # Main
 # ============================================================================
 def main():
-    import env
+    from quantpits.utils import env
     env.safeguard("Order Generation")
     parser = argparse.ArgumentParser(
         description='Order Generation - 基于融合/单模型预测生成买卖订单',
@@ -631,7 +631,7 @@ def main():
     anchor_date = get_anchor_date()
     config, cashflow_config = load_configs()
 
-    import strategy
+    from quantpits.utils import strategy
     strategy_config = strategy.load_strategy_config()
     order_gen = strategy.create_order_generator(strategy_config)
     

@@ -33,7 +33,7 @@ import pandas as pd
 from quantpits.scripts.brokers import get_adapter
 from quantpits.scripts.brokers.base import SELL_TYPES, BUY_TYPES, INTEREST_TYPES
 
-from quantpits.scripts import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ EMPTY_TRADE_FILE = os.path.join(DATA_DIR, "emp-table.xlsx")
 # ---------------------------------------------------------------------------
 def load_prod_config():
     """使用 config_loader 加载统一配置"""
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
     # env.ROOT_DIR 已经自动由 os.chdir 设置
     return load_workspace_config(env.ROOT_DIR)
 
@@ -565,7 +565,7 @@ Cashflow 配置 (config/cashflow.json):
 
 
 def main():
-    import env
+    from quantpits.utils import env
     env.safeguard("Prod Post Trade")
     
     # 初始化 Qlib

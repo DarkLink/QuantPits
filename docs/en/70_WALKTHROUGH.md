@@ -144,7 +144,7 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 ### 3.2 Create a New Workspace
 
 ```bash
-python quantpits/scripts/init_workspace.py \
+python quantpits/tools/init_workspace.py \
   --source workspaces/Demo_Workspace \
   --target workspaces/MyWorkspace
 ```
@@ -477,7 +477,7 @@ python quantpits/scripts/order_gen.py --dry-run --verbose
 python quantpits/scripts/order_gen.py --model gru
 
 # Generate multi-model ranking visualization
-python quantpits/scripts/plot_model_opinions.py
+python quantpits/tools/plot_model_opinions.py
 ```
 
 Output files:

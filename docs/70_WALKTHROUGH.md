@@ -143,7 +143,7 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 ### 3.2 创建新工作区
 
 ```bash
-python quantpits/scripts/init_workspace.py \
+python quantpits/tools/init_workspace.py \
   --source workspaces/Demo_Workspace \
   --target workspaces/MyWorkspace
 ```
@@ -476,7 +476,7 @@ python quantpits/scripts/order_gen.py --dry-run --verbose
 python quantpits/scripts/order_gen.py --model gru
 
 # 生成多模型排名可视化
-python quantpits/scripts/plot_model_opinions.py
+python quantpits/tools/plot_model_opinions.py
 ```
 
 输出文件：

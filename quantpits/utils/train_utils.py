@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 import gc
 import traceback
 
-import env
+from quantpits.utils import env
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
@@ -49,7 +49,7 @@ PRETRAINED_DIR = os.path.join(ROOT_DIR, "data", "pretrained")
 def calculate_dates():
     """根据统一配置计算训练日期窗口"""
     from qlib.data import D
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
 
     # 加载统一配置 (取代对 MODEL_CONFIG_FILE 和 PROD_CONFIG_FILE 的直接读取)
     config = load_workspace_config(ROOT_DIR)
@@ -336,7 +336,7 @@ def inject_config(yaml_path, params, model_name=None, no_pretrain=False):
         segs['test'] = [params['test_start_time'], params['test_end_time']]
 
     if 'port_analysis_config' in config:
-        import strategy
+        from quantpits.utils import strategy
         pa = strategy.generate_port_analysis_config(freq=freq)
         pa['backtest']['start_time'] = params['test_start_time']
         pa['backtest']['end_time'] = params['test_end_time']

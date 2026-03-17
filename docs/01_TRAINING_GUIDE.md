@@ -308,10 +308,10 @@ python quantpits/scripts/incremental_train.py --tag tree
 
 ```bash
 # 检查所有的 workflow_config_*.yaml 是否符合生产环境参数要求 (day/week)
-python quantpits/scripts/check_workflow_yaml.py
+python quantpits/tools/check_workflow_yaml.py
 
 # 尝试自动修正所有异常的 YAML 文件（自动将参数转为生产环境要求的格式）
-python quantpits/scripts/check_workflow_yaml.py --fix
+python quantpits/tools/check_workflow_yaml.py --fix
 ```
 
 ---

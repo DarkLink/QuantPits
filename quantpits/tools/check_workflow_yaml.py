@@ -17,7 +17,7 @@ import re
 import yaml
 import argparse
 
-import env
+from quantpits.utils import env
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR

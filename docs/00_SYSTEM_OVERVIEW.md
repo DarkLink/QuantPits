@@ -13,7 +13,7 @@
 - **Workspace (`workspaces/` 下目录)**: 任何进行实盘交易或模拟的独立集合。包含了该实例独有的 `config/`、`data/`、`output/`，以及隔离的 `mlruns/`。
 
 **如何使用工作区？**
-1. 创建新工作区：使用 `python quantpits/scripts/init_workspace.py --source workspaces/A --target workspaces/B` 快速搭建。
+1. 创建新工作区：使用 `python quantpits/tools/init_workspace.py --source workspaces/A --target workspaces/B` 快速搭建。
 2. 激活工作区：进入系统目录，`source workspaces/<你的工作区>/run_env.sh` 设置 `QLIB_WORKSPACE_DIR`。
 3. (可选) 自定义数据源：在 `run_env.sh` 中取消注释 `QLIB_DATA_DIR` / `QLIB_REGION`，即可为该工作区指向不同的 Qlib 数据目录（默认 `~/.qlib/qlib_data/cn_data`、`cn`）。
 4. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
@@ -467,7 +467,7 @@ python quantpits/scripts/ensemble_fusion.py \
 - 交易数据（订单建议、交易明细、xlsx）归档到 `data/order_history/`
 - 输出文件旧版本归档到 `archive/output/`
 - 支持 `--dry-run`、`--keep N`、`--include-notebooks`、`--cleanup-legacy`
-- **常态化使用**：每个分析周期运行后执行 `python quantpits/scripts/archive_dated_files.py` 即可
+- **常态化使用**：每个分析周期运行后执行 `python quantpits/tools/archive_dated_files.py` 即可
 - **模型加载**：从 Qlib Recorder 加载模型和预测
 
 ---

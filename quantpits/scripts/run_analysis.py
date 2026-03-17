@@ -8,7 +8,7 @@ import numpy as np
 from datetime import datetime
 
 # Adjust path so we can import analysis module
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

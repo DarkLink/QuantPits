@@ -46,7 +46,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # 路径设置
 # ---------------------------------------------------------------------------
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

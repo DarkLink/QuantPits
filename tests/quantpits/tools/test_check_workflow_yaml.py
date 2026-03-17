@@ -15,7 +15,8 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env, check_workflow_yaml
+    from quantpits.utils import env
+    from quantpits.tools import check_workflow_yaml
     import importlib
     importlib.reload(env)
     importlib.reload(check_workflow_yaml)

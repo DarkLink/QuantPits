@@ -19,12 +19,12 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
     # Reload all possible names to ensure they pick up the new QLIB_WORKSPACE_DIR
-    for mod_name in ['env', 'quantpits.scripts.env', 'run_rolling_health_report', 'quantpits.scripts.run_rolling_health_report']:
+    for mod_name in ['env', 'quantpits.utils.env', 'run_rolling_health_report', 'quantpits.scripts.run_rolling_health_report']:
         if mod_name in sys.modules:
             importlib.reload(sys.modules[mod_name])
             
     from quantpits.scripts import run_rolling_health_report as rrhr
-    from quantpits.scripts import env
+    from quantpits.utils import env
     
     # Mock os.chdir to avoid changing working directory
     monkeypatch.setattr(os, 'chdir', lambda x: None)

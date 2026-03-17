@@ -20,17 +20,17 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
     # Reload all possible names to ensure they pick up the new QLIB_WORKSPACE_DIR
-    for mod_name in ['env', 'quantpits.scripts.env', 'prod_predict_only', 'quantpits.scripts.prod_predict_only']:
+    for mod_name in ['env', 'quantpits.utils.env', 'prod_predict_only', 'quantpits.scripts.prod_predict_only']:
         if mod_name in sys.modules:
             importlib.reload(sys.modules[mod_name])
             
     from quantpits.scripts import prod_predict_only as ppo
     yield ppo
 
-@patch('train_utils.get_models_by_names')
-@patch('train_utils.get_enabled_models')
-@patch('train_utils.get_models_by_filter')
-@patch('train_utils.load_model_registry')
+@patch('quantpits.utils.train_utils.get_models_by_names')
+@patch('quantpits.utils.train_utils.get_enabled_models')
+@patch('quantpits.utils.train_utils.get_models_by_filter')
+@patch('quantpits.utils.train_utils.load_model_registry')
 def test_resolve_target_models_by_names(mock_load, mock_filter, mock_enabled, mock_names, mock_env):
     ppo = mock_env
     mock_load.return_value = {"m1": {}, "m2": {}}
@@ -48,10 +48,10 @@ def test_resolve_target_models_by_names(mock_load, mock_filter, mock_enabled, mo
     targets = ppo.resolve_target_models(args)
     assert targets == {"m1": {}}
 
-@patch('train_utils.get_models_by_names')
-@patch('train_utils.get_enabled_models')
-@patch('train_utils.get_models_by_filter')
-@patch('train_utils.load_model_registry')
+@patch('quantpits.utils.train_utils.get_models_by_names')
+@patch('quantpits.utils.train_utils.get_enabled_models')
+@patch('quantpits.utils.train_utils.get_models_by_filter')
+@patch('quantpits.utils.train_utils.load_model_registry')
 def test_resolve_target_models_by_filter(mock_load, mock_filter, mock_enabled, mock_names, mock_env):
     ppo = mock_env
     mock_load.return_value = {"m1": {}, "m2": {}}
@@ -69,7 +69,7 @@ def test_resolve_target_models_by_filter(mock_load, mock_filter, mock_enabled, m
     targets = ppo.resolve_target_models(args)
     assert targets == {"m1": {}}
 
-@patch('train_utils.load_model_registry')
+@patch('quantpits.utils.train_utils.load_model_registry')
 def test_resolve_target_models_none(mock_load, mock_env):
     ppo = mock_env
     mock_load.return_value = {"m1": {}, "m2": {}}
@@ -102,10 +102,10 @@ def test_parse_args(mock_env):
         args = ppo.parse_args()
     assert args.list is True
 
-@patch('train_utils.load_model_registry')
-@patch('train_utils.get_enabled_models')
-@patch('train_utils.get_models_by_names')
-@patch('train_utils.get_models_by_filter')
+@patch('quantpits.utils.train_utils.load_model_registry')
+@patch('quantpits.utils.train_utils.get_enabled_models')
+@patch('quantpits.utils.train_utils.get_models_by_names')
+@patch('quantpits.utils.train_utils.get_models_by_filter')
 def test_resolve_with_skip(mock_filter, mock_names, mock_enabled, mock_load, mock_env):
     ppo = mock_env
     mock_load.return_value = {"m1": {}, "m2": {}, "m3": {}}
@@ -125,7 +125,7 @@ def test_resolve_with_skip(mock_filter, mock_names, mock_enabled, mock_load, moc
     assert "m2" not in targets
     assert "m3" not in targets
 
-@patch('train_utils.inject_config')
+@patch('quantpits.utils.train_utils.inject_config')
 @patch('qlib.utils.init_instance_by_config', create=True)
 @patch('qlib.workflow.R', create=True)
 def test_predict_single_model_yaml_missing(mock_R, mock_init, mock_inject, mock_env, tmp_path):
@@ -137,7 +137,7 @@ def test_predict_single_model_yaml_missing(mock_R, mock_init, mock_inject, mock_
     assert result['success'] is False
     assert 'YAML' in result['error']
 
-@patch('train_utils.inject_config')
+@patch('quantpits.utils.train_utils.inject_config')
 @patch('qlib.utils.init_instance_by_config', create=True)
 @patch('qlib.workflow.R', create=True)
 def test_predict_single_model_not_in_source(mock_R, mock_init, mock_inject, mock_env, tmp_path):
@@ -151,7 +151,7 @@ def test_predict_single_model_not_in_source(mock_R, mock_init, mock_inject, mock
     assert result['success'] is False
     assert '不在源训练记录中' in result['error']
 
-@patch('train_utils.inject_config')
+@patch('quantpits.utils.train_utils.inject_config')
 @patch('qlib.utils.init_instance_by_config', create=True)
 @patch('qlib.workflow.R', create=True)
 def test_predict_single_model_success(mock_R, mock_init, mock_inject, mock_env, tmp_path):
@@ -186,7 +186,7 @@ def test_predict_single_model_success(mock_R, mock_init, mock_inject, mock_env, 
     source_records = {'models': {'test_model': 'rid1'}, 'experiment_name': 'train'}
     params = {'anchor_date': '2020-01-01'}
 
-    with patch('train_utils.PREDICTION_OUTPUT_DIR', str(tmp_path)):
+    with patch('quantpits.utils.train_utils.PREDICTION_OUTPUT_DIR', str(tmp_path)):
         result = ppo.predict_single_model(
             'test_model', model_info, params, 'exp', source_records
         )
@@ -194,9 +194,9 @@ def test_predict_single_model_success(mock_R, mock_init, mock_inject, mock_env, 
     assert result['success'] is True
     assert result['record_id'] == 'new_rid'
 
-@patch('train_utils.load_model_registry')
-@patch('train_utils.get_models_by_filter')
-@patch('train_utils.print_model_table')
+@patch('quantpits.utils.train_utils.load_model_registry')
+@patch('quantpits.utils.train_utils.get_models_by_filter')
+@patch('quantpits.utils.train_utils.print_model_table')
 def test_show_list(mock_print_table, mock_filter, mock_load, mock_env, tmp_path):
     ppo = mock_env
     mock_load.return_value = {
@@ -213,9 +213,9 @@ def test_show_list(mock_print_table, mock_filter, mock_load, mock_env, tmp_path)
     ppo.show_list(args)
     mock_print_table.assert_called_once()
 
-@patch('train_utils.load_model_registry')
-@patch('train_utils.get_models_by_filter')
-@patch('train_utils.print_model_table')
+@patch('quantpits.utils.train_utils.load_model_registry')
+@patch('quantpits.utils.train_utils.get_models_by_filter')
+@patch('quantpits.utils.train_utils.print_model_table')
 def test_show_list_with_source(mock_print_table, mock_filter, mock_load, mock_env, tmp_path):
     import json
     ppo = mock_env
@@ -237,14 +237,14 @@ def test_show_list_with_source(mock_print_table, mock_filter, mock_load, mock_en
     ppo.show_list(args)
     mock_print_table.assert_called_once()
 
-@patch('train_utils.load_model_registry')
-@patch('train_utils.get_enabled_models')
-@patch('train_utils.get_models_by_names')
-@patch('train_utils.get_models_by_filter')
-@patch('train_utils.calculate_dates')
-@patch('train_utils.merge_train_records')
-@patch('train_utils.merge_performance_file')
-@patch('train_utils.print_model_table')
+@patch('quantpits.utils.train_utils.load_model_registry')
+@patch('quantpits.utils.train_utils.get_enabled_models')
+@patch('quantpits.utils.train_utils.get_models_by_names')
+@patch('quantpits.utils.train_utils.get_models_by_filter')
+@patch('quantpits.utils.train_utils.calculate_dates')
+@patch('quantpits.utils.train_utils.merge_train_records')
+@patch('quantpits.utils.train_utils.merge_performance_file')
+@patch('quantpits.utils.train_utils.print_model_table')
 def test_run_predict_only_dry_run(mock_table, mock_merge_perf, mock_merge_rec,
                                   mock_dates, mock_filter, mock_names,
                                   mock_enabled, mock_load, mock_env, tmp_path):
@@ -273,12 +273,12 @@ def test_run_predict_only_dry_run(mock_table, mock_merge_perf, mock_merge_rec,
     mock_dates.assert_not_called()
 
 @patch('quantpits.scripts.prod_predict_only.init_qlib', create=True)
-@patch('train_utils.calculate_dates')
-@patch('train_utils.merge_train_records')
-@patch('train_utils.merge_performance_file')
+@patch('quantpits.utils.train_utils.calculate_dates')
+@patch('quantpits.utils.train_utils.merge_train_records')
+@patch('quantpits.utils.train_utils.merge_performance_file')
 @patch('quantpits.scripts.prod_predict_only.predict_single_model')
 @patch('quantpits.scripts.prod_predict_only.resolve_target_models')
-@patch('train_utils.print_model_table')
+@patch('quantpits.utils.train_utils.print_model_table')
 def test_run_predict_only_success(mock_table, mock_resolve, mock_predict, 
                                   mock_merge_perf, mock_merge_rec,
                                   mock_dates, mock_init, mock_env, tmp_path):
@@ -304,7 +304,7 @@ def test_run_predict_only_success(mock_table, mock_resolve, mock_predict,
     mock_merge_perf.assert_called_once()
 
 @patch('quantpits.scripts.prod_predict_only.init_qlib', create=True)
-@patch('train_utils.calculate_dates')
+@patch('quantpits.utils.train_utils.calculate_dates')
 @patch('quantpits.scripts.prod_predict_only.predict_single_model')
 @patch('quantpits.scripts.prod_predict_only.resolve_target_models')
 def test_run_predict_only_failed_model(mock_resolve, mock_predict, 

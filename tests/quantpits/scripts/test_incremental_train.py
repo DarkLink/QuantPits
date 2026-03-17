@@ -35,7 +35,7 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
     # Reload all possible names to ensure they pick up the new QLIB_WORKSPACE_DIR
-    for mod_name in ['env', 'quantpits.scripts.env', 'train_utils', 'quantpits.scripts.train_utils', 'incremental_train', 'quantpits.scripts.incremental_train']:
+    for mod_name in ['env', 'quantpits.utils.env', 'train_utils', 'quantpits.utils.train_utils', 'incremental_train', 'quantpits.scripts.incremental_train']:
         if mod_name in sys.modules:
             importlib.reload(sys.modules[mod_name])
             
@@ -87,12 +87,12 @@ def test_resolve_target_models_filter(mock_env):
     assert "m1" in targets
     assert len(targets) == 1
 
-@patch('quantpits.scripts.env.init_qlib')
-@patch('train_utils.train_single_model')
-@patch('train_utils.save_run_state')
-@patch('train_utils.print_model_table')
+@patch('quantpits.utils.env.init_qlib')
+@patch('quantpits.utils.train_utils.train_single_model')
+@patch('quantpits.utils.train_utils.save_run_state')
+@patch('quantpits.utils.train_utils.print_model_table')
 @patch('quantpits.scripts.incremental_train.resolve_target_models')
-@patch('train_utils.calculate_dates')
+@patch('quantpits.utils.train_utils.calculate_dates')
 def test_run_incremental_train_failed(mock_dates, mock_resolve, mock_print_tbl, mock_save, mock_train, mock_init, mock_env):
     it, workspace = mock_env
     args = MagicMock()
@@ -117,12 +117,12 @@ def test_show_list(mock_env):
     args.market = None
     args.tag = None
     
-    with patch('train_utils.print_model_table'):
+    with patch('quantpits.utils.train_utils.print_model_table'):
         it.show_list(args)
 
 def test_show_state(mock_env):
     it, workspace = mock_env
-    with patch('train_utils.load_run_state') as mock_load:
+    with patch('quantpits.utils.train_utils.load_run_state') as mock_load:
         mock_load.return_value = {"completed": ["m1"], "target_models": ["m1", "m2"], "failed": {"m3": "error"}}
         it.show_state()
 
@@ -134,7 +134,7 @@ def test_main_clear_state(mock_env):
     args.clear_state = True
     
     with patch('quantpits.scripts.incremental_train.parse_args', return_value=args):
-        with patch('train_utils.clear_run_state') as mock_clear:
+        with patch('quantpits.utils.train_utils.clear_run_state') as mock_clear:
             it.main()
             mock_clear.assert_called_once()
 
@@ -158,7 +158,7 @@ def test_show_list_filter(mock_env):
     args.market = None
     args.tag = None
     
-    with patch('train_utils.print_model_table'):
+    with patch('quantpits.utils.train_utils.print_model_table'):
         it.show_list(args)
 
 def test_run_incremental_train_no_targets(mock_env):
@@ -186,13 +186,13 @@ def test_main_no_selection(mock_env):
     with patch('quantpits.scripts.incremental_train.parse_args', return_value=args):
         it.main() # Should print error and return
 
-@patch('quantpits.scripts.env.init_qlib')
-@patch('train_utils.calculate_dates')
-@patch('train_utils.train_single_model')
-@patch('train_utils.merge_train_records')
-@patch('train_utils.save_run_state')
-@patch('train_utils.clear_run_state')
-@patch('train_utils.print_model_table')
+@patch('quantpits.utils.env.init_qlib')
+@patch('quantpits.utils.train_utils.calculate_dates')
+@patch('quantpits.utils.train_utils.train_single_model')
+@patch('quantpits.utils.train_utils.merge_train_records')
+@patch('quantpits.utils.train_utils.save_run_state')
+@patch('quantpits.utils.train_utils.clear_run_state')
+@patch('quantpits.utils.train_utils.print_model_table')
 @patch('quantpits.scripts.incremental_train.resolve_target_models')
 def test_run_incremental_train_success(mock_resolve, mock_print_tbl, mock_clear, mock_save, mock_merge, mock_train, mock_dates, mock_init, mock_env):
     it, workspace = mock_env
@@ -212,7 +212,7 @@ def test_run_incremental_train_success(mock_resolve, mock_print_tbl, mock_clear,
     mock_merge.assert_called_once()
     mock_clear.assert_called_once()
 
-@patch('quantpits.scripts.train_utils.load_run_state')
+@patch('quantpits.utils.train_utils.load_run_state')
 def test_run_incremental_train_resume(mock_load_state, mock_env):
     it, workspace = mock_env
     args = MagicMock()
@@ -222,7 +222,7 @@ def test_run_incremental_train_resume(mock_load_state, mock_env):
     
     mock_load_state.return_value = {"completed": ["m1"]}
     
-    with patch('quantpits.scripts.train_utils.print_model_table'):
+    with patch('quantpits.utils.train_utils.print_model_table'):
         it.run_incremental_train(args)
         # Should filter out m1
 

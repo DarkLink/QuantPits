@@ -28,7 +28,8 @@ def mock_pretrain(monkeypatch):
     monkeypatch.setitem(sys.modules, 'qlib.constant', mock_qlib_constant)
     monkeypatch.setitem(sys.modules, 'mlflow', mock_mlflow)
     
-    from quantpits.scripts import env, pretrain
+    from quantpits.utils import env
+    from quantpits.scripts import pretrain
     import importlib
     importlib.reload(env)
     importlib.reload(pretrain)
@@ -43,9 +44,9 @@ def test_parse_args(mock_pretrain):
 
 def test_show_list(mock_pretrain):
     pretrain, _, _ = mock_pretrain
-    with patch('train_utils.load_model_registry') as mock_load, \
-         patch('train_utils.get_models_by_filter') as mock_filter, \
-         patch('train_utils.print_model_table') as mock_print:
+    with patch('quantpits.utils.train_utils.load_model_registry') as mock_load, \
+         patch('quantpits.utils.train_utils.get_models_by_filter') as mock_filter, \
+         patch('quantpits.utils.train_utils.print_model_table') as mock_print:
         
         # Case 1: models exist
         mock_load.return_value = {"m1": {"pretrain_source": "s1"}}
@@ -58,7 +59,7 @@ def test_show_list(mock_pretrain):
         pretrain.show_list()
         assert mock_print.call_count == 1 # Still 1 from previous call
 
-@patch('train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain')
+@patch('quantpits.utils.train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain')
 def test_show_pretrained(mock_pretrain):
     pretrain, _, _ = mock_pretrain
     
@@ -93,9 +94,9 @@ def test_pretrain_for_upper_model(mock_pretrain):
     # Mock R.start as a context manager
     mock_workflow.R.start.return_value.__enter__.return_value = MagicMock()
 
-    with patch('train_utils.load_model_registry') as mock_registry, \
-         patch('train_utils.inject_config') as mock_inject, \
-         patch('train_utils.save_pretrained_model'), \
+    with patch('quantpits.utils.train_utils.load_model_registry') as mock_registry, \
+         patch('quantpits.utils.train_utils.inject_config') as mock_inject, \
+         patch('quantpits.utils.train_utils.save_pretrained_model'), \
          patch('os.path.exists', return_value=True):
         
         # Success case
@@ -130,8 +131,8 @@ def test_pretrain_for_upper_model(mock_pretrain):
     # Exception case
     # Here we trigger the exception INSIDE the with R.start block in pretrain.py
     # Lines 220-227 are the block. fit() is line 233.
-    with patch('train_utils.load_model_registry') as mock_registry, \
-         patch('train_utils.inject_config') as mock_inject, \
+    with patch('quantpits.utils.train_utils.load_model_registry') as mock_registry, \
+         patch('quantpits.utils.train_utils.inject_config') as mock_inject, \
          patch('qlib.utils.init_instance_by_config', side_effect=Exception("Crash")):
         
         mock_registry.return_value = {
@@ -150,8 +151,8 @@ def test_pretrain_base_model(mock_pretrain):
     # Mock R.start as a context manager
     mock_workflow.R.start.return_value.__enter__.return_value = MagicMock()
 
-    with patch('train_utils.inject_config') as mock_inject, \
-         patch('train_utils.save_pretrained_model'), \
+    with patch('quantpits.utils.train_utils.inject_config') as mock_inject, \
+         patch('quantpits.utils.train_utils.save_pretrained_model'), \
          patch('os.path.exists', return_value=True):
         
         mock_inject.return_value = {'task': {'model': {}, 'dataset': {}}}
@@ -162,7 +163,7 @@ def test_pretrain_base_model(mock_pretrain):
             assert pretrain.pretrain_base_model("base", info, params, "Exp") is False
             
     # Exception case triggering inside the block
-    with patch('train_utils.inject_config') as mock_inject, \
+    with patch('quantpits.utils.train_utils.inject_config') as mock_inject, \
          patch('qlib.utils.init_instance_by_config', side_effect=Exception("Crash")):
         mock_inject.return_value = {'task': {'model': {}, 'dataset': {}}}
         with patch('os.path.exists', return_value=True):
@@ -172,9 +173,9 @@ def test_run_pretrain(mock_pretrain):
     pretrain, _, _ = mock_pretrain
     args = MagicMock(for_model=None, models=None, tag=None, dry_run=False, experiment_name=None)
     
-    with patch('train_utils.calculate_dates', return_value={'freq': 'week', 'anchor_date': '2026-03-13'}), \
-         patch('train_utils.load_model_registry', return_value={}), \
-         patch('quantpits.scripts.env.init_qlib'):
+    with patch('quantpits.utils.train_utils.calculate_dates', return_value={'freq': 'week', 'anchor_date': '2026-03-13'}), \
+         patch('quantpits.utils.train_utils.load_model_registry', return_value={}), \
+         patch('quantpits.utils.env.init_qlib'):
         
         # --for model dry run
         args.for_model = "upper"
@@ -193,16 +194,16 @@ def test_run_pretrain(mock_pretrain):
         # --models mode
         args.for_model = None
         args.models = "m1,m2"
-        with patch('train_utils.get_models_by_names', return_value={"m1": {}}), \
-             patch('train_utils.print_model_table'), \
+        with patch('quantpits.utils.train_utils.get_models_by_names', return_value={"m1": {}}), \
+             patch('quantpits.utils.train_utils.print_model_table'), \
              patch.object(pretrain, 'pretrain_base_model', side_effect=[True, False]):
             pretrain.run_pretrain(args)
             
         # --tag mode
         args.models = None
         args.tag = "base"
-        with patch('train_utils.get_models_by_filter', return_value={"m1": {}}), \
-             patch('train_utils.print_model_table'), \
+        with patch('quantpits.utils.train_utils.get_models_by_filter', return_value={"m1": {}}), \
+             patch('quantpits.utils.train_utils.print_model_table'), \
              patch.object(pretrain, 'pretrain_base_model', return_value=True):
             pretrain.run_pretrain(args)
             
@@ -212,14 +213,14 @@ def test_run_pretrain(mock_pretrain):
         
         # match no models
         args.tag = "none"
-        with patch('train_utils.get_models_by_filter', return_value={}):
+        with patch('quantpits.utils.train_utils.get_models_by_filter', return_value={}):
             pretrain.run_pretrain(args)
             
         # dry run tag
         args.tag = "base"
         args.dry_run = True
-        with patch('train_utils.get_models_by_filter', return_value={"m1": {}}), \
-             patch('train_utils.print_model_table'):
+        with patch('quantpits.utils.train_utils.get_models_by_filter', return_value={"m1": {}}), \
+             patch('quantpits.utils.train_utils.print_model_table'):
             pretrain.run_pretrain(args)
 
 def test_main(mock_pretrain):

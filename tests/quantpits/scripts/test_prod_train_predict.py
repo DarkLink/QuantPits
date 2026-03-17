@@ -5,12 +5,15 @@ from unittest.mock import patch, MagicMock
 def mock_env(monkeypatch, tmp_path):
     workspace = tmp_path / "MockWorkspace"
     workspace.mkdir()
+    (workspace / "output").mkdir()
     
     import sys
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    monkeypatch.chdir(workspace)
     
-    from quantpits.scripts import env, prod_train_predict
+    from quantpits.utils import env
+    from quantpits.scripts import prod_train_predict
     import importlib
     importlib.reload(env)
     importlib.reload(prod_train_predict)

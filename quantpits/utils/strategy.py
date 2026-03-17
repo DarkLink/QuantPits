@@ -19,7 +19,7 @@ import json
 import importlib
 import pandas as pd
 import numpy as np
-import env
+from quantpits.utils import env
 
 
 # ==============================================================================
@@ -29,7 +29,7 @@ def load_strategy_config():
     """
     加载策略配置。使用 config_loader.load_workspace_config 统筹加载。
     """
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
     
     # load_workspace_config 已经包含了对 strategy_config.yaml 的读取以及对 TopK/DropN 的 Promote
     full_config = load_workspace_config(env.ROOT_DIR)

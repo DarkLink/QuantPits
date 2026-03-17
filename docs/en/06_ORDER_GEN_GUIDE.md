@@ -130,7 +130,7 @@ python quantpits/scripts/order_gen.py --verbose --dry-run
 
 Utilize `plot_model_opinions.py` yielding accelerated ranked line chart extrapolations targeting discrete assets arrayed sequentially across the algorithm framework mapping:
 ```bash
-python quantpits/scripts/plot_model_opinions.py
+python quantpits/tools/plot_model_opinions.py
 # Natively auto-locates newest mapped artifacts, or explicit targeting: --input output/model_opinions_2026-02-24.csv
 ```
 

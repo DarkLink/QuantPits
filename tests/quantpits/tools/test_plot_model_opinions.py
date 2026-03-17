@@ -19,7 +19,8 @@ def mock_env(monkeypatch, tmp_path):
     import matplotlib
     matplotlib.use('Agg')
     
-    from quantpits.scripts import env, plot_model_opinions
+    from quantpits.utils import env
+    from quantpits.tools import plot_model_opinions
     import importlib
     importlib.reload(env)
     importlib.reload(plot_model_opinions)

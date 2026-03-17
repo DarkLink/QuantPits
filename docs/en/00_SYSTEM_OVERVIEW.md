@@ -13,7 +13,7 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 - **Workspace (Directories under `workspaces/`)**: Any independent collection for live trading or simulation. Contains the instance-specific `config/`, `data/`, `output/`, and an isolated `mlruns/`.
 
 **How to use workspaces?**
-1. Create a new workspace: Use `python quantpits/scripts/init_workspace.py --source workspaces/A --target workspaces/B` for quick scaffolding.
+1. Create a new workspace: Use `python quantpits/tools/init_workspace.py --source workspaces/A --target workspaces/B` for quick scaffolding.
 2. Activate a workspace: Enter the system directory and run `source workspaces/<Your_Workspace>/run_env.sh` to set `QLIB_WORKSPACE_DIR`.
 3. (Optional) Custom data source: Uncomment `QLIB_DATA_DIR` / `QLIB_REGION` in `run_env.sh` to point the workspace at a different Qlib data directory (defaults to `~/.qlib/qlib_data/cn_data` and `cn`).
 4. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace, and `env.init_qlib()` will initialize Qlib with the configured data path.
@@ -465,7 +465,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 - Trading data (suggestions, logs, excel files) is safely archived to `data/order_history/`
 - Previous outputs migrated to `archive/output/`
 - Supports `--dry-run`, `--keep N`, `--include-notebooks`, `--cleanup-legacy`
-- **Routine use**: Just execute `python quantpits/scripts/archive_dated_files.py` post-run each period
+- **Routine use**: Just execute `python quantpits/tools/archive_dated_files.py` post-run each period
 - **Model Loading**: Interfaces gracefully with Qlib's native Recorder instances
 
 ---

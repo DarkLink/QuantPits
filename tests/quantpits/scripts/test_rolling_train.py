@@ -24,7 +24,7 @@ SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 sys.path.insert(0, os.path.abspath(SCRIPT_DIR))
 
 # Now env can be imported normally and it will be a real module.
-import env
+from quantpits.utils import env
 import pandas as pd
 import yaml
 from rolling_train import generate_rolling_windows, RollingState, parse_step_to_relativedelta, resolve_target_models
@@ -63,13 +63,13 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     monkeypatch.setattr(sys, 'argv', ['script.py'])
 
-    import train_utils
+    from quantpits.utils import train_utils
     monkeypatch.setattr(train_utils, 'ROLLING_PREDICTION_DIR', str(workspace / "output" / "predictions" / "rolling"))
     (workspace / "output" / "predictions" / "rolling").mkdir(parents=True)
 
     # Reload relevant modules to pick up new env
     import importlib
-    for mod in ['env', 'train_utils', 'rolling_train']:
+    for mod in ['quantpits.utils.env', 'quantpits.utils.train_utils', 'rolling_train']:
         if mod in sys.modules:
             importlib.reload(sys.modules[mod])
 
@@ -342,7 +342,7 @@ class TestRollingStateExtra:
         state = RollingState(state_file=str(state_file))
         state.init_run({}, '2025-01-01', 1)
 
-        with mock.patch('train_utils.backup_file_with_date') as mock_backup:
+        with mock.patch('quantpits.utils.train_utils.backup_file_with_date') as mock_backup:
             state.clear()
             mock_backup.assert_called_once_with(str(state_file), prefix="rolling_state")
             assert not os.path.exists(state_file)
@@ -422,7 +422,7 @@ class TestFunctionalLogic:
 
     def test_get_base_params(self, mock_env):
         rt, _ = mock_env
-        with mock.patch('config_loader.load_workspace_config') as mock_load:
+        with mock.patch('quantpits.utils.config_loader.load_workspace_config') as mock_load:
             mock_load.return_value = {'market': 'csi500'}
             with mock.patch('qlib.data.D', create=True) as mock_d:
                 mock_d.calendar.return_value = [pd.Timestamp('2024-01-01')]
@@ -441,7 +441,7 @@ class TestFunctionalLogic:
         
         with mock.patch('qlib.workflow.R', create=True) as mock_r, \
              mock.patch('qlib.utils.init_instance_by_config') as mock_init, \
-             mock.patch('train_utils.inject_config') as mock_inject:
+             mock.patch('quantpits.utils.train_utils.inject_config') as mock_inject:
             
             mock_recorder = mock.MagicMock()
             mock_recorder.info = {'id': 'rec_123'}
@@ -506,7 +506,7 @@ class TestFunctionalLogic:
         window = {'window_idx': 0, 'test_start': '2024-01-01', 'train_start': '2020-01-01', 'train_end': '2022-12-31', 'valid_start': '2023-01-01', 'valid_end': '2023-12-31', 'test_end': '2024-03-31'}
         
         with mock.patch('qlib.workflow.R', create=True) as mock_r, \
-             mock.patch('train_utils.inject_config') as mock_inject:
+             mock.patch('quantpits.utils.train_utils.inject_config') as mock_inject:
             
             mock_inject.return_value = {'task': {'model': {}, 'dataset': {}}}
             mock_r.start.side_effect = Exception("Training crash")
@@ -554,7 +554,7 @@ class TestFunctionalLogic:
         
         with mock.patch('qlib.workflow.R', create=True) as mock_r, \
              mock.patch('qlib.utils.init_instance_by_config') as mock_init, \
-             mock.patch('train_utils.inject_config') as mock_inject:
+             mock.patch('quantpits.utils.train_utils.inject_config') as mock_inject:
             
             mock_recorder = mock.MagicMock()
             mock_model = mock.MagicMock()
@@ -583,7 +583,7 @@ class TestMainFlows:
             'valid_years': 1, 'test_step': '3M'
         }
         
-        with mock.patch('quantpits.scripts.env.init_qlib'), \
+        with mock.patch('quantpits.utils.env.init_qlib'), \
              mock.patch('rolling_train.get_base_params') as mock_base, \
              mock.patch('rolling_train.train_window_model') as mock_train:
             
@@ -603,7 +603,7 @@ class TestMainFlows:
             'valid_years': 1, 'test_step': '3M'
         }
         
-        with mock.patch('quantpits.scripts.env.init_qlib'), \
+        with mock.patch('quantpits.utils.env.init_qlib'), \
              mock.patch('rolling_train.get_base_params') as mock_base, \
              mock.patch('rolling_train.train_window_model') as mock_train, \
              mock.patch('rolling_train.concatenate_rolling_predictions') as mock_concat, \
@@ -625,7 +625,7 @@ class TestMainFlows:
             'test_step': '3M', 'test_step_months': 3
         }
         
-        with mock.patch('quantpits.scripts.env.init_qlib'), \
+        with mock.patch('quantpits.utils.env.init_qlib'), \
              mock.patch.object(rt, 'get_base_params') as mock_base, \
              mock.patch.object(rt, 'RollingState') as mock_state_cls, \
              mock.patch.object(rt, 'predict_with_latest_model') as mock_predict, \
@@ -658,7 +658,7 @@ class TestMainFlows:
         
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models') as mock_resolve, \
-             mock.patch('config_loader.load_rolling_config') as mock_load_cfg, \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config') as mock_load_cfg, \
              mock.patch('rolling_train.run_cold_start') as mock_run, \
              mock.patch('rolling_train.run_daily') as mock_run_daily:
             
@@ -702,7 +702,7 @@ class TestMainFlows:
         
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
-             mock.patch('config_loader.load_rolling_config', return_value=mock_patch_cfg), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value=mock_patch_cfg), \
              mock.patch('rolling_train.run_predict_only') as mock_run_po:
             
             rt.main()
@@ -736,7 +736,7 @@ class TestMainFlows:
 
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
-             mock.patch('config_loader.load_rolling_config', return_value=mock_patch_cfg), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value=mock_patch_cfg), \
              mock.patch('rolling_train.RollingState', return_value=mock_state), \
              mock.patch('rolling_train.run_cold_start') as mock_run:
             
@@ -857,7 +857,7 @@ class TestMainFlowsExtended:
 
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
-             mock.patch('config_loader.load_rolling_config', return_value=mock_patch_cfg), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value=mock_patch_cfg), \
              mock.patch('rolling_train.RollingState') as mock_state_cls, \
              mock.patch('rolling_train.run_cold_start') as mock_run:
             
@@ -888,7 +888,7 @@ class TestMainFlowsExtended:
 
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
-             mock.patch('config_loader.load_rolling_config', return_value=mock_patch_cfg), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value=mock_patch_cfg), \
              mock.patch('rolling_train.run_backtest_only') as mock_run:
             
             rt.main()
@@ -910,7 +910,7 @@ class TestRunModesExtra:
             "models": {"m1": "rec123"}
         }))
 
-        with mock.patch('quantpits.scripts.env.init_qlib'), \
+        with mock.patch('quantpits.utils.env.init_qlib'), \
              mock.patch('rolling_train.get_base_params') as mock_base, \
              mock.patch('rolling_train.run_combined_backtest') as mock_run_bt:
             
@@ -920,7 +920,7 @@ class TestRunModesExtra:
             # But ROLLING_RECORD_FILE might be bound at import time.
             # In mock_env: monkeypatch.setattr(train_utils, 'ROLLING_PREDICTION_DIR', ...)
             # Let's ensure ROLLING_RECORD_FILE is also mocked.
-            import train_utils
+            from quantpits.utils import train_utils
             with mock.patch.object(train_utils, 'ROLLING_RECORD_FILE', str(rec_file)):
                 rt.run_backtest_only(args, targets)
                 mock_run_bt.assert_called_once()
@@ -935,9 +935,9 @@ class TestRunModesExtra:
         with mock.patch('qlib.workflow.R', create=True) as mock_r, \
              mock.patch('qlib.backtest.backtest') as mock_bt, \
              mock.patch('qlib.backtest.executor.SimulatorExecutor', create=True), \
-             mock.patch('strategy.create_backtest_strategy'), \
-             mock.patch('strategy.load_strategy_config'), \
-             mock.patch('strategy.get_backtest_config') as mock_get_bt_cfg, \
+             mock.patch('quantpits.utils.strategy.create_backtest_strategy'), \
+             mock.patch('quantpits.utils.strategy.load_strategy_config'), \
+             mock.patch('quantpits.utils.strategy.get_backtest_config') as mock_get_bt_cfg, \
              mock.patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer') as mock_pa_cls, \
              mock.patch('qlib.data.D', create=True) as mock_d:
             
@@ -977,7 +977,7 @@ class TestRunModesExtra:
         targets = {'m1': {}}
         cfg = {}
         
-        with mock.patch('quantpits.scripts.env.init_qlib'), \
+        with mock.patch('quantpits.utils.env.init_qlib'), \
              mock.patch('rolling_train.get_base_params') as mock_base, \
              mock.patch('rolling_train.RollingState') as mock_state_cls, \
              mock.patch('rolling_train.predict_with_latest_model') as mock_predict:
@@ -1028,7 +1028,7 @@ class TestRunModesExtra:
         targets = {'m1': {}}
         cfg = {}
         
-        with mock.patch('quantpits.scripts.env.init_qlib'), \
+        with mock.patch('quantpits.utils.env.init_qlib'), \
              mock.patch('rolling_train.get_base_params') as mock_base, \
              mock.patch('rolling_train.RollingState') as mock_state_cls:
             

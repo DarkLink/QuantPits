@@ -39,7 +39,7 @@ import argparse
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -140,7 +140,7 @@ class RollingState:
     """Rolling 训练状态管理，支持断点恢复"""
 
     def __init__(self, state_file=None):
-        from train_utils import ROLLING_STATE_FILE
+        from quantpits.utils.train_utils import ROLLING_STATE_FILE
         self.state_file = state_file or ROLLING_STATE_FILE
         self._state = self._load()
 
@@ -214,7 +214,7 @@ class RollingState:
 
     def clear(self):
         if os.path.exists(self.state_file):
-            from train_utils import backup_file_with_date
+            from quantpits.utils.train_utils import backup_file_with_date
             backup_file_with_date(self.state_file, prefix="rolling_state")
             os.remove(self.state_file)
             print("🗑️  Rolling 状态已清除")
@@ -264,7 +264,7 @@ def train_window_model(model_name, yaml_file, window, params_base,
     Returns:
         dict: {success, record_id, performance, error}
     """
-    from train_utils import inject_config, ROLLING_PREDICTION_DIR
+    from quantpits.utils.train_utils import inject_config, ROLLING_PREDICTION_DIR
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
 
@@ -405,7 +405,7 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
         dict: {model_name: combined_record_id}
     """
     from qlib.workflow import R
-    from train_utils import ROLLING_PREDICTION_DIR
+    from quantpits.utils.train_utils import ROLLING_PREDICTION_DIR
     import pandas as pd
 
     print(f"\n{'='*60}")
@@ -484,7 +484,7 @@ def save_rolling_records(combined_records, combined_exp_name, anchor_date):
 
     格式与 latest_train_records.json 一致，以便下游直接 --record-file 读取。
     """
-    from train_utils import ROLLING_RECORD_FILE, backup_file_with_date
+    from quantpits.utils.train_utils import ROLLING_RECORD_FILE, backup_file_with_date
 
     records = {
         "experiment_name": combined_exp_name,
@@ -513,7 +513,7 @@ def predict_with_latest_model(model_name, model_info, state,
 
     用于日常模式中距离上次 rolling 未超过 step 的情况。
     """
-    from train_utils import inject_config, ROLLING_PREDICTION_DIR
+    from quantpits.utils.train_utils import inject_config, ROLLING_PREDICTION_DIR
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
 
@@ -623,7 +623,7 @@ def parse_args():
 
 def resolve_target_models(args):
     """解析目标模型列表"""
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         load_model_registry,
         get_enabled_models,
         get_models_by_filter,
@@ -656,7 +656,7 @@ def resolve_target_models(args):
 
 def get_base_params():
     """获取 workspace 基础参数 (market, benchmark 等)"""
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
     config = load_workspace_config(ROOT_DIR)
 
     from qlib.data import D
@@ -678,7 +678,7 @@ def get_base_params():
 # ================= 主流程 =================
 def run_cold_start(args, targets, rolling_cfg):
     """冷启动：所有 windows 训练 + 拼接"""
-    from train_utils import print_model_table
+    from quantpits.utils.train_utils import print_model_table
 
     env.init_qlib()
     params_base = get_base_params()
@@ -885,7 +885,7 @@ def run_combined_backtest(model_names, combined_records, combined_exp_name, para
     from qlib.workflow import R
     from qlib.backtest import backtest
     from qlib.backtest.executor import SimulatorExecutor
-    import strategy
+    from quantpits.utils import strategy
     import numpy as np
     import warnings
     
@@ -1032,7 +1032,7 @@ def run_combined_backtest(model_names, combined_records, combined_exp_name, para
 def run_backtest_only(args, targets):
     """仅回测模式：读取 latest_rolling_records.json 直接运行"""
     import os, json
-    from train_utils import ROLLING_RECORD_FILE
+    from quantpits.utils.train_utils import ROLLING_RECORD_FILE
     env.init_qlib()
     params_base = get_base_params()
     
@@ -1099,7 +1099,7 @@ def main():
         return
 
     # 加载 rolling 配置
-    from config_loader import load_rolling_config
+    from quantpits.utils.config_loader import load_rolling_config
     rolling_cfg = load_rolling_config(ROOT_DIR)
     if rolling_cfg is None:
         print("❌ 找不到 config/rolling_config.yaml")

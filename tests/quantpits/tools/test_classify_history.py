@@ -26,7 +26,7 @@ def test_classify_history_dry_run(monkeypatch, tmp_path, capsys):
     
     with patch("quantpits.scripts.analysis.trade_classifier.classify_trades", return_value=mock_df) as mock_classify:
         with patch("quantpits.scripts.analysis.trade_classifier._print_summary") as mock_summary:
-            from quantpits.scripts import classify_history
+            from quantpits.tools import classify_history
             import importlib
             importlib.reload(classify_history)
             
@@ -57,7 +57,7 @@ def test_classify_history_verbose(monkeypatch, tmp_path, capsys):
     
     with patch("quantpits.scripts.analysis.trade_classifier.classify_trades", return_value=mock_df):
         with patch("quantpits.scripts.analysis.trade_classifier.save_classification") as mock_save:
-            from quantpits.scripts import classify_history
+            from quantpits.tools import classify_history
             import importlib
             importlib.reload(classify_history)
             

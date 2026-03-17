@@ -20,12 +20,12 @@ def mock_env_constants(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env
+    from quantpits.utils import env
     import importlib
     importlib.reload(env)
 
     # Now we can import train_utils
-    from quantpits.scripts import train_utils
+    from quantpits.utils import train_utils
     importlib.reload(train_utils)
     
     yield train_utils, workspace
@@ -51,7 +51,7 @@ def test_run_state(mock_env_constants, tmp_path):
     assert "model1" in loaded["completed"]
     
     # Clear
-    with patch('quantpits.scripts.train_utils.HISTORY_DIR', str(tmp_path / "history")):
+    with patch('quantpits.utils.train_utils.HISTORY_DIR', str(tmp_path / "history")):
         train_utils.clear_run_state(str(state_file))
         assert not os.path.exists(state_file)
         
@@ -122,7 +122,7 @@ def test_calculate_dates_slide(mock_env_constants, tmp_path):
         "current_full_cash": 200000.0
     }
         
-    with patch('config_loader.load_workspace_config') as mock_load:
+    with patch('quantpits.utils.config_loader.load_workspace_config') as mock_load:
         mock_load.return_value = config_dict
         with patch('qlib.data.D') as mock_d:
             # Mock calendar to anchor on 2026-03-01
@@ -154,7 +154,7 @@ def test_calculate_dates_fixed(mock_env_constants, tmp_path):
         "test_end_time": "2026-01-01"
     }
         
-    with patch('config_loader.load_workspace_config') as mock_load:
+    with patch('quantpits.utils.config_loader.load_workspace_config') as mock_load:
         mock_load.return_value = config_dict
         params = train_utils.calculate_dates()
         assert params["anchor_date"] == "2026-01-01"
@@ -202,7 +202,7 @@ def test_merge_performance_file(mock_env_constants, tmp_path):
     
     new_perf = {"modelB": {"IC_Mean": 0.2}, "modelA": {"IC_Mean": 0.15}}
     
-    with patch('quantpits.scripts.train_utils.HISTORY_DIR', str(tmp_path / "history")):
+    with patch('quantpits.utils.train_utils.HISTORY_DIR', str(tmp_path / "history")):
         merged = train_utils.merge_performance_file(new_perf, "2026-01-01", output_dir=str(out_dir))
     
     assert "modelB" in merged
@@ -307,7 +307,7 @@ def test_train_single_model(mock_env_constants, tmp_path):
     pred_dir = workspace / "output" / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
     
-    with patch('quantpits.scripts.train_utils.PREDICTION_OUTPUT_DIR', str(pred_dir)):
+    with patch('quantpits.utils.train_utils.PREDICTION_OUTPUT_DIR', str(pred_dir)):
         with patch('qlib.utils.init_instance_by_config') as mock_init_instance:
             with patch('qlib.workflow.R') as mock_R:
                 # Setup mocks for models and recorder
@@ -354,10 +354,10 @@ def test_train_single_model(mock_env_constants, tmp_path):
 
 
 class TestPretrainManagement:
-    @patch('quantpits.scripts.train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain_dir')
+    @patch('quantpits.utils.train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain_dir')
     @patch('os.path.exists')
     def test_get_pretrained_model_path(self, mock_exists):
-        from quantpits.scripts.train_utils import get_pretrained_model_path
+        from quantpits.utils.train_utils import get_pretrained_model_path
         
         # Test with anchor_date
         mock_exists.return_value = True
@@ -372,13 +372,13 @@ class TestPretrainManagement:
         mock_exists.return_value = False
         assert get_pretrained_model_path("lstm_Alpha158") is None
 
-    @patch('quantpits.scripts.train_utils._get_inner_model')
-    @patch('quantpits.scripts.train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain_dir')
+    @patch('quantpits.utils.train_utils._get_inner_model')
+    @patch('quantpits.utils.train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain_dir')
     @patch('os.makedirs')
     @patch('shutil.copy2')
     @patch('builtins.open', new_callable=mock_open)
     def test_save_pretrained_model(self, mock_file, mock_copy, mock_makedirs, mock_get_inner):
-        from quantpits.scripts.train_utils import save_pretrained_model
+        from quantpits.utils.train_utils import save_pretrained_model
         
         # Mock model
         mock_inner = MagicMock()
@@ -402,21 +402,21 @@ class TestPretrainManagement:
         # Verify copying to latest
         assert mock_copy.call_count == 2 # pkl and json
 
-    @patch('quantpits.scripts.train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain_dir')
+    @patch('quantpits.utils.train_utils.PRETRAINED_DIR', '/tmp/mock_pretrain_dir')
     @patch('os.path.exists')
     @patch('builtins.open', new_callable=mock_open, read_data='{"d_feat": 20}')
     def test_load_pretrained_metadata(self, mock_file, mock_exists):
-        from quantpits.scripts.train_utils import load_pretrained_metadata
+        from quantpits.utils.train_utils import load_pretrained_metadata
         mock_exists.return_value = True
         
         meta = load_pretrained_metadata("lstm_Alpha158")
         assert meta["d_feat"] == 20
         mock_exists.assert_called_with("/tmp/mock_pretrain_dir/lstm_Alpha158_latest.json")
 
-    @patch('quantpits.scripts.train_utils.load_model_registry')
-    @patch('quantpits.scripts.train_utils.get_pretrained_model_path')
+    @patch('quantpits.utils.train_utils.load_model_registry')
+    @patch('quantpits.utils.train_utils.get_pretrained_model_path')
     def test_resolve_pretrained_path(self, mock_get_path, mock_load_registry):
-        from quantpits.scripts.train_utils import resolve_pretrained_path
+        from quantpits.utils.train_utils import resolve_pretrained_path
         
         mock_load_registry.return_value = {
             "gats": {"pretrain_source": "lstm"},
@@ -437,9 +437,9 @@ class TestPretrainManagement:
         mock_get_path.return_value = None
         assert resolve_pretrained_path("gats") is None
 
-    @patch('quantpits.scripts.train_utils.load_pretrained_metadata')
+    @patch('quantpits.utils.train_utils.load_pretrained_metadata')
     def test_validate_pretrain_compatibility(self, mock_load_meta):
-        from quantpits.scripts.train_utils import validate_pretrain_compatibility
+        from quantpits.utils.train_utils import validate_pretrain_compatibility
         
         # Match
         mock_load_meta.return_value = {"d_feat": 20}

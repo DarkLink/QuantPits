@@ -25,7 +25,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 
-import env
+from quantpits.utils import env
 
 # ── 路径定义 ─────────────────────────────────────────────────────────────
 ROOT_DIR = env.ROOT_DIR

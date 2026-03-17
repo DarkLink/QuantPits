@@ -54,7 +54,7 @@ from tqdm.auto import tqdm
 # ---------------------------------------------------------------------------
 # 路径设置
 # ---------------------------------------------------------------------------
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -133,7 +133,7 @@ def init_qlib():
 
 def load_config(record_file="latest_train_records.json"):
     """使用 config_loader 加载统一配置"""
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
     if os.path.exists(record_file):
         with open(record_file, "r") as f:
             train_records = json.load(f)
@@ -1170,7 +1170,7 @@ def analyze_results(
 # ============================================================================
 
 def main():
-    import env
+    from quantpits.utils import env
     env.safeguard("Brute Force Fast")
     parser = argparse.ArgumentParser(
         description="⚡ 快速向量化暴力穷举组合回测 + 结果分析",

@@ -23,10 +23,10 @@ def mock_env(monkeypatch, tmp_path):
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
 
-    from quantpits.scripts import env
+    from quantpits.utils import env
     importlib.reload(env)
 
-    from quantpits.scripts import archive_dated_files as adf
+    from quantpits.tools import archive_dated_files as adf
     importlib.reload(adf)
 
     # Patch module-level constants to use tmp_path

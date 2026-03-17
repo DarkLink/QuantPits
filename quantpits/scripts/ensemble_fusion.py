@@ -55,7 +55,7 @@ import json
 import argparse
 from datetime import datetime
 
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 import numpy as np
@@ -85,7 +85,7 @@ def init_qlib():
 
 def load_config(record_file="latest_train_records.json"):
     """使用 config_loader 加载统一配置"""
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
     if os.path.exists(record_file):
         with open(record_file, "r") as f:
             train_records = json.load(f)
@@ -570,7 +570,7 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt
     """运行回测"""
     from qlib.backtest import backtest
     from qlib.backtest.executor import SimulatorExecutor
-    import strategy
+    from quantpits.utils import strategy
 
     if st_config is None:
         st_config = strategy.load_strategy_config()
@@ -927,7 +927,7 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
     if report_df is not None:
         print(">>> Ensemble 模型风险分析:")
         from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
-        import strategy
+        from quantpits.utils import strategy
         st_config = strategy.load_strategy_config()
         benchmark = st_config.get('benchmark', 'SH000300')
         
@@ -1179,7 +1179,7 @@ def compare_combos(combo_results, anchor_date, output_dir, freq):
         report_df = result.get('report_df')
         if report_df is not None:
             from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
-            import strategy
+            from quantpits.utils import strategy
             st_config = strategy.load_strategy_config()
             benchmark = st_config.get('benchmark', 'SH000300')
             
@@ -1444,7 +1444,7 @@ def main():
                         help='开启 Qlib 回测的详细模式')
     args = parser.parse_args()
 
-    import env
+    from quantpits.utils import env
     env.safeguard("Ensemble Fusion")
 
     # ---- 验证参数 ----
@@ -1598,7 +1598,7 @@ def main():
         print(f"  权重模式 : {result['method']}")
         print(f"  预测文件 : {result['pred_file']}")
         if result.get('report_df') is not None:
-            import strategy
+            from quantpits.utils import strategy
             bt_config = strategy.get_backtest_config()
             initial_cash = bt_config['account']
             final_nav = result['report_df'].iloc[-1]['account']

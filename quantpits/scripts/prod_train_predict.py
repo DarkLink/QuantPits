@@ -16,7 +16,7 @@ import sys
 import argparse
 from datetime import datetime, timedelta
 
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)  # 必须在 qlib 导入前切换目录并确保环境变量生效
 
 import qlib
@@ -38,7 +38,7 @@ ROOT_DIR = env.ROOT_DIR
 env.init_qlib()
 
 # 导入共享工具
-from train_utils import (
+from quantpits.utils.train_utils import (
     calculate_dates,
     inject_config,
     load_model_registry,

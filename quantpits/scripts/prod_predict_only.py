@@ -34,7 +34,7 @@ import json
 import argparse
 from datetime import datetime
 
-import env
+from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 DEFAULT_EXPERIMENT_NAME = "Prod_Predict"
@@ -110,7 +110,7 @@ def resolve_target_models(args):
     Returns:
         dict: {model_name: model_info} 或 None（未指定选择条件）
     """
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         load_model_registry,
         get_enabled_models,
         get_models_by_filter,
@@ -172,7 +172,7 @@ def predict_single_model(model_name, model_info, params, experiment_name, source
             'error': str or None
         }
     """
-    from train_utils import inject_config, PREDICTION_OUTPUT_DIR
+    from quantpits.utils.train_utils import inject_config, PREDICTION_OUTPUT_DIR
 
     result = {
         'success': False,
@@ -291,7 +291,7 @@ def predict_single_model(model_name, model_info, params, experiment_name, source
 
 def run_predict_only(args):
     """执行 predict-only 流程"""
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         calculate_dates,
         merge_train_records,
         merge_performance_file,
@@ -444,7 +444,7 @@ def run_predict_only(args):
 
 def show_list(args):
     """列出模型注册表"""
-    from train_utils import (
+    from quantpits.utils.train_utils import (
         load_model_registry,
         get_models_by_filter,
         print_model_table,
@@ -492,7 +492,7 @@ def show_list(args):
 
 
 def main():
-    import env
+    from quantpits.utils import env
     env.safeguard("Prod Predict Only")
     args = parse_args()
 

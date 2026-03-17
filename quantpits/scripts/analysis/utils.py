@@ -11,7 +11,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.dirname(SCRIPT_DIR)
 if SCRIPTS_DIR not in sys.path:
     sys.path.append(SCRIPTS_DIR)
-import env
+from quantpits.utils import env
 
 ROOT_DIR = env.ROOT_DIR
 CONFIG_FILE = os.path.join(ROOT_DIR, "config", "prod_config.json")
@@ -27,7 +27,7 @@ def load_market_config():
     """
     使用 config_loader 加载统一配置并返回 market 和 benchmark。
     """
-    from config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_workspace_config
     try:
         config = load_workspace_config(ROOT_DIR)
         

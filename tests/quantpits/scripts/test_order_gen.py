@@ -19,7 +19,8 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env, order_gen, strategy
+    from quantpits.utils import env, strategy
+    from quantpits.scripts import order_gen
     import importlib
     importlib.reload(env)
     importlib.reload(order_gen)
@@ -191,7 +192,7 @@ def test_load_configs(mock_env):
     with open(cashflow_file, "w") as f:
         json.dump({"cash_flow_today": 123}, f)
         
-    with patch('config_loader.load_workspace_config') as mock_load:
+    with patch('quantpits.utils.config_loader.load_workspace_config') as mock_load:
         mock_load.return_value = {"market": "csi300"}
         config, cf_config = order_gen.load_configs()
         
@@ -411,7 +412,7 @@ def test_generate_model_opinions_no_sources(mock_env, tmp_path):
 @patch('quantpits.scripts.order_gen.load_configs')
 @patch('quantpits.scripts.order_gen.load_predictions')
 @patch('quantpits.scripts.order_gen.get_price_data')
-@patch('quantpits.scripts.env.safeguard')
+@patch('quantpits.utils.env.safeguard')
 @patch('qlib.data.D', create=True)
 def test_main_dry_run_full(mock_D, mock_safeguard, mock_price, mock_pred, mock_configs, mock_anchor, mock_init, mock_env):
     order_gen, strategy, workspace = mock_env

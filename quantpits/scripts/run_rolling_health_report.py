@@ -6,9 +6,9 @@ from datetime import datetime
 import argparse
 
 try:
-    from quantpits.scripts import env
+    from quantpits.utils import env
 except ImportError:
-    import env
+    from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
 
 def evaluate_health():

@@ -13,7 +13,7 @@ def test_env_workspace_arg(monkeypatch, tmp_path):
     sys.argv.extend(['script.py', '--workspace', str(workspace), '--other-arg'])
     monkeypatch.delenv("QLIB_WORKSPACE_DIR", raising=False)
     
-    from quantpits.scripts import env
+    from quantpits.utils import env
     importlib.reload(env)
     
     assert env.ROOT_DIR == str(workspace)
@@ -32,7 +32,7 @@ def test_env_workspace_env(monkeypatch, tmp_path):
     sys.argv.extend(['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env
+    from quantpits.utils import env
     importlib.reload(env)
     
     assert env.ROOT_DIR == str(workspace)
@@ -47,7 +47,7 @@ def test_env_no_workspace(monkeypatch):
     monkeypatch.delenv("QLIB_WORKSPACE_DIR", raising=False)
     
     with pytest.raises(RuntimeError, match="Please source a workspace run_env.sh first!"):
-        from quantpits.scripts import env
+        from quantpits.utils import env
         importlib.reload(env)
 
 def test_init_qlib(monkeypatch, tmp_path):
@@ -56,7 +56,7 @@ def test_init_qlib(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env
+    from quantpits.utils import env
     
     class MockQlib:
         def __init__(self):
@@ -91,7 +91,7 @@ def test_safeguard(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sys, 'argv', ['script.py'])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     
-    from quantpits.scripts import env
+    from quantpits.utils import env
     importlib.reload(env)
     
     # Mock time.sleep to avoid waiting 3 seconds during tests

@@ -15,7 +15,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
     
-import quantpits.scripts.env as env
+import quantpits.utils.env as env
 os.chdir(env.ROOT_DIR)
 
 from quantpits.scripts.analysis.utils import init_qlib, get_daily_features, load_market_config
