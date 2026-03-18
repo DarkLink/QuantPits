@@ -116,7 +116,7 @@ python quantpits/scripts/run_analysis.py --models gru_Alpha158 --shareable --out
 ### 1. 单模型及融合打分表现 (Model Quality)
 - **Rank IC Mean & ICIR**：
   - **绿灯**：IC > 0.035 且 ICIR > 0.15 即被认为是有效的 Alpha 来源。
-  - **红线行动**：若某个主力的 `T+1 IC` 持续低迷至 0.01 或变负，应当停止其参与 Ensemble Fusion，并调用 `incremental_train.py` 重训。
+  - **红线行动**：若某个主力的 `T+1 IC` 持续低迷至 0.01 或变负，应当停止其参与 Ensemble Fusion，并调用 `static_train.py` 重训。
 - **Decile Spread (十分位多空收益差)**：衡量模型打分前 10% 标的与后 10% 标的的收益差（基于次日）。该值应显著为正。
 - **Long-Only IC (Top 22)**：严格只计算模型预测头部分数（因实际只有对应仓位）与收益的 Spearman 相关性。由于头部样本少，稍微为正或在 0 附近即可接受；如果深负说明模型在“高优股票”中存在严重的偏好误导。
 - **IC Decay (衰减曲线)**：健康的信号应当在 T+1 时最强，随后平滑衰减。如果直线下坠，说明信号极度偏向高频或失效过快。

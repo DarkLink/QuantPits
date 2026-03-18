@@ -191,7 +191,7 @@ python quantpits/scripts/order_gen.py --help
 
 ```bash
 # Step 1: 训练 / 预测
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 
 # Step 2: 穷举组合
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
@@ -247,7 +247,7 @@ python quantpits/scripts/order_gen.py
 
 | 脚本 | 用途 | 输入 | 输出 |
 |------|------|------|------|
-| `prod_train_predict.py` | 训练模型 | configs | `latest_train_records.json` |
+| `static_train.py --full` | 训练模型 | configs | `latest_train_records.json` |
 | `brute_force_fast.py` | 穷举组合 | train records | leaderboard |
 | `ensemble_fusion.py` | 融合回测 | 选定模型 | 融合预测 + 绩效 |
 | `prod_post_trade.py` | 处理交易 | 交易文件 | 更新持仓/现金 |

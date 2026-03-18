@@ -44,8 +44,8 @@ Every step in this system is **optional and combinable**. Only "Prediction" and 
 ```mermaid
 flowchart TB
     subgraph TRAIN["① Train (On-demand)"]
-        TP["prod_train_predict.py<br/>Full Train"]
-        IT["incremental_train.py<br/>Incremental Train"]
+        TP["static_train.py --full<br/>Full Train"]
+        IT["static_train.py<br/>Incremental Train"]
     end
 
     subgraph ROLLING["⑨ Rolling Train (On-demand)"]
@@ -53,7 +53,7 @@ flowchart TB
     end
 
     subgraph PREDICT["② Predict (Every time)"]
-        PO["prod_predict_only.py<br/>Predict Only"]
+        PO["static_train.py --predict-only<br/>Predict Only"]
     end
 
     subgraph BRUTEFORCE["③ Brute Force (Occasionally)"]
@@ -125,7 +125,7 @@ Suitable for the first run or when models need to be refreshed.
 
 ```bash
 # ① Full Training (Outputs predictions + training records)
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 
 # ③ Brute force combo search (Optional, very time-consuming)
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
@@ -147,7 +147,7 @@ Existing models are available; directly predict after data updates. **This is th
 
 ```bash
 # ② Predict new data using existing models
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # ④ Fusion Prediction (Multi-combo comparison)
 python quantpits/scripts/ensemble_fusion.py --from-config-all
@@ -172,7 +172,7 @@ When fusion prediction degrades, retrain specific models and re-evaluate.
 
 ```bash
 # ① Incrementally train specific models
-python quantpits/scripts/incremental_train.py --models gru,alstm_Alpha158
+python quantpits/scripts/static_train.py --models gru,alstm_Alpha158
 
 # ④ Refuse with the new models
 python quantpits/scripts/ensemble_fusion.py \
@@ -189,7 +189,7 @@ Re-run brute force periodically or when current combos are unsuitable.
 
 ```bash
 # ② Predict using existing models (or automatically outputted after training)
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # ③ Fast Brute Force Screening
 python quantpits/scripts/brute_force_fast.py --max-combo-size 5
@@ -233,8 +233,8 @@ python quantpits/scripts/ensemble_fusion.py \
 
 | Script | Purpose | Save Semantics |
 |------|------|----------|
-| `prod_train_predict.py` | Full training of all enabled models | **Full Overwrite** of `latest_train_records.json` |
-| `incremental_train.py` | Selective training by name/algo/tags | **Incremental Merge** to `latest_train_records.json` |
+| `static_train.py --full` | Full training of all enabled models | **Full Overwrite** of `latest_train_records.json` |
+| `static_train.py` | Selective training by name/algo/tags | **Incremental Merge** to `latest_train_records.json` |
 
 - Models are uniformly managed in `config/model_registry.yaml`
 - Date parameters are controlled by `config/model_config.json`
@@ -261,7 +261,7 @@ python quantpits/scripts/ensemble_fusion.py \
 
 | Script | Purpose |
 |------|------|
-| `prod_predict_only.py` | Predict on new data using existing models, no retraining |
+| `static_train.py --predict-only` | Predict on new data using existing models, no retraining |
 
 - Loads models from `latest_train_records.json` and creates a new Recorder to save predictions
 - Supports the same model selection methods as training scripts (by name/algo/tags)
@@ -490,7 +490,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 
 ```bash
 # Routine minimal loop (4 commands, assuming workspace is activated)
-python quantpits/scripts/prod_predict_only.py --all-enabled     # Predict
+python quantpits/scripts/static_train.py --predict-only --all-enabled     # Predict
 python quantpits/scripts/ensemble_fusion.py --from-config-all       # Fuse
 python quantpits/scripts/prod_post_trade.py                      # Post-Trade
 python quantpits/scripts/order_gen.py                              # Generate Orders

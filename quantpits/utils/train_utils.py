@@ -819,3 +819,244 @@ def print_model_table(models, title="模型列表"):
         print(f"  {name:<30} {info.get('algorithm',''):<12} {info.get('dataset',''):<12} {info.get('market',''):<8} {tags_str}")
     
     print(f"{'='*70}\n")
+
+
+# ================= 共享 CLI 逻辑 =================
+def resolve_target_models(args, registry=None):
+    """
+    根据 CLI 参数解析目标模型列表（共享逻辑）
+
+    支持的 args 属性:
+    - models: str, 逗号分隔模型名
+    - all_enabled: bool
+    - algorithm / dataset / market / tag: str, 筛选条件
+    - skip: str, 逗号分隔的排除模型名
+
+    Args:
+        args: argparse.Namespace
+        registry: 模型注册表 dict, None 则自动加载
+
+    Returns:
+        dict: {model_name: model_info} 或 None（未指定选择条件）
+    """
+    if registry is None:
+        registry = load_model_registry()
+
+    if getattr(args, 'models', None):
+        model_names = [m.strip() for m in args.models.split(',')]
+        targets = get_models_by_names(model_names, registry)
+    elif getattr(args, 'all_enabled', False):
+        targets = get_enabled_models(registry)
+    elif any([getattr(args, 'algorithm', None),
+              getattr(args, 'dataset', None),
+              getattr(args, 'market', None),
+              getattr(args, 'tag', None)]):
+        targets = get_models_by_filter(
+            registry,
+            algorithm=getattr(args, 'algorithm', None),
+            dataset=getattr(args, 'dataset', None),
+            market=getattr(args, 'market', None),
+            tag=getattr(args, 'tag', None),
+        )
+    else:
+        return None  # 没有指定任何选择条件
+
+    # 应用 --skip
+    skip_str = getattr(args, 'skip', None)
+    if skip_str:
+        skip_names = [m.strip() for m in skip_str.split(',')]
+        targets = {k: v for k, v in targets.items() if k not in skip_names}
+        if skip_names:
+            print(f"⏭️  跳过模型: {', '.join(skip_names)}")
+
+    return targets
+
+
+def show_model_list(args, source_records_file=None):
+    """
+    列出模型注册表（共享逻辑）
+
+    Args:
+        args: 含 algorithm/dataset/market/tag 筛选属性
+        source_records_file: 可选，源训练记录文件路径（用于显示可预测模型）
+    """
+    registry = load_model_registry()
+
+    # 应用筛选条件
+    if any([getattr(args, 'algorithm', None),
+            getattr(args, 'dataset', None),
+            getattr(args, 'market', None),
+            getattr(args, 'tag', None)]):
+        models = get_models_by_filter(
+            registry,
+            algorithm=getattr(args, 'algorithm', None),
+            dataset=getattr(args, 'dataset', None),
+            market=getattr(args, 'market', None),
+            tag=getattr(args, 'tag', None),
+        )
+        title = "筛选结果"
+    else:
+        models = registry
+        title = "全部注册模型"
+
+    print_model_table(models, title=title)
+
+    # 打印启用/禁用统计
+    enabled_count = sum(1 for m in models.values() if m.get('enabled', False))
+    disabled_count = len(models) - enabled_count
+    print(f"  启用: {enabled_count}  |  禁用: {disabled_count}")
+
+    # 按数据集分组统计
+    datasets = {}
+    for name, info in models.items():
+        ds = info.get('dataset', 'unknown')
+        datasets.setdefault(ds, []).append(name)
+
+    print(f"\n  按数据集分布:")
+    for ds, names in sorted(datasets.items()):
+        print(f"    {ds}: {len(names)} ({', '.join(names)})")
+
+    # 检查源训练记录中哪些模型可用
+    if source_records_file and os.path.exists(source_records_file):
+        with open(source_records_file, 'r') as f:
+            source_records = json.load(f)
+        source_models = source_records.get('models', {})
+        available = [name for name in models if name in source_models]
+        print(f"\n  源记录 ({source_records_file}):")
+        print(f"    已训练可预测: {len(available)} / {len(models)}")
+        if available:
+            print(f"    可用: {', '.join(available)}")
+        not_available = [name for name in models if name not in source_models]
+        if not_available:
+            print(f"    无记录: {', '.join(not_available)}")
+
+
+def predict_single_model(model_name, model_info, params, experiment_name,
+                         source_records, no_pretrain=False):
+    """
+    使用已有模型对新数据进行预测（不训练）— 共享逻辑
+
+    流程：
+    1. 从 source_records 获取原始 recorder_id
+    2. 从原 recorder 加载 model.pkl
+    3. 用 inject_config() 构建新的 dataset（新的日期范围）
+    4. model.predict(dataset)
+    5. 在新实验下创建 Recorder，保存 pred.pkl 和 SignalRecord
+    6. 计算 IC 等指标
+
+    Args:
+        model_name: 模型名称
+        model_info: 模型注册表信息（含 yaml_file 等）
+        params: 日期参数（来自 calculate_dates）
+        experiment_name: 新 MLflow 实验名称
+        source_records: 源训练记录 dict
+        no_pretrain: 是否跳过预训练权重
+
+    Returns:
+        dict: {success, record_id, performance, error}
+    """
+    result = {
+        'success': False,
+        'record_id': None,
+        'performance': None,
+        'error': None
+    }
+
+    yaml_file = model_info['yaml_file']
+    if not os.path.exists(yaml_file):
+        result['error'] = f"YAML 配置文件不存在: {yaml_file}"
+        print(f"!!! Warning: {yaml_file} not found, skipping...")
+        return result
+
+    # 检查模型是否存在于源记录中
+    source_models = source_records.get('models', {})
+    if model_name not in source_models:
+        result['error'] = f"模型 '{model_name}' 不在源训练记录中，无法加载已有模型"
+        print(f"!!! Error: {result['error']}")
+        return result
+
+    source_record_id = source_models[model_name]
+    source_experiment = source_records.get('experiment_name', 'Weekly_Production_Train')
+
+    from qlib.utils import init_instance_by_config
+    from qlib.workflow import R
+
+    print(f"\n>>> Predict-Only: {model_name}")
+    print(f"    Source: experiment={source_experiment}, recorder={source_record_id}")
+    print(f"    YAML: {yaml_file}")
+
+    try:
+        # 1. 从源 recorder 加载模型
+        print(f"[{model_name}] Loading model from source recorder...")
+        source_recorder = R.get_recorder(
+            recorder_id=source_record_id,
+            experiment_name=source_experiment
+        )
+        model = source_recorder.load_object("model.pkl")
+        print(f"[{model_name}] Model loaded successfully")
+
+        # 2. 构建新的 dataset（使用新日期范围）
+        task_config = inject_config(yaml_file, params, model_name=model_name,
+                                    no_pretrain=no_pretrain)
+
+        dataset_cfg = task_config['task']['dataset']
+        dataset = init_instance_by_config(dataset_cfg)
+
+        # 3. 在新实验下创建 Recorder 并预测
+        with R.start(experiment_name=experiment_name):
+            R.set_tags(
+                model=model_name,
+                anchor_date=params['anchor_date'],
+                mode='predict_only',
+                source_experiment=source_experiment,
+                source_record_id=source_record_id,
+            )
+            R.log_params(**params)
+
+            # 预测
+            print(f"[{model_name}] Predicting...")
+            pred = model.predict(dataset=dataset)
+
+            # 运行 SignalRecord（生成 pred.pkl + sig_analysis/ic.pkl）
+            record_cfgs = task_config['task'].get('record', [])
+            recorder = R.get_recorder()
+
+            for r_cfg in record_cfgs:
+                if r_cfg['kwargs'].get('model') == '<MODEL>':
+                    r_cfg['kwargs']['model'] = model
+                if r_cfg['kwargs'].get('dataset') == '<DATASET>':
+                    r_cfg['kwargs']['dataset'] = dataset
+
+                r_obj = init_instance_by_config(r_cfg, recorder=recorder)
+                r_obj.generate()
+
+            # 获取 IC 指标
+            performance = {}
+            try:
+                ic_series = recorder.load_object("sig_analysis/ic.pkl")
+                ic_mean = ic_series.mean()
+                ic_std = ic_series.std()
+                ic_ir = ic_mean / ic_std if ic_std != 0 else None
+                performance = {
+                    "IC_Mean": float(ic_mean) if ic_mean else None,
+                    "ICIR": float(ic_ir) if ic_ir else None,
+                    "record_id": recorder.info['id'],
+                }
+            except Exception as e:
+                print(f"[{model_name}] Could not get IC metrics: {e}")
+                performance = {"record_id": recorder.info['id']}
+
+            rid = recorder.info['id']
+            print(f"[{model_name}] Finished! New Recorder ID: {rid}")
+
+            result['success'] = True
+            result['record_id'] = rid
+            result['performance'] = performance
+
+    except Exception as e:
+        result['error'] = str(e)
+        print(f"!!! Error running predict-only for {model_name}: {e}")
+        import traceback
+        traceback.print_exc()
+
+    return result

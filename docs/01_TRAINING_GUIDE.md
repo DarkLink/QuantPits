@@ -6,9 +6,9 @@
 
 | 脚本 | 用途 | 训练 | 数据源 | 保存语义 |
 |------|------|------|--------|----------|
-| `prod_train_predict.py` | 全量训练+预测 | ✅ | configs | `latest_train_records.json` |
-| `incremental_train.py` | 增量训练+预测 | ✅ | configs | `latest_train_records.json` |
-| `prod_predict_only.py` | 仅预测 | ❌ | 已有模型 | `latest_train_records.json` |
+| `static_train.py --full` | 全量训练 | ✅ | configs | `latest_train_records.json` |
+| `static_train.py` | 增量训练 | ✅ | configs | `latest_train_records.json` |
+| `static_train.py --predict-only` | 仅预测 | ❌ | 已有模型 | `latest_train_records.json` |
 | `pretrain.py` | 基础模型预训练 | ✅ | configs | `data/pretrained/` (state_dict) |
 
 两个脚本都会在修改 `latest_train_records.json` 之前自动备份历史到 `data/history/`。
@@ -21,9 +21,7 @@
 QuantPits/
 ├── quantpits/
 │   ├── scripts/                      # 系统核心代码
-│   │   ├── prod_train_predict.py   # 全量训练脚本
-│   │   ├── incremental_train.py      # 增量训练脚本
-│   │   ├── prod_predict_only.py    # 仅预测脚本（不训练）
+│   │   ├── static_train.py           # 静态训练统一入口（全量/增量/仅预测）
 │   │   ├── pretrain.py               # 🧠 基础模型预训练脚本
 │   │   ├── check_workflow_yaml.py    # 🔧 YAML配置生产环境参数验证
 │   │   └── train_utils.py            # 共享工具模块
@@ -78,7 +76,7 @@ models:
 
 1. 创建 YAML 工作流配置 `config/workflow_config_xxx.yaml`
 2. 在 `model_registry.yaml` 添加模型条目
-3. 使用 `incremental_train.py --models xxx` 单独训练验证
+3. 使用 `static_train.py --models xxx` 单独训练验证
 4. 确认无误后将 `enabled` 设为 `true`
 
 ### 禁用模型
@@ -100,7 +98,7 @@ models:
 
 ---
 
-## 全量训练 (`prod_train_predict.py`)
+## 全量训练 (`static_train.py --full`)
 
 ### 使用场景
 - 生产环境例行全量训练
@@ -110,7 +108,7 @@ models:
 
 ```bash
 cd QuantPits
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 ```
 
 ### 行为
@@ -121,7 +119,7 @@ python quantpits/scripts/prod_train_predict.py
 
 ---
 
-## 增量训练 (`incremental_train.py`)
+## 增量训练 (`static_train.py`)
 
 ### 使用场景
 - 新增了模型，只想训练新模型
@@ -135,25 +133,25 @@ python quantpits/scripts/prod_train_predict.py
 cd QuantPits
 
 # 1. 按名称指定（逗号分隔）
-python quantpits/scripts/incremental_train.py --models gru,mlp
+python quantpits/scripts/static_train.py --models gru,mlp
 
 # 2. 按算法筛选
-python quantpits/scripts/incremental_train.py --algorithm lstm
+python quantpits/scripts/static_train.py --algorithm lstm
 
 # 3. 按数据集筛选
-python quantpits/scripts/incremental_train.py --dataset Alpha360
+python quantpits/scripts/static_train.py --dataset Alpha360
 
 # 4. 按标签筛选
-python quantpits/scripts/incremental_train.py --tag tree
+python quantpits/scripts/static_train.py --tag tree
 
 # 5. 按市场筛选
-python quantpits/scripts/incremental_train.py --market csi300
+python quantpits/scripts/static_train.py --market csi300
 
 # 6. 所有 enabled 模型（merge 模式）
-python quantpits/scripts/incremental_train.py --all-enabled
+python quantpits/scripts/static_train.py --all-enabled
 
 # 7. 组合使用
-python quantpits/scripts/incremental_train.py --all-enabled --skip catboost_Alpha158
+python quantpits/scripts/static_train.py --all-enabled --skip catboost_Alpha158
 ```
 
 ### 保存行为 (Merge 语义)
@@ -168,7 +166,7 @@ python quantpits/scripts/incremental_train.py --all-enabled --skip catboost_Alph
 
 ```bash
 # 查看将训练哪些模型，不实际执行
-python quantpits/scripts/incremental_train.py --models gru,mlp --dry-run
+python quantpits/scripts/static_train.py --models gru,mlp --dry-run
 ```
 
 ### Rerun / Resume（中断恢复）
@@ -177,13 +175,13 @@ python quantpits/scripts/incremental_train.py --models gru,mlp --dry-run
 
 ```bash
 # 查看上次运行状态
-python quantpits/scripts/incremental_train.py --show-state
+python quantpits/scripts/static_train.py --show-state
 
 # 继续上次未完成的训练（跳过已成功的模型）
-python quantpits/scripts/incremental_train.py --models gru,mlp,alstm_Alpha158 --resume
+python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158 --resume
 
 # 清除运行状态（重新开始）
-python quantpits/scripts/incremental_train.py --clear-state
+python quantpits/scripts/static_train.py --clear-state
 ```
 
 **注意**：`--resume` 只跳过已完成的模型，**失败的模型会被重新训练**。
@@ -192,12 +190,12 @@ python quantpits/scripts/incremental_train.py --clear-state
 
 ```bash
 # 列出所有注册模型
-python quantpits/scripts/incremental_train.py --list
+python quantpits/scripts/static_train.py --list
 
 # 按条件筛选查看
-python quantpits/scripts/incremental_train.py --list --algorithm gru
-python quantpits/scripts/incremental_train.py --list --dataset Alpha360
-python quantpits/scripts/incremental_train.py --list --tag tree
+python quantpits/scripts/static_train.py --list --algorithm gru
+python quantpits/scripts/static_train.py --list --dataset Alpha360
+python quantpits/scripts/static_train.py --list --tag tree
 ```
 
 ---
@@ -244,7 +242,7 @@ data/history/
 
 ```bash
 cd QuantPits
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 python quantpits/scripts/ensemble_predict.py --method icir_weighted --backtest
 ```
 
@@ -253,7 +251,7 @@ python quantpits/scripts/ensemble_predict.py --method icir_weighted --backtest
 ```bash
 cd QuantPits
 # 使用已有模型对新数据预测
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 # 后续穷举/融合流程不变
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
 python quantpits/scripts/ensemble_fusion.py --models gru,linear_Alpha158,alstm_Alpha158
@@ -267,7 +265,7 @@ python quantpits/scripts/ensemble_fusion.py --models gru,linear_Alpha158,alstm_A
 # 1. 创建 YAML 配置
 # 2. 在 model_registry.yaml 添加条目（先设 enabled: false）
 # 3. 单独训练验证
-python quantpits/scripts/incremental_train.py --models new_model_name
+python quantpits/scripts/static_train.py --models new_model_name
 
 # 4. 确认无误后，修改 enabled: true
 ```
@@ -276,27 +274,27 @@ python quantpits/scripts/incremental_train.py --models new_model_name
 
 ```bash
 # 修改 YAML 配置后
-python quantpits/scripts/incremental_train.py --models gru
+python quantpits/scripts/static_train.py --models gru
 ```
 
 ### 场景 4：训练中断恢复
 
 ```bash
 # 第一次运行（中途中断了）
-python quantpits/scripts/incremental_train.py --models gru,mlp,alstm_Alpha158,sfm_Alpha360
+python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158,sfm_Alpha360
 # ... gru 完成，mlp 失败，后面的还没开始 ...
 
 # 查看状态
-python quantpits/scripts/incremental_train.py --show-state
+python quantpits/scripts/static_train.py --show-state
 
 # 继续运行（跳过已完成的 gru）
-python quantpits/scripts/incremental_train.py --models gru,mlp,alstm_Alpha158,sfm_Alpha360 --resume
+python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158,sfm_Alpha360 --resume
 ```
 
 ### 场景 5：只想跑 tree 系列模型
 
 ```bash
-python quantpits/scripts/incremental_train.py --tag tree
+python quantpits/scripts/static_train.py --tag tree
 # 等价于: --models lightgbm_Alpha158,catboost_Alpha158
 ```
 
@@ -347,8 +345,8 @@ python quantpits/scripts/pretrain.py --for gats_Alpha158_plus
 python quantpits/scripts/pretrain.py --show-pretrained
 
 # 5. 强制使用随机权重（跳过预训练）
-# 在 incremental_train 或 prod_predict_only 中均可用
-python quantpits/scripts/incremental_train.py --models gats_Alpha158_plus --no-pretrain
+# 在全量、增量或仅预测中均可用
+python quantpits/scripts/static_train.py --models gats_Alpha158_plus --no-pretrain
 ```
 
 ---
@@ -360,7 +358,7 @@ python quantpits/scripts/incremental_train.py --models gats_Alpha158_plus --no-p
   1. 预训练基模型（可选，已有则跳过）：
      `python quantpits/scripts/pretrain.py --for gats_Alpha158_plus`
   2. 训练上层模型：
-     `python quantpits/scripts/incremental_train.py --models gats_Alpha158_plus`
+     `python quantpits/scripts/static_train.py --models gats_Alpha158_plus`
 
 - 如果不想使用预训练模型，只需加上 `--no-pretrain` 标志。
 
@@ -370,7 +368,11 @@ python quantpits/scripts/incremental_train.py --models gats_Alpha158_plus --no-p
 ## 完整参数一览
 
 ```
-python quantpits/scripts/incremental_train.py --help
+python quantpits/scripts/static_train.py --help
+
+模式:
+  --full                  全量训练：训练所有 enabled 模型，全量覆写 records
+  --predict-only          仅预测：使用已有模型对最新数据预测，不重新训练
 
 模型选择:
   --models TEXT           指定模型名，逗号分隔

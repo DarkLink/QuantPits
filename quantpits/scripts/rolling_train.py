@@ -602,36 +602,9 @@ def parse_args():
 
 
 def resolve_target_models(args):
-    """解析目标模型列表"""
-    from quantpits.utils.train_utils import (
-        load_model_registry,
-        get_enabled_models,
-        get_models_by_filter,
-        get_models_by_names,
-    )
-
-    registry = load_model_registry()
-
-    if args.models:
-        model_names = [m.strip() for m in args.models.split(',')]
-        targets = get_models_by_names(model_names, registry)
-    elif args.all_enabled:
-        targets = get_enabled_models(registry)
-    elif args.algorithm or args.dataset or args.tag:
-        targets = get_models_by_filter(
-            registry,
-            algorithm=args.algorithm,
-            dataset=args.dataset,
-            tag=args.tag,
-        )
-    else:
-        return None
-
-    if args.skip:
-        skip_names = [m.strip() for m in args.skip.split(',')]
-        targets = {k: v for k, v in targets.items() if k not in skip_names}
-
-    return targets
+    """解析目标模型列表（委托给 train_utils 共享实现）"""
+    from quantpits.utils.train_utils import resolve_target_models as _resolve
+    return _resolve(args)
 
 
 def get_base_params():

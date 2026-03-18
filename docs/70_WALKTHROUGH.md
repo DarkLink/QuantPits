@@ -217,7 +217,7 @@ Demo 工作区已自带示例文件 `workflow_config_demo_weekly.yaml`（周频 
 训练 `model_registry.yaml` 中所有 `enabled: true` 的模型：
 
 ```bash
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 ```
 
 #### 增量训练（按需）
@@ -226,16 +226,16 @@ python quantpits/scripts/prod_train_predict.py
 
 ```bash
 # 按名称指定
-python quantpits/scripts/incremental_train.py --models demo_linear_Alpha158
+python quantpits/scripts/static_train.py --models demo_linear_Alpha158
 
 # 按标签筛选
-python quantpits/scripts/incremental_train.py --tag tree
+python quantpits/scripts/static_train.py --tag tree
 
 # 所有 enabled 模型（merge 模式，不覆写）
-python quantpits/scripts/incremental_train.py --all-enabled
+python quantpits/scripts/static_train.py --all-enabled
 
 # 预览训练计划（不实际执行）
-python quantpits/scripts/incremental_train.py --models demo_linear_Alpha158 --dry-run
+python quantpits/scripts/static_train.py --models demo_linear_Alpha158 --dry-run
 ```
 
 训练结束后生成的核心文件：
@@ -256,13 +256,13 @@ python quantpits/scripts/incremental_train.py --models demo_linear_Alpha158 --dr
 
 ```bash
 # 预测所有 enabled 模型
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # 只预测指定模型
-python quantpits/scripts/prod_predict_only.py --models demo_linear_Alpha158
+python quantpits/scripts/static_train.py --predict-only --models demo_linear_Alpha158
 
 # 预览计划
-python quantpits/scripts/prod_predict_only.py --all-enabled --dry-run
+python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
 ```
 
 预测结果会自动保存到 `output/predictions/`，同时以 Merge 方式更新 `latest_train_records.json`。
@@ -537,7 +537,7 @@ python quantpits/scripts/run_rolling_health_report.py
 source workspaces/Demo_Workspace/run_env.sh
 
 # ① 全量训练
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 
 # ② 快速穷举找组合
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
@@ -553,7 +553,7 @@ cd QuantPits
 source workspaces/MyWorkspace/run_env.sh
 
 # ① 预测
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # ② 融合
 python quantpits/scripts/ensemble_fusion.py --from-config-all
@@ -574,7 +574,7 @@ python quantpits/scripts/order_gen.py
 
 ```bash
 # ① 用已有模型预测
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # ② 快速穷举（带 OOS 验证）
 python quantpits/scripts/brute_force_fast.py --exclude-last-years 1 --auto-test-top 10
@@ -590,7 +590,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 
 ```bash
 # ① 增量训练某些模型
-python quantpits/scripts/incremental_train.py --models gru,alstm_Alpha158
+python quantpits/scripts/static_train.py --models gru,alstm_Alpha158
 
 # ② 用新模型重新融合
 python quantpits/scripts/ensemble_fusion.py --from-config-all

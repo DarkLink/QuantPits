@@ -218,7 +218,7 @@ Core configuration files in `config/`:
 Trains all `enabled: true` models in `model_registry.yaml`:
 
 ```bash
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 ```
 
 #### Incremental Training (On Demand)
@@ -227,16 +227,16 @@ Train only specific models, preserving existing records:
 
 ```bash
 # By name
-python quantpits/scripts/incremental_train.py --models demo_linear_Alpha158
+python quantpits/scripts/static_train.py --models demo_linear_Alpha158
 
 # By tag
-python quantpits/scripts/incremental_train.py --tag tree
+python quantpits/scripts/static_train.py --tag tree
 
 # All enabled models (merge mode, non-destructive)
-python quantpits/scripts/incremental_train.py --all-enabled
+python quantpits/scripts/static_train.py --all-enabled
 
 # Dry-run (preview only)
-python quantpits/scripts/incremental_train.py --models demo_linear_Alpha158 --dry-run
+python quantpits/scripts/static_train.py --models demo_linear_Alpha158 --dry-run
 ```
 
 Key output files:
@@ -257,13 +257,13 @@ Once you have trained models, use them to generate new predictions on updated da
 
 ```bash
 # Predict with all enabled models
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # Predict with specific models
-python quantpits/scripts/prod_predict_only.py --models demo_linear_Alpha158
+python quantpits/scripts/static_train.py --predict-only --models demo_linear_Alpha158
 
 # Dry-run (preview only)
-python quantpits/scripts/prod_predict_only.py --all-enabled --dry-run
+python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
 ```
 
 Predictions are saved to `output/predictions/`, and `latest_train_records.json` is updated via merge semantics.
@@ -542,7 +542,7 @@ source workspaces/Demo_Workspace/run_env.sh
 . ./workspaces/Demo_Workspace/run_env.ps1
 
 # ① Full training
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 
 # ② Quick brute-force search
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
@@ -561,7 +561,7 @@ source workspaces/MyWorkspace/run_env.sh
 . ./workspaces/MyWorkspace/run_env.ps1
 
 # ① Predict
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 ```
 
 python quantpits/scripts/ensemble_fusion.py --from-config-all
@@ -582,7 +582,7 @@ python quantpits/scripts/order_gen.py
 
 ```bash
 # ① Predict with existing models
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # ② Fast brute-force search (with OOS validation)
 python quantpits/scripts/brute_force_fast.py --exclude-last-years 1 --auto-test-top 10
@@ -598,7 +598,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 
 ```bash
 # ① Incrementally retrain underperforming models
-python quantpits/scripts/incremental_train.py --models gru,alstm_Alpha158
+python quantpits/scripts/static_train.py --models gru,alstm_Alpha158
 
 # ② Re-fuse with updated models
 python quantpits/scripts/ensemble_fusion.py --from-config-all

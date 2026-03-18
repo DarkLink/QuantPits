@@ -149,7 +149,7 @@ python quantpits/scripts/brute_force_ensemble.py --max-combo-size 5
 # "⚠️ Interrupted safely! Completed: X/Y combos. Utilize --resume next session."
 
 # Step 1: Train targeted algorithms
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
  --max-combo-size 5 --resume
 ```
 

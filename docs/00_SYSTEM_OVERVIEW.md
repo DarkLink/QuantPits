@@ -46,8 +46,8 @@
 ```mermaid
 flowchart TB
     subgraph TRAIN["① 训练（按需）"]
-        TP["prod_train_predict.py<br/>全量训练"]
-        IT["incremental_train.py<br/>增量训练"]
+        TP["static_train.py --full<br/>全量训练"]
+        IT["static_train.py<br/>增量训练"]
     end
 
     subgraph ROLLING["⑨ 滚动训练（按需）"]
@@ -55,7 +55,7 @@ flowchart TB
     end
 
     subgraph PREDICT["② 预测（每次）"]
-        PO["prod_predict_only.py<br/>仅预测"]
+        PO["static_train.py --predict-only<br/>仅预测"]
     end
 
     subgraph BRUTEFORCE["③ 暴力穷举（偶尔）"]
@@ -127,7 +127,7 @@ source workspaces/Demo_Workspace/run_env.sh
 
 ```bash
 # ① 全量训练（产出预测 + 训练记录）
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 
 # ③ 暴力穷举找组合（可选，非常耗时）
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
@@ -149,7 +149,7 @@ python quantpits/scripts/order_gen.py
 
 ```bash
 # ② 用已有模型预测新数据
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # ④ 融合预测（多组合对比）
 python quantpits/scripts/ensemble_fusion.py --from-config-all
@@ -174,7 +174,7 @@ python quantpits/scripts/run_analysis.py \
 
 ```bash
 # ① 增量训练某些模型
-python quantpits/scripts/incremental_train.py --models gru,alstm_Alpha158
+python quantpits/scripts/static_train.py --models gru,alstm_Alpha158
 
 # ④ 用新模型重新融合
 python quantpits/scripts/ensemble_fusion.py \
@@ -191,7 +191,7 @@ python quantpits/scripts/order_gen.py
 
 ```bash
 # ② 用已有模型预测（或训练后自动产出）
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # ③ 快速穷举
 python quantpits/scripts/brute_force_fast.py --max-combo-size 5
@@ -235,8 +235,8 @@ python quantpits/scripts/ensemble_fusion.py \
 
 | 脚本 | 用途 | 保存语义 |
 |------|------|----------|
-| `prod_train_predict.py` | 全量训练所有 enabled 模型 | **全量覆写** `latest_train_records.json` |
-| `incremental_train.py` | 按名称/算法/标签等选择性训练 | **增量合并** `latest_train_records.json` |
+| `static_train.py --full` | 全量训练所有 enabled 模型 | **全量覆写** `latest_train_records.json` |
+| `static_train.py` | 按名称/算法/标签等选择性训练 | **增量合并** `latest_train_records.json` |
 
 - 模型通过 `config/model_registry.yaml` 统一注册管理
 - 日期参数由 `config/model_config.json` 控制
@@ -263,7 +263,7 @@ python quantpits/scripts/ensemble_fusion.py \
 
 | 脚本 | 用途 |
 |------|------|
-| `prod_predict_only.py` | 用已有模型对新数据预测，不重训 |
+| `static_train.py --predict-only` | 用已有模型对新数据预测，不重训 |
 
 - 从 `latest_train_records.json` 加载模型，创建新 Recorder 保存预测
 - 支持与训练脚本相同的模型选择方式（按名称/算法/标签等）
@@ -492,7 +492,7 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ```bash
 # 每周最小闭环（4 条命令，假设 workspace 已激活）
-python quantpits/scripts/prod_predict_only.py --all-enabled     # 预测
+python quantpits/scripts/static_train.py --predict-only --all-enabled     # 预测
 python quantpits/scripts/ensemble_fusion.py --from-config-all       # 融合
 python quantpits/scripts/prod_post_trade.py                      # Post-Trade
 python quantpits/scripts/order_gen.py                              # 生成订单

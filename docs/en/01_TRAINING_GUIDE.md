@@ -6,9 +6,9 @@ The training system consists of three main scripts that share the same utility m
 
 | Script | Purpose | Training | Data Source | Save Semantics |
 |------|------|------|--------|----------|
-| `prod_train_predict.py` | Full training+predict | ✅ | configs | `latest_train_records.json` |
-| `incremental_train.py` | Incremental training+predict | ✅ | configs | `latest_train_records.json` |
-| `prod_predict_only.py` | Prediction only | ❌ | Existing models | `latest_train_records.json` |
+| `static_train.py --full` | Full training | ✅ | configs | `latest_train_records.json` |
+| `static_train.py` | Incremental training | ✅ | configs | `latest_train_records.json` |
+| `static_train.py --predict-only` | Prediction only | ❌ | Existing models | `latest_train_records.json` |
 | `pretrain.py` | Base model pre-training | ✅ | configs | `data/pretrained/` (state_dict) |
 
 Both scripts automatically back up the history to `data/history/` before modifying `latest_train_records.json`.
@@ -21,9 +21,7 @@ Both scripts automatically back up the history to `data/history/` before modifyi
 QuantPits/
 ├── quantpits/
 │   ├── scripts/                      # Core system logic
-│   │   ├── prod_train_predict.py   # Full training script
-│   │   ├── incremental_train.py      # Incremental training script
-│   │   ├── prod_predict_only.py    # Prediction-only script (no training)
+│   │   ├── static_train.py           # Unified static training entry point
 │   │   ├── pretrain.py               # 🧠 Base model pre-training script
 │   │   ├── check_workflow_yaml.py    # 🔧 YAML config production validation & fix
 │   │   └── train_utils.py            # Shared utility module
@@ -78,7 +76,7 @@ models:
 
 1. Create a YAML workflow config at `config/workflow_config_xxx.yaml`
 2. Add a model entry in `model_registry.yaml`
-3. Use `incremental_train.py --models xxx` to train and verify it independently
+3. Use `static_train.py --models xxx` to train and verify it independently
 4. Once confirmed, set `enabled` to `true`
 
 ### Disabling a Model
@@ -100,7 +98,7 @@ Set `enabled` to `false`. It will be automatically skipped during full training.
 
 ---
 
-## Full Training (`prod_train_predict.py`)
+## Full Training (`static_train.py --full`)
 
 ### Usage Scenarios
 - Routine production full retraining
@@ -110,7 +108,7 @@ Set `enabled` to `false`. It will be automatically skipped during full training.
 
 ```bash
 cd QuantPits
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 ```
 
 ### Behavior
@@ -121,7 +119,7 @@ python quantpits/scripts/prod_train_predict.py
 
 ---
 
-## Incremental Training (`incremental_train.py`)
+## Incremental Training (`static_train.py`)
 
 ### Usage Scenarios
 - A new model was added, and you only want to train that one
@@ -135,25 +133,25 @@ python quantpits/scripts/prod_train_predict.py
 cd QuantPits
 
 # 1. By name (comma-separated)
-python quantpits/scripts/incremental_train.py --models gru,mlp
+python quantpits/scripts/static_train.py --models gru,mlp
 
 # 2. By algorithm
-python quantpits/scripts/incremental_train.py --algorithm lstm
+python quantpits/scripts/static_train.py --algorithm lstm
 
 # 3. By dataset
-python quantpits/scripts/incremental_train.py --dataset Alpha360
+python quantpits/scripts/static_train.py --dataset Alpha360
 
 # 4. By tag
-python quantpits/scripts/incremental_train.py --tag tree
+python quantpits/scripts/static_train.py --tag tree
 
 # 5. By market
-python quantpits/scripts/incremental_train.py --market csi300
+python quantpits/scripts/static_train.py --market csi300
 
 # 6. All enabled models (merge mode)
-python quantpits/scripts/incremental_train.py --all-enabled
+python quantpits/scripts/static_train.py --all-enabled
 
 # 7. Combinations
-python quantpits/scripts/incremental_train.py --all-enabled --skip catboost_Alpha158
+python quantpits/scripts/static_train.py --all-enabled --skip catboost_Alpha158
 ```
 
 ### Save Behavior (Merge Semantics)
@@ -168,7 +166,7 @@ python quantpits/scripts/incremental_train.py --all-enabled --skip catboost_Alph
 
 ```bash
 # Preview which models will be trained without executing
-python quantpits/scripts/incremental_train.py --models gru,mlp --dry-run
+python quantpits/scripts/static_train.py --models gru,mlp --dry-run
 ```
 
 ### Rerun / Resume (Crash Recovery)
@@ -177,13 +175,13 @@ If training is interrupted (model crashes or killed manually), the execution sta
 
 ```bash
 # View last run state
-python quantpits/scripts/incremental_train.py --show-state
+python quantpits/scripts/static_train.py --show-state
 
 # Resume unfinished training (skips successfully completed models)
-python quantpits/scripts/incremental_train.py --models gru,mlp,alstm_Alpha158 --resume
+python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158 --resume
 
 # Clear run state (start fresh)
-python quantpits/scripts/incremental_train.py --clear-state
+python quantpits/scripts/static_train.py --clear-state
 ```
 
 **Note**: `--resume` only skips successfully completed models. **Failed models will be retrained.**
@@ -192,12 +190,12 @@ python quantpits/scripts/incremental_train.py --clear-state
 
 ```bash
 # List all registered models
-python quantpits/scripts/incremental_train.py --list
+python quantpits/scripts/static_train.py --list
 
 # Filter list by conditions
-python quantpits/scripts/incremental_train.py --list --algorithm gru
-python quantpits/scripts/incremental_train.py --list --dataset Alpha360
-python quantpits/scripts/incremental_train.py --list --tag tree
+python quantpits/scripts/static_train.py --list --algorithm gru
+python quantpits/scripts/static_train.py --list --dataset Alpha360
+python quantpits/scripts/static_train.py --list --tag tree
 ```
 
 ---
@@ -244,7 +242,7 @@ This runs automatically without manual orchestration.
 
 ```bash
 cd QuantPits
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 python quantpits/scripts/ensemble_predict.py --method icir_weighted --backtest
 ```
 
@@ -253,7 +251,7 @@ python quantpits/scripts/ensemble_predict.py --method icir_weighted --backtest
 ```bash
 cd QuantPits
 # Predict new data using existing models
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 # The subsequent brute force/fusion pipeline remains unchanged
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
 python quantpits/scripts/ensemble_fusion.py --models gru,linear_Alpha158,alstm_Alpha158
@@ -267,7 +265,7 @@ python quantpits/scripts/ensemble_fusion.py --models gru,linear_Alpha158,alstm_A
 # 1. Create YAML config
 # 2. Add entry to model_registry.yaml (set enabled: false initially)
 # 3. Train independently to verify
-python quantpits/scripts/incremental_train.py --models new_model_name
+python quantpits/scripts/static_train.py --models new_model_name
 
 # 4. If verified, change enabled: true
 ```
@@ -276,27 +274,27 @@ python quantpits/scripts/incremental_train.py --models new_model_name
 
 ```bash
 # After modifying YAML config
-python quantpits/scripts/incremental_train.py --models gru
+python quantpits/scripts/static_train.py --models gru
 ```
 
 ### Scenario 4: Crash Recovery
 
 ```bash
 # First run (interrupted mid-way)
-python quantpits/scripts/incremental_train.py --models gru,mlp,alstm_Alpha158,sfm_Alpha360
+python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158,sfm_Alpha360
 # ... gru completes, mlp fails, subsequent models haven't started ...
 
 # View state
-python quantpits/scripts/incremental_train.py --show-state
+python quantpits/scripts/static_train.py --show-state
 
 # Resume (groups gru into completed logic)
-python quantpits/scripts/incremental_train.py --models gru,mlp,alstm_Alpha158,sfm_Alpha360 --resume
+python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158,sfm_Alpha360 --resume
 ```
 
 ### Scenario 5: Training Only Tree Models
 
 ```bash
-python quantpits/scripts/incremental_train.py --tag tree
+python quantpits/scripts/static_train.py --tag tree
 # Equivalent to: --models lightgbm_Alpha158,catboost_Alpha158
 ```
 
@@ -347,8 +345,8 @@ python quantpits/scripts/pretrain.py --for gats_Alpha158_plus
 python quantpits/scripts/pretrain.py --show-pretrained
 
 # 5. Force random weights (Skip pre-training)
-# Available in both incremental_train and prod_predict_only
-python quantpits/scripts/incremental_train.py --models gats_Alpha158_plus --no-pretrain
+# Available in all modes
+python quantpits/scripts/static_train.py --models gats_Alpha158_plus --no-pretrain
 ```
 
 ---
@@ -360,7 +358,7 @@ python quantpits/scripts/incremental_train.py --models gats_Alpha158_plus --no-p
   1. Pre-train base model (Optional if already exists):
      `python quantpits/scripts/pretrain.py --for gats_Alpha158_plus`
   2. Train upper model:
-     `python quantpits/scripts/incremental_train.py --models gats_Alpha158_plus`
+     `python quantpits/scripts/static_train.py --models gats_Alpha158_plus`
 
 - To bypass pre-training and use random weights, use the `--no-pretrain` flag.
 
@@ -370,7 +368,11 @@ python quantpits/scripts/incremental_train.py --models gats_Alpha158_plus --no-p
 ## Comprehensive Parameter List
 
 ```text
-python quantpits/scripts/incremental_train.py --help
+python quantpits/scripts/static_train.py --help
+
+Mode:
+  --full                  Full training: train all enabled models, overwrite records
+  --predict-only          Predict only: use existing models on latest data, no training
 
 Model Selection:
   --models TEXT           Target model names, comma-separated

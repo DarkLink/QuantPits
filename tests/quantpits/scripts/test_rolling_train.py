@@ -383,6 +383,7 @@ class TestResolveTargetModels:
         args.all_enabled = False
         args.algorithm = "gru"
         args.dataset = None
+        args.market = None
         args.tag = None
         args.skip = None
         targets = rt.resolve_target_models(args)
@@ -412,6 +413,7 @@ class TestResolveTargetModels:
         args.all_enabled = False
         args.algorithm = None
         args.dataset = None
+        args.market = None
         args.tag = None
         args.skip = None
         assert rt.resolve_target_models(args) is None

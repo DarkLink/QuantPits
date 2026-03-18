@@ -205,7 +205,7 @@ output/
 
 ```bash
 # Step 1: Train targeted algorithms
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 
 # Step 2: Brute force sweep uncovering optimized matrices
 python quantpits/scripts/brute_force_ensemble.py --min-models 3 --max-models 6
@@ -228,7 +228,7 @@ python quantpits/scripts/order_gen.py
 
 | Script Scope | Intent | Input | Output |
 |------|------|------|------|
-| `prod_train_predict.py` | Train models | configs | `latest_train_records.json` |
+| `static_train.py --full` | Train models | configs | `latest_train_records.json` |
 | `brute_force_ensemble.py` | Combo Exhaustion | train records | leaderboards |
 | **`ensemble_fusion.py`** | **Fusion Backtest** | **Targeted Combo sets** | **Fused Predictions + Risk Matrix** |
 | `signal_ranking.py` | Top N Output | Fusion CSVs | Ranked CSV sets |

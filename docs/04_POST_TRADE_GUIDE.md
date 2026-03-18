@@ -211,7 +211,7 @@ python quantpits/scripts/prod_post_trade.py --help
 ## 注意事项
 
 > [!IMPORTANT]
-> 本脚本**仅处理实盘交易数据**，与训练 (`prod_train_predict.py`)、预测 (`prod_predict_only.py`)、回测 (`brute_force_ensemble.py`) 等模块完全独立，互不耦合。
+> 本脚本**仅处理实盘交易数据**，与训练 (`static_train.py --full`)、预测 (`static_train.py --predict-only`)、回测 (`brute_force_ensemble.py`) 等模块完全独立，互不耦合。
 
 > [!TIP]
 > 建议在正式运行前先用 `--dry-run` 确认处理计划，特别是有 cashflow 的情况。

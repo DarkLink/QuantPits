@@ -2,7 +2,7 @@
 
 ## 概述
 
-`scripts/prod_predict_only.py` 用于**不重新训练**的情况下，使用已有模型对最新数据进行预测和回测。
+`scripts/static_train.py --predict-only` 用于**不重新训练**的情况下，使用已有模型对最新数据进行预测和回测。
 
 **使用场景**：数据更新后无需重训，直接用现有模型生成新预测，然后接入穷举/融合流程。
 
@@ -16,16 +16,16 @@
 cd QuantPits
 
 # 预测所有 enabled 模型
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # 预测指定模型
-python quantpits/scripts/prod_predict_only.py --models gru,mlp,linear_Alpha158
+python quantpits/scripts/static_train.py --predict-only --models gru,mlp,linear_Alpha158
 
 # 只预测 tree 系列
-python quantpits/scripts/prod_predict_only.py --tag tree
+python quantpits/scripts/static_train.py --predict-only --tag tree
 
 # 查看会预测哪些模型（不实际执行）
-python quantpits/scripts/prod_predict_only.py --all-enabled --dry-run
+python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
 ```
 
 ---
@@ -72,22 +72,22 @@ python quantpits/scripts/prod_predict_only.py --all-enabled --dry-run
 
 ```bash
 # 1. 按名称指定
-python quantpits/scripts/prod_predict_only.py --models gru,mlp
+python quantpits/scripts/static_train.py --predict-only --models gru,mlp
 
 # 2. 按算法筛选
-python quantpits/scripts/prod_predict_only.py --algorithm lstm
+python quantpits/scripts/static_train.py --predict-only --algorithm lstm
 
 # 3. 按数据集筛选
-python quantpits/scripts/prod_predict_only.py --dataset Alpha360
+python quantpits/scripts/static_train.py --predict-only --dataset Alpha360
 
 # 4. 按标签筛选
-python quantpits/scripts/prod_predict_only.py --tag tree
+python quantpits/scripts/static_train.py --predict-only --tag tree
 
 # 5. 所有 enabled 模型
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # 6. 排除某些模型
-python quantpits/scripts/prod_predict_only.py --all-enabled --skip catboost_Alpha158
+python quantpits/scripts/static_train.py --predict-only --all-enabled --skip catboost_Alpha158
 ```
 
 ---
@@ -109,7 +109,7 @@ latest_train_records.json               # 更新后的训练记录（含新 reco
 
 ## 保存行为 (Merge 语义)
 
-与 `incremental_train.py` 一致：
+与增量训练一致：
 
 | 情况 | 行为 |
 |------|------|
@@ -129,7 +129,7 @@ latest_train_records.json               # 更新后的训练记录（含新 reco
 cd QuantPits
 
 # Step 1: 用现有模型预测新数据
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # Step 2: 穷举组合（快速版）
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
@@ -146,7 +146,7 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ```bash
 # 只用 tree 系列模型预测
-python quantpits/scripts/prod_predict_only.py --tag tree
+python quantpits/scripts/static_train.py --predict-only --tag tree
 
 # 然后对这些模型做融合
 python quantpits/scripts/ensemble_fusion.py \
@@ -157,10 +157,10 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ```bash
 # 先看看哪些模型会被预测
-python quantpits/scripts/prod_predict_only.py --all-enabled --dry-run
+python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
 
 # 列出注册表和可用模型
-python quantpits/scripts/prod_predict_only.py --list
+python quantpits/scripts/static_train.py --list
 ```
 
 ---
@@ -169,9 +169,9 @@ python quantpits/scripts/prod_predict_only.py --list
 
 | 脚本 | 用途 | 是否训练 | 输入 | 输出 |
 |------|------|:--------:|------|------|
-| `prod_train_predict.py` | 全量训练+预测 | ✅ | configs | `latest_train_records.json` |
-| `incremental_train.py` | 增量训练+预测 | ✅ | configs | `latest_train_records.json` |
-| **`prod_predict_only.py`** | **仅预测** | **❌** | **已有模型** | **`latest_train_records.json`** |
+| `static_train.py --full` | 全量训练 | ✅ | configs | `latest_train_records.json` |
+| `static_train.py` | 增量训练 | ✅ | configs | `latest_train_records.json` |
+| `static_train.py --predict-only` | 仅预测 | ❌ | 已有模型 | `latest_train_records.json` |
 | `brute_force_ensemble.py` | 穷举组合 | - | train records | leaderboard |
 | `ensemble_fusion.py` | 融合回测 | - | 选定模型 | 融合预测 + 绩效 |
 

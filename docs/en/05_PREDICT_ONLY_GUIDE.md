@@ -2,7 +2,7 @@
 
 ## Overview
 
-`scripts/prod_predict_only.py` serves to operate explicit predictive generations across freshly updated datasets utilizing pre-existing architectures, **exempting completely from triggering parameter optimization training intervals.**
+`scripts/static_train.py --predict-only` serves to operate explicit predictive generations across freshly updated datasets utilizing pre-existing architectures, **exempting completely from triggering parameter optimization training intervals.**
 
 **Usage Context**: Employed after dataset appending sequences to rapidly spin fresh predictive targets without model retraining, seamlessly linking onto the Exhaustive Combo/Fusion streams.
 
@@ -16,16 +16,16 @@
 cd QuantPits
 
 # Broadcast prediction arrays across all active enabled architectures
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # Bound predictions against explicit named algorithm targets
-python quantpits/scripts/prod_predict_only.py --models gru,mlp,linear_Alpha158
+python quantpits/scripts/static_train.py --predict-only --models gru,mlp,linear_Alpha158
 
 # Sub-select via Tag classes (e.g. tree structures only)
-python quantpits/scripts/prod_predict_only.py --tag tree
+python quantpits/scripts/static_train.py --predict-only --tag tree
 
 # Run sequence preview inspection tracing mapping behavior
-python quantpits/scripts/prod_predict_only.py --all-enabled --dry-run
+python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
 ```
 
 ---
@@ -72,22 +72,22 @@ python quantpits/scripts/prod_predict_only.py --all-enabled --dry-run
 
 ```bash
 # 1. Nomenclature targets
-python quantpits/scripts/prod_predict_only.py --models gru,mlp
+python quantpits/scripts/static_train.py --predict-only --models gru,mlp
 
 # 2. Logic groupings
-python quantpits/scripts/prod_predict_only.py --algorithm lstm
+python quantpits/scripts/static_train.py --predict-only --algorithm lstm
 
 # 3. Handle structure filtering
-python quantpits/scripts/prod_predict_only.py --dataset Alpha360
+python quantpits/scripts/static_train.py --predict-only --dataset Alpha360
 
 # 4. Attribute label constraints
-python quantpits/scripts/prod_predict_only.py --tag tree
+python quantpits/scripts/static_train.py --predict-only --tag tree
 
 # 5. Native configuration activation
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # 6. Combined inclusive/exclusionary constraints
-python quantpits/scripts/prod_predict_only.py --all-enabled --skip catboost_Alpha158
+python quantpits/scripts/static_train.py --predict-only --all-enabled --skip catboost_Alpha158
 ```
 
 ---
@@ -109,7 +109,7 @@ latest_train_records.json               # Refreshed primary node dictionary
 
 ## Persistence Operations (Merge Rules)
 
-Functionality is rigidly analogous to `incremental_train.py`:
+Functionality is rigidly analogous to incremental training:
 
 | Structural Occurrence | Resolution Behavior |
 |------|------|
@@ -129,7 +129,7 @@ Note: Baseline logic actively maintains archival backups dumping to `data/histor
 cd QuantPits
 
 # Step 1: Predict via extant unretrained logic nodes
-python quantpits/scripts/prod_predict_only.py --all-enabled
+python quantpits/scripts/static_train.py --predict-only --all-enabled
 
 # Step 2: Validate Exhaustive Compositions
 python quantpits/scripts/brute_force_fast.py --max-combo-size 3
@@ -146,7 +146,7 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ```bash
 # Explicitly force execution strictly via tree logic frameworks 
-python quantpits/scripts/prod_predict_only.py --tag tree
+python quantpits/scripts/static_train.py --predict-only --tag tree
 
 # Target resultant mappings via ensemble bounding explicitly 
 python quantpits/scripts/ensemble_fusion.py \
@@ -157,10 +157,10 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ```bash
 # Analyze trace outputs dictating expected pipeline mapping targets solely
-python quantpits/scripts/prod_predict_only.py --all-enabled --dry-run
+python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
 
 # Output full structured components array natively mapped through to YAML configs
-python quantpits/scripts/prod_predict_only.py --list
+python quantpits/scripts/static_train.py --list
 ```
 
 ---
@@ -169,9 +169,9 @@ python quantpits/scripts/prod_predict_only.py --list
 
 | Script Endpoint | Context Usage | Modifies Parameters | Input Required | Primary Render Target |
 |------|------|:--------:|------|------|
-| `prod_train_predict.py` | Full Network Overhaul | ✅ | configurations | `latest_train_records.json` |
-| `incremental_train.py` | Focused Target Adjustments | ✅ | configurations | `latest_train_records.json` |
-| **`prod_predict_only.py`** | **Extrapolation (Prediction)** | **❌** | **Extant `.pkl`** | **`latest_train_records.json`** |
+| `static_train.py --full` | Full Network Overhaul | ✅ | configurations | `latest_train_records.json` |
+| `static_train.py` | Focused Target Adjustments | ✅ | configurations | `latest_train_records.json` |
+| `static_train.py --predict-only` | Extrapolation (Prediction) | **❌** | **Extant `.pkl`** | **`latest_train_records.json`** |
 | `brute_force_ensemble.py` | Exhaustive Combo Sorting | - | train records | leaderboards CSV |
 | `ensemble_fusion.py` | Compounded Backtest Validation | - | targeted outputs | Net fusion mappings |
 

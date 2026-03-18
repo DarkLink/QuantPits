@@ -211,7 +211,7 @@ Optional Overrides:
 ## Important Notices
 
 > [!IMPORTANT]
-> This script **strictly processes live trading data**. It is completely independent and decoupled from training (`prod_train_predict.py`), prediction (`prod_predict_only.py`), backtesting (`brute_force_ensemble.py`), and other modules.
+> This script **strictly processes live trading data**. It is completely independent and decoupled from training (`static_train.py --full`), prediction (`static_train.py --predict-only`), backtesting (`brute_force_ensemble.py`), and other modules.
 
 > [!TIP]
 > Executing `--dry-run` is heavily advocated whenever complex multiday deposits (`cashflow.json`) are utilized prior to confirming data bounds updates.

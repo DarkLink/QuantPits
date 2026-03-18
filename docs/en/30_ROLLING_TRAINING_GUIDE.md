@@ -6,7 +6,7 @@
 
 ## Overview
 
-Traditional static training (`prod_train_predict.py`, `incremental_train.py`) uses **fixed date ranges** to train models. As market regimes shift, static models gradually lose predictive power.
+Traditional static training (`static_train.py --full`, `static_train.py`) uses **fixed date ranges** to train models. As market regimes shift, static models gradually lose predictive power.
 
 **Rolling Training** divides the timeline into multiple sliding windows and trains models independently on each window, keeping them continuously adapted to the latest market conditions.
 

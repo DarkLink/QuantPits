@@ -205,7 +205,7 @@ output/
 
 ```bash
 # Step 1: 训练所有模型
-python quantpits/scripts/prod_train_predict.py
+python quantpits/scripts/static_train.py --full
 
 # Step 2: 暴力穷举找最优组合
 python quantpits/scripts/brute_force_ensemble.py --min-models 3 --max-models 6
@@ -228,7 +228,7 @@ python quantpits/scripts/order_gen.py
 
 | 脚本 | 用途 | 输入 | 输出 |
 |------|------|------|------|
-| `prod_train_predict.py` | 训练模型 | configs | `latest_train_records.json` |
+| `static_train.py --full` | 训练模型 | configs | `latest_train_records.json` |
 | `brute_force_ensemble.py` | 穷举组合 | train records | leaderboard |
 | **`ensemble_fusion.py`** | **融合回测** | **选定模型/多组合** | **融合预测 + 绩效 + 对比** |
 | `signal_ranking.py` | 信号排名 | 融合预测 | Top N 排名 CSV |
