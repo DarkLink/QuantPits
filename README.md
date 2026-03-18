@@ -96,10 +96,10 @@ Once activated, you can execute the minimal routine loop using the quantpits scr
 # If not, update it first.
 
 # 1. Train models (Required for first-time setup or retraining)
-python -m quantpits.scripts.prod_train_predict
+python -m quantpits.scripts.static_train --full
 
 # 2. Generate predictions from existing models
-python -m quantpits.scripts.prod_predict_only --all-enabled
+python -m quantpits.scripts.static_train --predict-only --all-enabled
 
 # 3. Fuse predictions using your combo configs
 python -m quantpits.scripts.ensemble_fusion --from-config-all

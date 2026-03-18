@@ -96,10 +96,10 @@ source workspaces/Demo_Workspace/run_env.sh
 # 如果未更新，请在此步骤前优先更新。
 
 # 1. 全量训练模型（首次运行或需要刷新模型时必做）
-python -m quantpits.scripts.prod_train_predict
+python -m quantpits.scripts.static_train --full
 
 # 2. 使用所有已使能的模型触发全量增量预测推断
-python -m quantpits.scripts.prod_predict_only --all-enabled
+python -m quantpits.scripts.static_train --predict-only --all-enabled
 
 # 3. 调用当前库表配置好的融合配比组合完成多维度参数预测网格
 python -m quantpits.scripts.ensemble_fusion --from-config-all

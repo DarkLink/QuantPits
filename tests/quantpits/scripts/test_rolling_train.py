@@ -1042,4 +1042,413 @@ class TestRunModesExtra:
             # Should return early
 
 
+class TestMoreFunctionalLogic:
+    def test_train_window_model_record_kwargs(self, mock_env):
+        rt, _ = mock_env
+        window = {'window_idx': 0, 'test_start': '2024-01-01', 'train_start': '2020-01-01', 'train_end': '2022-12-31', 'valid_start': '2023-01-01', 'valid_end': '2023-12-31', 'test_end': '2024-03-31'}
+        
+        with mock.patch('qlib.workflow.R', create=True) as mock_r, \
+             mock.patch('qlib.utils.init_instance_by_config') as mock_init, \
+             mock.patch('quantpits.utils.train_utils.inject_config') as mock_inject:
+            
+            mock_recorder = mock.MagicMock()
+            mock_recorder.info = {'id': 'rec_123'}
+            mock_r.get_recorder.return_value = mock_recorder
+            
+            mock_model = mock.MagicMock()
+            mock_dataset = mock.MagicMock()
+            mock_init.return_value = mock_model
+            
+            mock_inject.return_value = {
+                'task': {
+                    'model': {}, 
+                    'dataset': {},
+                    'record': [{'class': 'MockRecord', 'kwargs': {'model': '<MODEL>', 'dataset': '<DATASET>'}}]
+                }
+            }
+            
+            result = rt.train_window_model('m1', 'm1.yaml', window, {}, 'exp')
+            assert result['success'] is True
+
+    def test_train_window_model_ic_unavailable(self, mock_env):
+        rt, _ = mock_env
+        window = {'window_idx': 0, 'test_start': '2024-01-01', 'train_start': '2020-01-01', 'train_end': '2022-12-31', 'valid_start': '2023-01-01', 'valid_end': '2023-12-31', 'test_end': '2024-03-31'}
+        
+        with mock.patch('qlib.workflow.R', create=True) as mock_r, \
+             mock.patch('qlib.utils.init_instance_by_config') as mock_init, \
+             mock.patch('quantpits.utils.train_utils.inject_config') as mock_inject:
+            
+            mock_recorder = mock.MagicMock()
+            mock_recorder.info = {'id': 'rec_123'}
+            mock_recorder.load_object.side_effect = Exception("No IC")
+            mock_r.get_recorder.return_value = mock_recorder
+            mock_r.start.return_value.__enter__.return_value = mock_recorder
+            
+            mock_init.return_value = mock.MagicMock()
+            mock_inject.return_value = {'task': {'model': {}, 'dataset': {}}}
+            
+            result = rt.train_window_model('m1', 'm1.yaml', window, {}, 'exp')
+            assert result['success'] is True
+            assert result['performance'] == {"record_id": "rec_123"}
+
+    def test_concatenate_predictions_empty_completions(self, mock_env):
+        rt, _ = mock_env
+        state = mock.MagicMock()
+        state.get_completed_record_ids.return_value = []
+        res = rt.concatenate_rolling_predictions(state, ['m1'], 'exp', 'comb', '2024-01-01')
+        assert res == {}
+
+    def test_concatenate_predictions_load_fails(self, mock_env):
+        rt, _ = mock_env
+        state = mock.MagicMock()
+        state.get_completed_record_ids.return_value = [{'window_idx': 0, 'record_id': 'r0'}]
+        with mock.patch('qlib.workflow.R', create=True) as mock_r:
+            rec = mock.MagicMock()
+            rec.load_object.side_effect = Exception("Load Fails")
+            mock_r.get_recorder.return_value = rec
+            res = rt.concatenate_rolling_predictions(state, ['m1'], 'exp', 'comb', '2024-01-01')
+            assert res == {}
+
+    def test_predict_with_latest_model_empty(self, mock_env):
+        rt, _ = mock_env
+        state = mock.MagicMock()
+        state.get_completed_record_ids.return_value = []
+        res = rt.predict_with_latest_model('m1', {}, state, 'exp', {}, '2024-01-01')
+        assert res is None
+
+    def test_predict_with_latest_model_fails(self, mock_env):
+        rt, _ = mock_env
+        state = mock.MagicMock()
+        state.get_completed_record_ids.return_value = [{'window_idx': 0, 'record_id': 'r0'}]
+        with mock.patch('qlib.workflow.R', create=True) as mock_r:
+            rec = mock.MagicMock()
+            rec.load_object.side_effect = Exception("Fail")
+            mock_r.get_recorder.return_value = rec
+            res = rt.predict_with_latest_model('m1', {'yaml_file':'m1.yaml'}, state, 'exp', {}, '2024-01-01')
+            assert res is None
+
+
+class TestMoreMainFlows:
+    def test_run_cold_start_no_windows(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        targets = {'m1': {}}
+        cfg = {'rolling_start': '2025-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base:
+            mock_base.return_value = {'anchor_date': '2020-01-01', 'freq': 'week'}
+            # This should print "无法生成" and return
+            rt.run_cold_start(args, targets, cfg)
+
+    def test_run_cold_start_resume_no_state(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.resume = True
+        args.merge = False
+        args.dry_run = False
+        args.backtest = False
+        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        cfg = {'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
+        
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.train_window_model', return_value={'success': True, 'record_id': 'r1'}), \
+             mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m1': 'cr1'}), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls:
+            
+            mock_base.return_value = {'anchor_date': '2024-02-01', 'freq': 'week'}
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = None
+            
+            rt.run_cold_start(args, targets, cfg)
+            mock_state.init_run.assert_called_once()
+
+    def test_run_cold_start_merge_existing_state(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.merge = True
+        args.dry_run = False
+        args.backtest = False
+        targets = {'m2': {'yaml_file': 'm2.yaml'}}
+        cfg = {'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
+        
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.train_window_model', return_value={'success': True, 'record_id': 'r1'}), \
+             mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m2': 'cr2'}), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls:
+            
+            mock_base.return_value = {'anchor_date': '2024-02-01', 'freq': 'week'}
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = '2024-02-01'
+            mock_state.is_window_model_done.return_value = False
+            mock_state.get_all_completed_windows.return_value = {'0': {'m1': 'r0'}}
+            
+            rt.run_cold_start(args, targets, cfg)
+            # train should be called for m2
+            assert mock_state.init_run.call_count == 0
+
+    def test_run_daily_full_with_new_windows(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.dry_run = False
+        args.backtest = True
+        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        cfg = {'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
+        
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.train_window_model', return_value={'success': True, 'record_id': 'r1'}), \
+             mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m1': 'cr1'}), \
+             mock.patch('rolling_train.save_rolling_records') as mock_save, \
+             mock.patch('rolling_train.run_combined_backtest') as mock_bt:
+            
+            mock_base.return_value = {'anchor_date': '2024-06-01', 'freq': 'week'}
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = '2024-01-01'
+            mock_state.get_all_completed_windows.return_value = {'0': {'m1': 'r0'}}
+            mock_state.is_window_model_done.return_value = False
+            
+            rt.run_daily(args, targets, cfg)
+            mock_save.assert_called_once()
+            mock_bt.assert_called_once()
+
+    def test_run_daily_dry_run(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.dry_run = True
+        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        cfg = {'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
+        
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.train_window_model') as mock_train:
+            
+            mock_base.return_value = {'anchor_date': '2024-06-01', 'freq': 'week'}
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = '2024-01-01'
+            mock_state.get_all_completed_windows.return_value = {'0': {'m1': 'r0'}}
+            
+            rt.run_daily(args, targets, cfg)
+            mock_train.assert_not_called()
+
+    def test_run_daily_no_anchor(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        cfg = {}
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params', return_value={'anchor_date': '2024-06-01', 'freq': 'w'}), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls:
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = None
+            # returns early
+            assert rt.run_daily(args, targets, cfg) is None
+
+    def test_run_predict_only_full_extra(self, mock_env):
+        rt, workspace = mock_env
+        args = mock.MagicMock()
+        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        cfg = {}
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params', return_value={'anchor_date': '2024-06-01', 'freq': 'w'}), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.predict_with_latest_model', return_value=pd.Series([1.0], index=pd.MultiIndex.from_tuples([(pd.Timestamp('2024-06-01'), 'S1')], names=['datetime', 'instrument']))):
+            
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = '2024-01-01'
+            rt.run_predict_only(args, targets, cfg)
+
+    def test_run_combined_backtest_exceptions(self, mock_env):
+        rt, _ = mock_env
+        with mock.patch('qlib.workflow.R', create=True) as mock_r, \
+             mock.patch('qlib.backtest.backtest') as mock_bt, \
+             mock.patch('qlib.backtest.executor.SimulatorExecutor', create=True), \
+             mock.patch('quantpits.utils.strategy.create_backtest_strategy'), \
+             mock.patch('quantpits.utils.strategy.load_strategy_config'), \
+             mock.patch('quantpits.utils.strategy.get_backtest_config'):
+             
+             mock_r.get_recorder.side_effect = Exception("General Failure")
+             rt.run_combined_backtest(['m1'], {'m1': 'rec1'}, 'Exp', {'freq': 'day', 'benchmark': 'SH000300'})
+
+    def test_run_cold_start_train_model_fails(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.merge = False
+        args.resume = False
+        args.dry_run = False
+        args.backtest = True
+        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        cfg = {'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
+        
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.train_window_model', return_value={'success': False, 'error': 'Unknown'}), \
+             mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m1': 'cr1'}), \
+             mock.patch('rolling_train.run_combined_backtest') as mock_bt, \
+             mock.patch('rolling_train.RollingState') as mock_state_cls:
+            
+            mock_base.return_value = {'anchor_date': '2024-02-01', 'freq': 'week'}
+            rt.run_cold_start(args, targets, cfg)
+            # This should cover line 716 and trigger run_combined_backtest (line 735)
+            mock_bt.assert_called_once()
+
+
+    def test_run_daily_train_model_fails_and_skip(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.dry_run = False
+        args.backtest = False
+        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        cfg = {'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
+        
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params') as mock_base, \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.train_window_model', return_value={'success': False, 'error': 'Disk OOM'}), \
+             mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m1': 'cr1'}):
+            
+            mock_base.return_value = {'anchor_date': '2024-06-01', 'freq': 'week'}
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = '2024-01-01'
+            mock_state.get_all_completed_windows.return_value = {'0': {'m1': 'r0'}}
+            mock_state.is_window_model_done.side_effect = [True, False] # First time skip, second time fail
+            
+            rt.run_daily(args, {'m2': {'yaml_file': 'm2.yaml'}, 'm1': {'yaml_file': 'm1.yaml'}}, cfg)
+            # Covers line 796 (continue) and 810 (print error)
+
+
+    def test_run_combined_backtest_edge_cases(self, mock_env):
+        rt, _ = mock_env
+        with mock.patch('qlib.workflow.R', create=True) as mock_r, \
+             mock.patch('qlib.backtest.backtest') as mock_bt, \
+             mock.patch('qlib.backtest.executor.SimulatorExecutor', create=True), \
+             mock.patch('quantpits.utils.strategy.create_backtest_strategy'), \
+             mock.patch('quantpits.utils.strategy.load_strategy_config'), \
+             mock.patch('quantpits.utils.strategy.get_backtest_config') as mock_bt_cfg:
+
+            mock_bt_cfg.return_value = {'account': 1.0, 'exchange_kwargs': {}}
+
+            # 1. model_name not in combined_records
+            rt.run_combined_backtest(['m1', 'm2'], {'m1': 'rec1'}, 'Exp', {'freq': 'day', 'benchmark': 'BM'})
+
+            # 2. prediction is None / empty
+            mock_recorder = mock.MagicMock()
+            mock_recorder.load_object.side_effect = [None, pd.DataFrame()]
+            mock_r.get_recorder.return_value = mock_recorder
+            rt.run_combined_backtest(['m1'], {'m1': 'rec1'}, 'Exp', {'freq': 'day', 'benchmark': 'BM'})
+            rt.run_combined_backtest(['m1'], {'m1': 'rec1'}, 'Exp', {'freq': 'day', 'benchmark': 'BM'})
+
+            # 3. extract_report_df tuple/dict scenarios & exception handling
+            dates = pd.date_range('2024-01-01', periods=2)
+            pred_df = pd.DataFrame({'score': [0.5, 0.5]}, index=pd.MultiIndex.from_product([dates, ['S1']], names=['datetime', 'instrument']))
+            mock_recorder.load_object.side_effect = [pred_df]*4
+            
+            # Scenario A: empty report
+            mock_bt.return_value = ({'day': (pd.DataFrame(), pd.DataFrame())}, {})
+            rt.run_combined_backtest(['m1'], {'m1': 'rec1'}, 'Exp', {'freq': 'day', 'benchmark': 'BM'})
+            
+            # Scenario B: pd.DataFrame missing index / exception during save
+            # Note: da_df.index = pd.to_datetime(...) is covered when index is not DatetimeIndex. Let's make it range index 
+            report_df = pd.DataFrame({'account': [1, 2], 'bench': [0, 0]}) # No datetime index
+            mock_bt.return_value = ({'day': (report_df, pd.DataFrame())}, {})
+            mock_recorder.save_objects.side_effect = Exception("MLFlow error")
+            with mock.patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer') as mock_pa:
+                mock_pa.return_value.calculate_traditional_metrics.return_value = {}
+                with mock.patch('qlib.data.D') as mock_d:
+                    mock_d.calendar.return_value = dates
+                    rt.run_combined_backtest(['m1'], {'m1': 'rec1'}, 'Exp', {'freq': 'day', 'benchmark': 'BM'})
+            
+            # Scenario C: Only 1 tuple item
+            mock_bt.return_value = ({'day': (report_df,)}, {})
+            with mock.patch('quantpits.scripts.analysis.portfolio_analyzer.PortfolioAnalyzer') as mock_pa:
+                mock_pa.return_value.calculate_traditional_metrics.return_value = {}
+                with mock.patch('qlib.data.D') as mock_d:
+                    mock_d.calendar.return_value = dates
+                    rt.run_combined_backtest(['m1'], {'m1': 'rec1'}, 'Exp', {'freq': 'day', 'benchmark': 'BM'})
+
+            
+    def test_run_backtest_only_missing_json(self, mock_env):
+        rt, _ = mock_env
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params', return_value={'freq': 'week'}):
+             
+             # JSON not exist
+             with mock.patch('os.path.exists', return_value=False):
+                 rt.run_backtest_only(mock.MagicMock(), {'m1':{}})
+                 
+             # JSON exists but invalid key
+             with mock.patch('os.path.exists', return_value=True), \
+                  mock.patch('builtins.open', mock.mock_open(read_data='{}')):
+                 rt.run_backtest_only(mock.MagicMock(), {'m1':{}})
+
+             # JSON exists without exp name, model not in combined
+             with mock.patch('os.path.exists', return_value=True), \
+                  mock.patch('builtins.open', mock.mock_open(read_data='{"models": {"m2": "rec2"}}')):
+                 rt.run_backtest_only(mock.MagicMock(), {'m1':{}})
+
+
+class TestMainAdditionalBranches:
+    def test_main_no_config(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock(show_state=False, clear_state=False)
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value=None):
+            rt.main() # Expect to print 找不到 config... / return
+
+    def test_main_resume_all_enabled(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock(show_state=False, clear_state=False, resume=True, backtest_only=False, cold_start=False, merge=False, predict_only=False, models=None, algorithm=None, dataset=None, tag=None, all_enabled=False)
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.resolve_target_models', return_value={'m1': {}}), \
+             mock.patch('rolling_train.run_cold_start') as mock_run:
+            
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = '2024-01-01'
+            rt.main()
+            assert args.all_enabled is True # This covers lines 1076-1077
+
+    def test_main_no_selection_return(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock(show_state=False, clear_state=False, resume=False, backtest_only=False, cold_start=False, merge=False, predict_only=False, models=None, algorithm=None, dataset=None, tag=None, all_enabled=False)
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}):
+            rt.main() # Covers lines 1080-1082
+
+    def test_main_daily_execution(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock(show_state=False, clear_state=False, resume=False, backtest_only=False, cold_start=False, merge=False, predict_only=False, models='m1', algorithm=None, dataset=None, tag=None, all_enabled=False)
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
+             mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
+             mock.patch('rolling_train.run_daily') as mock_run_daily:
+            rt.main()
+            mock_run_daily.assert_called_once() # Covers line 1103
+
+class TestParseArgsExtra:
+    def test_parse_args_all(self, mock_env):
+        rt, _ = mock_env
+        import sys
+        with mock.patch.object(sys, 'argv', ['script.py', '--predict-only', '--resume', '--merge', '--backtest', '--backtest-only', '--models', 'm1,m2', '--algorithm', 'gru', '--dataset', 'Alpha158', '--tag', 't1', '--skip', 'm3', '--dry-run', '--no-pretrain', '--show-state', '--clear-state']):
+            args = rt.parse_args()
+            assert args.predict_only is True
+            assert args.resume is True
+            assert args.merge is True
+            assert args.backtest is True
+            assert args.backtest_only is True
+            assert args.models == 'm1,m2'
+            assert args.algorithm == 'gru'
+            assert args.dataset == 'Alpha158'
+            assert args.tag == 't1'
+            assert args.skip == 'm3'
+            assert args.dry_run is True
+            assert args.no_pretrain is True
+            assert args.show_state is True
+            assert args.clear_state is True
+
+
 
