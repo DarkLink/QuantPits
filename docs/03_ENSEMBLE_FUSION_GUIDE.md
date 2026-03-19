@@ -163,8 +163,6 @@ Stage 8: 可视化 (可跳过)
 
 ```
 output/
-├── predictions/
-│   └── ensemble_{anchor_date}.csv            # 融合预测
 └── ensemble/
     ├── ensemble_fusion_config_{date}.json     # 融合配置
     ├── correlation_matrix_{date}.csv          # 相关性矩阵
@@ -178,10 +176,6 @@ output/
 
 ```
 output/
-├── predictions/
-│   ├── ensemble_combo_A_{date}.csv           # combo_A 融合预测
-│   ├── ensemble_combo_B_{date}.csv           # combo_B 融合预测
-│   └── ensemble_{date}.csv                   # default combo 兼容文件
 └── ensemble/
     ├── ensemble_fusion_config_combo_A_{date}.json
     ├── ensemble_fusion_config_combo_B_{date}.json
@@ -190,8 +184,6 @@ output/
     └── backtest_analysis_report_{combo}_{date}.md # [NEW] 该组合的详尽分析报告
 ```
 
-> [!TIP]
-> Default combo 会额外保存一份不带 combo 名的 `ensemble_{date}.csv`，确保向后兼容 `order_gen.py` 等下游脚本。
 
 > [!NOTE]
 > **关于单模型表现与融合回测的评测差异说明**
@@ -231,5 +223,5 @@ python quantpits/scripts/order_gen.py
 | `static_train.py --full` | 训练模型 | configs | `latest_train_records.json` |
 | `brute_force_ensemble.py` | 穷举组合 | train records | leaderboard |
 | **`ensemble_fusion.py`** | **融合回测** | **选定模型/多组合** | **融合预测 + 绩效 + 对比** |
-| `signal_ranking.py` | 信号排名 | 融合预测 | Top N 排名 CSV |
-| `order_gen.py` | 生成订单 | 融合预测 + 持仓 | 买卖建议 + 多模型判断 |
+| `signal_ranking.py` | 信号排名 | 融合 Recorder | Top N 排名 CSV |
+| `order_gen.py` | 生成订单 | 融合 Recorder + 持仓 | 买卖建议 + 多模型判断 |

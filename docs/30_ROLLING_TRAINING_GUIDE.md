@@ -27,7 +27,7 @@
 ```text
 output/
 ├── predictions/               # 静态训练预测
-│   └── rolling/               # 滚动训练预测（per-window CSV + 拼接 CSV）
+│   └── rolling/               # 滚动训练预测记录 (Qlib Recorder，存于 mlruns)
 data/
 ├── latest_train_records.json  # 静态训练记录
 ├── latest_rolling_records.json# 滚动训练记录

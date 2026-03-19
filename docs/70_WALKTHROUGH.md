@@ -240,7 +240,6 @@ python quantpits/scripts/static_train.py --models demo_linear_Alpha158 --dry-run
 
 训练结束后生成的核心文件：
 - `latest_train_records.json` — 模型训练记录（下游所有脚本的输入）
-- `output/predictions/<model>_<date>.csv` — 各模型预测结果
 - `output/model_performance_<date>.json` — 模型 IC/ICIR 指标
 
 > [!NOTE]
@@ -381,7 +380,6 @@ python quantpits/scripts/ensemble_fusion.py --from-config --only-last-years 1
 ```
 
 输出文件：
-- `output/predictions/ensemble_<combo>_<date>.csv` — 融合预测结果
 - `output/ensemble/combo_comparison_<date>.csv` — 跨组合对比表
 - `output/ensemble/combo_comparison_<date>.png` — 净值对比图
 

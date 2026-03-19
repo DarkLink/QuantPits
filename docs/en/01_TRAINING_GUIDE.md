@@ -35,7 +35,7 @@ QuantPits/
         │   ├── model_config.json     # Date/Market parameters
         │   └── workflow_config_*.yaml# Qlib workflow bindings for each model
         ├── output/
-        │   ├── predictions/          # Prediction CSV results
+        │   ├── predictions/          # (Managed by Qlib Recorders inside mlruns)
         │   └── model_performance_*.json # Model performance metrics (IC/ICIR)
         ├── data/
         │   ├── history/              # 📦 Auto-backed up historical files

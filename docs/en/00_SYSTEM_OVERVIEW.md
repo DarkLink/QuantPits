@@ -84,7 +84,7 @@ flowchart TB
     REG["model_registry.yaml<br/>Model Registry"]
     LTR["latest_train_records.json<br/>Train Records"]
     LRR["latest_rolling_records.json<br/>Rolling Records"]
-    PRED_CSV["output/predictions/<br/>Prediction CSVs"]
+    PRED_REC["output/predictions/<br/>Prediction Recorders"]
     WC["prod_config.json<br/>Holdings/Cash"]
 
     REG --> TRAIN
@@ -97,11 +97,11 @@ flowchart TB
     LTR --> FUSION
     LRR -.->|--record-file| BRUTEFORCE
     LRR -.->|--record-file| FUSION
-    FUSION --> PRED_CSV
-    PREDICT --> PRED_CSV
-    PRED_CSV --> ORDERGEN
-    PRED_CSV --> SR
-    PRED_CSV --> AN
+    FUSION --> PRED_REC
+    PREDICT --> PRED_REC
+    PRED_REC --> ORDERGEN
+    PRED_REC --> SR
+    PRED_REC --> AN
     PT --> WC
     WC --> ORDERGEN
     WC -.->|daily_amount| AN
@@ -291,7 +291,7 @@ python quantpits/scripts/ensemble_fusion.py \
 - Supports multi-combo fusion: `--from-config-all` runs all combos at once, `--combo` specifies a single combo
 - Multi-combo mode generates crossover comparison tables and net value comparison charts
 - Weighting modes: `equal` / `icir_weighted` / `manual` / `dynamic`
-- Outputs fused prediction CSV to `output/predictions/ensemble_*.csv`
+- Outputs fused predictions to Qlib Recorder's pred.pkl
 - Config file: `config/ensemble_config.json` (Multi-combo structure, backwards compatible)
 
 ### ⑤ Post-Trade Module
@@ -364,12 +364,12 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
   │ Ensemble Fusion  │                 │
   │ ensemble_fusion  │                 │
   └────────┬─────────┘                 │
-           │ ensemble_*.csv            │
+           │ Fusion Recorder         │
            ▼                           ▼
   ┌────────────────────────────────────────┐
   │ Order Generation                       │
   │ order_gen.py                           │
-  │ Input: Predict CSV + Pos/Cash          │
+  │ Input: Predict Recorder + Pos/Cash          │
   │ Output: buy/sell_suggestion_*.csv      │
   └────────────────────────────────────────┘
 ```
@@ -395,8 +395,8 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 
 | Dir/File | Purpose |
 |-----------|------|
-| `predictions/*.csv` | Prediction results for models and ensembles (multi-combo includes combo name) |
-| `predictions/rolling/` | Rolling training predictions (per-window CSV + stitched CSV) |
+| `(Qlib Recorders)` | Prediction results for models and ensembles (Stored in mlruns) |
+| `(Qlib Recorders)` | Rolling training predictions |
 | `brute_force/` | Exact brute force backtest results and analytical reports |
 | `brute_force_fast/` | Fast brute force screening results |
 | `ensemble/` | Fusion configs, leaderboards, charts, inter-combo comparisons |

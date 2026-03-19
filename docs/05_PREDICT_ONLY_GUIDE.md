@@ -41,7 +41,6 @@ python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
    c. 构建新 dataset、执行 model.predict()
     d. 在 Prod_Predict_{FREQ} 实验下创建新 Recorder
     e. 保存 pred.pkl + 运行 SignalRecord（生成 IC/ICIR 指标）
-   f. 同时输出 CSV 到 output/predictions/
 4. Merge 方式更新 latest_train_records.json
 ```
 
@@ -96,10 +95,6 @@ python quantpits/scripts/static_train.py --predict-only --all-enabled --skip cat
 
 ```
 output/
-├── predictions/
-│   ├── gru_2026-02-13.csv              # 预测结果 CSV
-│   ├── mlp_2026-02-13.csv
-│   └── ...
 └── model_performance_2026-02-13.json   # IC/ICIR 指标（合并）
 
 latest_train_records.json               # 更新后的训练记录（含新 record_id）

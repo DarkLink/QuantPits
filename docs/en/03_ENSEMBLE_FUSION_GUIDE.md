@@ -163,8 +163,6 @@ Cross-combo Comparison Table + Merged Net Value Crossover Plot
 
 ```text
 output/
-├── predictions/
-│   └── ensemble_{anchor_date}.csv            # Fused prediction vectors
 └── ensemble/
     ├── ensemble_fusion_config_{date}.json     # Fused configuration state
     ├── correlation_matrix_{date}.csv          # Correlation matrix
@@ -178,10 +176,6 @@ output/
 
 ```text
 output/
-├── predictions/
-│   ├── ensemble_combo_A_{date}.csv           # combo_A predictions
-│   ├── ensemble_combo_B_{date}.csv           # combo_B predictions
-│   └── ensemble_{date}.csv                   # default combo backward-compat shadow file
 └── ensemble/
     ├── ensemble_fusion_config_combo_A_{date}.json
     ├── ensemble_fusion_config_combo_B_{date}.json
@@ -190,8 +184,6 @@ output/
     └── backtest_analysis_report_{combo}_{date}.md # [NEW] Detailed analysis report for this specific combo
 ```
 
-> [!TIP]
-> The `default` combo will redundantly output a nameless `ensemble_{date}.csv` artifact, guaranteeing absolute zero-modification compliance for downstream utilities like `order_gen.py`.
 
 > [!NOTE]
 > **Understanding Metric Discrepancies: Single Models vs. Ensemble Backtests**
@@ -231,5 +223,5 @@ python quantpits/scripts/order_gen.py
 | `static_train.py --full` | Train models | configs | `latest_train_records.json` |
 | `brute_force_ensemble.py` | Combo Exhaustion | train records | leaderboards |
 | **`ensemble_fusion.py`** | **Fusion Backtest** | **Targeted Combo sets** | **Fused Predictions + Risk Matrix** |
-| `signal_ranking.py` | Top N Output | Fusion CSVs | Ranked CSV sets |
-| `order_gen.py` | Target Execution | Fused CSVs + Current Pos | Buys/Sells + Multi-Model opinions |
+| `signal_ranking.py` | Top N Output | Fusion Recorders | Ranked CSV sets |
+| `order_gen.py` | Target Execution | Fused Recorders + Current Pos | Buys/Sells + Multi-Model opinions |

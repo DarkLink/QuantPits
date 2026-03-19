@@ -41,7 +41,6 @@ python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
    c. Compile target Datasets + execute `.predict()` outputs.
     d. Instantiate novel Recorder mappings mapped inside the `Prod_Predict_{Freq}` branch identifier.
     e. Commit `pred.pkl` artifact persistence + Execute standard `SignalRecord` structures extracting IC/ICIR parameters.
-   f. Emulate parallel CSV data distributions terminating in `output/predictions/`.
 4. Trigger Incremental Merge persisting logic to `latest_train_records.json`.
 ```
 
@@ -96,10 +95,6 @@ python quantpits/scripts/static_train.py --predict-only --all-enabled --skip cat
 
 ```text
 output/
-├── predictions/
-│   ├── gru_2026-02-13.csv              # Emulated prediction CSV dumps
-│   ├── mlp_2026-02-13.csv
-│   └── ...
 └── model_performance_2026-02-13.json   # Compounded IC/ICIR statistics 
 
 latest_train_records.json               # Refreshed primary node dictionary 

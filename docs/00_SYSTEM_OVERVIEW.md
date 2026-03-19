@@ -86,7 +86,7 @@ flowchart TB
     REG["model_registry.yaml<br/>模型注册表"]
     LTR["latest_train_records.json<br/>训练记录"]
     LRR["latest_rolling_records.json<br/>滚动训练记录"]
-    PRED_CSV["output/predictions/<br/>预测 CSV"]
+    PRED_REC["output/predictions/<br/>预测 Recorders"]
     WC["prod_config.json<br/>持仓/现金"]
 
     REG --> TRAIN
@@ -99,11 +99,11 @@ flowchart TB
     LTR --> FUSION
     LRR -.->|--record-file| BRUTEFORCE
     LRR -.->|--record-file| FUSION
-    FUSION --> PRED_CSV
-    PREDICT --> PRED_CSV
-    PRED_CSV --> ORDERGEN
-    PRED_CSV --> SR
-    PRED_CSV --> AN
+    FUSION --> PRED_REC
+    PREDICT --> PRED_REC
+    PRED_REC --> ORDERGEN
+    PRED_REC --> SR
+    PRED_REC --> AN
     PT --> WC
     WC --> ORDERGEN
     WC -.->|daily_amount| AN
@@ -293,7 +293,7 @@ python quantpits/scripts/ensemble_fusion.py \
 - 支持多组合融合：`--from-config-all` 一次运行所有 combo，`--combo` 指定单个
 - 多组合模式生成跨组合对比表和净值对比图
 - 权重模式：`equal`（等权）/ `icir_weighted` / `manual` / `dynamic`
-- 输出融合预测 CSV 到 `output/predictions/ensemble_*.csv`
+- 输出融合预测到 Qlib Recorder 的 pred.pkl
 - 配置文件：`config/ensemble_config.json`（多 combo 结构，兼容旧格式）
 
 ### ⑤ Post-Trade 模块
@@ -366,12 +366,12 @@ python quantpits/scripts/ensemble_fusion.py \
   │ 融合预测          │                 │
   │ ensemble_fusion  │                 │
   └────────┬─────────┘                 │
-           │ ensemble_*.csv            │
+           │ 融合 Recorder          │
            ▼                           ▼
   ┌────────────────────────────────────────┐
   │ 订单生成                                │
   │ order_gen.py                           │
-  │ 输入: 预测CSV + 持仓/现金               │
+  │ 输入: 预测Recorder + 持仓/现金               │
   │ 输出: buy/sell_suggestion_*.csv        │
   └────────────────────────────────────────┘
 ```
@@ -397,8 +397,8 @@ python quantpits/scripts/ensemble_fusion.py \
 
 | 目录/文件 | 用途 |
 |-----------|------|
-| `predictions/*.csv` | 各模型和 ensemble 的预测结果（多 combo 带组合名） |
-| `predictions/rolling/` | 滚动训练预测（per-window CSV + 拼接 CSV） |
+| `(Qlib Recorders)` | 各模型和 ensemble 的预测结果（储存于 mlruns） |
+| `(Qlib Recorders)` | 滚动训练预测结果 |
 | `brute_force/` | 暴力穷举精确回测结果和分析报告 |
 | `brute_force_fast/` | 快速穷举结果 |
 | `ensemble/` | 融合配置、排行榜、图表、跨组合对比 |

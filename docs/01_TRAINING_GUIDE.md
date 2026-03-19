@@ -35,7 +35,7 @@ QuantPits/
         │   ├── model_config.json     # 日期/市场参数
         │   └── workflow_config_*.yaml# 各模型的 Qlib 工作流配置
         ├── output/
-        │   ├── predictions/          # 预测结果 CSV
+        │   ├── predictions/          # (由 Qlib Recorder 接管，存储于 mlruns)
         │   └── model_performance_*.json # 模型成绩
         ├── data/
         │   ├── history/              # 📦 自动备份的历史文件

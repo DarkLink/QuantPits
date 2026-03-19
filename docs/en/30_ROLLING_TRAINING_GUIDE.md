@@ -27,7 +27,7 @@ Rolling training is **fully independent** from static training and coexists with
 ```text
 output/
 ├── predictions/               # Static training predictions
-│   └── rolling/               # Rolling training predictions (per-window CSV + stitched CSV)
+│   └── rolling/               # Rolling training prediction records (Qlib Recorders in mlruns)
 data/
 ├── latest_train_records.json  # Static training records
 ├── latest_rolling_records.json# Rolling training records

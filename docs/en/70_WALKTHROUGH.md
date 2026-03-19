@@ -241,7 +241,6 @@ python quantpits/scripts/static_train.py --models demo_linear_Alpha158 --dry-run
 
 Key output files:
 - `latest_train_records.json` — Model training records (input for all downstream scripts)
-- `output/predictions/<model>_<date>.csv` — Per-model prediction results
 - `output/model_performance_<date>.json` — Model IC/ICIR metrics
 
 > [!NOTE]
@@ -382,7 +381,6 @@ python quantpits/scripts/ensemble_fusion.py --from-config --only-last-years 1
 ```
 
 Output files:
-- `output/predictions/ensemble_<combo>_<date>.csv` — Fused predictions
 - `output/ensemble/combo_comparison_<date>.csv` — Cross-combo comparison table
 - `output/ensemble/combo_comparison_<date>.png` — NAV comparison chart
 
