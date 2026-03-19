@@ -875,7 +875,6 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
             'mean': r_strat.mean(),
             'std': r_strat.std(),
             'annualized_return': metrics.get('CAGR', 0),
-            'annualized_excess': metrics.get('Excess_Return_CAGR', 0),
             'information_ratio': metrics.get('Information_Ratio', 0),
             'max_drawdown': metrics.get('Max_Drawdown', 0)
         })
@@ -903,6 +902,7 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
 
         # 添加到排行榜
         metrics_for_lb = risk_strat.to_dict()
+        metrics_for_lb['annualized_excess'] = metrics.get('Excess_Return_CAGR', 0)
         metrics_for_lb['name'] = 'Ensemble'
         leaderboard_data.append(metrics_for_lb)
         all_reports['Ensemble'] = report_df
