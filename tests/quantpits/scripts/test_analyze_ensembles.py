@@ -130,16 +130,17 @@ def test_main(mock_env, tmp_path):
                         
                         mock_load_pred.return_value = (norm_df, None, None)
                         
-                        with patch('quantpits.scripts.analyze_ensembles.run_single_backtest_oos') as mock_run_oos:
-                            mock_run_oos.return_value = {
-                                "models": "m1", "n_models": 1, "Ann_Ret": 0.1, "Max_DD": -0.05, "Excess_Ret": 0.01,
-                                "Ann_Excess": 0.05, "Total_Ret": 0.1, "Final_NAV": 10000, "Calmar": 2.0
-                            }
-                            with patch('builtins.print'):
-                                analyze.main()
-                                # Should run smoothly and create the outputs
-                                assert (tmp_path / "oos_multi_analysis_2020-01-01.csv").exists()
-                                assert (tmp_path / "oos_report_2020-01-01.txt").exists()
+                        with patch('quantpits.scripts.analyze_ensembles.Exchange'):
+                            with patch('quantpits.scripts.analyze_ensembles.run_single_backtest_oos') as mock_run_oos:
+                                mock_run_oos.return_value = {
+                                    "models": "m1", "n_models": 1, "Ann_Ret": 0.1, "Max_DD": -0.05, "Excess_Ret": 0.01,
+                                    "Ann_Excess": 0.05, "Total_Ret": 0.1, "Final_NAV": 10000, "Calmar": 2.0
+                                }
+                                with patch('builtins.print'):
+                                    analyze.main()
+                                    # Should run smoothly and create the outputs
+                                    assert (tmp_path / "oos_multi_analysis_2020-01-01.csv").exists()
+                                    assert (tmp_path / "oos_report_2020-01-01.txt").exists()
 
 def test_main_missing_oos_dates(mock_env, tmp_path):
     analyze, _ = mock_env
