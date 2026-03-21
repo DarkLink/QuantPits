@@ -1116,12 +1116,14 @@ def predict_single_model(model_name, model_info, params, experiment_name,
 
     # 检查模型是否存在于源记录中
     source_models = source_records.get('models', {})
-    if model_name not in source_models:
+    resolved_key = resolve_model_key(model_name, source_models, default_mode='static')
+    
+    if not resolved_key:
         result['error'] = f"模型 '{model_name}' 不在源训练记录中，无法加载已有模型"
         print(f"!!! Error: {result['error']}")
         return result
 
-    source_record_id = source_models[model_name]
+    source_record_id = source_models[resolved_key]
     source_experiment = source_records.get('experiment_name', 'Weekly_Production_Train')
 
     from qlib.utils import init_instance_by_config
@@ -1134,11 +1136,31 @@ def predict_single_model(model_name, model_info, params, experiment_name,
     try:
         # 1. 从源 recorder 加载模型
         print(f"[{model_name}] Loading model from source recorder...")
-        source_recorder = R.get_recorder(
-            recorder_id=source_record_id,
-            experiment_name=source_experiment
-        )
-        model = source_recorder.load_object("model.pkl")
+        
+        # 稳健加载：如果在当前 recorder 里没找到 model.pkl，则根据 source_record_id tag 向上溯源
+        current_id = source_record_id
+        current_exp = source_experiment
+        model = None
+        for _ in range(10):
+            source_recorder = R.get_recorder(
+                recorder_id=current_id,
+                experiment_name=current_exp
+            )
+            try:
+                model = source_recorder.load_object("model.pkl")
+                break
+            except Exception:
+                tags = source_recorder.list_tags()
+                if 'source_record_id' in tags and 'source_experiment' in tags:
+                    print(f"    [Fallback] model.pkl 不在 {current_id} 中，正在向上溯源到 {tags['source_record_id']}...")
+                    current_id = tags['source_record_id']
+                    current_exp = tags['source_experiment']
+                else:
+                    raise ValueError(f"model.pkl not found in {current_id} and no parent tags available.")
+                    
+        if model is None:
+            raise ValueError(f"Exceeded max traceback depth of 10 for {model_name}.")
+            
         print(f"[{model_name}] Model loaded successfully")
 
         # 2. 构建新的 dataset（使用新日期范围）
@@ -1175,6 +1197,10 @@ def predict_single_model(model_name, model_info, params, experiment_name,
 
                 r_obj = init_instance_by_config(r_cfg, recorder=recorder)
                 r_obj.generate()
+
+            # 重点修复：必须把模型也存入新的 recorder 里面，
+            # 否则下一个周期如果继续做仅预测，会因为上个仅预测的记录中没有 model.pkl 而失败
+            recorder.save_objects(**{"model.pkl": model})
 
             # 获取 IC 指标
             performance = {}

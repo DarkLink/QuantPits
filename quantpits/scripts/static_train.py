@@ -367,6 +367,7 @@ def run_predict_only(args, targets):
         predict_single_model,
         print_model_table,
         make_model_key,
+        resolve_model_key,
         PREDICTION_OUTPUT_DIR,
         RECORD_OUTPUT_FILE,
     )
@@ -388,8 +389,13 @@ def run_predict_only(args, targets):
 
     # 检查哪些模型在源记录中存在
     source_models = source_records.get('models', {})
-    available = {k: v for k, v in targets.items() if k in source_models}
-    missing = {k: v for k, v in targets.items() if k not in source_models}
+    available = {}
+    missing = {}
+    for k, v in targets.items():
+        if resolve_model_key(k, source_models, default_mode='static'):
+            available[k] = v
+        else:
+            missing[k] = v
 
     if missing:
         print(f"\n⚠️  以下模型不在源训练记录中，将跳过:")
@@ -466,7 +472,7 @@ def run_predict_only(args, targets):
     print("📊 Predict-Only 完成")
     print("=" * 60)
 
-    succeeded = [m for m in new_records['models']]
+    succeeded = [m for m in available if m in new_performances]
     print(f"  ✅ 成功: {len(succeeded)} 个模型")
     for name in succeeded:
         perf = new_performances.get(name, {})
@@ -474,7 +480,9 @@ def run_predict_only(args, targets):
         icir = perf.get('ICIR', 'N/A')
         ic_str = f"{ic:.4f}" if isinstance(ic, float) else ic
         icir_str = f"{icir:.4f}" if isinstance(icir, float) else icir
-        print(f"    {name}: IC={ic_str}, ICIR={icir_str}")
+        
+        model_key = make_model_key(name, 'static')
+        print(f"    {model_key}: IC={ic_str}, ICIR={icir_str}")
 
     if failed_models:
         print(f"  ❌ 失败: {len(failed_models)} 个模型")
