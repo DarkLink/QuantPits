@@ -53,8 +53,8 @@ def main():
     )
 
     # 检查文件状态
-    static_file = os.path.join(root_dir, RECORD_OUTPUT_FILE)
-    rolling_file = os.path.join(root_dir, LEGACY_ROLLING_RECORD_FILE)
+    static_file = os.path.join(root_dir, os.path.basename(RECORD_OUTPUT_FILE))
+    rolling_file = os.path.join(root_dir, os.path.basename(LEGACY_ROLLING_RECORD_FILE))
 
     print(f"\n{'='*60}")
     print("文件状态检查")

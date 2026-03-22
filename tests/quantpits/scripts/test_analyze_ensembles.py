@@ -138,9 +138,9 @@ def test_main(mock_env, tmp_path):
                                 }
                                 with patch('builtins.print'):
                                     analyze.main()
-                                    # Should run smoothly and create the outputs
-                                    assert (tmp_path / "oos_multi_analysis_2020-01-01.csv").exists()
-                                    assert (tmp_path / "oos_report_2020-01-01.txt").exists()
+                                    # Should run smoothly and create the outputs with prefix
+                                    assert (tmp_path / "brute_force_fast_oos_multi_analysis_2020-01-01.csv").exists()
+                                    assert (tmp_path / "brute_force_fast_oos_report_2020-01-01.txt").exists()
 
 def test_main_missing_oos_dates(mock_env, tmp_path):
     analyze, _ = mock_env
@@ -156,10 +156,18 @@ def test_main_missing_oos_dates(mock_env, tmp_path):
     with open(meta_path, "w") as f:
         json.dump(meta_data, f)
         
+    # Create the expected IS result file to avoid early sys.exit(1)
+    csv_path = tmp_path / "brute_force_results_2020.csv"
+    pd.DataFrame({"models": ["m1"], "Ann_Excess": [0.1], "Ann_Ret": [0.1], "Calmar": [1], "Max_DD": [-0.1], "n_models": [1]}).to_csv(csv_path, index=False)
+    
     import sys
     with patch.object(sys, 'argv', ['script.py', '--metadata', str(meta_path)]):
-        with pytest.raises(SystemExit):
+        with patch('builtins.print') as mock_print:
+            # Now it returns early instead of sys.exit
             analyze.main()
+            # Verify its warning message
+            any_warn = any("元数据中未找到有效的 OOS 数据周期" in str(arg) for call in mock_print.call_args_list for arg in call[0])
+            assert any_warn
 
 def test_main_missing_is_csv(mock_env, tmp_path):
     analyze, _ = mock_env
@@ -179,3 +187,75 @@ def test_main_missing_is_csv(mock_env, tmp_path):
     with patch.object(sys, 'argv', ['script.py', '--metadata', str(meta_path)]):
         with pytest.raises(SystemExit):
             analyze.main()
+
+def test_generate_is_visualizations(mock_env, tmp_path):
+    analyze, _ = mock_env
+    df = pd.DataFrame({
+        "models": ["m1", "m2", "m1,m2"],
+        "n_models": [1, 1, 2],
+        "Ann_Ret": [0.1, 0.2, 0.3],
+        "Ann_Excess": [0.05, 0.1, 0.15],
+        "Calmar": [1.0, 2.0, 3.0],
+        "Max_DD": [-0.1, -0.05, -0.08]
+    })
+    
+    # Mock correlation matrix for diversity bonus coverage
+    corr_df = pd.DataFrame({"m1": [1.0, 0.2], "m2": [0.2, 1.0]}, index=["m1", "m2"])
+    corr_path = tmp_path / "correlation_matrix_2020.csv"
+    corr_df.to_csv(corr_path)
+    
+    with patch('matplotlib.pyplot.savefig'):
+        res_df = analyze.generate_is_visualizations_and_report(df, str(tmp_path), "2020", prefix="test_", top_n=2)
+        assert "avg_corr" in res_df.columns
+        assert "diversity_bonus" in res_df.columns
+        assert (tmp_path / "test_analysis_report_2020.txt").exists()
+
+def test_generate_dendrogram(mock_env, tmp_path):
+    analyze, _ = mock_env
+    corr_df = pd.DataFrame({"m1": [1.0, 0.2], "m2": [0.2, 1.0]}, index=["m1", "m2"])
+    corr_path = tmp_path / "test_correlation_matrix_2020.csv"
+    corr_df.to_csv(corr_path)
+    
+    with patch('matplotlib.pyplot.savefig'):
+        analyze.generate_dendrogram(str(tmp_path), "2020", prefix="test_")
+
+def test_generate_oos_visualizations(mock_env, tmp_path):
+    analyze, _ = mock_env
+    oos_df = pd.DataFrame({
+        "Pool_Sources": ["Yield_Top", "Robust_Top"],
+        "Ann_Excess": [0.1, 0.05],
+        "Max_DD": [-0.05, -0.02]
+    })
+    with patch('matplotlib.pyplot.savefig'):
+        analyze.generate_oos_visualizations(oos_df, str(tmp_path), "2020", prefix="test_")
+
+def test_main_training_mode_filter(mock_env, tmp_path):
+    analyze, _ = mock_env
+    meta_path = tmp_path / "meta_filter.json"
+    with open(meta_path, "w") as f:
+        json.dump({
+            "anchor_date": "2020", "script_used": "brute", "freq": "day",
+            "record_file": "none", "oos_start_date": "none", "oos_end_date": "none"
+        }, f)
+    
+    csv_path = tmp_path / "brute_force_results_2020.csv"
+    pd.DataFrame({
+        "models": ["m1@static", "m1@inc"], 
+        "Ann_Excess": [0.1, 0.2], 
+        "Ann_Ret": [0.1, 0.2],
+        "Calmar": [1, 2], 
+        "Max_DD": [-0.1, -0.1], 
+        "n_models": [1, 1]
+    }).to_csv(csv_path, index=False)
+    
+    import sys
+    with patch.object(sys, 'argv', ['script.py', '--metadata', str(meta_path), '--training-mode', 'static']):
+        with patch('quantpits.scripts.analyze_ensembles.generate_is_visualizations_and_report') as mock_vis:
+            # We expect it to filter and call vis with only 1 row
+            mock_vis.return_value = pd.DataFrame() 
+            analyze.main()
+            
+            assert mock_vis.called
+            call_df = mock_vis.call_args[0][0]
+            assert len(call_df) == 1
+            assert call_df.iloc[0]["models"] == "m1@static"

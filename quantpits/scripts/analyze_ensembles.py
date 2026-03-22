@@ -90,7 +90,7 @@ def run_single_backtest_oos(
 # VISUALIZATION FUNCTIONS
 # ==========================================
 
-def generate_is_visualizations_and_report(df, metadata_dir, anchor_date, top_n=50):
+def generate_is_visualizations_and_report(df, metadata_dir, anchor_date, prefix="", top_n=50):
     print("\n📊 === 生成 IS 阶段可视化与分析报告 ===")
     
     report_lines = []
@@ -122,7 +122,7 @@ def generate_is_visualizations_and_report(df, metadata_dir, anchor_date, top_n=5
         attribution["Net_Score"] = attribution["Top_Count"] - attribution["Bottom_Count"]
         attribution = attribution.sort_values("Net_Score", ascending=False)
 
-        attr_path = os.path.join(metadata_dir, f"model_attribution_{anchor_date}.csv")
+        attr_path = os.path.join(metadata_dir, f"{prefix}model_attribution_{anchor_date}.csv")
         attribution.to_csv(attr_path)
 
         fig, ax = plt.subplots(figsize=(14, 6))
@@ -142,7 +142,7 @@ def generate_is_visualizations_and_report(df, metadata_dir, anchor_date, top_n=5
         ax.set_title(f"Model Importance Analysis (Top/Bottom {top_n} by Calmar)")
         ax.legend()
         plt.tight_layout()
-        attr_fig_path = os.path.join(metadata_dir, f"model_attribution_{anchor_date}.png")
+        attr_fig_path = os.path.join(metadata_dir, f"{prefix}model_attribution_{anchor_date}.png")
         plt.savefig(attr_fig_path, dpi=150)
         plt.close()
         print(f"归因图已保存: {attr_fig_path}")
@@ -153,7 +153,10 @@ def generate_is_visualizations_and_report(df, metadata_dir, anchor_date, top_n=5
 
     # 读取相关性矩阵并计算 avg_corr
     try:
-        corr_file = os.path.join(metadata_dir, f"correlation_matrix_{anchor_date}.csv")
+        corr_file = os.path.join(metadata_dir, f"{prefix}correlation_matrix_{anchor_date}.csv")
+        # 兼容旧版本没有任何前缀的情况
+        if not os.path.exists(corr_file):
+            corr_file = os.path.join(metadata_dir, f"correlation_matrix_{anchor_date}.csv")
         if os.path.exists(corr_file):
             corr_matrix = pd.read_csv(corr_file, index_col=0)
             
@@ -241,7 +244,7 @@ def generate_is_visualizations_and_report(df, metadata_dir, anchor_date, top_n=5
         
         summary.append("=" * 60)
         
-        report_path = os.path.join(metadata_dir, f"analysis_report_{anchor_date}.txt")
+        report_path = os.path.join(metadata_dir, f"{prefix}analysis_report_{anchor_date}.txt")
         full_report = "\n".join(summary) + "\n\n" + "\n".join(report_lines)
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(full_report)
@@ -308,7 +311,7 @@ def generate_is_visualizations_and_report(df, metadata_dir, anchor_date, top_n=5
                     ax1.set_xlabel("Avg Intra-Ensemble Correlation")
 
                 plt.tight_layout()
-                scatter_path = os.path.join(metadata_dir, f"risk_return_scatter_{anchor_date}.png")
+                scatter_path = os.path.join(metadata_dir, f"{prefix}risk_return_scatter_{anchor_date}.png")
                 plt.savefig(scatter_path, dpi=150)
                 plt.close()
                 print(f"IS 散点图已保存: {scatter_path}")
@@ -318,10 +321,12 @@ def generate_is_visualizations_and_report(df, metadata_dir, anchor_date, top_n=5
 
     return df  # Return df in case it has updated avg_corr
 
-def generate_dendrogram(metadata_dir, anchor_date):
+def generate_dendrogram(metadata_dir, anchor_date, prefix=""):
     print("\n🌳 === 生成聚类树状图 ===")
     try:
-        corr_file = os.path.join(metadata_dir, f"correlation_matrix_{anchor_date}.csv")
+        corr_file = os.path.join(metadata_dir, f"{prefix}correlation_matrix_{anchor_date}.csv")
+        if not os.path.exists(corr_file):
+            corr_file = os.path.join(metadata_dir, f"correlation_matrix_{anchor_date}.csv")
         if os.path.exists(corr_file):
             corr_matrix = pd.read_csv(corr_file, index_col=0)
             # Ward linkage expects distance, but we can feed it corr_matrix if we convert it to distance
@@ -342,7 +347,7 @@ def generate_dendrogram(metadata_dir, anchor_date):
             plt.xticks(rotation=45, ha="right")
             plt.tight_layout()
 
-            dendro_path = os.path.join(metadata_dir, f"cluster_dendrogram_{anchor_date}.png")
+            dendro_path = os.path.join(metadata_dir, f"{prefix}cluster_dendrogram_{anchor_date}.png")
             plt.savefig(dendro_path, dpi=150)
             plt.close()
             print(f"聚类图已保存: {dendro_path}")
@@ -351,7 +356,7 @@ def generate_dendrogram(metadata_dir, anchor_date):
     except Exception as e:
         print(f"聚类分析失败: {e}")
 
-def generate_oos_visualizations(oos_df, metadata_dir, anchor_date):
+def generate_oos_visualizations(oos_df, metadata_dir, anchor_date, prefix=""):
     print("\n📈 === 生成 OOS 阶段可视化分析 ===")
     try:
         fig, ax = plt.subplots(figsize=(10, 8))
@@ -373,7 +378,7 @@ def generate_oos_visualizations(oos_df, metadata_dir, anchor_date):
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
         
-        scatter_path = os.path.join(metadata_dir, f"oos_risk_return_{anchor_date}.png")
+        scatter_path = os.path.join(metadata_dir, f"{prefix}oos_risk_return_{anchor_date}.png")
         plt.savefig(scatter_path, dpi=150)
         plt.close()
         print(f"OOS 散点图已保存: {scatter_path}")
@@ -412,15 +417,17 @@ def main():
     print(f"OOS 验证周期间隔: {oos_start_date} ~ {oos_end_date}")
     print("=" * 60)
 
-    if not oos_start_date or not oos_end_date or oos_start_date == "None" or oos_end_date == "None":
-        print("❌ 错误：元数据中未找到有效的 OOS 数据周期！生成该结果时未切分 OOS。")
-        sys.exit(1)
+    has_oos = bool(oos_start_date and oos_end_date and str(oos_start_date).lower() != "none" and str(oos_end_date).lower() != "none")
+    if not has_oos:
+        print("⚠️ 警告：元数据中未找到有效的 OOS 数据周期！本次运行仅执行 IS (In-Sample) 全量分析，将跳过 OOS 验证环节。")
 
     metadata_dir = os.path.dirname(os.path.abspath(args.metadata))
     
     # 2. 读取 IS Results CSV
     if "fast" in script_used:
         results_file = os.path.join(metadata_dir, f"brute_force_fast_results_{anchor_date}.csv")
+    elif "minentropy" in script_used:
+        results_file = os.path.join(metadata_dir, f"minentropy_results_{anchor_date}.csv")
     else:
         results_file = os.path.join(metadata_dir, f"brute_force_results_{anchor_date}.csv")
 
@@ -442,13 +449,19 @@ def main():
             print("❌ 过滤后无符合条件的记录，分析终止。")
             sys.exit(0)
 
+    prefix = "" if script_used == "brute_force_ensemble" else f"{script_used.replace('_ensemble', '')}_"
+
     # 2.5 生成 IS 全量结果可视化
     try:
-        df = generate_is_visualizations_and_report(df, metadata_dir, anchor_date, top_n=args.top_n)
-        generate_dendrogram(metadata_dir, anchor_date)
+        df = generate_is_visualizations_and_report(df, metadata_dir, anchor_date, prefix=prefix, top_n=args.top_n)
+        generate_dendrogram(metadata_dir, anchor_date, prefix=prefix)
     except Exception as e:
         import traceback; traceback.print_exc()
         print(f"IS 可视化图表生成跳过/失败: {e}")
+
+    if not has_oos:
+        print("\n✅ IS 分析已完成。由于未切分 OOS 数据，后续 OOS 验证环节已跳过。")
+        return
 
     # 3. 构建多维 OOS 候选池
     print("\n📦 === 构建多维 OOS 候选池 ===")
@@ -588,11 +601,11 @@ def main():
     oos_df = pd.DataFrame(oos_results)
     oos_df = oos_df.sort_values("Ann_Excess", ascending=False)
     
-    out_csv = os.path.join(metadata_dir, f"oos_multi_analysis_{anchor_date}.csv")
+    out_csv = os.path.join(metadata_dir, f"{prefix}oos_multi_analysis_{anchor_date}.csv")
     oos_df.to_csv(out_csv, index=False)
     
     # 7. 生成 OOS 可视化散点图
-    generate_oos_visualizations(oos_df, metadata_dir, anchor_date)
+    generate_oos_visualizations(oos_df, metadata_dir, anchor_date, prefix=prefix)
 
     print("\n🏆 全维 OOS 验证成绩 (Top 15):")
     disp_cols = ["models", "Pool_Sources", "Ann_Excess", "Max_DD", "Calmar", "IS_Ann_Excess", "IS_Calmar"]
@@ -611,7 +624,7 @@ def main():
     
     print(oos_df[disp_cols].head(15).to_string(formatters=fmt))
     
-    report_path = os.path.join(metadata_dir, f"oos_report_{anchor_date}.txt")
+    report_path = os.path.join(metadata_dir, f"{prefix}oos_report_{anchor_date}.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_text)
         
