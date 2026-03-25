@@ -20,11 +20,16 @@ Both scripts automatically back up the history to `data/history/` before modifyi
 ```text
 QuantPits/
 ├── quantpits/
-│   ├── scripts/                      # Core system logic
+│   ├── scripts/                      # Core system scripts
 │   │   ├── static_train.py           # Unified static training entry point
 │   │   ├── pretrain.py               # 🧠 Base model pre-training script
-│   │   ├── check_workflow_yaml.py    # 🔧 YAML config production validation & fix
-│   │   └── train_utils.py            # Shared utility module
+│   │   └── check_workflow_yaml.py    # 🔧 YAML config production validation & fix
+│   ├── utils/                         # Shared utility modules
+│   │   ├── train_utils.py            # Date calculus, YAML injection, model registry, record merging
+│   │   ├── predict_utils.py          # Prediction data load/save
+│   │   ├── config_loader.py          # Workspace-level config loading
+│   │   ├── strategy.py               # Strategy config / backtest strategy construction
+│   │   └── ...                       # More shared modules (see System Overview)
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # This document
 │

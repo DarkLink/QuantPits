@@ -78,14 +78,14 @@ def evaluate_health():
 
     # 3. Historical Percentile Extremes (Factor Drift)
     # Evaluate 1-year historical percentiles for Barra exposures
-    past_year_60 = df_60.last("252D").dropna(subset=['Exposure_Size', 'Exposure_Momentum', 'Exposure_Volatility'])
+    past_year_60 = df_60.last("252D").dropna(subset=['Exposure_Liquidity', 'Exposure_Momentum', 'Exposure_Volatility'])
     
     print(f"DEBUG: len(past_year_60)={len(past_year_60)}")
     
     if not past_year_60.empty:
-        curr_size = past_year_60['Exposure_Size'].iloc[-1]
-        size_5th = past_year_60['Exposure_Size'].quantile(0.05)
-        size_95th = past_year_60['Exposure_Size'].quantile(0.95)
+        curr_size = past_year_60['Exposure_Liquidity'].iloc[-1]
+        size_5th = past_year_60['Exposure_Liquidity'].quantile(0.05)
+        size_95th = past_year_60['Exposure_Liquidity'].quantile(0.95)
         
         if curr_size <= size_5th:
             alerts.append(f"🔴 **极端微盘暴露**：Barra_Liquidity_Exp 滚动均值跌至 {curr_size:.2f} (突破一年内5%极低分位)。诊断：策略已严重偏离中盘基准，当前正暴露于极高的微盘股流动性风险区！")

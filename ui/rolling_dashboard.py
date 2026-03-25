@@ -75,8 +75,8 @@ def main():
     st.markdown("Monitors the OLS beta estimates of the strategy against standard Barra Proxy risk factors.")
     
     fig1 = go.Figure()
-    if 'Exposure_Size' in view_df.columns:
-        fig1.add_trace(go.Scatter(x=view_df.index, y=view_df['Exposure_Size'], mode='lines', name='Size Exp', fill='tozeroy'))
+    if 'Exposure_Liquidity' in view_df.columns:
+        fig1.add_trace(go.Scatter(x=view_df.index, y=view_df['Exposure_Liquidity'], mode='lines', name='Liquidity Exp', fill='tozeroy'))
         fig1.add_trace(go.Scatter(x=view_df.index, y=view_df['Exposure_Momentum'], mode='lines', name='Momentum Exp', fill='tozeroy'))
         fig1.add_trace(go.Scatter(x=view_df.index, y=view_df['Exposure_Volatility'], mode='lines', name='Volatility Exp', fill='tozeroy'))
         

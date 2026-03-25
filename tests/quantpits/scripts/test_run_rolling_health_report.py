@@ -38,7 +38,7 @@ def create_mock_csvs(workspace, n=70):
         "Exec_Slippage_Mean": np.random.rand(n) * 0.001,
         "Delay_Cost_Mean": np.random.rand(n) * 0.001,
         "Idiosyncratic_Alpha": np.random.rand(n) * 0.01 + 0.01,
-        "Exposure_Size": np.random.rand(n),
+        "Exposure_Liquidity": np.random.rand(n),
         "Exposure_Momentum": np.random.rand(n),
         "Exposure_Volatility": np.random.rand(n),
         "Win_Rate": [0.55] * n,
@@ -73,8 +73,8 @@ def test_evaluate_health_alerts(mock_env):
     df.loc[69, "Exec_Slippage_Mean"] = -1.0
     
     # Trigger Size Alert (Percentile < 0.05)
-    df["Exposure_Size"] = 0.5
-    df.loc[69, "Exposure_Size"] = -10.0
+    df["Exposure_Liquidity"] = 0.5
+    df.loc[69, "Exposure_Liquidity"] = -10.0
     
     # Trigger Alpha Decay (20d < 60d and < 0)
     df["Idiosyncratic_Alpha"] = 0.01

@@ -451,13 +451,20 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ## 共享工具模块
 
-`scripts/train_utils.py` 提供训练和预测模块的公共能力：
+`quantpits/utils/` 目录提供所有脚本的公共能力，避免代码重复：
 
-- **日期计算**：基于 Qlib 日历的锚点日期、窗口计算
-- **YAML 注入**：将日期参数注入 Qlib 工作流配置
-- **模型注册表**：加载和筛选 `model_registry.yaml`
-- **历史备份**：自动备份关键文件到 `data/history/`
-- **记录合并**：Merge 语义更新 `latest_train_records.json`
+| 模块 | 用途 | 服务对象 |
+|------|------|----------|
+| `train_utils.py` | 日期计算、YAML 注入、模型注册表、记录合并、历史备份 | 训练、预测 |
+| `predict_utils.py` | 预测数据加载/保存、Recorder 管理 | 预测、融合、穷举 |
+| `config_loader.py` | Workspace 级配置加载 | 全局 |
+| `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
+| `backtest_utils.py` | Qlib 回测执行与评估 | 穷举、融合、分析 |
+| `env.py` | Qlib 初始化、工作目录管理 | 全局 |
+| `ensemble_utils.py` | Ensemble 配置解析、combo 管理、记录加载 | 融合、信号排名、订单生成 |
+| `search_utils.py` | 组合搜索共享逻辑：信号处理、回测核心、IS/OOS 切分、分组穷举 | 暴力穷举(标准/快速)、最小熵搜索、组合分析 |
+| `fusion_engine.py` | 权重计算 (equal/icir/manual/dynamic)、信号融合 | 融合 |
+| `backtest_report.py` | 详尽回测分析报告生成 (复用 PortfolioAnalyzer) | 融合 |
 
 ### ⑧ 文件归档工具
 
@@ -470,7 +477,7 @@ python quantpits/scripts/ensemble_fusion.py \
 - 输出文件旧版本归档到 `archive/output/`
 - 支持 `--dry-run`、`--keep N`、`--include-notebooks`、`--cleanup-legacy`
 - **常态化使用**：每个分析周期运行后执行 `python quantpits/tools/archive_dated_files.py` 即可
-- **模型加载**：从 Qlib Recorder 加载模型和预测
+
 
 ---
 

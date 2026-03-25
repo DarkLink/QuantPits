@@ -447,13 +447,20 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 
 ## Shared Utilities
 
-`scripts/train_utils.py` provides shared capabilities for training and prediction modules:
+The `quantpits/utils/` directory provides shared capabilities for all scripts, eliminating code duplication:
 
-- **Date Calculus**: Anchor date and window evaluations based on the Qlib calendar
-- **YAML Injection**: Dynamically pushes date parameters into Qlib workflow config files
-- **Model Registry**: Parses and filters `model_registry.yaml`
-- **History Backups**: Automatically duplicates critical tables into `data/history/`
-- **Record Merging**: Safely overwrites or merges data back into `latest_train_records.json`
+| Module | Purpose | Consumers |
+|------|------|----------|
+| `train_utils.py` | Date calculus, YAML injection, model registry, record merging, history backups | Training, Prediction |
+| `predict_utils.py` | Prediction data load/save, Recorder management | Prediction, Fusion, Brute Force |
+| `config_loader.py` | Workspace-level config loading | Global |
+| `strategy.py` | Strategy config / backtest strategy construction | Brute Force, Fusion, Analysis |
+| `backtest_utils.py` | Qlib backtest execution and evaluation | Brute Force, Fusion, Analysis |
+| `env.py` | Qlib initialization, working directory management | Global |
+| `ensemble_utils.py` | Ensemble config parsing, combo management, records loading | Fusion, Signal Ranking, Order Gen |
+| `search_utils.py` | Combo search shared logic: signal handling, backtest core, IS/OOS splitting, grouped combinations | Brute Force (Standard/Fast), MinEntropy, Analysis |
+| `fusion_engine.py` | Weight calculation (equal/icir/manual/dynamic), signal fusion | Fusion |
+| `backtest_report.py` | Detailed backtest analysis reports (using PortfolioAnalyzer) | Fusion |
 
 ### ⑧ File Archiving Tool
 
@@ -466,7 +473,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 - Previous outputs migrated to `archive/output/`
 - Supports `--dry-run`, `--keep N`, `--include-notebooks`, `--cleanup-legacy`
 - **Routine use**: Just execute `python quantpits/tools/archive_dated_files.py` post-run each period
-- **Model Loading**: Interfaces gracefully with Qlib's native Recorder instances
+
 
 ---
 

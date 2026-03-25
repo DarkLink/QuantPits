@@ -47,15 +47,18 @@ def compute_rolling_metrics(windows=[60, 20], sub_window=20, market='csi300'):
         features = features.reset_index()
         features['datetime'] = pd.to_datetime(features['datetime'])
         features = features.sort_values(['instrument', 'datetime'])
-        features['size'] = np.log(features['close'] * features['volume'] + 1e-9)
-        features['momentum'] = features.groupby('instrument')['close'].pct_change(sub_window)
         features['prev_close'] = features.groupby('instrument')['close'].shift(1)
         features['ret'] = (features['close'] - features['prev_close']) / features['prev_close']
+        # Factor values use T-1 data (shift(1)) to avoid lookahead bias
+        features['liquidity'] = np.log(features['close'] * features['volume'] + 1e-9)
+        features['liquidity'] = features.groupby('instrument')['liquidity'].shift(1)
+        features['momentum'] = features.groupby('instrument')['close'].pct_change(sub_window).shift(1)
         features['volatility'] = features.groupby('instrument')['ret'].rolling(sub_window, min_periods=5).std().reset_index(0, drop=True)
-        features = features.dropna(subset=['ret', 'size', 'momentum', 'volatility'])
+        features['volatility'] = features.groupby('instrument')['volatility'].shift(1)
+        features = features.dropna(subset=['ret', 'liquidity', 'momentum', 'volatility'])
         
         factor_returns = {}
-        for factor in ['size', 'momentum', 'volatility']:
+        for factor in ['liquidity', 'momentum', 'volatility']:
             def _factor_ret(df):
                 if len(df) < 5: return 0.0
                 q_top = df[factor].quantile(0.8)
@@ -142,17 +145,17 @@ def compute_rolling_metrics(windows=[60, 20], sub_window=20, market='csi300'):
         
         # OLS
         if not aligned.empty and len(aligned) > window:
-            X = sm.add_constant(aligned[['Market', 'size', 'momentum', 'volatility']])
+            X = sm.add_constant(aligned[['Market', 'liquidity', 'momentum', 'volatility']])
             y = aligned['Portfolio']
             rolling_model = RollingOLS(y, X, window=window).fit()
             params = rolling_model.params
             results_df['Exposure_Market_Beta'] = params['Market']
-            results_df['Exposure_Size'] = params['size']
+            results_df['Exposure_Liquidity'] = params['liquidity']
             results_df['Exposure_Momentum'] = params['momentum']
             results_df['Exposure_Volatility'] = params['volatility']
             
             results_df['Beta_Return'] = params['Market'] * aligned['Market']
-            results_df['Style_Alpha'] = (params['size'] * aligned['size']) + \
+            results_df['Style_Alpha'] = (params['liquidity'] * aligned['liquidity']) + \
                                         (params['momentum'] * aligned['momentum']) + \
                                         (params['volatility'] * aligned['volatility'])
             results_df['Idiosyncratic_Alpha'] = aligned['Portfolio'] - results_df['Beta_Return'] - results_df['Style_Alpha']

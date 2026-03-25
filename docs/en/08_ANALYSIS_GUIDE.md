@@ -75,7 +75,7 @@ streamlit run ui/rolling_dashboard.py --server.port 8503
 ```
 
 - Target monitoring scopes explicitly encompass:
-  1.  **Rolling Factor Exposure**: Dynamic environments mapping stylistic scaling tracking Size matrices alongside explicit Momentum / Volatility constraints targeting deviation or concentrated parameter densities explicitly mapping.
+  1.  **Rolling Factor Exposure**: Dynamic environments mapping stylistic scaling tracking Liquidity (turnover/amount) matrices alongside explicit Momentum / Volatility constraints targeting deviation or concentrated parameter densities. Factor values use T-1 data (lagged one period) to prevent lookahead bias.
   2.  **Rolling Return Attribution**: Stacked evaluation rendering bounding discrete daily components dividing Beta mapping against authentic Style Alpha extraction arrays mapping isolated authentic unassociated Idiosyncratic Alpha variables strictly.
 
 ### 5. Automated Rolling Health Report
@@ -92,7 +92,7 @@ python quantpits/scripts/run_rolling_health_report.py
 This routine triggers bounding output mapped specifically generating `output/rolling_health_report.md` structures explicitly evaluating 3-stage multi-criteria alerts native architectures dynamically mapping explicit boundary exceptions explicitly tracking:
 1. **Z-Score Exclusion Boundaries (Friction limits)**: Real-time checks identifying explicitly whether immediate operational parameters suffer explicit gap constraint deviances exceeding negative parameters trailing past average 60-day scopes bounding variance distributions explicitly triggering structured system alerts natively identifying structural execution failures dynamically.
 2. **Moving Average Deviances (Alpha Decay)**: Calculates utilizing 5-day explicit short intervals identifying immediate Idio Alpha collapses beneath 60-day Idio matrices explicitly mapping native algorithm degradation identifiers indicating total baseline component failure scaling trajectories directly mapped explicitly.
-3. **Threshold Boundary Ruptures (Factor Drift)**: Diagnostic routines evaluating discrete stylistic matrices like exact Size representations bounding against explicit trailing historical representations mapping exact highest bounds evaluating explicit constraint triggers identifying native market structure anomalies dynamically indicating explicit neutral mapping extraction imperatives dynamically.
+3. **Threshold Boundary Ruptures (Factor Drift)**: Diagnostic routines evaluating discrete stylistic matrices like Liquidity (turnover/amount) representations bounding against explicit trailing historical representations mapping exact highest bounds evaluating explicit constraint triggers identifying native market structure anomalies dynamically indicating explicit neutral mapping extraction imperatives dynamically.
 
 ### 6. Generating a Shareable Report
 

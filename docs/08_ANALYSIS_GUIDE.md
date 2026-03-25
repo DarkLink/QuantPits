@@ -75,7 +75,7 @@ streamlit run ui/rolling_dashboard.py --server.port 8503
 ```
 
 - 该看板包含四大滚动监控模块：
-  1. **风格漂移监控 (Rolling Factor Exposure)**：动态揭示策略在 Size、Momentum、Volatility 等因子上的拥挤或偏离度。
+  1. **风格漂移监控 (Rolling Factor Exposure)**：动态揭示策略在 Liquidity（流动性/成交额）、Momentum、Volatility 等因子上的拥挤或偏离度。因子值均采用 T-1 日数据（滞后一期），避免未来函数偏差。
   2. **阿尔法生命周期 (Rolling Return Attribution)**：堆叠柱状图，将每日收益明确切分为 Beta、Style Alpha 和纯粹的不跟风 Idiosyncratic Alpha。
 ### 5. 自动化滚动异常体检报告 (Automated Rolling Health Report)
 
@@ -91,7 +91,7 @@ python quantpits/scripts/run_rolling_health_report.py
 这将在 `output/rolling_health_report.md` 生成最新的状态报文，其引擎内部会执行以下三级异常监测：
 1. **Z-Score 异常检测 (Friction limits)**：实时判定系统在最近一个分析周期的数据与持仓之后，快速验证系统健康度和组合多样性。
 2. **均线死叉断层 (Alpha Decay)**：利用最近 5 天平滑的短期 Idio Alph 下穿 60 日 Idio Alpha（死跌入水下），定性判断底层模型的纯净选股能力是否正在面临彻底失效与断层衰减。
-3. **极小/极大历史分位突破 (Factor Drift)**：判断最新的诸如 Size (市值)、Momentum 因子 Beta 的值，是否突破了这台策略一年历史环境以来的 5% 深水重灾极点。如果触及极高极低边界，会提出强制风格因子中性化的抢救建议。
+3. **极小/极大历史分位突破 (Factor Drift)**：判断最新的诸如 Liquidity（流动性）、Momentum 因子 Beta 的值，是否突破了这台策略一年历史环境以来的 5% 深水重灾极点。如果触及极高极低边界，会提出强制风格因子中性化的抢救建议。
 
 ### 6. 生成可分享报告 (Generating a Shareable Report)
 
@@ -150,7 +150,7 @@ python quantpits/scripts/run_analysis.py --models gru_Alpha158 --shareable --out
   - **Max / Avg Time under Water Days**：资产在创下某一个历史新高后，随后的连跌或震荡导致它“直到重新突破前高”所耗费的交易日数量。
   - **Days Below Initial Capital**：即资产跌破初始本金的真实亏损天数，与水下时间配合服用，可判别“横盘期”与“实亏期”。
 - **Barra 风格暴露 (Proxy Style Exposures)**：
-  - 基于实际资产日收益对简单的 Barra 代理特征 (Size, Momentum, Volatility) 进行横截面回归。若某一项系数绝对值异常偏高（例如 Size 远负于 -0.5 等），说明策略严重暴露于某些市值/热度因子陷阱中。
+  - 基于实际资产日收益对简单的 Barra 代理特征 (Liquidity 流动性/成交额, Momentum, Volatility) 进行横截面回归。因子值采用 T-1 日数据（滞后一期），避免使用当天收盘价决定当天持仓的未来函数偏差。注意：Liquidity 因子使用 `log(close × volume)` 计算，代表的是成交额/流动性，而非市值（市值需要总股本数据）。若某一项系数绝对值异常偏高，说明策略严重暴露于某些流动性/热度因子陷阱中。
 - **Performance Attribution (收益归因分析)**：
   - 在大类因子暴露回归分析的基础上，进一步将模型的总 CAGR 等权重拆分。**明确：此计算为粗略的线性工程近似，存在一定的归因残差，仅作趋势参考，不可作为严格的风险审计依据。**
   - **Beta Return**：源于纯粹跟踪大盘 Beta (比如市场涨了，你也随之被动涨出的收益部分)。

@@ -20,11 +20,16 @@
 ```text
 QuantPits/
 ├── quantpits/
-│   ├── scripts/                      # 系统核心代码
+│   ├── scripts/                      # 系统核心脚本
 │   │   ├── static_train.py           # 静态训练统一入口（全量/增量/仅预测）
 │   │   ├── pretrain.py               # 🧠 基础模型预训练脚本
-│   │   ├── check_workflow_yaml.py    # 🔧 YAML配置生产环境参数验证
-│   │   └── train_utils.py            # 共享工具模块
+│   │   └── check_workflow_yaml.py    # 🔧 YAML配置生产环境参数验证
+│   ├── utils/                         # 共享工具模块
+│   │   ├── train_utils.py            # 日期计算、YAML 注入、模型注册表、记录合并
+│   │   ├── predict_utils.py          # 预测数据加载/保存
+│   │   ├── config_loader.py          # Workspace 级配置加载
+│   │   ├── strategy.py               # 策略配置/回测策略构建
+│   │   └── ...                       # 更多共享模块（详见系统总览）
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # 本文档
 │
