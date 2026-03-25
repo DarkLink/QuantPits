@@ -141,8 +141,7 @@ def test_generate_signal_scores_constant(mock_env):
     assert res_df["推荐指数"].iloc[0] == 0.0
 
 # ── get_prediction_from_recorder ─────────────────────────────────────────
-@patch('qlib.workflow.R.get_recorder')
-def test_get_prediction_from_recorder(mock_get_recorder, mock_env):
+def test_get_prediction_from_recorder(mock_env):
     sr, workspace = mock_env
     config_file = workspace / "config" / "ensemble_records.json"
     
@@ -158,16 +157,19 @@ def test_get_prediction_from_recorder(mock_get_recorder, mock_env):
     # Mock recorder returns a dummy series
     mock_rec = MagicMock()
     mock_rec.load_object.return_value = pd.Series([1.0], name='score')
-    mock_get_recorder.return_value = mock_rec
-    
-    # Generic default
-    df, rid = sr.get_prediction_from_recorder(combo_name=None)
-    assert rid == "rec123"
-    assert "score" in df.columns
-    
-    # Specific combo
-    df, rid = sr.get_prediction_from_recorder(combo_name="combo_B")
-    assert rid == "rec456"
+
+    mock_R = MagicMock()
+    mock_R.get_recorder.return_value = mock_rec
+
+    with patch('qlib.workflow.R', mock_R):
+        # Generic default
+        df, rid = sr.get_prediction_from_recorder(combo_name=None)
+        assert rid == "rec123"
+        assert "score" in df.columns
+        
+        # Specific combo
+        df, rid = sr.get_prediction_from_recorder(combo_name="combo_B")
+        assert rid == "rec456"
 
 def test_get_prediction_from_recorder_not_found(mock_env):
     sr, workspace = mock_env

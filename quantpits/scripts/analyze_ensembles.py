@@ -37,51 +37,12 @@ def run_single_backtest_oos(
     combo_models, norm_df, top_k, drop_n, benchmark, freq,
     trade_exchange, bt_start, bt_end, st_config=None, bt_config=None
 ):
-    """单独运行一次标准回测，用于 OOS 精确验证"""
-    if st_config is None:
-        st_config = strategy.load_strategy_config()
-    if bt_config is None:
-        bt_config = strategy.get_backtest_config(st_config)
-
-    # 1. 合成信号
-    combo_score = norm_df[list(combo_models)].dropna(how='any').mean(axis=1)
-
-    import copy
-    st_config = copy.deepcopy(st_config)
-    st_config["strategy"]["params"]["topk"] = top_k
-    st_config["strategy"]["params"]["n_drop"] = drop_n
-
-    strategy_inst = strategy.create_backtest_strategy(combo_score, st_config)
-
-    # 2. 回测
-    try:
-        report, _ = run_backtest_with_strategy(
-            strategy_inst=strategy_inst,
-            trade_exchange=trade_exchange,
-            freq=freq,
-            account_cash=bt_config["account"],
-            bt_start=bt_start,
-            bt_end=bt_end
-        )
-
-        st_config_inner = strategy.load_strategy_config()
-        benchmark_col = st_config_inner.get('benchmark', 'SH000300')
-        metrics = standard_evaluate_portfolio(report, benchmark_col, freq)
-
-        return {
-            "models": ",".join(combo_models),
-            "n_models": len(combo_models),
-            "Ann_Ret": metrics.get("CAGR", 0),
-            "Max_DD": metrics.get("Max_Drawdown", 0),
-            "Excess_Ret": metrics.get("Absolute_Return", 0) - metrics.get("Benchmark_Absolute_Return", 0),
-            "Ann_Excess": metrics.get("Excess_Return_CAGR", 0),
-            "Total_Ret": metrics.get("Absolute_Return", 0),
-            "Final_NAV": report.iloc[-1]["account"],
-            "Calmar": metrics.get("Calmar", 0) if pd.notna(metrics.get("Calmar")) else 0,
-        }
-    except Exception as e:
-        print(f"  [ERROR] Combo {combo_models} failed: {e}")
-        return None
+    """单独运行一次标准回测，用于 OOS 精确验证 (委托给 search_utils)"""
+    from quantpits.utils.search_utils import run_single_backtest
+    return run_single_backtest(
+        combo_models, norm_df, top_k, drop_n, benchmark, freq,
+        trade_exchange, bt_start, bt_end, st_config, bt_config
+    )
 
 
 

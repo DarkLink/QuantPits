@@ -602,7 +602,7 @@ def test_run_detailed_backtest_analysis(mock_pa, tmp_path):
     mock_pa_inst = mock_pa.return_value
     mock_pa_inst.calculate_traditional_metrics.return_value = {"CAGR": 0.5}
     mock_pa_inst.calculate_factor_exposure.return_value = {"Beta_Market": 1.1}
-    mock_pa_inst.calculate_style_exposures.return_value = {"Barra_Size_Exp": 0.1}
+    mock_pa_inst.calculate_style_exposures.return_value = {"Barra_Liquidity_Exp": 0.1}
     mock_pa_inst.calculate_holding_metrics.return_value = {
         "Avg_Daily_Holdings_Count": 5,
         "Avg_Top1_Concentration": 0.1,
@@ -870,7 +870,7 @@ def test_run_detailed_backtest_analysis_metrics_calc(mock_env, tmp_path):
         pa_inst.calculate_traditional_metrics.return_value = {"CAGR": 0.1, "Benchmark_CAGR": 0.05}
         pa_inst.calculate_factor_exposure.return_value = {"Beta_Market": 1.0}
         pa_inst.calculate_style_exposures.return_value = {
-            "Barra_Size_Exp": 0.1, "Barra_Momentum_Exp": 0.2, "Barra_Volatility_Exp": 0.3,
+            "Barra_Liquidity_Exp": 0.1, "Barra_Momentum_Exp": 0.2, "Barra_Volatility_Exp": 0.3,
             "Factor_Annualized": {"size": 0.01, "momentum": 0.02, "volatility": 0.03},
             "Multi_Factor_Intercept": 0.01
         }

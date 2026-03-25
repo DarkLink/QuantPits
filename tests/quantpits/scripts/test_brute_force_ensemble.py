@@ -216,18 +216,21 @@ def test_signal_handlers(mock_env):
 
 def test_signal_handler_sets_shutdown(mock_env):
     bfe, _ = mock_env
-    import quantpits.scripts.brute_force_ensemble as bfe_mod
-    bfe_mod._shutdown = False
+    import quantpits.utils.search_utils as _su
+    _su._shutdown = False
     
     with patch('builtins.print') as mock_print:
         bfe._signal_handler(2, None)  # SIGINT = 2
-        assert bfe_mod._shutdown is True
+        assert _su._shutdown is True
         assert any("安全退出" in str(call) for call in mock_print.call_args_list)
 
     # Second call exits (lines 81-82)
     with patch('sys.exit') as mock_exit:
         bfe._signal_handler(2, None)
         mock_exit.assert_called_with(1)
+    
+    # Reset for other tests
+    _su._shutdown = False
 
 # ── _append_results_to_csv ───────────────────────────────────────────────
 def test_append_results_to_csv(mock_env, tmp_path):
@@ -488,6 +491,7 @@ def test_brute_force_backtest_resume(mock_run_bt, mock_exchange, mock_env, tmp_p
 @patch('quantpits.scripts.brute_force_ensemble.run_single_backtest')
 def test_brute_force_backtest_shutdown_signal(mock_run_bt, mock_exchange, mock_env, tmp_path):
     bfe, _ = mock_env
+    import quantpits.utils.search_utils as _su
     out_dir = str(tmp_path / "output")
     os.makedirs(out_dir, exist_ok=True)
     
@@ -497,8 +501,7 @@ def test_brute_force_backtest_shutdown_signal(mock_run_bt, mock_exchange, mock_e
     
     def side_effect_run_bt(combo, *args, **kwargs):
         # Trigger shutdown during the first model evaluation
-        import quantpits.scripts.brute_force_ensemble as bfe_mod
-        bfe_mod._shutdown = True
+        _su._shutdown = True
         return {
             "models": ",".join(combo), "n_models": len(combo), "Ann_Ret": 0.1, "Max_DD": -0.05,
             "Excess_Ret": 0.05, "Ann_Excess": 0.05, "Total_Ret": 0.1, "Final_NAV": 110000, "Calmar": 2.0
@@ -514,10 +517,9 @@ def test_brute_force_backtest_shutdown_signal(mock_run_bt, mock_exchange, mock_e
     
     # Due to shutdown, only 1 result should be captured and loop should break early
     assert len(results) == 1
-    import quantpits.scripts.brute_force_ensemble as bfe_mod
-    assert bfe_mod._shutdown is True
+    assert _su._shutdown is True
     # Reset for other tests
-    bfe_mod._shutdown = False
+    _su._shutdown = False
 
 @patch('quantpits.scripts.brute_force_ensemble.init_qlib')
 @patch('quantpits.scripts.brute_force_ensemble.load_config')

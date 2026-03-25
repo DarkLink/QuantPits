@@ -304,9 +304,9 @@ class PortfolioAnalyzer:
         X = sm.add_constant(aligned['Market'])
         model = sm.OLS(aligned['Portfolio'], X).fit()
         
-        # Use period-based years for consistency with metrics
-        years = len(aligned) / self.periods_per_year
-        alpha = (1.0 + model.params['const']) ** self.periods_per_year - 1.0
+        # OLS intercept is an arithmetic daily mean; annualize arithmetically
+        # to stay consistent with the multi-factor model.
+        alpha = model.params['const'] * self.periods_per_year
         beta = model.params['Market']
         
         return {
@@ -317,7 +317,10 @@ class PortfolioAnalyzer:
 
     def calculate_style_exposures(self, market=None):
         """
-        Regress daily returns against proxy style factors (Size, Momentum, Volatility).
+        Regress daily returns against proxy style factors (Liquidity, Momentum, Volatility).
+        Factor values are lagged by 1 day (T-1) to avoid lookahead bias.
+        Note: 'Liquidity' uses log(close*volume) as a proxy; this is turnover/amount,
+        not market capitalization (which requires total_shares data).
         market 默认从 model_config.json 读取。
         """
         if market is None:
@@ -344,18 +347,23 @@ class PortfolioAnalyzer:
         features['datetime'] = pd.to_datetime(features['datetime'])
         
         features = features.sort_values(['instrument', 'datetime'])
-        features['size'] = np.log(features['close'] * features['volume'] + 1e-9)
-        features['momentum'] = features.groupby('instrument')['close'].pct_change(20)
         
+        # Calculate daily returns first (no lag needed, this is the dependent variable)
         features['prev_close'] = features.groupby('instrument')['close'].shift(1)
         features['ret'] = (features['close'] - features['prev_close']) / features['prev_close']
         
+        # Factor values use T-1 data (shift(1)) to avoid lookahead bias:
+        # We use yesterday's factor scores to explain today's returns.
+        features['liquidity'] = np.log(features['close'] * features['volume'] + 1e-9)
+        features['liquidity'] = features.groupby('instrument')['liquidity'].shift(1)
+        features['momentum'] = features.groupby('instrument')['close'].pct_change(20).shift(1)
         features['volatility'] = features.groupby('instrument')['ret'].rolling(20, min_periods=5).std().reset_index(0, drop=True)
+        features['volatility'] = features.groupby('instrument')['volatility'].shift(1)
         
-        features = features.dropna(subset=['ret', 'size', 'momentum', 'volatility'])
+        features = features.dropna(subset=['ret', 'liquidity', 'momentum', 'volatility'])
         
         factor_returns = {}
-        for factor in ['size', 'momentum', 'volatility']:
+        for factor in ['liquidity', 'momentum', 'volatility']:
             # top 20% minus bottom 20%
             def _factor_ret(df):
                 if len(df) < 5:
@@ -397,13 +405,13 @@ class PortfolioAnalyzer:
         if len(aligned) < 2:
             return {}
             
-        X = sm.add_constant(aligned[['Market', 'size', 'momentum', 'volatility']])
+        X = sm.add_constant(aligned[['Market', 'liquidity', 'momentum', 'volatility']])
         model = sm.OLS(aligned.iloc[:, 0], X).fit()
         
         return {
             'Multi_Factor_Intercept': float(model.params.get('const', 0)) * self.periods_per_year,
             'Multi_Factor_Beta': float(model.params.get('Market', 0)),
-            'Barra_Size_Exp': float(model.params.get('size', 0)),
+            'Barra_Liquidity_Exp': float(model.params.get('liquidity', 0)),
             'Barra_Momentum_Exp': float(model.params.get('momentum', 0)),
             'Barra_Volatility_Exp': float(model.params.get('volatility', 0)),
             'Barra_Style_R_Squared': float(model.rsquared),

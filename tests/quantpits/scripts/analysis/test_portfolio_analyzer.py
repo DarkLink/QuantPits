@@ -146,7 +146,7 @@ def test_calculate_style_exposures(mock_get_features):
 
     if metrics:  # It might still be empty if the mocked random data yields no overlap
         assert "Multi_Factor_Intercept" in metrics
-        assert "Barra_Size_Exp" in metrics
+        assert "Barra_Liquidity_Exp" in metrics
         assert "Barra_Style_R_Squared" in metrics
 
 

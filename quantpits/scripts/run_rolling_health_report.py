@@ -88,10 +88,10 @@ def evaluate_health():
         size_95th = past_year_60['Exposure_Size'].quantile(0.95)
         
         if curr_size <= size_5th:
-            alerts.append(f"🔴 **极端微盘暴露**：Barra_Size_Exp 滚动均值跌至 {curr_size:.2f} (突破一年内5%极低分位)。诊断：策略已严重偏离中盘基准，当前正暴露于极高的微盘股流动性风险区！")
+            alerts.append(f"🔴 **极端微盘暴露**：Barra_Liquidity_Exp 滚动均值跌至 {curr_size:.2f} (突破一年内5%极低分位)。诊断：策略已严重偏离中盘基准，当前正暴露于极高的微盘股流动性风险区！")
             recommendations.append("[因子剥离]：建议在模型融合训练层面加入 Size 因子中性化约束，强行斩断针对流通市值的过度拥挤偏好。")
         elif curr_size >= size_95th:
-            alerts.append(f"🔴 **大盘股超载**：Barra_Size_Exp 攀升至 {curr_size:.2f} (突破一年内95%极高分位)。诊断：风格向权重蓝筹严重漂移。")
+            alerts.append(f"🔴 **大盘股超载**：Barra_Liquidity_Exp 攀升至 {curr_size:.2f} (突破一年内95%极高分位)。诊断：风格向权重蓝筹严重漂移。")
 
         # Win Rate Trend
         past_20_wr = df_20['Win_Rate'].dropna()

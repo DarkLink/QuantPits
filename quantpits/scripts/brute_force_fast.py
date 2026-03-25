@@ -350,43 +350,9 @@ def prepare_matrices(norm_df, returns_wide, common_dates):
 
 
 def split_is_oos_by_args(norm_df, args):
-    """根据参数将 norm_df 划分为 IS (In-Sample) 和 OOS (Out-of-Sample)"""
-    start_date = pd.to_datetime(args.start_date) if args.start_date else None
-    
-    dates = norm_df.index.get_level_values("datetime").unique().sort_values()
-    max_date = dates.max()
-    
-    cutoff_date = max_date
-    if args.exclude_last_years > 0:
-        cutoff_date = cutoff_date - pd.DateOffset(years=args.exclude_last_years)
-    if args.exclude_last_months > 0:
-        cutoff_date = cutoff_date - pd.DateOffset(months=args.exclude_last_months)
-        
-    end_date = pd.to_datetime(args.end_date) if args.end_date else None
-    if end_date and end_date < cutoff_date:
-        cutoff_date = end_date
-        
-    is_mask = norm_df.index.get_level_values("datetime") <= cutoff_date
-    if start_date:
-        is_mask &= norm_df.index.get_level_values("datetime") >= start_date
-        
-    is_norm_df = norm_df[is_mask]
-    
-    oos_mask = norm_df.index.get_level_values("datetime") > cutoff_date
-    oos_norm_df = norm_df[oos_mask]
-    
-    print(f"\n=== 数据集划分 (In-Sample / Out-Of-Sample) ===")
-    if not is_norm_df.empty:
-        print(f"IS 期  : {is_norm_df.index.get_level_values('datetime').min().date()} ~ {is_norm_df.index.get_level_values('datetime').max().date()} (共 {len(is_norm_df.index.get_level_values('datetime').unique())} 天)")
-    else:
-        print("IS 期  : 无数据")
-        
-    if not oos_norm_df.empty:
-        print(f"OOS 期 : {oos_norm_df.index.get_level_values('datetime').min().date()} ~ {oos_norm_df.index.get_level_values('datetime').max().date()} (共 {len(oos_norm_df.index.get_level_values('datetime').unique())} 天)")
-    else:
-        print("OOS 期 : 无数据")
-        
-    return is_norm_df, oos_norm_df
+    """根据参数将 norm_df 划分为 IS 和 OOS，委托给 search_utils"""
+    from quantpits.utils.search_utils import split_is_oos_by_args as _split
+    return _split(norm_df, args)
 
 
 # ============================================================================
@@ -416,83 +382,15 @@ def correlation_analysis(norm_df, output_dir, anchor_date):
 # ============================================================================
 
 def load_combo_groups(group_config_path, available_models):
-    """
-    加载分组配置，验证模型名，返回有效分组。
-
-    Args:
-        group_config_path: combo_groups.yaml 路径
-        available_models: 当前加载到的模型列表 (norm_df.columns)
-
-    Returns:
-        groups: dict, group_name -> list of valid model names
-    """
-    with open(group_config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-
-    raw_groups = cfg.get("groups", {})
-    if not raw_groups:
-        raise ValueError(f"分组配置为空: {group_config_path}")
-
-    available_set = set(available_models)
-    groups = {}
-    skipped_models = []
-
-    for gname, models in raw_groups.items():
-        valid = [m for m in models if m in available_set]
-        invalid = [m for m in models if m not in available_set]
-        if invalid:
-            skipped_models.extend(invalid)
-            print(f"  ⚠️  组 [{gname}] 中以下模型不存在于预测数据中，已忽略: {invalid}")
-        if valid:
-            groups[gname] = valid
-        else:
-            print(f"  ⚠️  组 [{gname}] 无有效模型，已跳过")
-
-    if skipped_models:
-        print(f"  共忽略 {len(skipped_models)} 个无效模型")
-
-    # 检查未分组的模型 (仅打印提示，不自动参与)
-    grouped_models = set()
-    for models in groups.values():
-        grouped_models.update(models)
-    ungrouped = available_set - grouped_models
-    if ungrouped:
-        print(f"  ℹ️  以下模型未在任何分组中，将被排除: {sorted(ungrouped)}")
-
-    return groups
+    """加载分组配置，委托给 search_utils"""
+    from quantpits.utils.search_utils import load_combo_groups as _load
+    return _load(group_config_path, available_models)
 
 
 def generate_grouped_combinations(groups, min_combo_size=1, max_combo_size=0):
-    """
-    基于分组生成组合：从所有组的子集中，每组选一个模型，做笛卡尔积。
-
-    为支持 min/max combo size，我们枚举组的子集（选哪些组参与），
-    然后对参与的组做 itertools.product。
-
-    Args:
-        groups: dict, group_name -> list of models
-        min_combo_size: 最小组合大小 (选几个组)
-        max_combo_size: 最大组合大小 (0=全部组)
-
-    Returns:
-        list of tuples, 每个 tuple 是一个模型组合
-    """
-    group_names = list(groups.keys())
-    n_groups = len(group_names)
-    max_size = max_combo_size if max_combo_size > 0 else n_groups
-    max_size = min(max_size, n_groups)
-
-    all_combinations = []
-
-    # 枚举选哪些组参与 (选 r 个组的组合)
-    for r in range(min_combo_size, max_size + 1):
-        for group_subset in itertools.combinations(group_names, r):
-            # 对选中的组做笛卡尔积
-            model_lists = [groups[g] for g in group_subset]
-            for combo in itertools.product(*model_lists):
-                all_combinations.append(combo)
-
-    return all_combinations
+    """基于分组生成组合，委托给 search_utils"""
+    from quantpits.utils.search_utils import generate_grouped_combinations as _gen
+    return _gen(groups, min_combo_size, max_combo_size)
 
 
 # ============================================================================

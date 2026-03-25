@@ -377,7 +377,7 @@ class TestFactorExposure:
         X = sm.add_constant(aligned["Market"])
         model_ref = sm.OLS(aligned["Portfolio"], X).fit()
 
-        expected_alpha = (1.0 + model_ref.params["const"]) ** 252 - 1.0
+        expected_alpha = model_ref.params["const"] * 252
         expected_beta = model_ref.params["Market"]
         expected_r2 = model_ref.rsquared
 
@@ -442,7 +442,7 @@ class TestFactorExposure:
             model_ref = sm.OLS(aligned["Portfolio"], X).fit()
 
             assert np.isclose(result["Beta_Market"], model_ref.params["Market"], atol=1e-10)
-            expected_alpha = (1.0 + model_ref.params["const"]) ** 252 - 1.0
+            expected_alpha = model_ref.params["const"] * 252
             assert np.isclose(result["Annualized_Alpha"], expected_alpha, atol=1e-10)
             assert np.isclose(result["R_Squared"], model_ref.rsquared, atol=1e-10)
 
@@ -554,18 +554,20 @@ class TestStyleExposures:
             # Not enough aligned data after rolling operations — pass silently.
             return
 
-        # Independent verification: replicate factor construction
+        # Independent verification: replicate factor construction with T-1 lag
         feat = mock_features.sort_values(["instrument", "datetime"]).copy()
-        feat["size"] = np.log(feat["close"] * feat["volume"] + 1e-9)
-        feat["momentum"] = feat.groupby("instrument")["close"].pct_change(20)
         feat["prev_close"] = feat.groupby("instrument")["close"].shift(1)
         feat["ret"] = (feat["close"] - feat["prev_close"]) / feat["prev_close"]
+        feat["liquidity"] = np.log(feat["close"] * feat["volume"] + 1e-9)
+        feat["liquidity"] = feat.groupby("instrument")["liquidity"].shift(1)
+        feat["momentum"] = feat.groupby("instrument")["close"].pct_change(20).shift(1)
         feat["volatility"] = feat.groupby("instrument")["ret"].rolling(20, min_periods=5).std().reset_index(0, drop=True)
-        feat = feat.dropna(subset=["ret", "size", "momentum", "volatility"])
+        feat["volatility"] = feat.groupby("instrument")["volatility"].shift(1)
+        feat = feat.dropna(subset=["ret", "liquidity", "momentum", "volatility"])
 
         # Factor returns: long-short top/bottom 20%
         factor_returns = {}
-        for factor in ["size", "momentum", "volatility"]:
+        for factor in ["liquidity", "momentum", "volatility"]:
             def _factor_ret(df, f=factor):
                 if len(df) < 5:
                     return 0.0
@@ -599,11 +601,11 @@ class TestStyleExposures:
             return
 
         aligned.columns = ["Portfolio", "Market"] + list(factor_df.columns)
-        X = sm.add_constant(aligned[["Market", "size", "momentum", "volatility"]])
+        X = sm.add_constant(aligned[["Market", "liquidity", "momentum", "volatility"]])
         model_ref = sm.OLS(aligned["Portfolio"], X).fit()
 
         assert np.isclose(result["Multi_Factor_Beta"], model_ref.params.get("Market", 0), atol=1e-8)
-        assert np.isclose(result["Barra_Size_Exp"], model_ref.params.get("size", 0), atol=1e-8)
+        assert np.isclose(result["Barra_Liquidity_Exp"], model_ref.params.get("liquidity", 0), atol=1e-8)
         assert np.isclose(result["Barra_Momentum_Exp"], model_ref.params.get("momentum", 0), atol=1e-8)
         assert np.isclose(result["Barra_Volatility_Exp"], model_ref.params.get("volatility", 0), atol=1e-8)
         assert np.isclose(result["Barra_Style_R_Squared"], model_ref.rsquared, atol=1e-8)

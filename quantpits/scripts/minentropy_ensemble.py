@@ -34,14 +34,17 @@ import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 
-from quantpits.scripts.brute_force_ensemble import (
+from quantpits.utils.search_utils import (
     _install_signal_handlers, _restore_signal_handlers, _signal_handler,
-    init_qlib, load_config, load_predictions, split_is_oos_by_args,
-    correlation_analysis, run_single_backtest, _append_results_to_csv
+    run_single_backtest, _append_results_to_csv,
+    split_is_oos_by_args,
+)
+from quantpits.scripts.brute_force_ensemble import (
+    init_qlib, load_config, load_predictions, correlation_analysis,
 )
 
-# 借用 brute_force 中的 _shutdown
-import quantpits.scripts.brute_force_ensemble as bfe_module
+# 使用 search_utils 的 _shutdown 状态
+import quantpits.utils.search_utils as _su
 
 def minentropy_backtest(
     norm_df, top_k, drop_n, benchmark, freq,
@@ -51,7 +54,7 @@ def minentropy_backtest(
     """
     基于 mRMR (Minimum Redundancy Maximum Relevance) 计算候选集，然后回测。
     """
-    bfe_module._shutdown = False
+    _su._shutdown = False
     
     # 强制确保索引名称正确，防止某些操作导致名称丢失
     if not norm_df.empty:
@@ -213,7 +216,7 @@ def minentropy_backtest(
 
         try:
             for batch_start in range(0, len(pending), batch_size):
-                if bfe_module._shutdown:
+                if _su._shutdown:
                     break
 
                 batch = pending[batch_start : batch_start + batch_size]
@@ -230,7 +233,7 @@ def minentropy_backtest(
                     }
 
                     for future in as_completed(future_to_combo):
-                        if bfe_module._shutdown:
+                        if _su._shutdown:
                             pass
                         try:
                             res = future.result()
@@ -249,7 +252,7 @@ def minentropy_backtest(
                 del batch_results
                 gc.collect()
 
-                if bfe_module._shutdown:
+                if _su._shutdown:
                     break
 
         finally:
@@ -257,7 +260,7 @@ def minentropy_backtest(
             _restore_signal_handlers()
             qlib_log.setLevel(original_level)
 
-        if bfe_module._shutdown:
+        if _su._shutdown:
             print(f"\n⚠️  已安全中断！")
             print(f"   已完成: {completed_count}/{total_count} 组合")
             print(f"   结果保存至: {csv_path}")

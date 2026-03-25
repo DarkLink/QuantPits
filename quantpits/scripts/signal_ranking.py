@@ -56,7 +56,7 @@ ENSEMBLE_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "ensemble_config.json")
 
 
 # ============================================================================
-# 配置解析 (复用 ensemble_fusion.py 的逻辑)
+# 配置解析 (委托给 ensemble_utils)
 # ============================================================================
 def parse_ensemble_config(config_file=None):
     """
@@ -75,29 +75,15 @@ def parse_ensemble_config(config_file=None):
     with open(_config_file, 'r') as f:
         config = json.load(f)
 
-    if 'combos' in config:
-        return config['combos']
-    elif 'models' in config:
-        # 旧格式
-        return {
-            'legacy': {
-                'models': config['models'],
-                'method': config.get('ensemble_method', 'equal'),
-                'default': True,
-            }
-        }
-    return {}
+    from quantpits.utils.ensemble_utils import parse_ensemble_config as _parse
+    combos, _ = _parse(config)
+    return combos
 
 
 def get_default_combo(combos):
     """返回 default combo 的 (name, config)"""
-    for name, cfg in combos.items():
-        if cfg.get('default', False):
-            return name, cfg
-    if combos:
-        first_name = next(iter(combos))
-        return first_name, combos[first_name]
-    return None, None
+    from quantpits.utils.ensemble_utils import get_default_combo as _get
+    return _get(combos)
 
 
 # ============================================================================
@@ -152,25 +138,11 @@ def get_prediction_from_recorder(combo_name=None):
     从 Qlib Recorder 获取预测数据。
     """
     from qlib.workflow import R
-    ensemble_records_file = os.path.join(ROOT_DIR, "config", "ensemble_records.json")
-    if not os.path.exists(ensemble_records_file):
-        raise FileNotFoundError("未找到 ensemble_records.json，请先运行 ensemble_fusion.py")
-        
-    with open(ensemble_records_file, 'r') as f:
-        records = json.load(f)
-        
-    combos = records.get("combos", {})
-    if not combo_name:
-        combo_name = records.get("default_combo")
-        if not combo_name:
-             if not combos:
-                 raise ValueError("ensemble_records.json 中没有有效的融合记录")
-             combo_name = list(combos.keys())[-1]
-             
-    record_id = combos.get(combo_name) or combos.get(f"ensemble_{combo_name}") or combos.get(combo_name.replace("combo_", ""))
-    if not record_id:
-         raise FileNotFoundError(f"未找到 combo '{combo_name}' 的记录 ID")
-         
+    from quantpits.utils.ensemble_utils import load_ensemble_records, resolve_combo_record_id
+
+    records = load_ensemble_records(ROOT_DIR)
+    combo_name, record_id = resolve_combo_record_id(records, combo_name)
+
     recorder = R.get_recorder(recorder_id=record_id, experiment_name="Ensemble_Fusion")
     pred_df = recorder.load_object("pred.pkl")
     if isinstance(pred_df, pd.Series):

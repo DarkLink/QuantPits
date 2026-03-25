@@ -25,12 +25,13 @@ def mock_env(monkeypatch, tmp_path):
 
 def test_run_single_backtest_oos_success(mock_env):
     analyze, _ = mock_env
-    # Mocks for standard_evaluate_portfolio and run_backtest_with_strategy
-    with patch('quantpits.scripts.analyze_ensembles.strategy.load_strategy_config') as mock_st_cfg:
-        with patch('quantpits.scripts.analyze_ensembles.strategy.get_backtest_config') as mock_bt_cfg:
-            with patch('quantpits.scripts.analyze_ensembles.strategy.create_backtest_strategy'):
-                with patch('quantpits.scripts.analyze_ensembles.run_backtest_with_strategy') as mock_run:
-                    with patch('quantpits.scripts.analyze_ensembles.standard_evaluate_portfolio') as mock_eval:
+    # Since run_single_backtest_oos now delegates to search_utils.run_single_backtest,
+    # we need to mock at the search_utils level
+    with patch('quantpits.utils.strategy.load_strategy_config') as mock_st_cfg:
+        with patch('quantpits.utils.strategy.get_backtest_config') as mock_bt_cfg:
+            with patch('quantpits.utils.strategy.create_backtest_strategy'):
+                with patch('quantpits.utils.backtest_utils.run_backtest_with_strategy') as mock_run:
+                    with patch('quantpits.utils.backtest_utils.standard_evaluate_portfolio') as mock_eval:
                         
                         mock_st_cfg.return_value = {"strategy": {"params": {}}, "benchmark": "SH000300"}
                         mock_bt_cfg.return_value = {"account": 10000}
@@ -66,10 +67,10 @@ def test_run_single_backtest_oos_success(mock_env):
 
 def test_run_single_backtest_oos_exception(mock_env):
     analyze, _ = mock_env
-    with patch('quantpits.scripts.analyze_ensembles.strategy.load_strategy_config'):
-        with patch('quantpits.scripts.analyze_ensembles.strategy.get_backtest_config'):
-            with patch('quantpits.scripts.analyze_ensembles.strategy.create_backtest_strategy'):
-                with patch('quantpits.scripts.analyze_ensembles.run_backtest_with_strategy', side_effect=Exception("Failed")):
+    with patch('quantpits.utils.strategy.load_strategy_config'):
+        with patch('quantpits.utils.strategy.get_backtest_config'):
+            with patch('quantpits.utils.strategy.create_backtest_strategy'):
+                with patch('quantpits.utils.backtest_utils.run_backtest_with_strategy', side_effect=Exception("Failed")):
                     dates = pd.to_datetime(["2020-01-01"])
                     idx = pd.MultiIndex.from_arrays([dates, ["A"]], names=["datetime", "instrument"])
                     norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)

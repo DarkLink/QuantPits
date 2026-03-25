@@ -152,7 +152,7 @@ class TestProductionStyleExposures:
         se = analyzer.calculate_style_exposures(market="csi300")
         if se:
             assert "Multi_Factor_Beta" in se
-            assert "Barra_Size_Exp" in se
+            assert "Barra_Liquidity_Exp" in se
             assert "Barra_Momentum_Exp" in se
             assert "Barra_Volatility_Exp" in se
             assert "Barra_Style_R_Squared" in se
