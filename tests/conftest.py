@@ -35,11 +35,88 @@ _scripts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'qu
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
 
-# conftest.py can be used for globally shared fixtures
+@pytest.fixture
+def mock_qlib_workspace(tmp_path):
+    """Fixture providing a temporary workspace directory with Qlib structure."""
+    workspace = tmp_path / "MockWorkspace"
+    os.makedirs(workspace / "config", exist_ok=True)
+    os.makedirs(workspace / "data" / "history", exist_ok=True)
+    os.makedirs(workspace / "output" / "predictions", exist_ok=True)
+    return workspace
 
 @pytest.fixture
-def mock_workspace(tmp_path):
-    """Fixture providing a temporary workspace directory."""
-    workspace_dir = tmp_path / "MockWorkspace"
-    workspace_dir.mkdir()
-    return str(workspace_dir)
+def mock_env_constants(monkeypatch, mock_qlib_workspace):
+    """
+    Shared fixture to mock Qlib workspace environment for all utils tests.
+    Sets up a temporary workspace and patches env/train_utils variables.
+    """
+    workspace = mock_qlib_workspace
+    import importlib
+    
+    # Ensure sys.argv is clean for env.py parsing
+    monkeypatch.setattr(sys, 'argv', ['pytest'])
+    # satisfy quantpits.utils.env check
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    
+    # Reload env and train_utils to apply the new environment
+    from quantpits.utils import env, train_utils
+    importlib.reload(env)
+    importlib.reload(train_utils)
+    
+    # Patch module-level constants in train_utils to use temporary paths
+    monkeypatch.setattr(train_utils, 'ROOT_DIR', str(workspace))
+    monkeypatch.setattr(train_utils, 'RECORD_OUTPUT_FILE', str(workspace / "latest_train_records.json"))
+    monkeypatch.setattr(train_utils, 'HISTORY_DIR', str(workspace / "data" / "history"))
+    monkeypatch.setattr(train_utils, 'RUN_STATE_FILE', str(workspace / "data" / "run_state.json"))
+    monkeypatch.setattr(train_utils, 'PRETRAINED_DIR', str(workspace / "data" / "pretrain"))
+    monkeypatch.setattr(train_utils, 'PREDICTION_OUTPUT_DIR', str(workspace / "output" / "predictions"))
+    
+    # Create required directories for constants
+    os.makedirs(train_utils.PRETRAINED_DIR, exist_ok=True)
+    
+    yield train_utils, workspace
+
+@pytest.fixture
+def mock_script_context(monkeypatch, mock_qlib_workspace):
+    """
+    Factory fixture to create a script-specific mock context.
+    Usage:
+        def test_something(mock_script_context):
+            import my_script
+            ctx = mock_script_context(my_script, ["quantpits.utils.env", "quantpits.utils.strategy"])
+            # Now my_script.ROOT_DIR is patched, and env/strategy are reloaded.
+    """
+    def _create_context(script_module, reload_modules=None):
+        import importlib
+        import sys
+        
+        # 1. Clean up argv
+        monkeypatch.setattr(sys, 'argv', ['script.py'])
+        
+        # 2. Set Env
+        monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(mock_qlib_workspace))
+        
+        # 3. Reload requested modules
+        if reload_modules:
+            for mod_name in reload_modules:
+                if mod_name in sys.modules:
+                    importlib.reload(sys.modules[mod_name])
+        
+        # 4. Patch script's ROOT_DIR and other common paths if they exist
+        if hasattr(script_module, 'ROOT_DIR'):
+            monkeypatch.setattr(script_module, 'ROOT_DIR', str(mock_qlib_workspace))
+        
+        # Many scripts use these, so we patch them if present
+        for path_name in ['CONFIG_FILE', 'CASHFLOW_FILE', 'ENSEMBLE_CONFIG_FILE']:
+            if hasattr(script_module, path_name):
+                # We assume these are based on ROOT_DIR or we can just point to mock_qlib_workspace
+                orig_path = getattr(script_module, path_name)
+                # If it's a relative path or inside a different ROOT, we force it to mock_qlib_workspace
+                filename = os.path.basename(orig_path)
+                monkeypatch.setattr(script_module, path_name, os.path.join(mock_qlib_workspace, "config", filename))
+                
+        return mock_qlib_workspace
+        
+    return _create_context
+
+# conftest.py can be used for globally shared fixtures

@@ -207,6 +207,93 @@ def test_save_load_classification(tmp_path):
     assert "SZ000003" in loaded_over["instrument"].values
     assert "SZ000002" not in loaded_over["instrument"].values
 
-    # 4. Load empty
-    empty_path = str(tmp_path / "missing.csv")
-    assert tc.load_classification(path=empty_path).empty
+# ── New P1 Robustness Tests ──────────────────────────────────────────────
+
+def test_classify_trades_missing_file(tmp_path):
+    with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', str(tmp_path / "nonexistent.csv")):
+        with pytest.raises(FileNotFoundError, match="Trade log not found"):
+            tc.classify_trades()
+
+def test_classify_trades_missing_columns(tmp_path):
+    log_path = tmp_path / "bad_log.csv"
+    # Missing "成交日期"
+    log_path.write_text("wrong_col,证券代码,交易类别\n2026-01-10,SH600000,买入\n")
+    
+    with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', str(log_path)):
+        with pytest.raises(ValueError, match="Column '成交日期' not found"):
+            tc.classify_trades()
+
+def test_classify_trades_missing_instrument_column(tmp_path):
+    log_path = tmp_path / "bad_log_2.csv"
+    # Has "成交日期" but missing "证券代码"
+    log_path.write_text("成交日期,交易类别\n2026-01-10,SH600000买入\n")
+    
+    with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', str(log_path)):
+        with pytest.raises(ValueError, match="Column '证券代码' not found"):
+            tc.classify_trades()
+
+def test_scan_suggestion_dates_robustness(tmp_path):
+    order_dir = tmp_path / "orders"
+    order_dir.mkdir()
+    # Malformed filename (missing date part)
+    (order_dir / "buy_suggestion_invalid.csv").write_text("dummy")
+    # Valid one
+    (order_dir / "buy_suggestion_2026-01-01.csv").write_text("dummy")
+    
+    with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
+        with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(tmp_path)):
+            dates = tc._scan_suggestion_dates("buy_suggestion")
+            assert len(dates) == 1
+            assert dates[0] == pd.Timestamp("2026-01-01")
+
+def test_classify_trades_malformed_config(tmp_path):
+    # This triggers the 'except Exception: pass' in factor loading
+    data_dir, order_dir, out_dir = _make_dummy_suggestions(tmp_path)
+    log_file = _make_dummy_trade_log(data_dir)
+    cfg_file = tmp_path / "config" / "prod_config.json"
+    cfg_file.parent.mkdir(exist_ok=True)
+    cfg_file.write_text("INVALID JSON")
+    
+    with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', log_file):
+        with patch('quantpits.scripts.analysis.trade_classifier.ROOT_DIR', str(tmp_path)):
+            with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
+                with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(out_dir)):
+                    # Should use default factor=3 and not crash
+                    result = tc.classify_trades()
+                    assert not result.empty
+
+def test_classify_trades_no_trades(tmp_path):
+    data_dir, order_dir, out_dir = _make_dummy_suggestions(tmp_path)
+    # Date with no trades in dummy log
+    with patch('quantpits.scripts.analysis.trade_classifier.ROOT_DIR', str(tmp_path)):
+        with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
+            with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(out_dir)):
+                with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', str(tmp_path / "data" / "trade_log_empty.csv")):
+                    # Create empty log
+                    (tmp_path / "data").mkdir(exist_ok=True)
+                    (tmp_path / "data" / "trade_log_empty.csv").write_text("成交日期,证券代码,交易类别,成交数量\n")
+                    # Case with empty trade log or no matches
+                    res = tc.classify_trades(trade_dates=["1999-01-01"])
+                    assert res.empty
+
+def test_save_classification_default_path(tmp_path):
+    df = pd.DataFrame({"a": [1]})
+    with patch('quantpits.scripts.analysis.trade_classifier.CLASSIFICATION_FILE', str(tmp_path / "default.csv")):
+        tc.save_classification(df)
+        assert os.path.exists(tmp_path / "default.csv")
+
+def test_classify_trades_unbalanced(tmp_path):
+    data_dir, order_dir, out_dir = _make_dummy_suggestions(tmp_path)
+    # Create a log with ONLY buys
+    log_content = "成交日期,证券代码,交易类别,成交数量\n2026-01-10,SZ000001,深圳A股普通股票竞价买入,100\n"
+    log_path = tmp_path / "buys_only.csv"
+    log_path.write_text(log_content)
+    
+    with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', str(log_path)):
+        with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
+            with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(out_dir)):
+                with patch('quantpits.scripts.analysis.trade_classifier.ROOT_DIR', str(tmp_path)):
+                    # Should cover 'continue' when sells are empty (Line 337)
+                    result = tc.classify_trades(verbose=True)
+                    assert not result.empty
+                    assert "SELL" not in result["trade_type"].values

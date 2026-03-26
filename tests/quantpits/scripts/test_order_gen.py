@@ -3,35 +3,23 @@ import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
 from decimal import Decimal
+import json
 
 # Apply environment mocking before loading the module
 @pytest.fixture(autouse=True)
-def mock_env(monkeypatch, tmp_path):
-    workspace = tmp_path / "MockWorkspace"
-    workspace.mkdir()
-    
-    (workspace / "config").mkdir()
-    (workspace / "data").mkdir()
-    (workspace / "output").mkdir()
-    (workspace / "output" / "predictions").mkdir()
-    
-    import sys
-    monkeypatch.setattr(sys, 'argv', ['script.py'])
-    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
-    
-    from quantpits.utils import env, strategy
+def mock_env(monkeypatch, mock_script_context):
     from quantpits.scripts import order_gen
-    import importlib
-    importlib.reload(env)
-    importlib.reload(strategy)
+    from quantpits.utils import strategy
     
-    # Needs to be set after reload to ensure module uses fake workspace ROOT_DIR
-    env.ROOT_DIR = str(workspace)
-    order_gen.ROOT_DIR = str(workspace)
-    order_gen.ENSEMBLE_CONFIG_FILE = os.path.join(env.ROOT_DIR, "config", "ensemble_fusion_config.json")
-    order_gen.CASHFLOW_FILE = os.path.join(env.ROOT_DIR, "config", "cashflow.json")
+    workspace = mock_script_context(order_gen, ["quantpits.utils.env", "quantpits.utils.strategy"])
+    
+    # Custom tweaks for order_gen specifically if needed
+    # The factory already patches ROOT_DIR and standard CONFIG files.
     
     yield order_gen, strategy, workspace
+
+# ... Existing tests (test_get_cashflow_today to test_main_dry_run_full) ...
+# I will append new tests at the end of the file.
 
 def test_get_cashflow_today(mock_env):
     order_gen, strategy, _ = mock_env
@@ -364,7 +352,7 @@ def test_generate_model_opinions_default_generic_loading(mock_R, mock_env, tmp_p
     
     import json
     # Mock ENSEMBLE_CONFIG_FILE content
-    ensemble_cfg = workspace / "config" / "ensemble_fusion_config.json"
+    ensemble_cfg = workspace / "config" / "ensemble_config.json"
     with open(ensemble_cfg, "w") as f:
         json.dump({"combos": {"test_combo": {"models": ["gru"]}}}, f)
     
@@ -378,7 +366,8 @@ def test_generate_model_opinions_default_generic_loading(mock_R, mock_env, tmp_p
         }, f)
         
     mock_rec = MagicMock()
-    mock_df = pd.DataFrame({"score": [0.9], "instrument": ["A"]}).set_index("instrument")
+    # Test Series to DataFrame conversion (Line 124/150 coverage)
+    mock_df = pd.Series([0.9], index=pd.Index(["A"], name="instrument"))
     mock_rec.load_object.return_value = mock_df
     mock_rec.list_metrics.return_value = {}
     mock_rec.info = {"experiment_name": "ex", "id": "rec_id"}
@@ -472,6 +461,61 @@ def test_main_dry_run_full(mock_D, mock_safeguard, mock_price, mock_pred, mock_c
     import sys
     with patch.object(sys, 'argv', ['script.py', '--dry-run', '--verbose']):
         order_gen.main()
+
+# ── New P1 Error Handling Tests ──────────────────────────────────────────
+
+def test_load_configs_missing_cashflow(mock_env):
+    order_gen, _, workspace = mock_env
+    # Ensure cashflow file does NOT exist
+    if os.path.exists(order_gen.CASHFLOW_FILE):
+        os.remove(order_gen.CASHFLOW_FILE)
     
-    # Check if a few key print messages were hit (via capsys if we had it, but mostly we want coverage)
-    # The test should pass if it runs through the whole main()
+    with patch('quantpits.utils.config_loader.load_workspace_config', return_value={"m": "c"}):
+        config, cf_config = order_gen.load_configs()
+    
+    assert config == {"m": "c"}
+    assert cf_config == {} # Should be empty dict, not crash
+
+def test_load_predictions_missing_records(mock_env):
+    order_gen, _, workspace = mock_env
+    # latest_train_records.json doesn't exist by default in fresh mock_env
+    with pytest.raises(FileNotFoundError, match="无法找到训练记录文件"):
+        order_gen.load_predictions(model_name="gru")
+
+def test_load_predictions_invalid_model(mock_env):
+    order_gen, _, workspace = mock_env
+    train_file = workspace / "latest_train_records.json"
+    with open(train_file, "w") as f:
+        json.dump({"models": {"gru": "rec_123"}}, f)
+    
+    with pytest.raises(ValueError, match="模型 lstm 的训练记录未找到"):
+        order_gen.load_predictions(model_name="lstm")
+
+def test_load_predictions_ensemble_missing(mock_env):
+    order_gen, _, workspace = mock_env
+    # ensemble_records.json doesn't exist
+    with pytest.raises(FileNotFoundError, match="未找到 ensemble_records.json"):
+        order_gen.load_predictions()
+
+def test_load_predictions_ensemble_empty(mock_env):
+    order_gen, _, workspace = mock_env
+    records_file = workspace / "config" / "ensemble_records.json"
+    os.makedirs(os.path.dirname(records_file), exist_ok=True)
+    with open(records_file, "w") as f:
+        json.dump({"combos": {}}, f)
+    
+    with pytest.raises(ValueError, match="没有有效的融合记录"):
+        order_gen.load_predictions()
+
+@patch('quantpits.scripts.order_gen.init_qlib')
+@patch('quantpits.scripts.order_gen.get_anchor_date')
+@patch('quantpits.scripts.order_gen.load_configs')
+def test_main_exit_on_load_config_error(mock_load, mock_anchor, mock_init, mock_env):
+    order_gen, _, _ = mock_env
+    mock_load.side_effect = Exception("Config fatal error")
+    mock_anchor.return_value = "2020-01-01"
+    
+    import sys
+    with patch.object(sys, 'argv', ['script.py']):
+        with pytest.raises(Exception, match="Config fatal error"):
+            order_gen.main()
