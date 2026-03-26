@@ -39,9 +39,9 @@ def load_workspace_config(workspace_path):
                 config['n_drop'] = strat_params.get('n_drop', config.get('DropN'))
                 config['buy_suggestion_factor'] = strat_params.get('buy_suggestion_factor', config.get('buy_suggestion_factor'))
                 
-                # Compatibility mapping (Upper case versions if they don't exist)
-                if 'TopK' not in config: config['TopK'] = config['topk']
-                if 'DropN' not in config: config['DropN'] = config['n_drop']
+                # Compatibility mapping (Upper case versions)
+                config['TopK'] = config['topk']
+                config['DropN'] = config['n_drop']
                 
     # 3. Load Prod Config (Current state - handles cash/holding)
     if prod_cfg_path.exists():

@@ -18,8 +18,11 @@ class ExecutionAnalyzer:
             class_path = os.path.join(ROOT_DIR, "data", "trade_classification.csv")
             if os.path.exists(class_path):
                 class_df = pd.read_csv(class_path)
-                if '成交日期' not in class_df.columns and 'trade_date' in class_df.columns:
+                if '成交日期' in class_df.columns:
+                    class_df['成交日期'] = pd.to_datetime(class_df['成交日期'])
+                elif 'trade_date' in class_df.columns:
                     class_df['成交日期'] = pd.to_datetime(class_df['trade_date'])
+                
                 if '证券代码' not in class_df.columns and 'instrument' in class_df.columns:
                     class_df['证券代码'] = class_df['instrument']
                 if '交易类别' not in class_df.columns and 'trade_type' in class_df.columns:

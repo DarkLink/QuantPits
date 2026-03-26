@@ -562,6 +562,8 @@ def main():
                         help='仅打印订单计划，不写入文件')
     parser.add_argument('--verbose', action='store_true',
                         help='显示详细的排名和价格信息')
+    parser.add_argument('--combo', type=str, default=None,
+                        help='指定要使用的融合组合名称 (从 ensemble_records.json 加载)')
 
     args = parser.parse_args()
 
@@ -610,10 +612,10 @@ def main():
     # ---- Stage 1: 加载预测 ----
     print(f"\n{'='*60}")
     print("Stage 1: 加载预测数据")
-    print(f"{'='*60}")
 
     pred_df, source_desc = load_predictions(
         model_name=args.model,
+        combo_name=args.combo,
         anchor_date=anchor_date,
         record_file=args.record_file
     )

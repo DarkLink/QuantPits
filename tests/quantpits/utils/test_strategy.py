@@ -273,3 +273,83 @@ def test_generate_buy_orders_insufficient_cash(mock_env):
     # Cash is only 50, can't even buy 100 shares at 100.0
     buys = gen.generate_buy_orders(buy_candidates, buy_count=1, available_cash=50, next_trade_date_string="2026-03-02")
     assert len(buys) == 0
+
+
+def test_generate_buy_orders_success(mock_env):
+    strategy, _, _ = mock_env
+    gen = strategy.TopkDropoutOrderGenerator(topk=2, n_drop=1)
+    
+    buy_candidates = pd.DataFrame({
+        'instrument': ['A'],
+        'possible_max': [10.0],
+        'score': [0.9],
+        'current_close': [9.5]
+    }).set_index('instrument')
+    
+    # Cash is 2000, can buy 200 shares at 10.0
+    buys = gen.generate_buy_orders(buy_candidates, buy_count=1, available_cash=2000, next_trade_date_string="2026-03-02")
+    assert len(buys) == 1
+    assert buys[0]['instrument'] == 'A'
+    assert buys[0]['value'] == 200
+    assert buys[0]['estimated_amount'] == 2000.0
+
+
+def test_generate_sell_orders(mock_env):
+    strategy, _, _ = mock_env
+    gen = strategy.TopkDropoutOrderGenerator(topk=20, n_drop=3)
+    
+    sell_candidates = pd.DataFrame({
+        'instrument': ['A'],
+        'possible_min': [9.0],
+        'score': [0.1],
+        'current_close': [10.0]
+    }).set_index('instrument')
+    
+    current_holding = [{'instrument': 'A', 'value': 1000}]
+    
+    orders, amount = gen.generate_sell_orders(sell_candidates, current_holding, "2026-03-02")
+    assert len(orders) == 1
+    assert orders[0]['instrument'] == 'A'
+    assert orders[0]['value'] == 1000
+    assert orders[0]['estimated_amount'] == 9000.0
+    assert amount == 9000.0
+
+
+# ── create_backtest_strategy ─────────────────────────────────────────────
+
+def test_create_backtest_strategy(mock_env, monkeypatch):
+    strategy, _, _ = mock_env
+
+    # Mock Qlib strategy class
+    mock_qlib_strat = MagicMock()
+    mock_module = MagicMock()
+    setattr(mock_module, "TopkDropoutStrategy", mock_qlib_strat)
+    
+    monkeypatch.setitem(sys.modules, "qlib.contrib.strategy", mock_module)
+
+    config = {
+        "strategy": {
+            "name": "topk_dropout",
+            "params": {"topk": 20, "n_drop": 3, "buy_suggestion_factor": 2}
+        },
+        "backtest": {}
+    }
+    
+    signal = MagicMock()
+    strat_instance = strategy.create_backtest_strategy(signal, config_dict=config)
+    
+    # Verify that the correct class was called with the correct parameters
+    # Note: buy_suggestion_factor should have been popped
+    mock_qlib_strat.assert_called_once_with(signal=signal, topk=20, n_drop=3)
+
+
+def test_create_backtest_strategy_unknown(mock_env):
+    strategy, _, _ = mock_env
+
+    config = {
+        "strategy": {"name": "non_existent_strategy", "params": {}},
+        "backtest": {}
+    }
+    
+    with pytest.raises(ValueError, match="not found in STRATEGY_REGISTRY"):
+        strategy.create_backtest_strategy(MagicMock(), config_dict=config)

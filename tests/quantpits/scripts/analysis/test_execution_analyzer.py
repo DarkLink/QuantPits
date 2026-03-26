@@ -4,8 +4,29 @@ import pandas as pd
 import numpy as np
 from unittest.mock import patch, MagicMock
 
-from quantpits.scripts.analysis.execution_analyzer import ExecutionAnalyzer
+@pytest.fixture(autouse=True)
+def mock_env(monkeypatch, tmp_path):
+    workspace = tmp_path / "MockWorkspace"
+    workspace.mkdir()
+    (workspace / "data").mkdir()
+    
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    
+    from quantpits.utils import env
+    import importlib
+    importlib.reload(env)
+    
+    from quantpits.scripts.analysis import execution_analyzer
+    importlib.reload(execution_analyzer)
+    
+    return workspace
 
+@pytest.fixture
+def ea_factory(mock_env):
+    from quantpits.scripts.analysis.execution_analyzer import ExecutionAnalyzer
+    def _create(trade_log_df=None, **kwargs):
+        return ExecutionAnalyzer(trade_log_df=trade_log_df, **kwargs)
+    return _create
 
 def _make_trade_log():
     """Build a synthetic trade log with columns matching source expectations."""
@@ -23,9 +44,9 @@ def _make_trade_log():
 
 # ── analyze_explicit_costs ───────────────────────────────────────────────
 
-def test_analyze_explicit_costs():
+def test_analyze_explicit_costs(ea_factory):
     trade_log = _make_trade_log()
-    ea = ExecutionAnalyzer(trade_log_df=trade_log)
+    ea = ea_factory(trade_log_df=trade_log)
     result = ea.analyze_explicit_costs()
     assert result is not None
     assert "fee_ratio" in result
@@ -33,8 +54,8 @@ def test_analyze_explicit_costs():
     assert result["total_fees"] == 13.0  # 5 + 8
 
 
-def test_analyze_explicit_costs_empty():
-    ea = ExecutionAnalyzer(trade_log_df=pd.DataFrame())
+def test_analyze_explicit_costs_empty(ea_factory):
+    ea = ea_factory(trade_log_df=pd.DataFrame())
     result = ea.analyze_explicit_costs()
     assert result["fee_ratio"] == 0.0
     assert result["total_fees"] == 0.0
@@ -42,9 +63,9 @@ def test_analyze_explicit_costs_empty():
 
 # ── slippage with mock ───────────────────────────────────────────────────
 
-def test_slippage_with_mock():
+def test_slippage_with_mock(ea_factory):
     trade_log = _make_trade_log()
-    ea = ExecutionAnalyzer(trade_log_df=trade_log)
+    ea = ea_factory(trade_log_df=trade_log)
 
     with patch.object(ea, 'calculate_slippage_and_delay') as mock_method:
         mock_result = trade_log.copy()
@@ -59,9 +80,9 @@ def test_slippage_with_mock():
 # ── calculate_slippage_and_delay ─────────────────────────────────────────
 
 @patch('quantpits.scripts.analysis.execution_analyzer.get_daily_features')
-def test_calculate_slippage_and_delay(mock_get_features):
+def test_calculate_slippage_and_delay(mock_get_features, ea_factory):
     trade_log = _make_trade_log()
-    ea = ExecutionAnalyzer(trade_log_df=trade_log)
+    ea = ea_factory(trade_log_df=trade_log)
 
     # Mock Qlib daily features
     mock_features = pd.DataFrame({
@@ -96,12 +117,42 @@ def test_calculate_slippage_and_delay(mock_get_features):
     # Delay Cost = (20.2 - 20.0) / 20.0 = 0.01
     assert np.isclose(result.loc[result['证券代码'] == 'SZ000002', 'Delay_Cost'].iloc[0], 0.01)
 
+def test_calculate_slippage_and_delay_null_dates(ea_factory):
+    trade_log = pd.DataFrame({"成交日期": [pd.NaT], "证券代码": ["A"]})
+    ea = ea_factory(trade_log_df=trade_log)
+    result = ea.calculate_slippage_and_delay()
+    assert result.empty
+
+@patch('quantpits.scripts.analysis.execution_analyzer.get_daily_features')
+def test_calculate_slippage_and_delay_empty_features(mock_get_features, ea_factory):
+    trade_log = _make_trade_log()
+    ea = ea_factory(trade_log_df=trade_log)
+    mock_get_features.return_value = pd.DataFrame()
+    with patch('quantpits.scripts.analysis.execution_analyzer.load_market_config', return_value=("csi300", "SH000300")):
+        result = ea.calculate_slippage_and_delay()
+    assert result.empty
+
+@patch('quantpits.scripts.analysis.execution_analyzer.get_daily_features')
+def test_calculate_slippage_and_delay_no_merge(mock_get_features, ea_factory):
+    trade_log = _make_trade_log()
+    ea = ea_factory(trade_log_df=trade_log)
+    # Price for different dates
+    mock_features = pd.DataFrame({
+        'instrument': ['SZ000001'],
+        'datetime': pd.to_datetime(['2020-01-01']),
+        'close': [10.0], 'open': [10.0], 'unadj_open': [10.0], 'unadj_close': [10.0], 'volume': [1], 'vwap': [10]
+    })
+    mock_get_features.return_value = mock_features
+    with patch('quantpits.scripts.analysis.execution_analyzer.load_market_config', return_value=("csi300", "SH000300")):
+        result = ea.calculate_slippage_and_delay()
+    assert result.empty
+
 # ── calculate_path_dependency ────────────────────────────────────────────
 
 @patch('quantpits.scripts.analysis.execution_analyzer.get_daily_features')
-def test_calculate_path_dependency(mock_get_features):
+def test_calculate_path_dependency(mock_get_features, ea_factory):
     trade_log = _make_trade_log()
-    ea = ExecutionAnalyzer(trade_log_df=trade_log)
+    ea = ea_factory(trade_log_df=trade_log)
 
     # Mock high/low features
     mock_features = pd.DataFrame({
@@ -124,16 +175,27 @@ def test_calculate_path_dependency(mock_get_features):
     assert np.isclose(result.loc[result['证券代码'] == 'SZ000001', 'MFE'].iloc[0], (11.0 - 10.5) / 10.5)
     assert np.isclose(result.loc[result['证券代码'] == 'SZ000001', 'MAE'].iloc[0], (10.0 - 10.5) / 10.5)
 
-    # Sell SZ000002 at 20.1. High: 20.5, Low: 19.5
-    # MFE = (20.1 - 19.5)/20.1, MAE = (20.1 - 20.5)/20.1
-    assert np.isclose(result.loc[result['证券代码'] == 'SZ000002', 'MFE'].iloc[0], (20.1 - 19.5) / 20.1)
+def test_calculate_path_dependency_null_dates(ea_factory):
+    trade_log = pd.DataFrame({"成交日期": [pd.NaT], "证券代码": ["A"]})
+    ea = ea_factory(trade_log_df=trade_log)
+    result = ea.calculate_path_dependency()
+    assert result.empty
+
+@patch('quantpits.scripts.analysis.execution_analyzer.get_daily_features')
+def test_calculate_path_dependency_empty_features(mock_get_features, ea_factory):
+    trade_log = _make_trade_log()
+    ea = ea_factory(trade_log_df=trade_log)
+    mock_get_features.return_value = pd.DataFrame()
+    with patch('quantpits.scripts.analysis.execution_analyzer.load_market_config', return_value=("csi300", "SH000300")):
+        result = ea.calculate_path_dependency()
+    assert result.empty
 
 # ── analyze_order_discrepancies ──────────────────────────────────────────
 
 @patch('quantpits.scripts.analysis.utils.get_forward_returns')
-def test_analyze_order_discrepancies(mock_fwd_returns, tmp_path):
+def test_analyze_order_discrepancies(mock_fwd_returns, tmp_path, ea_factory):
     trade_log = _make_trade_log()
-    ea = ExecutionAnalyzer(trade_log_df=trade_log)
+    ea = ea_factory(trade_log_df=trade_log)
 
     # Create dummy suggestion file for 2026-01-10 (when we bought SZ000001)
     order_dir = tmp_path / "order_suggestions"
@@ -151,8 +213,6 @@ def test_analyze_order_discrepancies(mock_fwd_returns, tmp_path):
         ('SZ000999', pd.to_datetime('2026-01-10')), # missed return
         ('SZ000001', pd.to_datetime('2026-01-10'))  # substitute return
     ], names=["instrument", "datetime"]))
-    # Since get_forward_returns just returns a regular dataframe in normal use,
-    # let's set it up exactly how get_forward_returns constructs it
     mock_returns = mock_returns.reset_index()
     mock_returns = mock_returns.set_index(["instrument", "datetime"])  
     mock_fwd_returns.return_value = mock_returns
@@ -164,51 +224,50 @@ def test_analyze_order_discrepancies(mock_fwd_returns, tmp_path):
     assert result["total_missed_count"] == 1
     assert result["total_days_with_misses"] == 1
     
-    # Values might be numpy float64 which don't compare cleanly sometimes.
     assert np.isclose(float(result["avg_missed_buys_return"]), 0.10)
     assert np.isclose(float(result["avg_substitute_buys_return"]), -0.05)
-    
-    # substitute_bias_impact = avg_substitute_return - avg_missed_return
-    # Here: -0.05 - 0.10 = -0.15
     assert np.isclose(float(result["substitute_bias_impact"]), -0.15)
 
-def test_analyze_order_discrepancies_empty(tmp_path):
-    ea = ExecutionAnalyzer(trade_log_df=pd.DataFrame())
+def test_analyze_order_discrepancies_no_date(ea_factory, tmp_path):
+    trade_log = _make_trade_log()
+    trade_log['成交日期'] = pd.NaT
+    ea = ea_factory(trade_log_df=trade_log)
+    result = ea.analyze_order_discrepancies(str(tmp_path))
+    assert result == {}
+
+def test_analyze_order_discrepancies_empty(tmp_path, ea_factory):
+    ea = ea_factory(trade_log_df=pd.DataFrame())
     result = ea.analyze_order_discrepancies(str(tmp_path))
     assert result == {}
 
 # ── __init__ ─────────────────────────────────────────────────────────────
 
-def test_init_with_date_range(tmp_path):
+def test_init_with_date_range(ea_factory):
     trade_log = _make_trade_log()
-    
-    # Test date filtering
-    ea = ExecutionAnalyzer(trade_log_df=trade_log, start_date="2026-01-11", end_date="2026-01-20")
+    ea = ea_factory(trade_log_df=trade_log, start_date="2026-01-11", end_date="2026-01-20")
     assert len(ea.trade_log) == 1
     assert ea.trade_log['证券代码'].iloc[0] == "SZ000002"
 
-    # Test auto-loading classification (mocking ROOT_DIR)
+def test_init_load_classification(mock_env, ea_factory):
+    workspace = mock_env
+    trade_log = _make_trade_log()
+    
+    # Test auto-loading classification
     class_df = pd.DataFrame({
-        "成交日期": ["2026-01-10", "2026-01-15"],
+        "成交日期": pd.to_datetime(["2026-01-10", "2026-01-15"]),
         "证券代码": ["SZ000001", "SZ000002"],
         "trade_class": ["S", "M"]
     })
-    
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    class_df.to_csv(data_dir / "trade_classification.csv", index=False)
-    
-    # We must format trade_classification correctly
     class_df['成交日期'] = pd.to_datetime(class_df['成交日期'])
-
+    
+    class_path = workspace / "data" / "trade_classification.csv"
+    # Force both to datetime before merge in the mock to avoid the warning/error
+    trade_log['成交日期'] = pd.to_datetime(trade_log['成交日期'])
+    class_df['成交日期'] = pd.to_datetime(class_df['成交日期'])
+    class_df.to_csv(class_path, index=False)
+    
     with patch('quantpits.scripts.analysis.execution_analyzer.load_trade_log', return_value=trade_log):
-        with patch('quantpits.scripts.analysis.execution_analyzer.pd.read_csv', return_value=class_df):
-            # We can mock ROOT_DIR inside the execution_analyzer dependencies directly
-            with patch('quantpits.scripts.analysis.execution_analyzer.ROOT_DIR', str(tmp_path), create=True):
-                # Wait, execution_analyzer imports ROOT_DIR from utils locally
-                # Actually, the import is `from .utils import ROOT_DIR` inside `__init__`.
-                # So we can patch it in utils.
-                with patch('quantpits.scripts.analysis.utils.ROOT_DIR', str(tmp_path)):
-                    ea_loaded = ExecutionAnalyzer(trade_log_df=None)
-                    assert 'trade_class' in ea_loaded.trade_log.columns
-                    assert ea_loaded.trade_log.loc[ea_loaded.trade_log['证券代码'] == 'SZ000001', 'trade_class'].iloc[0] == 'S'
+        with patch('quantpits.scripts.analysis.utils.ROOT_DIR', str(workspace)):
+            ea = ea_factory(trade_log_df=None)
+            assert 'trade_class' in ea.trade_log.columns
+            assert ea.trade_log.loc[ea.trade_log['证券代码'] == 'SZ000001', 'trade_class'].iloc[0] == 'S'

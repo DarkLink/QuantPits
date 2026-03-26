@@ -297,3 +297,32 @@ port_analysis_config:
     captured = capsys.readouterr()
     assert "开始执行自动修复 (week)..." in captured.out
     assert "完美符合 week 频次要求" in captured.out
+
+
+def test_fix_yamls_day_freq(mock_env):
+    cw, workspace = mock_env
+    target_yaml = workspace / "config" / "workflow_config_m1.yaml"
+    # Week freq yaml
+    invalid_yaml = """
+task:
+  dataset:
+    kwargs:
+      handler:
+        kwargs:
+          label: ["Ref($close, -6) / Ref($close, -1) - 1"]
+  record:
+    - class: SigAnaRecord
+      kwargs:
+        ann_scaler: 52
+port_analysis_config:
+  executor:
+    kwargs:
+      time_per_step: "week"
+"""
+    target_yaml.write_text(invalid_yaml)
+    cw.fix_yamls(freq="day")
+    
+    fixed_yaml = target_yaml.read_text()
+    assert 'label: ["Ref($close, -2) / Ref($close, -1) - 1"]' in fixed_yaml
+    assert 'ann_scaler: 252' in fixed_yaml
+    assert 'time_per_step: "day"' in fixed_yaml

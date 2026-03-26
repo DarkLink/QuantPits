@@ -1,11 +1,27 @@
 import pytest
 import os
+import sys
 import json
 import pandas as pd
 import numpy as np
 from unittest.mock import MagicMock, patch
-from quantpits.scripts import minentropy_ensemble
-from quantpits.utils import strategy
+
+@pytest.fixture(autouse=True)
+def mock_env(monkeypatch, tmp_path):
+    workspace = tmp_path / "MockWorkspace"
+    workspace.mkdir()
+    
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    
+    from quantpits.utils import env
+    import importlib
+    importlib.reload(env)
+    
+    from quantpits.scripts import minentropy_ensemble
+    importlib.reload(minentropy_ensemble)
+    
+    yield minentropy_ensemble, workspace
 
 @pytest.fixture
 def mock_is_norm_df():
@@ -19,7 +35,8 @@ def mock_is_norm_df():
     }, index=idx)
     return df
 
-def test_minentropy_backtest_logic(mock_is_norm_df, tmp_path):
+def test_minentropy_backtest_logic(mock_env, mock_is_norm_df, tmp_path):
+    minentropy_ensemble, _ = mock_env
     # Ensure index names are correct
     mock_is_norm_df.index.names = ["datetime", "instrument"]
     
@@ -51,14 +68,16 @@ def test_minentropy_backtest_logic(mock_is_norm_df, tmp_path):
                     )
                     assert not res_df.empty
 
-def test_minentropy_backtest_empty():
+def test_minentropy_backtest_empty(mock_env):
+    minentropy_ensemble, _ = mock_env
     empty_df = pd.DataFrame()
     res = minentropy_ensemble.minentropy_backtest(
         empty_df, 1, 0, "B", "day", 2, "dir", "date"
     )
     assert res.empty
 
-def test_main_flow(mock_is_norm_df, tmp_path):
+def test_main_flow(mock_env, mock_is_norm_df, tmp_path):
+    minentropy_ensemble, _ = mock_env
     mock_is_norm_df.index.names = ["datetime", "instrument"]
     empty_oos = mock_is_norm_df.iloc[:0].copy()
     
@@ -74,7 +93,8 @@ def test_main_flow(mock_is_norm_df, tmp_path):
                                     with patch('builtins.open', create=True):
                                         minentropy_ensemble.main()
 
-def test_main_training_mode_filter(mock_is_norm_df, tmp_path):
+def test_main_training_mode_filter(mock_env, mock_is_norm_df, tmp_path):
+    minentropy_ensemble, _ = mock_env
     mock_is_norm_df.index.names = ["datetime", "instrument"]
     train_records = {"models": {"m1": {}, "m2": {}}, "anchor_date": "2020"}
     empty_oos = mock_is_norm_df.iloc[:0].copy()
@@ -90,3 +110,53 @@ def test_main_training_mode_filter(mock_is_norm_df, tmp_path):
                                 with patch.object(sys, 'argv', ['script.py', '--training-mode', 'static']):
                                     minentropy_ensemble.main()
                                     assert mock_filter.called
+
+
+def test_minentropy_backtest_resume(mock_env, mock_is_norm_df, tmp_path):
+    minentropy_ensemble, _ = mock_env
+    mock_is_norm_df.index.names = ["datetime", "instrument"]
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    
+    anchor_date = "2020-01-01"
+    csv_path = output_dir / f"minentropy_results_{anchor_date}.csv"
+    
+    # Pre-create result CSV with one combo done
+    pd.DataFrame({
+        "models": ["m1,m2"],
+        "Ann_Excess": [0.1]
+    }).to_csv(csv_path, index=False)
+    
+    with patch('quantpits.utils.strategy.load_strategy_config', return_value={}):
+        with patch('quantpits.utils.strategy.get_backtest_config', return_value={"account": 100, "exchange_kwargs": {"freq": "day"}}):
+            with patch('quantpits.scripts.minentropy_ensemble.Exchange'):
+                with patch('quantpits.scripts.minentropy_ensemble.run_single_backtest') as mock_run:
+                    mock_run.return_value = {"Ann_Excess": 0.1, "models": "m1"}
+                    # mRMR will generate m1,m2 as a combo. With resume=True, it should be skipped.
+                    res_df = minentropy_ensemble.minentropy_backtest(
+                        mock_is_norm_df.copy(), 22, 3, "SH000300", "day",
+                        2, str(output_dir), anchor_date, resume=True
+                    )
+                    
+                    # Verify that "m1,m2" was NOT passed to run_single_backtest
+                    for call in mock_run.call_args_list:
+                        # call[0][0] is the 'models' argument
+                        assert call[0][0] != ["m1", "m2"]
+
+
+def test_minentropy_backtest_shutdown(mock_env, mock_is_norm_df, tmp_path):
+    minentropy_ensemble, _ = mock_env
+    mock_is_norm_df.index.names = ["datetime", "instrument"]
+    
+    with patch('quantpits.utils.strategy.load_strategy_config', return_value={}):
+        with patch('quantpits.utils.strategy.get_backtest_config', return_value={"account": 100, "exchange_kwargs": {"freq": "day"}}):
+            # Patch Exchange to do nothing
+            with patch('quantpits.scripts.minentropy_ensemble.Exchange'):
+                # Force shutdown before batch loop
+                with patch('quantpits.utils.search_utils._shutdown', True):
+                    res_df = minentropy_ensemble.minentropy_backtest(
+                        mock_is_norm_df.copy(), 22, 3, "SH000300", "day",
+                        2, str(tmp_path), "2020-01-01", batch_size=1
+                    )
+                    # Loop should break immediately
+                    assert res_df.empty

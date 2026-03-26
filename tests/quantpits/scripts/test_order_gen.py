@@ -6,17 +6,34 @@ from decimal import Decimal
 import json
 
 # Apply environment mocking before loading the module
+import pytest
+import os
+import pandas as pd
+import numpy as np
+from unittest.mock import patch, MagicMock
+
 @pytest.fixture(autouse=True)
-def mock_env(monkeypatch, mock_script_context):
+def mock_env(monkeypatch, mock_script_context, tmp_path):
+    # Set environment variable BEFORE any quantpits imports
+    workspace = tmp_path / "MockWorkspace"
+    workspace.mkdir(exist_ok=True)
+    (workspace / "config").mkdir(exist_ok=True)
+    (workspace / "data").mkdir(exist_ok=True)
+    (workspace / "output").mkdir(exist_ok=True)
+    
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    
+    import importlib
+    from quantpits.utils import env
+    importlib.reload(env)
+    
     from quantpits.scripts import order_gen
     from quantpits.utils import strategy
-    
-    workspace = mock_script_context(order_gen, ["quantpits.utils.env", "quantpits.utils.strategy"])
-    
-    # Custom tweaks for order_gen specifically if needed
-    # The factory already patches ROOT_DIR and standard CONFIG files.
+    importlib.reload(order_gen)
+    importlib.reload(strategy)
     
     yield order_gen, strategy, workspace
+
 
 # ... Existing tests (test_get_cashflow_today to test_main_dry_run_full) ...
 # I will append new tests at the end of the file.
@@ -439,21 +456,24 @@ def test_generate_model_opinions_no_sources(mock_env, tmp_path):
 @patch('quantpits.scripts.order_gen.get_price_data')
 @patch('quantpits.utils.env.safeguard')
 @patch('qlib.data.D', create=True)
-def test_main_dry_run_full(mock_D, mock_safeguard, mock_price, mock_pred, mock_configs, mock_anchor, mock_init, mock_env):
+def test_main_dry_run_full(mock_D, mock_safeguard, mock_price, mock_pred, mock_configs, mock_anchor, mock_init, mock_env, capsys):
     order_gen, strategy, workspace = mock_env
     
     mock_anchor.return_value = "2020-01-01"
     mock_configs.return_value = (
-        {"market": "csi300", "current_cash": 1000000, "current_holding": []},
+        {"market": "csi300", "current_cash": 1000000, "current_holding": [{"instrument": "HOLD1", "value": 1000}]},
         {"cash_flow_today": 0}
     )
     
-    idx = pd.MultiIndex.from_tuples([("000001", pd.to_datetime("2020-01-01"))], names=["instrument", "datetime"])
-    mock_pred.return_value = (pd.DataFrame({"score": [0.9]}, index=idx), "Mock Source")
+    idx = pd.MultiIndex.from_tuples([
+        ("000001", pd.to_datetime("2020-01-01")),
+        ("HOLD1", pd.to_datetime("2020-01-01"))
+    ], names=["instrument", "datetime"])
+    mock_pred.return_value = (pd.DataFrame({"score": [0.9, 0.8]}, index=idx), "Mock Source")
     
-    idx_p = pd.Index(["000001"], name="instrument")
+    idx_p = pd.Index(["000001", "HOLD1"], name="instrument")
     mock_price.return_value = pd.DataFrame({
-        "current_close": [10.0], "possible_max": [11.0], "possible_min": [9.0]
+        "current_close": [10.0, 20.0], "possible_max": [11.0, 22.0], "possible_min": [9.0, 18.0]
     }, index=idx_p)
     
     mock_D.calendar.return_value = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
@@ -461,6 +481,15 @@ def test_main_dry_run_full(mock_D, mock_safeguard, mock_price, mock_pred, mock_c
     import sys
     with patch.object(sys, 'argv', ['script.py', '--dry-run', '--verbose']):
         order_gen.main()
+        
+    captured = capsys.readouterr()
+    # Debug print for terminal output if it fails
+    if "✅ 订单生成完成!" not in captured.out:
+        print(f"DEBUG CAPTURED OUT:\n{captured.out}")
+        
+    assert "✅ 订单生成完成!" in captured.out
+    assert "--- 继续持有 ---" in captured.out 
+    assert "HOLD1" in captured.out 
 
 # ── New P1 Error Handling Tests ──────────────────────────────────────────
 
@@ -519,3 +548,71 @@ def test_main_exit_on_load_config_error(mock_load, mock_anchor, mock_init, mock_
     with patch.object(sys, 'argv', ['script.py']):
         with pytest.raises(Exception, match="Config fatal error"):
             order_gen.main()
+
+
+@patch('qlib.workflow.R', create=True)
+def test_load_predictions_missing_combo(mock_R, mock_env):
+    order_gen, _, workspace = mock_env
+    records_file = workspace / "config" / "ensemble_records.json"
+    os.makedirs(os.path.dirname(records_file), exist_ok=True)
+    with open(records_file, "w") as f:
+        json.dump({"combos": {"exists": "rec1"}}, f) # Note: value is record_id string
+    
+    mock_rec = MagicMock()
+    mock_rec.load_object.return_value = pd.DataFrame({"score": [1.0]}, index=pd.Index(["A"], name="instrument"))
+    mock_R.get_recorder.return_value = mock_rec
+
+    # It should FALLBACK to "exists" instead of raising ValueError if combos is not empty
+    df, desc = order_gen.load_predictions(combo_name="missing")
+    assert "exists" in desc
+
+
+def test_load_pred_latest_day_with_nan(mock_env):
+    order_gen, _, _ = mock_env
+    
+    dates = pd.to_datetime(["2020-01-01", "2020-01-01"])
+    df = pd.DataFrame({
+        "score": [1.0, np.nan], 
+        "instrument": ["A", "B"], 
+        "datetime": dates
+    }).set_index(["instrument", "datetime"])
+    
+    res = order_gen._load_pred_latest_day(df, valid_instruments=["A", "B"])
+    # Currently it takes all instruments for that date, including NaNs
+    assert len(res) == 2
+    assert "A" in res.index
+    assert "B" in res.index
+
+
+@patch('quantpits.scripts.order_gen.init_qlib')
+@patch('quantpits.scripts.order_gen.get_anchor_date')
+@patch('quantpits.scripts.order_gen.load_configs')
+@patch('quantpits.scripts.order_gen.load_predictions')
+@patch('quantpits.scripts.order_gen.get_price_data')
+@patch('qlib.data.D', create=True)
+def test_main_verbose_dry_run(mock_D, mock_price, mock_pred, mock_configs, mock_anchor, mock_init, mock_env):
+    order_gen, _, workspace = mock_env
+    mock_anchor.return_value = "2020-01-01"
+    mock_configs.return_value = ({"market": "csi300", "current_cash": 1000}, {})
+    
+    idx = pd.MultiIndex.from_tuples([("A", pd.to_datetime("2020-01-01"))], names=["instrument", "datetime"])
+    mock_pred.return_value = (pd.DataFrame({"score": [0.9]}, index=idx), "source")
+    idx_p = pd.Index(["A"], name="instrument")
+    mock_price.return_value = pd.DataFrame({"current_close": [10.0], "possible_max": [11.0], "possible_min": [9.0]}, index=idx_p)
+    mock_D.calendar.return_value = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+
+    import sys
+    # Test --verbose and --dry-run combined
+    with patch.object(sys, 'argv', ['script.py', '--verbose', '--dry-run']):
+        order_gen.main()
+    
+    # Test --combo flag
+    ensemble_cfg = workspace / "config" / "ensemble_config.json"
+    os.makedirs(os.path.dirname(ensemble_cfg), exist_ok=True)
+    with open(ensemble_cfg, "w") as f:
+        json.dump({"combos": {"test_combo": {"models": ["gru"]}}}, f)
+        
+    with patch.object(sys, 'argv', ['script.py', '--combo', 'test_combo', '--dry-run']):
+        # This might fail if load_predictions isn't patched correctly for combo
+        # But we previously patched it. Wait, mock_pred is patched here.
+        order_gen.main()

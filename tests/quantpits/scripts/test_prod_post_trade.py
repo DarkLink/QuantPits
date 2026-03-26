@@ -283,3 +283,165 @@ def test_main(mock_save_class, mock_classify, mock_adapter, mock_save, mock_proc
     mock_save.assert_called_once()
     mock_classify.assert_called_once()
     mock_save_class.assert_called_once()
+
+
+def test_process_single_day_with_dividend(mock_env):
+    post_trade, workspace = mock_env
+    
+    current_cash = Decimal("100000.0")
+    current_holding = [{"instrument": "SZ000001", "value": "100", "amount": "1000.0"}]
+    
+    mock_adapter = MagicMock()
+    # Mock trade detail with Interest/Dividend
+    trade_df = pd.DataFrame({
+        "证券代码": ["000001"],
+        "model": ["GATs"],
+        "交易类别": ["利息归本"],
+        "成交价格": [0.0],
+        "成交数量": [0.0],
+        "成交金额": [0.0],
+        "资金发生数": [50.0],  # 50.0 dividend
+        "交收日期": ["20260302"]
+    })
+    
+    mock_features_df = pd.DataFrame({
+        "instrument": ["SZ000001"],
+        "datetime": [pd.to_datetime("2026-03-02")],
+        "Div($close,$factor)": [11.0]
+    }).set_index(["instrument", "datetime"])
+    
+    import sys
+    mock_qlib = MagicMock()
+    mock_qlib.data.D.features.return_value = mock_features_df
+    mock_qlib.data.D.instruments.return_value = []
+    
+    with patch.dict(sys.modules, {'qlib': mock_qlib, 'qlib.data': mock_qlib.data, 'qlib.data.ops': mock_qlib.data.ops}):
+        with patch("quantpits.scripts.prod_post_trade.load_trade_file", return_value=trade_df):
+            with patch("quantpits.scripts.prod_post_trade.INTEREST_TYPES", {"利息归本"}):
+                cash_after, holding_after = post_trade.process_single_day(
+                    current_date_string="2026-03-02",
+                    current_cash=current_cash,
+                    current_holding=current_holding,
+                    model="GATs",
+                    market="csi300",
+                    benchmark="SH000300",
+                    cashflow_today=Decimal("0"),
+                    adapter=mock_adapter
+                )
+    
+    # 100000 + 50 (interest) = 100050
+    assert cash_after == Decimal("100050.0")
+    assert len(holding_after) == 1
+
+
+def test_process_single_day_with_position_addition(mock_env):
+    post_trade, workspace = mock_env
+    
+    current_cash = Decimal("100000.0")
+    # Initial holding: 100 shares of 000001
+    current_holding = [{"instrument": "SZ000001", "value": "100", "amount": "1000.0"}]
+    
+    mock_adapter = MagicMock()
+    # Buy another 100 shares of 000001
+    trade_df = pd.DataFrame({
+        "证券代码": ["000001"],
+        "model": ["GATs"],
+        "交易类别": ["买入"],
+        "成交价格": [12.0],
+        "成交数量": [100.0],
+        "成交金额": [1200.0],
+        "资金发生数": [-1200.0],
+        "交收日期": ["20260302"]
+    })
+    
+    mock_features_df = pd.DataFrame({
+        "instrument": ["SZ000001"],
+        "datetime": [pd.to_datetime("2026-03-02")],
+        "Div($close,$factor)": [12.5]
+    }).set_index(["instrument", "datetime"])
+    
+    import sys
+    mock_qlib = MagicMock()
+    mock_qlib.data.D.features.return_value = mock_features_df
+    mock_qlib.data.D.instruments.return_value = []
+    
+    with patch.dict(sys.modules, {'qlib': mock_qlib, 'qlib.data': mock_qlib.data, 'qlib.data.ops': mock_qlib.data.ops}):
+        with patch("quantpits.scripts.prod_post_trade.load_trade_file", return_value=trade_df):
+            with patch("quantpits.scripts.prod_post_trade.BUY_TYPES", {"买入"}):
+                cash_after, holding_after = post_trade.process_single_day(
+                    current_date_string="2026-03-02",
+                    current_cash=current_cash,
+                    current_holding=current_holding,
+                    model="GATs",
+                    market="csi300",
+                    benchmark="SH000300",
+                    cashflow_today=Decimal("0"),
+                    adapter=mock_adapter
+                )
+    
+    # 100000 - 1200 = 98800
+    assert cash_after == Decimal("98800.0")
+    assert len(holding_after) == 1
+    assert holding_after[0]["instrument"] == "SZ000001"
+    # 100 + 100 = 200
+    assert Decimal(holding_after[0]["value"]) == Decimal("200")
+    # 1000 + 1200 = 2200
+    assert Decimal(holding_after[0]["amount"]) == Decimal("2200")
+
+
+def test_process_single_day_with_trade_log_concatenation(mock_env):
+    post_trade, workspace = mock_env
+    
+    data_dir = workspace / "data"
+    trade_log_file = data_dir / "trade_log_full.csv"
+    
+    # Create existing trade log
+    pd.DataFrame({"证券代码": ["SH600000"], "model": ["init"]}).to_csv(trade_log_file, index=False)
+    
+    current_cash = Decimal("100000.0")
+    # Provide dummy holding with columns to avoid KeyError in rename/set_index.
+    # Set value to 1 to avoid DivisionByZero in mean price calculation.
+    current_holding = [{"instrument": "DUMMY", "value": "1", "amount": "0.0"}]
+    
+    mock_adapter = MagicMock()
+    # New trade for SH600001
+    trade_df = pd.DataFrame({
+        "证券代码": ["600001"],
+        "model": ["GATs"],
+        "交易类别": ["买入"],
+        "成交价格": [10.0],
+        "成交数量": [100.0],
+        "成交金额": [1000.0],
+        "资金发生数": [-1000.0],
+        "交收日期": ["20260302"]
+    })
+    
+    mock_features_df = pd.DataFrame({
+        "instrument": ["SH600001"],
+        "datetime": [pd.to_datetime("2026-03-02")],
+        "Div($close,$factor)": [10.5]
+    }).set_index(["instrument", "datetime"])
+    
+    import sys
+    mock_qlib = MagicMock()
+    mock_qlib.data.D.features.return_value = mock_features_df
+    mock_qlib.data.D.instruments.return_value = []
+    
+    with patch.dict(sys.modules, {'qlib': mock_qlib, 'qlib.data': mock_qlib.data, 'qlib.data.ops': mock_qlib.data.ops}):
+        with patch("quantpits.scripts.prod_post_trade.load_trade_file", return_value=trade_df):
+            post_trade.process_single_day(
+                current_date_string="2026-03-02",
+                current_cash=current_cash,
+                current_holding=current_holding,
+                model="GATs",
+                market="csi300",
+                benchmark="SH000300",
+                cashflow_today=Decimal("0"),
+                adapter=mock_adapter
+            )
+            
+    # Check that trade_log_full.csv has both rows
+    log_df = pd.read_csv(trade_log_file)
+    assert len(log_df) == 2
+    assert "SH600000" in log_df["证券代码"].values
+    assert "SH600001" in log_df["证券代码"].values
