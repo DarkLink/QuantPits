@@ -788,8 +788,13 @@ def main():
     print(f"📤 卖出     : {len(sell_orders)}")
     print(f"📥 买入     : {len(buy_orders)}")
     if buy_orders:
-        total_buy = sum(o['estimated_amount'] for o in buy_orders)
-        print(f"💰 预估支出 : {total_buy:,.2f}")
+        amounts = sorted([o['estimated_amount'] for o in buy_orders])
+        min_total = sum(amounts[:buy_count])
+        max_total = sum(amounts[-buy_count:]) if len(amounts) >= buy_count else sum(amounts)
+        if min_total == max_total:
+            print(f"💰 预估支出 : {min_total:,.2f}")
+        else:
+            print(f"💰 预估支出 : {min_total:,.2f} ~ {max_total:,.2f}")
     if sell_orders:
         print(f"💰 预估回收 : {sell_amount:,.2f}")
 
