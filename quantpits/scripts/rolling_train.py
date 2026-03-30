@@ -30,6 +30,9 @@ Rolling Training Script (滚动训练)
 
   # 断点恢复
   python quantpits/scripts/rolling_train.py --resume
+
+  # 重训最后一个 window
+  python quantpits/scripts/rolling_train.py --retrain-last --all-enabled
 """
 
 import os
@@ -213,6 +216,22 @@ class RollingState:
     def anchor_date(self):
         return self._state.get('anchor_date')
 
+    def get_last_completed_window_idx(self):
+        """获取最后一个已完成的 window index"""
+        completed = self._state.get('completed_windows', {})
+        if not completed:
+            return None
+        return max(int(k) for k in completed.keys())
+
+    def remove_window(self, window_idx):
+        """删除指定 window 的所有训练记录（供 --retrain-last 使用）"""
+        key = str(window_idx)
+        if key in self._state['completed_windows']:
+            del self._state['completed_windows'][key]
+            self.save()
+            return True
+        return False
+
     def clear(self):
         if os.path.exists(self.state_file):
             from quantpits.utils.train_utils import backup_file_with_date
@@ -265,7 +284,7 @@ def train_window_model(model_name, yaml_file, window, params_base,
     Returns:
         dict: {success, record_id, performance, error}
     """
-    from quantpits.utils.train_utils import inject_config, ROLLING_PREDICTION_DIR
+    from quantpits.utils.train_utils import inject_config
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
 
@@ -377,16 +396,25 @@ def train_window_model(model_name, yaml_file, window, params_base,
 
 
 # ================= 预测拼接 =================
+def _filter_pred_to_test_segment(pred, window):
+    """将 pred 过滤到 window 的 test 段日期范围 [test_start, test_end]"""
+    dates = pred.index.get_level_values('datetime')
+    mask = (dates >= pd.Timestamp(window['test_start'])) & \
+           (dates <= pd.Timestamp(window['test_end']))
+    return pred[mask]
+
+
 def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
-                                    combined_exp_name, anchor_date, extra_preds=None):
+                                    combined_exp_name, anchor_date,
+                                    windows, extra_preds=None):
     """
     将各 window 的 pred.pkl 拼接成完整时间序列。
 
     对每个模型：
-    1. 从各 window recorder 加载 pred.pkl (仅 test 段)
-    2. pd.concat (日期不重叠)
-    3. 保存到 Rolling_Combined 实验的新 recorder
-    4. 保存拼接后的 CSV
+    1. 从各 window recorder 加载 pred.pkl
+    2. 截取仅 test 段的预测（避免训练集内预测泄漏到下游回测）
+    3. pd.concat (日期不重叠)
+    4. 保存到 Rolling_Combined 实验的新 recorder
 
     Args:
         state: RollingState
@@ -394,16 +422,20 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
         rolling_exp_name: per-window 实验名
         combined_exp_name: 拼接后实验名
         anchor_date: 锚点日期
+        windows: list of dict, 完整的 rolling windows 列表（用于 test 段截取）
+        extra_preds: dict {model_name: DataFrame}, 额外的 predict-only 预测
 
     Returns:
         dict: {model_name: combined_record_id}
     """
     from qlib.workflow import R
-    from quantpits.utils.train_utils import ROLLING_PREDICTION_DIR
 
     print(f"\n{'='*60}")
-    print("📦 拼接 Rolling 预测")
+    print("📦 拼接 Rolling 预测 (仅 test 段)")
     print(f"{'='*60}")
+
+    # 构建 window_idx -> window 的快速查找表
+    window_map = {w['window_idx']: w for w in windows}
 
     combined_records = {}
 
@@ -417,6 +449,7 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
 
         all_preds = []
         for comp in completions:
+            widx = comp['window_idx']
             try:
                 rec = R.get_recorder(
                     recorder_id=comp['record_id'],
@@ -428,13 +461,19 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
                     pred = pred[['score']]
                 elif isinstance(pred, pd.Series):
                     pred = pred.to_frame('score')
+
+                # 截取 test 段：仅保留 [test_start, test_end] 范围内的预测
+                w = window_map.get(widx)
+                if w:
+                    pred = _filter_pred_to_test_segment(pred, w)
+
                 all_preds.append(pred)
                 dates = pred.index.get_level_values('datetime')
-                print(f"    Window {comp['window_idx']}: "
+                print(f"    Window {widx}: "
                       f"{dates.min().date()} ~ {dates.max().date()}, "
                       f"{len(pred)} rows")
             except Exception as e:
-                print(f"    Window {comp['window_idx']}: FAILED - {e}")
+                print(f"    Window {widx}: FAILED - {e}")
 
         if extra_preds and model_name in extra_preds:
             extra_df = extra_preds[model_name]
@@ -446,6 +485,15 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
                     extra_df = extra_df[['score']]
                 elif isinstance(extra_df, pd.DataFrame):
                     extra_df.columns = ['score']
+
+                # extra_preds 来自 predict_with_latest_model，也需要截取 test 段
+                # 使用最新已完成 window 的 test 范围
+                if completions:
+                    last_widx = completions[-1]['window_idx']
+                    last_w = window_map.get(last_widx)
+                    if last_w:
+                        extra_df = _filter_pred_to_test_segment(extra_df, last_w)
+
                 all_preds.append(extra_df)
                 dts = extra_df.index.get_level_values('datetime')
                 print(f"    Extra Pred_Only: {dts.min().date()} ~ {dts.max().date()}, {len(extra_df)} rows")
@@ -456,7 +504,7 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
 
         # 拼接
         combined_pred = pd.concat(all_preds)
-        # 去重（以防万一）
+        # 去重：重叠区域保留最新 (extra_preds / 后续 window) 的预测
         combined_pred = combined_pred[~combined_pred.index.duplicated(keep='last')]
         combined_pred = combined_pred.sort_index()
 
@@ -522,7 +570,7 @@ def predict_with_latest_model(model_name, model_info, state,
 
     用于日常模式中距离上次 rolling 未超过 step 的情况。
     """
-    from quantpits.utils.train_utils import inject_config, ROLLING_PREDICTION_DIR
+    from quantpits.utils.train_utils import inject_config
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
 
@@ -552,8 +600,11 @@ def predict_with_latest_model(model_name, model_info, state,
         yaml_file = model_info['yaml_file']
         params = dict(params_base)
         params['anchor_date'] = anchor_date
-        
-        # 补齐基于该 window 的日期范围，以满足 inject_config 检查
+
+        # 补齐基于该 window 的日期范围，以满足 inject_config 检查。
+        # 注意：windows 是用当前 anchor_date 动态重新生成的，所以最后一个
+        # window 的 test_end 会自动延伸到 min(test_end_full, anchor_date)，
+        # 确保 dataset 能覆盖到最新数据。
         params['start_time'] = window['train_start']
         params['end_time'] = window['test_end']
         params['fit_start_time'] = window['train_start']
@@ -613,6 +664,8 @@ def parse_args():
                       help='从断点恢复训练')
     mode.add_argument('--merge', action='store_true',
                       help='合并冷启动：在已有 rolling 状态基础上追加新模型')
+    mode.add_argument('--retrain-last', action='store_true',
+                      help='重训最后一个 window：清除 state 中最后 window 的记录后走日常流程')
     mode.add_argument('--backtest', action='store_true',
                       help='训练拼接完成后，对产出的合成预测进行全量回测')
     mode.add_argument('--backtest-only', action='store_true',
@@ -717,14 +770,14 @@ def run_cold_start(args, targets, rolling_cfg):
 
     # 初始化状态
     state = RollingState()
-    if getattr(args, 'resume', False) is not True and getattr(args, 'merge', False) is not True:
+    if not args.resume and not args.merge:
         state.init_run(rolling_cfg, anchor_date, len(windows))
     else:
         if not state.anchor_date:
             print("❌ 无 rolling 状态可恢复，将新建状态")
             state.init_run(rolling_cfg, anchor_date, len(windows))
         else:
-            print(f"⏩ {'Merge' if getattr(args, 'merge', False) is True else 'Resume'} 模式：跳过已完成窗格")
+            print(f"⏩ {'Merge' if args.merge else 'Resume'} 模式：跳过已完成窗格")
 
     rolling_exp_name = f"Rolling_Windows_{freq}"
     combined_exp_name = f"Rolling_Combined_{freq}"
@@ -762,7 +815,7 @@ def run_cold_start(args, targets, rolling_cfg):
                 print(f"❌ {model_name} W{widx} 训练失败: {result.get('error', 'Unknown')}")
 
     # 拼接预测
-    if getattr(args, 'merge', False) is True:
+    if args.merge:
         completed = state.get_all_completed_windows()
         all_models = set(targets.keys())
         for win, models in completed.items():
@@ -772,12 +825,13 @@ def run_cold_start(args, targets, rolling_cfg):
         model_names = list(targets.keys())
 
     combined_records = concatenate_rolling_predictions(
-        state, model_names, rolling_exp_name, combined_exp_name, anchor_date
+        state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
+        windows=windows,
     )
 
     if combined_records:
         save_rolling_records(combined_records, combined_exp_name, anchor_date)
-        if getattr(args, 'backtest', False) is True:
+        if args.backtest:
             run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
 
     # 完成
@@ -855,19 +909,21 @@ def run_daily(args, targets, rolling_cfg):
                 else:
                     print(f"❌ {model_name} W{widx} 失败: {result.get('error')}")
 
-        # 重新拼接
+        # 重新拼接（含新训练的 window）
         model_names = list(targets.keys())
         combined_records = concatenate_rolling_predictions(
-            state, model_names, rolling_exp_name, combined_exp_name, anchor_date
+            state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
+            windows=windows,
         )
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name, anchor_date)
-            if getattr(args, 'backtest', False) is True:
+            if args.backtest:
                 run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
 
         print(f"\n✅ Rolling 滚动更新完成 (新训练 {len(new_windows)} 个 windows)")
 
     else:
+        # 所有 window 已训练，使用最新模型对当前 anchor_date 范围预测
         print(f"\n📊 所有 windows 已训练完毕，执行 predict-only...")
 
         extra_preds = {}
@@ -882,11 +938,12 @@ def run_daily(args, targets, rolling_cfg):
         if extra_preds:
             model_names = list(targets.keys())
             combined_records = concatenate_rolling_predictions(
-                state, model_names, rolling_exp_name, combined_exp_name, anchor_date, extra_preds=extra_preds
+                state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
+                windows=windows, extra_preds=extra_preds,
             )
             if combined_records:
                 save_rolling_records(combined_records, combined_exp_name, anchor_date)
-                if getattr(args, 'backtest', False) is True:
+                if args.backtest:
                     run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
 
 
@@ -1136,16 +1193,19 @@ def run_predict_only(args, targets, rolling_cfg):
         combined_exp_name = f"Rolling_Combined_{freq}"
         model_names = list(targets.keys())
         combined_records = concatenate_rolling_predictions(
-            state, model_names, rolling_exp_name, combined_exp_name, anchor_date, extra_preds=extra_preds
+            state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
+            windows=windows, extra_preds=extra_preds,
         )
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name, anchor_date)
             # 允许在 predict-only 后也触发 backtest
-            if getattr(args, 'backtest', False) is True:
+            if args.backtest:
                 run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
 
 
 def main():
+    from quantpits.utils import env as _env
+    _env.safeguard("Rolling Train")
     args = parse_args()
 
     # 信息查看命令
@@ -1171,13 +1231,27 @@ def main():
     print(f"   验证(Y): {rolling_cfg['valid_years']} 年")
     print(f"   步长(Z): {rolling_cfg['test_step']} ({rolling_cfg['test_step_months']} 个月)")
 
+    # --retrain-last: 清除最后一个 window 的训练记录，然后走日常流程
+    if args.retrain_last:
+        state = RollingState()
+        if not state.anchor_date:
+            print("❌ 无 rolling 状态，请先 --cold-start")
+            return
+        last_idx = state.get_last_completed_window_idx()
+        if last_idx is not None:
+            state.remove_window(last_idx)
+            print(f"🔄 已清除 Window {last_idx} 的训练记录，将重新训练")
+        else:
+            print("ℹ️  没有已完成的 window 可以重训")
+            return
+
     # 解析目标模型
     has_selection = any([
         args.models, args.algorithm, args.dataset,
         args.tag, args.all_enabled
     ])
 
-    if getattr(args, 'resume', False) is True or getattr(args, 'merge', False) is True or getattr(args, 'backtest_only', False) is True:
+    if args.resume or args.merge or args.backtest_only or args.retrain_last:
         if not has_selection:
             args.all_enabled = True
             has_selection = True
@@ -1187,9 +1261,9 @@ def main():
         print("   使用 --models, --algorithm, --dataset, --tag, 或 --all-enabled")
         return
 
-    if getattr(args, 'resume', False) is True or getattr(args, 'merge', False) is True:
+    if args.resume or args.merge:
         state = RollingState()
-        if not state.anchor_date and getattr(args, 'resume', False) is True:
+        if not state.anchor_date and args.resume:
             print("❌ 无 rolling 状态可恢复")
             return
 
@@ -1199,12 +1273,15 @@ def main():
         return
 
     # 选择运行模式
-    if getattr(args, 'backtest_only', False) is True:
+    if args.backtest_only:
         run_backtest_only(args, targets)
     elif args.predict_only:
         run_predict_only(args, targets, rolling_cfg)
-    elif args.cold_start or getattr(args, 'resume', False) is True or getattr(args, 'merge', False) is True:
+    elif args.cold_start or args.resume or args.merge:
         run_cold_start(args, targets, rolling_cfg)
+    elif args.retrain_last:
+        # --retrain-last 走日常流程（会检测到被清除的 window 并重训）
+        run_daily(args, targets, rolling_cfg)
     else:
         run_daily(args, targets, rolling_cfg)
 

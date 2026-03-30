@@ -27,7 +27,6 @@
 ```text
 output/
 ├── predictions/               # 静态训练预测
-│   └── rolling/               # 滚动训练预测记录 (Qlib Recorder，存于 mlruns)
 data/
 ├── latest_train_records.json  # 统一训练记录 (含 @rolling)
 ├── rolling_state.json         # 滚动运行状态进度（断点续跑）
@@ -112,7 +111,7 @@ python quantpits/scripts/rolling_train.py --cold-start --dry-run --all-enabled
 1. 从 `rolling_config.yaml` 读取参数
 2. 生成所有 rolling windows（到 anchor_date 为止）
 3. 对每个 window × 每个模型执行训练 + 预测
-4. 拼接所有 windows 的预测为连续时间序列
+4. 拼接所有 windows 的预测为连续时间序列（**仅截取各 window 的 test 段**，避免训练集内预测泄漏）
 5. 保存 `latest_train_records.json` (以 `@rolling` 后缀写入)
 
 ### 模式二：日常模式
@@ -142,6 +141,18 @@ python quantpits/scripts/rolling_train.py --backtest-only
 ```
 
 生成的标准化产物 (`report_normal_<freq>.pkl`, `positions_normal_<freq>.pkl` 等) 以及 indicator 分析指标将保存在 MLflow 的 Combined 实验记录下。
+
+### 模式五：重训最后一个 Window
+
+如果最近一次滚动训练的数据有问题（如数据修正），可以重训最后一个 window。
+此模式会清除 `rolling_state.json` 中最后一个 window 的记录，然后走日常模式自动重训。
+
+```bash
+python quantpits/scripts/rolling_train.py --retrain-last --all-enabled
+```
+
+> [!TIP]
+> 如果整个模型有问题，应使用 `--clear-state` + `--cold-start` 全量重建。
 
 ### 断点恢复
 

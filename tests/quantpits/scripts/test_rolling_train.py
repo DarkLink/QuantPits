@@ -77,6 +77,9 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(pd.DataFrame, 'to_csv', mock.MagicMock())
     monkeypatch.setattr(pd.Series, 'to_csv', mock.MagicMock())
 
+    # Mock safeguard to avoid 3-second sleep in tests
+    monkeypatch.setattr('quantpits.utils.env.safeguard', lambda x: None)
+
     import rolling_train as rt
     return rt, workspace
 
@@ -489,7 +492,9 @@ class TestFunctionalLogic:
             r1.load_object.return_value = df1
             mock_r.get_recorder.side_effect = [r0, r1, mock.MagicMock(id='combined_r')]
             
-            res = rt.concatenate_rolling_predictions(state, ['m1'], 'exp', 'comb', '2024-01-01')
+            res = rt.concatenate_rolling_predictions(state, ['m1'], 'exp', 'comb', '2024-01-01',
+                                                      windows=[{'window_idx': 0, 'test_start': '2024-01-01', 'test_end': '2024-01-31'},
+                                                               {'window_idx': 1, 'test_start': '2024-02-01', 'test_end': '2024-02-28'}])
             assert 'm1' in res
             assert res['m1'] == 'combined_r'
 
@@ -537,7 +542,9 @@ class TestFunctionalLogic:
             mock_combined_r = mock.MagicMock(id='combined_r')
             mock_r.get_recorder.side_effect = [r0, r1, mock_combined_r]
             
-            res = rt.concatenate_rolling_predictions(state, ['m1'], 'rolling_exp', 'comb_exp', '2024-03-31')
+            res = rt.concatenate_rolling_predictions(state, ['m1'], 'rolling_exp', 'comb_exp', '2024-03-31',
+                                                      windows=[{'window_idx': 0, 'test_start': '2024-01-01', 'test_end': '2024-01-31'},
+                                                               {'window_idx': 1, 'test_start': '2024-02-01', 'test_end': '2024-02-28'}])
             assert res['m1'] == 'combined_r'
             assert mock_r.save_objects.called
 
@@ -664,6 +671,15 @@ class TestMainFlows:
         args.cold_start = True
         args.predict_only = False
         args.resume = False
+        args.merge = False
+        args.retrain_last = False
+        args.backtest_only = False
+        args.backtest = False
+        args.all_enabled = True
+        args.models = None
+        args.algorithm = None
+        args.dataset = None
+        args.tag = None
         
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models') as mock_resolve, \
@@ -695,6 +711,9 @@ class TestMainFlows:
         args.predict_only = True
         args.resume = False
         args.cold_start = False
+        args.merge = False
+        args.retrain_last = False
+        args.backtest_only = False
         args.models = None
         args.algorithm = "gru"
         args.dataset = None
@@ -725,6 +744,10 @@ class TestMainFlows:
         args.resume = True
         args.cold_start = False
         args.predict_only = False
+        args.merge = False
+        args.retrain_last = False
+        args.backtest_only = False
+        args.backtest = False
         args.models = None
         args.algorithm = "gru"
         args.dataset = None
@@ -855,6 +878,7 @@ class TestMainFlowsExtended:
         args.predict_only = False
         args.backtest_only = False
         args.backtest = False
+        args.retrain_last = False
 
         mock_patch_cfg = {
             'rolling_start': '2020-01-01',
@@ -886,6 +910,7 @@ class TestMainFlowsExtended:
         args.cold_start = False
         args.resume = False
         args.merge = False
+        args.retrain_last = False
 
         mock_patch_cfg = {
             'rolling_start': '2020-01-01',
@@ -1008,6 +1033,11 @@ class TestRunModesExtra:
         args.show_state = False
         args.clear_state = False
         args.resume = True
+        args.cold_start = False
+        args.predict_only = False
+        args.merge = False
+        args.retrain_last = False
+        args.backtest_only = False
         args.all_enabled = True
 
         with mock.patch('rolling_train.parse_args', return_value=args), \
@@ -1027,7 +1057,16 @@ class TestRunModesExtra:
         args.show_state = False
         args.clear_state = False
         args.cold_start = True
+        args.predict_only = False
+        args.resume = False
+        args.merge = False
+        args.retrain_last = False
+        args.backtest_only = False
         args.all_enabled = True
+        args.models = None
+        args.algorithm = None
+        args.dataset = None
+        args.tag = None
 
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models', return_value={}):
@@ -1106,7 +1145,7 @@ class TestMoreFunctionalLogic:
         rt, _ = mock_env
         state = mock.MagicMock()
         state.get_completed_record_ids.return_value = []
-        res = rt.concatenate_rolling_predictions(state, ['m1'], 'exp', 'comb', '2024-01-01')
+        res = rt.concatenate_rolling_predictions(state, ['m1'], 'exp', 'comb', '2024-01-01', windows=[])
         assert res == {}
 
     def test_concatenate_predictions_load_fails(self, mock_env):
@@ -1117,7 +1156,8 @@ class TestMoreFunctionalLogic:
             rec = mock.MagicMock()
             rec.load_object.side_effect = Exception("Load Fails")
             mock_r.get_recorder.return_value = rec
-            res = rt.concatenate_rolling_predictions(state, ['m1'], 'exp', 'comb', '2024-01-01')
+            res = rt.concatenate_rolling_predictions(state, ['m1'], 'exp', 'comb', '2024-01-01',
+                                                      windows=[{'window_idx': 0, 'test_start': '2024-01-01', 'test_end': '2024-01-31'}])
             assert res == {}
 
     def test_predict_with_latest_model_empty(self, mock_env):
@@ -1424,7 +1464,7 @@ class TestMainAdditionalBranches:
 
     def test_main_resume_all_enabled(self, mock_env):
         rt, _ = mock_env
-        args = mock.MagicMock(show_state=False, clear_state=False, resume=True, backtest_only=False, cold_start=False, merge=False, predict_only=False, models=None, algorithm=None, dataset=None, tag=None, all_enabled=False)
+        args = mock.MagicMock(show_state=False, clear_state=False, resume=True, backtest_only=False, cold_start=False, merge=False, predict_only=False, retrain_last=False, models=None, algorithm=None, dataset=None, tag=None, all_enabled=False)
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
              mock.patch('rolling_train.RollingState') as mock_state_cls, \
@@ -1438,14 +1478,14 @@ class TestMainAdditionalBranches:
 
     def test_main_no_selection_return(self, mock_env):
         rt, _ = mock_env
-        args = mock.MagicMock(show_state=False, clear_state=False, resume=False, backtest_only=False, cold_start=False, merge=False, predict_only=False, models=None, algorithm=None, dataset=None, tag=None, all_enabled=False)
+        args = mock.MagicMock(show_state=False, clear_state=False, resume=False, backtest_only=False, cold_start=False, merge=False, predict_only=False, retrain_last=False, models=None, algorithm=None, dataset=None, tag=None, all_enabled=False)
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}):
             rt.main() # Covers lines 1080-1082
 
     def test_main_daily_execution(self, mock_env):
         rt, _ = mock_env
-        args = mock.MagicMock(show_state=False, clear_state=False, resume=False, backtest_only=False, cold_start=False, merge=False, predict_only=False, models='m1', algorithm=None, dataset=None, tag=None, all_enabled=False)
+        args = mock.MagicMock(show_state=False, clear_state=False, resume=False, backtest_only=False, cold_start=False, merge=False, predict_only=False, retrain_last=False, models='m1', algorithm=None, dataset=None, tag=None, all_enabled=False)
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
              mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
@@ -1457,11 +1497,12 @@ class TestParseArgsExtra:
     def test_parse_args_all(self, mock_env):
         rt, _ = mock_env
         import sys
-        with mock.patch.object(sys, 'argv', ['script.py', '--predict-only', '--resume', '--merge', '--backtest', '--backtest-only', '--models', 'm1,m2', '--algorithm', 'gru', '--dataset', 'Alpha158', '--tag', 't1', '--skip', 'm3', '--dry-run', '--no-pretrain', '--show-state', '--clear-state']):
+        with mock.patch.object(sys, 'argv', ['script.py', '--predict-only', '--resume', '--merge', '--retrain-last', '--backtest', '--backtest-only', '--models', 'm1,m2', '--algorithm', 'gru', '--dataset', 'Alpha158', '--tag', 't1', '--skip', 'm3', '--dry-run', '--no-pretrain', '--show-state', '--clear-state']):
             args = rt.parse_args()
             assert args.predict_only is True
             assert args.resume is True
             assert args.merge is True
+            assert args.retrain_last is True
             assert args.backtest is True
             assert args.backtest_only is True
             assert args.models == 'm1,m2'
