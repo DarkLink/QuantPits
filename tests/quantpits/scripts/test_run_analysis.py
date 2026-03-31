@@ -282,8 +282,10 @@ def test_main_coverage_edges(mock_port, mock_exec, mock_ens, mock_single,
         "total_missed_count": 120,
         "total_days_with_misses": 5,
         "avg_missed_buys_return": 0.05,
-        "avg_substitute_buys_return": 0.01,
-        "substitute_bias_impact": -0.04
+        "theoretical_avg_substitute_return": 0.01,
+        "realized_avg_substitute_return": 0.01,
+        "theoretical_substitute_bias_impact": -0.04,
+        "realized_substitute_bias_impact": -0.04
     }
     
     mock_ex.trade_log = pd.DataFrame({
@@ -364,10 +366,12 @@ def test_main_friction_and_discrepancy_comprehensive(mock_port, mock_exec, mock_
     # 2. Mock discrepancy to cover 267-270
     mock_ex.analyze_order_discrepancies.return_value = {
         "total_missed_count": 10,
-        "substitute_bias_impact": -0.01,
+        "theoretical_substitute_bias_impact": -0.01,
+        "realized_substitute_bias_impact": -0.02,
         "total_days_with_misses": 2,
         "avg_missed_buys_return": 0.02,
-        "avg_substitute_buys_return": 0.01
+        "theoretical_avg_substitute_return": 0.01,
+        "realized_avg_substitute_return": 0.00
     }
     mock_ex.trade_log = pd.DataFrame({"trade_class": ["S"], "成交金额": [100000], "交易类别": ["买入"]})
     
@@ -395,7 +399,8 @@ def test_main_friction_and_discrepancy_comprehensive(mock_port, mock_exec, mock_
     # Sell ADVMean: (0.005+0.06)/2 = 0.0325 -> 3.2500%
     # Sell ADVMax: 0.06 -> 6.0000%
     assert "ADV Participation Rate (Mean / Max): 3.2500% / 6.0000%" in content
-    assert "**Substitution Bias (Unlucky/Loss)**: -1.0000%" in content
+    assert "**Substitution Bias (Unlucky/Loss) (Theoretical)**: -1.0000%" in content
+    assert "**Substitution Bias (Unlucky/Loss) (Realized with Cost)**: -2.0000%" in content
 
 @patch('quantpits.scripts.run_analysis.init_qlib')
 @patch('quantpits.scripts.run_analysis.load_market_config')
@@ -633,10 +638,12 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
     mock_ex.analyze_explicit_costs.return_value = {"fee_ratio": 0.0005, "total_fees": 10.0, "total_dividend": 5.0}
     mock_ex.analyze_order_discrepancies.return_value = {
         "total_missed_count": 10,
-        "substitute_bias_impact": 0.01,
+        "theoretical_substitute_bias_impact": 0.01,
+        "realized_substitute_bias_impact": 0.01,
         "total_days_with_misses": 1,
         "avg_missed_buys_return": 0.02,
-        "avg_substitute_buys_return": 0.03
+        "theoretical_avg_substitute_return": 0.03,
+        "realized_avg_substitute_return": 0.03
     }
     mock_ex.trade_log = pd.DataFrame({"trade_class": ["S"], "成交金额": [100000], "交易类别": ["买入"]})
     
@@ -666,7 +673,7 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
     assert "~1 Months (Summer 2024 - Summer 2024)" in content # (2024-2024)*12 + 8-7=1
     assert "Rank IC Mean**: 0.1" in content # ensemble_metrics shareable (line 162)
     assert "Drop `m1` -> impact on Sharpe: +0.1" in content # marginal shareable (line 154)
-    assert "**Substitution Bias (Lucky/Gain)**: 1.0%" in content # discrepancy shareable (line 262)
+    assert "**Substitution Bias (Lucky/Gain) (Theoretical)**: 1.0%" in content # discrepancy shareable (line 262)
     assert "**Avg_Daily_Holdings_Count**: ~10" in content # holding shareable (line 305)
     assert "**CAGR (252-day basis)**: 15.0%" in content # CAGR shareable (line 325)
     assert "**Max_Time_Under_Water_Days**: 35-45 days" in content # fuzzy days shareable (line 320, 340)

@@ -192,8 +192,9 @@ def test_calculate_path_dependency_empty_features(mock_get_features, ea_factory)
 
 # ── analyze_order_discrepancies ──────────────────────────────────────────
 
+@patch('quantpits.scripts.analysis.execution_analyzer.get_daily_features')
 @patch('quantpits.scripts.analysis.utils.get_forward_returns')
-def test_analyze_order_discrepancies(mock_fwd_returns, tmp_path, ea_factory):
+def test_analyze_order_discrepancies(mock_fwd_returns, mock_get_features, tmp_path, ea_factory):
     trade_log = _make_trade_log()
     ea = ea_factory(trade_log_df=trade_log)
 
@@ -216,17 +217,31 @@ def test_analyze_order_discrepancies(mock_fwd_returns, tmp_path, ea_factory):
     mock_returns = mock_returns.reset_index()
     mock_returns = mock_returns.set_index(["instrument", "datetime"])  
     mock_fwd_returns.return_value = mock_returns
+    
+    # Mock unadj_close features
+    mock_features = pd.DataFrame({
+        'instrument': ['SZ000999', 'SZ000001'],
+        'datetime': pd.to_datetime(['2026-01-10', '2026-01-10']),
+        'unadj_close': [10.2, 11.0] # SZ000001 exec was 10.5
+    })
+    mock_get_features.return_value = mock_features
 
     with patch('quantpits.scripts.analysis.execution_analyzer.load_market_config', return_value=("csi300", "SH000300")):
         result = ea.analyze_order_discrepancies(str(order_dir))
 
-    assert "substitute_bias_impact" in result
+    assert "theoretical_substitute_bias_impact" in result
     assert result["total_missed_count"] == 1
     assert result["total_days_with_misses"] == 1
     
     assert np.isclose(float(result["avg_missed_buys_return"]), 0.10)
-    assert np.isclose(float(result["avg_substitute_buys_return"]), -0.05)
-    assert np.isclose(float(result["substitute_bias_impact"]), -0.15)
+    assert np.isclose(float(result["theoretical_avg_substitute_return"]), -0.05)
+    assert np.isclose(float(result["theoretical_substitute_bias_impact"]), -0.15)
+    
+    # Check realized tracking
+    # P_exec = 10.5, unadj_close = 11.0. Intraday slip ret = (11-10.5)/10.5 = 1/21
+    # realized_val = (1 + 1/21)*(1 - 0.05) - 1 = (22/21)*(0.95) - 1 = -0.00476190476
+    assert "realized_substitute_bias_impact" in result
+    assert np.isclose(float(result["realized_avg_substitute_return"]), -0.00476190476)
 
 def test_analyze_order_discrepancies_no_date(ea_factory, tmp_path):
     trade_log = _make_trade_log()

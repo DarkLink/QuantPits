@@ -66,7 +66,10 @@ class ExecutionAnalyzer:
         if pd.isna(min_date) or pd.isna(max_date):
             return pd.DataFrame()
             
-        min_date_str = min_date.strftime('%Y-%m-%d')
+        from datetime import timedelta
+        # Fetch features from 10 days earlier so that shift(1) doesn't produce NaN for the first trade date
+        fetch_min_date = min_date - timedelta(days=10)
+        min_date_str = fetch_min_date.strftime('%Y-%m-%d')
         max_date_str = max_date.strftime('%Y-%m-%d')
         
         # Get price features
@@ -115,8 +118,18 @@ class ExecutionAnalyzer:
         merged['Total_Friction'] = merged['Delay_Cost'] + merged['Exec_Slippage']
         
         # Absolute Slippage Monetary Amount (Loss if sliding backwards)
-        # Note: Slippage is negative percent when bad, so if we take it * Trade Amount it's already properly signed
-        merged['Absolute_Slippage_Amount'] = merged['Total_Friction'] * merged['成交金额']
+        trade_qty = merged['成交金额'] / merged['成交价格']
+        ideal_open_amount = merged['unadj_open'] * trade_qty
+        
+        # Abs Exec Slippage: If 'unadj_open' > '成交价格' (buy at a better price), it is a gain (+)
+        merged.loc[is_buy, 'Abs_Exec_Slippage'] = ideal_open_amount - merged['成交金额']
+        merged.loc[is_sell, 'Abs_Exec_Slippage'] = merged['成交金额'] - ideal_open_amount
+        
+        # Abs Delay Cost: Convert theoretical percentage into absolute monetary offset based on expected open value
+        merged.loc[is_buy, 'Abs_Delay_Cost'] = ideal_open_amount * (merged['Delay_Cost'] / (1 - merged['Delay_Cost']))
+        merged.loc[is_sell, 'Abs_Delay_Cost'] = ideal_open_amount * (merged['Delay_Cost'] / (1 + merged['Delay_Cost']))
+        
+        merged['Absolute_Slippage_Amount'] = merged['Abs_Delay_Cost'] + merged['Abs_Exec_Slippage']
         
         # ADV Participation Rate
         # Qlib's $amount is usually in thousands or scaled down. To reconstruct the True Daily Market Turnover in RMB:
@@ -238,8 +251,16 @@ class ExecutionAnalyzer:
         # Use 1-day or 5-day proxy for missed opportunities. Using 5-day for structural impact checking
         fwd_ret_5d = get_forward_returns(min_date, max_date, market=market, n_days=5)
         
-        missed_buys_return = []
-        actual_buys_return = []
+        # Fetch unadj_close to calculate actual execution-to-close friction for substitutes
+        unadj_close_df = get_daily_features(min_date, max_date, market=market, features={'unadj_close': '$close / $factor'})
+        if not unadj_close_df.empty:
+            unadj_close_df = unadj_close_df.reset_index()
+            unadj_close_df['datetime'] = pd.to_datetime(unadj_close_df['datetime'])
+            unadj_close_df = unadj_close_df.set_index(['instrument', 'datetime'])
+        
+        daily_missed_avgs = []
+        daily_sub_theo_avgs = []
+        daily_sub_real_avgs = []
         total_missed_count = 0
         total_days_with_misses = 0
         
@@ -271,6 +292,10 @@ class ExecutionAnalyzer:
                 total_missed_count += len(missed_targets)
                 total_days_with_misses += 1
             
+            day_missed_returns = []
+            day_sub_theoretical_returns = []
+            day_sub_realized_returns = []
+            
             if not fwd_ret_5d.empty:
                 day_ret = fwd_ret_5d[fwd_ret_5d.index.get_level_values('datetime') == pd.to_datetime(date_str)]
                 if not day_ret.empty:
@@ -278,26 +303,58 @@ class ExecutionAnalyzer:
                         try:
                             val = day_ret.loc[(t, pd.to_datetime(date_str)), 'return_5d']
                             if isinstance(val, pd.Series): val = val.iloc[0]
-                            missed_buys_return.append(val)
+                            day_missed_returns.append(val)
                         except KeyError:
                             pass
                     for t in substitute_targets:
                         try:
-                            val = day_ret.loc[(t, pd.to_datetime(date_str)), 'return_5d']
-                            if isinstance(val, pd.Series): val = val.iloc[0]
-                            actual_buys_return.append(val)
+                            val_return = day_ret.loc[(t, pd.to_datetime(date_str)), 'return_5d']
+                            if isinstance(val_return, pd.Series): val_return = val_return.iloc[0]
+                            day_sub_theoretical_returns.append(val_return)
+                            
+                            # Calculate realized return incorporating execution slip
+                            realized_val = val_return
+                            if not unadj_close_df.empty:
+                                try:
+                                    unadj_close_val = unadj_close_df.loc[(t, pd.to_datetime(date_str)), 'unadj_close']
+                                    if isinstance(unadj_close_val, pd.Series): unadj_close_val = unadj_close_val.iloc[0]
+                                    
+                                    # Get actual VWAP execution price
+                                    t_trades = day_log[day_log['证券代码'] == t]
+                                    if not t_trades.empty:
+                                        t_amount = t_trades['成交金额'].sum()
+                                        t_qty = t_trades['成交数量'].sum()
+                                        if t_qty > 0:
+                                            vwap_exec = t_amount / t_qty
+                                            if vwap_exec > 0:
+                                                exec_to_close_slip = (unadj_close_val - vwap_exec) / vwap_exec
+                                                realized_val = (1 + exec_to_close_slip) * (1 + val_return) - 1
+                                except KeyError:
+                                    pass
+                                    
+                            day_sub_realized_returns.append(realized_val)
                         except KeyError:
                             pass
 
-        avg_missed_return = float(np.nanmean(missed_buys_return)) if len(missed_buys_return) > 0 else 0.0
-        avg_substitute_return = float(np.nanmean(actual_buys_return)) if len(actual_buys_return) > 0 else 0.0
-        # Positive value means actual substitute performed BETTER than missed (Gain)
-        substitute_bias_impact = avg_substitute_return - avg_missed_return
+            if len(day_missed_returns) > 0 and len(day_sub_theoretical_returns) > 0:
+                day_missed_avg = float(np.nanmean(day_missed_returns))
+                day_sub_theo_avg = float(np.nanmean(day_sub_theoretical_returns))
+                day_sub_real_avg = float(np.nanmean(day_sub_realized_returns))
+                
+                daily_missed_avgs.append(day_missed_avg)
+                daily_sub_theo_avgs.append(day_sub_theo_avg)
+                daily_sub_real_avgs.append(day_sub_real_avg)
+
+        avg_missed_return = float(np.nanmean(daily_missed_avgs)) if len(daily_missed_avgs) > 0 else 0.0
+        avg_theo_sub_return = float(np.nanmean(daily_sub_theo_avgs)) if len(daily_sub_theo_avgs) > 0 else 0.0
+        avg_real_sub_return = float(np.nanmean(daily_sub_real_avgs)) if len(daily_sub_real_avgs) > 0 else 0.0
 
         return {
-            'substitute_bias_impact': substitute_bias_impact,
+            'theoretical_substitute_bias_impact': avg_theo_sub_return - avg_missed_return,
+            'realized_substitute_bias_impact': avg_real_sub_return - avg_missed_return,
+            'theoretical_avg_substitute_return': avg_theo_sub_return,
+            'realized_avg_substitute_return': avg_real_sub_return,
             'avg_missed_buys_return': avg_missed_return,
-            'avg_substitute_buys_return': avg_substitute_return,
             'total_missed_count': total_missed_count,
             'total_days_with_misses': total_days_with_misses
         }

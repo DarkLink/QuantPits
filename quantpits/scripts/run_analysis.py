@@ -259,19 +259,25 @@ def main():
     if discrepancy:
         report.append("\n### Order Suggestion vs Actual Discrepancy (Buys)")
         if discrepancy.get('total_missed_count', 0) > 0:
-            bias_val = discrepancy.get('substitute_bias_impact', 0)
-            bias_str = "Lucky/Gain" if bias_val > 0 else "Unlucky/Loss"
+            theo_bias_val = discrepancy.get('theoretical_substitute_bias_impact', 0)
+            real_bias_val = discrepancy.get('realized_substitute_bias_impact', 0)
+            theo_bias_str = "Lucky/Gain" if theo_bias_val > 0 else "Unlucky/Loss"
+            real_bias_str = "Lucky/Gain" if real_bias_val > 0 else "Unlucky/Loss"
             days_str = format_count(discrepancy.get('total_days_with_misses', 0))
             if args.shareable:
-                report.append(f"- **Substitution Bias ({bias_str})**: {bias_val:.1%}")
+                report.append(f"- **Substitution Bias ({theo_bias_str}) (Theoretical)**: {theo_bias_val:.1%}")
+                report.append(f"- **Substitution Bias ({real_bias_str}) (Realized with Cost)**: {real_bias_val:.1%}")
                 report.append(f"  - Scope: Missed Top Buy Occurrences: {format_count(discrepancy.get('total_missed_count', 0))}.")
                 report.append(f"  - Avg Missed Top Buys Expected Return: {discrepancy.get('avg_missed_buys_return', 0):.1%}")
-                report.append(f"  - Avg Actual Substitute Buys Return: {discrepancy.get('avg_substitute_buys_return', 0):.1%}")
+                report.append(f"  - Avg Actual Substitute Buys Return (Theoretical): {discrepancy.get('theoretical_avg_substitute_return', 0):.1%}")
+                report.append(f"  - Avg Actual Substitute Buys Return (Realized): {discrepancy.get('realized_avg_substitute_return', 0):.1%}")
             else:
-                report.append(f"- **Substitution Bias ({bias_str})**: {bias_val:.4%}")
+                report.append(f"- **Substitution Bias ({theo_bias_str}) (Theoretical)**: {theo_bias_val:.4%}")
+                report.append(f"- **Substitution Bias ({real_bias_str}) (Realized with Cost)**: {real_bias_val:.4%}")
                 report.append(f"  - Scope: Missed Top Buy Occurrences: {format_count(discrepancy.get('total_missed_count', 0))}, spread across {days_str} trading days.")
                 report.append(f"  - Avg Missed Top Buys Expected Return: {discrepancy.get('avg_missed_buys_return', 0):.4%}")
-                report.append(f"  - Avg Actual Substitute Buys Return: {discrepancy.get('avg_substitute_buys_return', 0):.4%}")
+                report.append(f"  - Avg Actual Substitute Buys Return (Theoretical): {discrepancy.get('theoretical_avg_substitute_return', 0):.4%}")
+                report.append(f"  - Avg Actual Substitute Buys Return (Realized): {discrepancy.get('realized_avg_substitute_return', 0):.4%}")
         else:
             report.append("- No measurable substitution bias or date mismatch for buys.")
             
