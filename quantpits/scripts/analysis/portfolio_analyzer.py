@@ -3,6 +3,11 @@ import numpy as np
 import statsmodels.api as sm
 from .utils import load_daily_amount, get_daily_features, load_holding_log, load_market_config
 
+# Metric Keys Contract
+BARRA_LIQD_KEY = 'Barra_Liquidity_Exp_(High-Low)'
+BARRA_MOMT_KEY = 'Barra_Momentum_Exp_(High-Low)'
+BARRA_VOLA_KEY = 'Barra_Volatility_Exp_(High-Low)'
+
 class PortfolioAnalyzer:
     def __init__(self, daily_amount_df=None, trade_log_df=None, holding_log_df=None, start_date=None, end_date=None, benchmark_col='CSI300', freq='day'):
         self.start_date = None
@@ -18,11 +23,14 @@ class PortfolioAnalyzer:
             # Ensure benchmark is NAV (Value/Price) internally.
             # If values start near 0, they are returns.
             if self.benchmark_col in self.daily_amount.columns:
-                if abs(self.daily_amount[self.benchmark_col].iloc[0]) < 0.5:
-                    # Convert Returns to cumulative NAV
-                    self.daily_amount[self.benchmark_col] = (1 + self.daily_amount[self.benchmark_col].fillna(0)).cumprod()
-                    # Ensure baseline is 1.0
-                    if not self.daily_amount.empty:
+                bench_series = self.daily_amount[self.benchmark_col].dropna()
+                if not bench_series.empty:
+                    # Adaptive check: if any value is negative OR (mean < 0.2 and max < 0.5) it's considered returns
+                    # This guarantees it doesn't fail based solely on the first day's outlier value
+                    if (bench_series.min() < 0) or (bench_series.mean() < 0.2 and bench_series.max() < 0.5):
+                        # Convert Returns to cumulative NAV
+                        self.daily_amount[self.benchmark_col] = (1 + self.daily_amount[self.benchmark_col].fillna(0)).cumprod()
+                        # Ensure baseline is 1.0
                         self.daily_amount.iloc[0, self.daily_amount.columns.get_loc(self.benchmark_col)] = 1.0
 
             if start_date:
@@ -201,7 +209,72 @@ class PortfolioAnalyzer:
             gross_profit = returns[returns > 0].sum()
             gross_loss = abs(returns[returns < 0].sum())
             
-        profit_factor = float(gross_profit / gross_loss) if gross_loss != 0 else np.nan
+        daily_profit_factor = float(gross_profit / gross_loss) if gross_loss != 0 else np.nan
+        
+        # ----------------------------------------------------
+        # Calculate Trade-Based Profit Factor (Closed-Loop FIFO)
+        # ----------------------------------------------------
+        trade_profit_factor = np.nan
+        if not self.trade_log.empty:
+            t_log = self.trade_log.copy()
+            if getattr(self, 'start_date', None) is not None:
+                t_log = t_log[t_log['成交日期'] >= pd.to_datetime(self.start_date)]
+            if getattr(self, 'end_date', None) is not None:
+                t_log = t_log[t_log['成交日期'] <= pd.to_datetime(self.end_date)]
+                
+            gross_trade_profit = 0.0
+            gross_trade_loss = 0.0
+            positions = {} # instrument -> list of {'price': p, 'qty': q, 'fees': f}
+            
+            t_log = t_log.sort_values('成交日期')
+            for _, row in t_log.iterrows():
+                inst = row.get('证券代码', '')
+                if inst == 'CASH' or not pd.notna(inst): continue
+                
+                trade_type = str(row.get('交易类别', ''))
+                qty = float(row.get('成交数量', 0))
+                price = float(row.get('成交价格', 0))
+                fees = float(row.get('费用合计', 0))
+                
+                if pd.isna(qty) or qty == 0: continue
+                
+                if '买入' in trade_type:
+                    if inst not in positions: positions[inst] = []
+                    positions[inst].append({'price': price, 'qty': qty, 'fees': fees})
+                elif '卖出' in trade_type:
+                    if inst not in positions: continue
+                    sell_qty_remaining = qty
+                    realized_pnl = 0.0
+                    
+                    while sell_qty_remaining > 0 and len(positions[inst]) > 0:
+                        lot = positions[inst][0]
+                        matched_qty = min(lot['qty'], sell_qty_remaining)
+                        
+                        buy_val = matched_qty * lot['price']
+                        sell_val = matched_qty * price
+                        
+                        buy_fee = lot['fees'] * (matched_qty / lot['qty']) if lot['qty'] > 0 else 0
+                        sell_fee = fees * (matched_qty / qty) if qty > 0 else 0
+                        
+                        chunk_pnl = sell_val - buy_val - buy_fee - sell_fee
+                        realized_pnl += chunk_pnl
+                        
+                        lot['qty'] -= matched_qty
+                        lot['fees'] -= buy_fee
+                        sell_qty_remaining -= matched_qty
+                        
+                        if lot['qty'] <= 1e-5:
+                            positions[inst].pop(0)
+                            
+                    if realized_pnl > 0:
+                        gross_trade_profit += realized_pnl
+                    else:
+                        gross_trade_loss += abs(realized_pnl)
+                        
+            if gross_trade_loss != 0:
+                trade_profit_factor = float(gross_trade_profit / gross_trade_loss)
+            elif gross_trade_profit > 0:
+                trade_profit_factor = np.inf
         
         avg_win = returns[returns > 0].mean() if not returns[returns > 0].empty else 0
         avg_loss = abs(returns[returns < 0].mean()) if not returns[returns < 0].empty else 1e-9
@@ -215,6 +288,14 @@ class PortfolioAnalyzer:
         # for avg, we must only avg the blocks that actually represent time under water
         # those are the ones where lengths > 0 and is_under_water was TRUE in that block
         under_water_only = under_water_lengths[under_water_lengths > 0]
+        
+        # EXCLUDE the final block for the AVERAGE calculation if it is unfinished 
+        # (i.e. the strategy is still in a drawdown at the end of the timeseries)
+        if len(is_under_water) > 0 and is_under_water.iloc[-1]:
+            last_block_id = under_water_blocks.iloc[-1]
+            if last_block_id in under_water_only.index:
+                under_water_only = under_water_only[under_water_only.index != last_block_id]
+                
         avg_time_under_water = float(under_water_only.mean()) if not under_water_only.empty else 0
         
         days_below_initial_capital = int((cum_ret < 1.0).sum())
@@ -244,6 +325,8 @@ class PortfolioAnalyzer:
                 aligned.columns = ['NAV', 'Trade_Amount']
                 # Avoid div by zero
                 aligned['NAV'] = aligned['NAV'].replace(0, 1e-9)
+                # Note: Trade_Amount integrates both buy and sell legs, effectively doubling execution value.
+                # Standard Turnover implies dividing the double-side volume by 2 to represent a 1-way equivalent.
                 daily_turnover = (aligned['Trade_Amount'] / 2) / aligned['NAV']
                 turnover_annual = float(daily_turnover.mean() * self.periods_per_year)
         
@@ -271,7 +354,8 @@ class PortfolioAnalyzer:
             'Days_Below_Initial_Capital': int(days_below_initial_capital),
             'Realized_Trade_Win_Rate': float(win_rate),
             'Win/Loss_Ratio': float(win_loss_ratio),
-            'Profit_Factor': float(profit_factor),
+            'Daily_Profit_Factor': float(daily_profit_factor),
+            'Trade_Profit_Factor': float(trade_profit_factor),
             'Turnover_Rate_Annual': turnover_annual
         }
 
@@ -320,6 +404,11 @@ class PortfolioAnalyzer:
         
         if len(aligned) < 2:
             return {}
+            
+        # Deduct risk-free rate for true excess-return CAPM regression
+        rf_daily = 0.0135 / self.periods_per_year
+        aligned['Portfolio'] = aligned['Portfolio'] - rf_daily
+        aligned['Market'] = aligned['Market'] - rf_daily
             
         X = sm.add_constant(aligned['Market'])
         model = sm.OLS(aligned['Portfolio'], X).fit()
@@ -423,15 +512,20 @@ class PortfolioAnalyzer:
         if len(aligned) < 2:
             return {}
             
+        # Deduct risk-free rate from Portfolio and Market for Excess-Return multi-factor regression
+        rf_daily = 0.0135 / self.periods_per_year
+        aligned['Portfolio'] = aligned['Portfolio'] - rf_daily
+        aligned['Market'] = aligned['Market'] - rf_daily
+            
         X = sm.add_constant(aligned[['Market', 'liquidity', 'momentum', 'volatility']])
         model = sm.OLS(aligned.iloc[:, 0], X).fit()
         
         return {
             'Multi_Factor_Intercept': float(model.params.get('const', 0)) * self.periods_per_year,
             'Multi_Factor_Beta': float(model.params.get('Market', 0)),
-            'Barra_Liquidity_Exp': float(model.params.get('liquidity', 0)),
-            'Barra_Momentum_Exp': float(model.params.get('momentum', 0)),
-            'Barra_Volatility_Exp': float(model.params.get('volatility', 0)),
+            BARRA_LIQD_KEY: float(model.params.get('liquidity', 0)),
+            BARRA_MOMT_KEY: float(model.params.get('momentum', 0)),
+            BARRA_VOLA_KEY: float(model.params.get('volatility', 0)),
             'Barra_Style_R_Squared': float(model.rsquared),
             'Factor_Annualized': factor_annualized,
             'Market_Annualized': float(aligned['Market'].mean() * self.periods_per_year)

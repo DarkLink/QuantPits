@@ -261,7 +261,8 @@ class TestTraditionalMetrics:
         gross_profit = daily_pnl[daily_pnl > 0].sum()
         gross_loss = abs(daily_pnl[daily_pnl < 0].sum())
         expected_pf = gross_profit / gross_loss
-        assert np.isclose(metrics["Profit_Factor"], expected_pf, atol=1e-10)
+        assert np.isclose(metrics["Daily_Profit_Factor"], expected_pf, atol=1e-10)
+        assert pd.isna(metrics["Trade_Profit_Factor"])
 
     def test_benchmark_cagr(self, setup):
         pa, _, bench_rets, bench_nav, n = setup
@@ -309,6 +310,10 @@ class TestTraditionalMetrics:
         lengths = is_uw.groupby(blocks).sum()
         expected_max_tuw = float(lengths.max())
         uw_only = lengths[lengths > 0]
+        if len(is_uw) > 0 and is_uw.iloc[-1]:
+            last_block_id = blocks.iloc[-1]
+            if last_block_id in uw_only.index:
+                uw_only = uw_only[uw_only.index != last_block_id]
         expected_avg_tuw = float(uw_only.mean()) if not uw_only.empty else 0
 
         assert np.isclose(metrics["Max_Time_Under_Water_Days"], expected_max_tuw, atol=1e-10)
@@ -374,8 +379,12 @@ class TestFactorExposure:
         market_close = market_close.loc[actual_returns.index].dropna()
         # Since bench_nav values > 2.0, market_return = pct_change
         mkt_ret_series = market_close.pct_change().fillna(0)
+        
+        rf_daily = 0.0135 / 252
+        port_excess = actual_returns - rf_daily
+        mkt_excess = mkt_ret_series - rf_daily
 
-        aligned = pd.concat([actual_returns, mkt_ret_series], axis=1).dropna()
+        aligned = pd.concat([port_excess, mkt_excess], axis=1).dropna()
         aligned.columns = ["Portfolio", "Market"]
         X = sm.add_constant(aligned["Market"])
         model_ref = sm.OLS(aligned["Portfolio"], X).fit()
@@ -437,7 +446,12 @@ class TestFactorExposure:
         market_return = feat.groupby("datetime")["ret"].mean()
 
         actual_rets = pa.calculate_daily_returns()
-        aligned = pd.concat([actual_rets, market_return], axis=1).dropna()
+        
+        rf_daily = 0.0135 / 252
+        port_excess = actual_rets - rf_daily
+        mkt_excess = market_return - rf_daily
+        
+        aligned = pd.concat([port_excess, mkt_excess], axis=1).dropna()
         aligned.columns = ["Portfolio", "Market"]
 
         if len(aligned) >= 2:
@@ -493,8 +507,9 @@ class TestFactorExposure:
         internal_bench = internal_bench.loc[actual_rets.index].dropna()
 
         market_ret = internal_bench.pct_change().fillna(0)
+        rf_daily = 0.0135 / 252
 
-        aligned = pd.concat([actual_rets, market_ret], axis=1).dropna()
+        aligned = pd.concat([actual_rets - rf_daily, market_ret - rf_daily], axis=1).dropna()
         aligned.columns = ["Portfolio", "Market"]
         X = sm.add_constant(aligned["Market"])
         model_ref = sm.OLS(aligned["Portfolio"], X).fit()
@@ -595,7 +610,7 @@ class TestStyleExposures:
         market_close = market_close.loc[actual_rets.index].dropna()
         market_ret = market_close.pct_change().fillna(0)
 
-        aligned = pd.concat([actual_rets, market_ret, factor_df], axis=1).dropna()
+        aligned = pd.concat([actual_rets - (0.0135/252), market_ret - (0.0135/252), factor_df], axis=1).dropna()
         if len(aligned) < 2:
             # Not enough aligned data for regression — pass silently.
             return
@@ -605,9 +620,9 @@ class TestStyleExposures:
         model_ref = sm.OLS(aligned["Portfolio"], X).fit()
 
         assert np.isclose(result["Multi_Factor_Beta"], model_ref.params.get("Market", 0), atol=1e-8)
-        assert np.isclose(result["Barra_Liquidity_Exp"], model_ref.params.get("liquidity", 0), atol=1e-8)
-        assert np.isclose(result["Barra_Momentum_Exp"], model_ref.params.get("momentum", 0), atol=1e-8)
-        assert np.isclose(result["Barra_Volatility_Exp"], model_ref.params.get("volatility", 0), atol=1e-8)
+        assert np.isclose(result["Barra_Liquidity_Exp_(High-Low)"], model_ref.params.get("liquidity", 0), atol=1e-8)
+        assert np.isclose(result["Barra_Momentum_Exp_(High-Low)"], model_ref.params.get("momentum", 0), atol=1e-8)
+        assert np.isclose(result["Barra_Volatility_Exp_(High-Low)"], model_ref.params.get("volatility", 0), atol=1e-8)
         assert np.isclose(result["Barra_Style_R_Squared"], model_ref.rsquared, atol=1e-8)
 
         expected_intercept = float(model_ref.params.get("const", 0)) * 252

@@ -5,6 +5,8 @@ import pandas as pd
 import numpy as np
 from unittest.mock import patch, MagicMock
 
+from quantpits.scripts.analysis.portfolio_analyzer import BARRA_LIQD_KEY, BARRA_MOMT_KEY, BARRA_VOLA_KEY
+
 @pytest.fixture
 def mock_env(monkeypatch, tmp_path):
     workspace = tmp_path / "MockWorkspace"
@@ -304,7 +306,7 @@ def test_main_coverage_edges(mock_port, mock_exec, mock_ens, mock_single,
         "Max_Time_Under_Water_Days": 1
     }
     mock_pa.calculate_factor_exposure.return_value = {
-        "Beta_Market": 1.0, "Barra_Liquidity_Exp": 0.1, "Barra_Momentum_Exp": 0.1, "Barra_Volatility_Exp": 0.1,
+        "Beta_Market": 1.0, BARRA_LIQD_KEY: 0.1, BARRA_MOMT_KEY: 0.1, BARRA_VOLA_KEY: 0.1,
         "Factor_Annualized": {"size": 0.1, "momentum": 0.1, "volatility": 0.1},
         "Multi_Factor_Intercept": 0.05
     }
@@ -433,9 +435,9 @@ def test_main_performance_attribution(mock_exec, mock_port, mock_fwd, mock_load_
     }
     mock_pa.calculate_factor_exposure.return_value = {
         "Beta_Market": 1.2,
-        "Barra_Liquidity_Exp": 0.5,
-        "Barra_Momentum_Exp": -0.2,
-        "Barra_Volatility_Exp": 0.1,
+        BARRA_LIQD_KEY: 0.5,
+        BARRA_MOMT_KEY: -0.2,
+        BARRA_VOLA_KEY: 0.1,
         "Factor_Annualized": {
             "size": 0.05,
             "momentum": 0.1,

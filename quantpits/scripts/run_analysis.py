@@ -20,7 +20,7 @@ from quantpits.scripts.analysis.utils import init_qlib, load_model_predictions, 
 from quantpits.scripts.analysis.single_model_analyzer import SingleModelAnalyzer
 from quantpits.scripts.analysis.ensemble_analyzer import EnsembleAnalyzer
 from quantpits.scripts.analysis.execution_analyzer import ExecutionAnalyzer
-from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer, BARRA_LIQD_KEY, BARRA_MOMT_KEY, BARRA_VOLA_KEY
 
 def main():
     parser = argparse.ArgumentParser(description="Comprehensive Analysis Module")
@@ -388,9 +388,9 @@ def main():
             
             style_ret = 0.0
             if 'liquidity' in factor_ann and 'momentum' in factor_ann and 'volatility' in factor_ann:
-                style_ret += exposure.get('Barra_Liquidity_Exp', 0) * factor_ann['liquidity']
-                style_ret += exposure.get('Barra_Momentum_Exp', 0) * factor_ann['momentum']
-                style_ret += exposure.get('Barra_Volatility_Exp', 0) * factor_ann['volatility']
+                style_ret += exposure.get(BARRA_LIQD_KEY, 0) * factor_ann['liquidity']
+                style_ret += exposure.get(BARRA_MOMT_KEY, 0) * factor_ann['momentum']
+                style_ret += exposure.get(BARRA_VOLA_KEY, 0) * factor_ann['volatility']
                 
             # Intercept is already Annualized since we multiply by 252 in portfolio_analyzer
             idio_alpha = exposure.get('Multi_Factor_Intercept', 0)
