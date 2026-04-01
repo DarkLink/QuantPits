@@ -321,8 +321,10 @@ def main():
     port_a = PortfolioAnalyzer(start_date=args.start_date, end_date=args.end_date)
     metrics = port_a.calculate_traditional_metrics()
     exposure = port_a.calculate_factor_exposure()
-    # Save single-factor market data BEFORE style_exposure.update() overwrites it
+    # Save single-factor data BEFORE style_exposure.update() overwrites it
     single_factor_market_ann = exposure.get('Market_Total_Return_Annualized')
+    single_factor_aligned_arith = exposure.get('Portfolio_Arithmetic_Annual_Return')
+    single_factor_sample_size = exposure.get('Aligned_Sample_Size')
     style_exposure = port_a.calculate_style_exposures()
     if style_exposure:
         exposure.update(style_exposure)
@@ -426,6 +428,15 @@ def main():
             # Independently-computed portfolio arithmetic annual return (consistent constant)
             portfolio_arith = metrics.get('Portfolio_Arithmetic_Annual_Return')
             
+            # ── Per-Model Aligned Returns ──
+            # Each regression model may operate on a different aligned data subset
+            # (e.g., multi-factor dropna removes rows where factor data is unavailable).
+            # Use each model's own aligned return so the attribution identity holds exactly.
+            # Note: single_factor_aligned_arith/single_factor_sample_size were saved
+            # BEFORE exposure.update(style_exposure) to avoid being overwritten.
+            if single_factor_aligned_arith is None:
+                single_factor_aligned_arith = portfolio_arith
+            
             # ── Single-Factor Attribution (Arithmetic) ──
             # Use the single-factor model's own sample market mean (NOT multi-factor's)
             market_ann_single = single_factor_market_ann if single_factor_market_ann is not None else metrics.get('Benchmark_CAGR_252', 0)
@@ -434,8 +445,10 @@ def main():
             rf_component_single = rf_annual * (1 - beta)
             
             # ── Multi-Factor Attribution (Arithmetic) ──
-            # Use multi-factor model's own sample market mean
+            # Use multi-factor model's own sample market mean and aligned return
             market_ann_multi = exposure.get('Market_Total_Return_Annualized', metrics.get('Benchmark_CAGR_252', 0))
+            multi_factor_aligned_arith = exposure.get('Portfolio_Arithmetic_Annual_Return', portfolio_arith)
+            multi_factor_sample_size = exposure.get('Aligned_Sample_Size')
             style_ret = 0.0
             if 'liquidity' in factor_ann and 'momentum' in factor_ann and 'volatility' in factor_ann:
                 style_ret += exposure.get(BARRA_LIQD_KEY, 0) * factor_ann['liquidity']
@@ -449,27 +462,32 @@ def main():
             
             report.append("\n### Performance Attribution (Single-Factor Market Beta)")
             if args.shareable:
-                report.append(f"- **Portfolio Arithmetic Annual Return**: {portfolio_arith:.1%} (CAGR: {cagr:.1%})")
+                report.append(f"- **Portfolio Arithmetic Annual Return**: {single_factor_aligned_arith:.1%} (CAGR: {cagr:.1%})")
                 report.append(f"  - Risk-Free Component rf(1-β): {rf_component_single:.1%}")
                 report.append(f"  - Beta Return (Exposure to Market): {beta_ret_single:.1%}")
                 report.append(f"  - Style Alpha (Exposure to Risk Factors): 0.0%")
                 report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha_single:.1%}")
             else:
-                report.append(f"- **Portfolio Arithmetic Annual Return**: {portfolio_arith:.2%} (CAGR: {cagr:.2%})")
+                report.append(f"- **Portfolio Arithmetic Annual Return**: {single_factor_aligned_arith:.2%} (CAGR: {cagr:.2%})")
                 report.append(f"  - Risk-Free Component rf(1-β): {rf_component_single:.2%}")
                 report.append(f"  - Beta Return (Exposure to Market): {beta_ret_single:.2%}")
                 report.append(f"  - Style Alpha (Exposure to Risk Factors): 0.00%")
                 report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha_single:.2%}")
                 
             report.append("\n### Performance Attribution (Multi-Factor Strict Alignment)")
+            # Detect if multi-factor alignment truncated data
+            alignment_note = ""
+            if (single_factor_sample_size is not None and multi_factor_sample_size is not None
+                    and single_factor_sample_size != multi_factor_sample_size):
+                alignment_note = f" (Full: {portfolio_arith:.2%}, N={multi_factor_sample_size} vs {single_factor_sample_size})"
             if args.shareable:
-                report.append(f"- **Portfolio Arithmetic Annual Return**: {portfolio_arith:.1%} (CAGR: {cagr:.1%})")
+                report.append(f"- **Portfolio Arithmetic Annual Return (aligned)**: {multi_factor_aligned_arith:.1%} (CAGR: {cagr:.1%})")
                 report.append(f"  - Risk-Free Component rf(1-β): {rf_component_multi:.1%}")
                 report.append(f"  - Beta Return (Multi-Factor Exposure to Market): {beta_ret_multi:.1%}")
                 report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.1%}")
                 report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha_multi:.1%}")
             else:
-                report.append(f"- **Portfolio Arithmetic Annual Return**: {portfolio_arith:.2%} (CAGR: {cagr:.2%})")
+                report.append(f"- **Portfolio Arithmetic Annual Return (aligned)**: {multi_factor_aligned_arith:.2%}{alignment_note} (CAGR: {cagr:.2%})")
                 report.append(f"  - Risk-Free Component rf(1-β): {rf_component_multi:.2%}")
                 report.append(f"  - Beta Return (Multi-Factor Exposure to Market): {beta_ret_multi:.2%}")
                 report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.2%}")

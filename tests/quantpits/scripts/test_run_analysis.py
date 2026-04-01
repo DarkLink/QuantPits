@@ -441,6 +441,8 @@ def test_main_performance_attribution(mock_exec, mock_port, mock_fwd, mock_load_
     mock_pa.calculate_factor_exposure.return_value = {
         "Beta_Market": 1.2,
         "Market_Total_Return_Annualized": 0.12,
+        "Portfolio_Arithmetic_Annual_Return": 0.27,
+        "Aligned_Sample_Size": 245,
         BARRA_LIQD_KEY: 0.5,
         BARRA_MOMT_KEY: -0.2,
         BARRA_VOLA_KEY: 0.1,
@@ -465,8 +467,11 @@ def test_main_performance_attribution(mock_exec, mock_port, mock_fwd, mock_load_
     with open(report_path, "r") as f:
         content = f.read()
     assert "Performance Attribution" in content
-    # Portfolio_Arithmetic_Annual_Return = 0.27 = 27.00%, shown consistently in BOTH sections
-    assert content.count("Portfolio Arithmetic Annual Return**: 27.00%") == 2
+    # Portfolio_Arithmetic_Annual_Return = 0.27 = 27.00%
+    # Single-factor section shows "Portfolio Arithmetic Annual Return"
+    assert "Portfolio Arithmetic Annual Return**: 27.00%" in content
+    # Multi-factor section shows "Portfolio Arithmetic Annual Return (aligned)"
+    assert "Portfolio Arithmetic Annual Return (aligned)**: 27.00%" in content
     # Beta=1.2, single-factor market_ann = 0.12 (from calculate_factor_exposure)
     # beta_ret_single = 1.2 * 0.12 = 0.144 = 14.40%
     assert "Beta Return (Exposure to Market): 14.40%" in content
@@ -671,7 +676,7 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
         "Turnover_Rate_Annual": 1.5,
         "Max_Time_Under_Water_Days": 42
     }
-    mock_pa.calculate_factor_exposure.return_value = {"Beta_Market": 1.0}
+    mock_pa.calculate_factor_exposure.return_value = {"Beta_Market": 1.0, "Portfolio_Arithmetic_Annual_Return": 0.16, "Aligned_Sample_Size": 40}
     mock_pa.calculate_style_exposures.return_value = {}
     mock_pa.calculate_holding_metrics.return_value = {"Avg_Daily_Holdings_Count": 10.5}
     mock_pa.calculate_classified_returns.return_value = {"class_df": pd.DataFrame({"S": [0.1]}), "manual_buys": pd.DataFrame(), "manual_sells": pd.DataFrame()}
@@ -692,8 +697,11 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
     assert "**Avg_Daily_Holdings_Count**: ~10" in content # holding shareable (line 305)
     assert "**CAGR (252-day basis)**: 15.0%" in content # CAGR shareable (line 325)
     assert "**Max_Time_Under_Water_Days**: 35-45 days" in content # fuzzy days shareable (line 320, 340)
-    # Attribution: Portfolio_Arithmetic_Annual_Return = 0.16 = 16.0%
+    # Attribution: Portfolio_Arithmetic_Annual_Return = 0.16 = 16.0% (shareable)
+    # Single-factor section shows "Portfolio Arithmetic Annual Return"
     assert "Portfolio Arithmetic Annual Return**: 16.0%" in content
+    # Multi-factor section shows "Portfolio Arithmetic Annual Return (aligned)"
+    assert "Portfolio Arithmetic Annual Return (aligned)**: 16.0%" in content
 
 @patch('quantpits.scripts.run_analysis.init_qlib')
 @patch('quantpits.scripts.run_analysis.load_market_config')

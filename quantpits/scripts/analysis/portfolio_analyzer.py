@@ -459,6 +459,8 @@ class PortfolioAnalyzer:
         # Deduct risk-free rate for true excess-return CAPM regression
         rf_daily = 0.0135 / self.periods_per_year
         market_ret_total = aligned['Market'].copy()
+        # Capture the aligned portfolio total return BEFORE subtracting rf
+        aligned_portfolio_total = aligned['Portfolio'].copy()
         aligned['Portfolio'] = aligned['Portfolio'] - rf_daily
         aligned['Market'] = aligned['Market'] - rf_daily
             
@@ -475,7 +477,9 @@ class PortfolioAnalyzer:
             'Annualized_Alpha': float(alpha),
             'R_Squared': float(model.rsquared),
             'Market_Total_Return_Annualized': float(market_ret_total.mean() * self.periods_per_year),
-            'Market_Excess_Return_Annualized': float(aligned['Market'].mean() * self.periods_per_year)
+            'Market_Excess_Return_Annualized': float(aligned['Market'].mean() * self.periods_per_year),
+            'Portfolio_Arithmetic_Annual_Return': float(aligned_portfolio_total.mean() * self.periods_per_year),
+            'Aligned_Sample_Size': len(aligned)
         }
 
     def calculate_style_exposures(self, market=None):
@@ -544,13 +548,6 @@ class PortfolioAnalyzer:
             
         factor_df = pd.DataFrame(factor_returns)
         
-        # Calculate annualized returns for each factor to use in Performance Attribution
-        # Note: Zero-investment long-short factor returns cannot be geometrically compounded (CAGR).
-        # We must use arithmetic annualized returns (mean daily return * 252) mathematically.
-        factor_annualized = {}
-        for col in factor_df.columns:
-            factor_annualized[col] = float(factor_df[col].mean() * self.periods_per_year)
-        
         # We need Market Return. 
         if self.benchmark_col in self.daily_amount.columns:
             market_close = self.daily_amount[self.benchmark_col].astype(float)
@@ -564,10 +561,21 @@ class PortfolioAnalyzer:
         
         if len(aligned) < 2:
             return {}
+        
+        # Calculate annualized returns for each factor FROM THE ALIGNED DATA.
+        # Critical: Factor_Annualized must use the same sample as the regression,
+        # otherwise the OLS identity E(Y) = β₀ + Σβᵢ*E(Xᵢ) will NOT hold.
+        # Note: Zero-investment long-short factor returns cannot be geometrically compounded (CAGR).
+        # We must use arithmetic annualized returns (mean daily return * 252) mathematically.
+        factor_annualized = {}
+        for col in factor_df.columns:
+            factor_annualized[col] = float(aligned[col].mean() * self.periods_per_year)
             
         # Deduct risk-free rate from Portfolio and Market for Excess-Return multi-factor regression
         rf_daily = 0.0135 / self.periods_per_year
         market_ret_total = aligned['Market'].copy()
+        # Capture the aligned portfolio total return BEFORE subtracting rf
+        aligned_portfolio_total = aligned['Portfolio'].copy()
         aligned['Portfolio'] = aligned['Portfolio'] - rf_daily
         aligned['Market'] = aligned['Market'] - rf_daily
             
@@ -583,7 +591,9 @@ class PortfolioAnalyzer:
             'Barra_Style_R_Squared': float(model.rsquared),
             'Factor_Annualized': factor_annualized,
             'Market_Total_Return_Annualized': float(market_ret_total.mean() * self.periods_per_year),
-            'Market_Excess_Return_Annualized': float(aligned['Market'].mean() * self.periods_per_year)
+            'Market_Excess_Return_Annualized': float(aligned['Market'].mean() * self.periods_per_year),
+            'Portfolio_Arithmetic_Annual_Return': float(aligned_portfolio_total.mean() * self.periods_per_year),
+            'Aligned_Sample_Size': len(aligned)
         }
 
     def calculate_holding_metrics(self):

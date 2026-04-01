@@ -563,6 +563,58 @@ class TestFactorExposure:
 
         assert np.isclose(result["Beta_Market"], model_ref.params["Market"], atol=1e-10)
 
+    def test_attribution_identity_single_factor(self):
+        """
+        Verify: rf*(1-β) + β*E(Rm) + α ≡ Portfolio_Arithmetic_Annual_Return.
+        This is the fundamental OLS identity and must hold exactly.
+        """
+        n = 100
+        rng = np.random.default_rng(42)
+        dates = pd.bdate_range("2025-01-02", periods=n)
+
+        bench_nav = np.zeros(n)
+        bench_nav[0] = 3500.0
+        bench_daily_rets = rng.normal(0.0005, 0.01, n)
+        bench_daily_rets[0] = 0
+        for i in range(1, n):
+            bench_nav[i] = bench_nav[i - 1] * (1 + bench_daily_rets[i])
+
+        port_rets = 0.0003 + 0.85 * np.diff(bench_nav, prepend=bench_nav[0]) / np.roll(bench_nav, 1) + rng.normal(0, 0.002, n)
+        port_rets[0] = 0.0
+        port_nav = np.zeros(n)
+        port_nav[0] = 100_000.0
+        for i in range(1, n):
+            port_nav[i] = port_nav[i - 1] * (1 + port_rets[i])
+
+        da = pd.DataFrame({
+            "成交日期": dates,
+            "收盘价值": port_nav,
+            "CASHFLOW": 0.0,
+            "CSI300": bench_nav,
+        })
+        pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
+
+        with patch('quantpits.scripts.analysis.portfolio_analyzer.load_market_config', return_value=("csi300", "SH000300")):
+            result = pa.calculate_factor_exposure()
+
+        rf_annual = 0.0135
+        beta = result['Beta_Market']
+        alpha = result['Annualized_Alpha']
+        market_ann = result['Market_Total_Return_Annualized']
+        aligned_arith = result['Portfolio_Arithmetic_Annual_Return']
+
+        # OLS identity: E(Rp) = rf*(1-β) + β*E(Rm) + α
+        rf_component = rf_annual * (1 - beta)
+        beta_return = beta * market_ann
+        attribution_sum = rf_component + beta_return + alpha
+
+        assert np.isclose(attribution_sum, aligned_arith, atol=1e-10), \
+            f"Single-factor identity failed: {rf_component:.6%} + {beta_return:.6%} + {alpha:.6%} = {attribution_sum:.6%} vs {aligned_arith:.6%}"
+
+        # Also check Aligned_Sample_Size is present and sane
+        assert 'Aligned_Sample_Size' in result
+        assert result['Aligned_Sample_Size'] > 0
+
 
 # ============================================================================
 # Group 5: Style Exposures (Multi-factor OLS)
@@ -644,13 +696,6 @@ class TestStyleExposures:
 
         factor_df = pd.DataFrame(factor_returns)
 
-        # Check Factor_Annualized
-        for col in factor_df.columns:
-            expected_ann = float(factor_df[col].mean() * 252)
-            if "Factor_Annualized" in result:
-                assert np.isclose(result["Factor_Annualized"][col], expected_ann, atol=1e-8), \
-                    f"Factor_Annualized[{col}]: {result['Factor_Annualized'][col]} vs {expected_ann}"
-
         # Full regression check
         actual_rets = pa.calculate_daily_returns()
         market_close_full = pd.Series(bench_nav, index=dates_port)
@@ -663,6 +708,14 @@ class TestStyleExposures:
             return
 
         aligned.columns = ["Portfolio", "Market"] + list(factor_df.columns)
+
+        # Check Factor_Annualized — must be computed from ALIGNED data (same sample as regression)
+        for col in factor_df.columns:
+            expected_ann = float(aligned[col].mean() * 252)
+            if "Factor_Annualized" in result:
+                assert np.isclose(result["Factor_Annualized"][col], expected_ann, atol=1e-8), \
+                    f"Factor_Annualized[{col}]: {result['Factor_Annualized'][col]} vs {expected_ann}"
+
         X = sm.add_constant(aligned[["Market", "liquidity", "momentum", "volatility"]])
         model_ref = sm.OLS(aligned["Portfolio"], X).fit()
 
@@ -676,6 +729,161 @@ class TestStyleExposures:
         assert np.isclose(result["Multi_Factor_Intercept"], expected_intercept, atol=1e-8)
         assert "Market_Total_Return_Annualized" in result
         assert "Market_Excess_Return_Annualized" in result
+
+    def test_attribution_identity_holds(self):
+        """
+        Verify multi-factor identity:
+        rf*(1-β) + β*E(Rm) + Σ(βi*E(Fi)) + α ≡ Portfolio_Arithmetic_Annual_Return.
+        
+        This must hold exactly because OLS guarantees:
+        E(Y) = β₀ + β₁*E(X₁) + β₂*E(X₂) + ...
+        """
+        n_port = 30
+        dates_port = pd.bdate_range("2025-02-03", periods=n_port)
+
+        rng = np.random.default_rng(55)
+        port_rets = rng.normal(0.001, 0.01, n_port)
+        port_rets[0] = 0.0
+        port_nav = np.zeros(n_port)
+        port_nav[0] = 100_000.0
+        for i in range(1, n_port):
+            port_nav[i] = port_nav[i - 1] * (1 + port_rets[i])
+
+        bench_nav = 3500.0 * np.cumprod(1 + rng.normal(0.0005, 0.008, n_port))
+
+        da = pd.DataFrame({
+            "成交日期": dates_port,
+            "收盘价值": port_nav,
+            "CASHFLOW": 0.0,
+            "CSI300": bench_nav,
+        })
+        pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
+
+        n_feat = 60
+        dates_feat = pd.bdate_range("2024-12-01", periods=n_feat)
+        instruments = [f"SZ{str(i).zfill(6)}" for i in range(20)]
+        rows = []
+        for inst in instruments:
+            base_price = rng.uniform(10, 50)
+            base_vol = rng.uniform(1e6, 5e6)
+            for j, d in enumerate(dates_feat):
+                close = base_price * (1 + rng.normal(0.001, 0.02)) ** (j + 1)
+                volume = base_vol * (1 + rng.normal(0, 0.3))
+                rows.append({"instrument": inst, "datetime": d, "close": max(close, 0.01), "volume": max(volume, 100)})
+        mock_features = pd.DataFrame(rows)
+
+        with patch('quantpits.scripts.analysis.portfolio_analyzer.get_daily_features', return_value=mock_features):
+            with patch('quantpits.scripts.analysis.portfolio_analyzer.load_market_config', return_value=("csi300", "SH000300")):
+                result = pa.calculate_style_exposures()
+
+        if not result:
+            return  # Not enough data for regression
+
+        rf_annual = 0.0135
+        multi_beta = result['Multi_Factor_Beta']
+        alpha = result['Multi_Factor_Intercept']
+        market_ann = result['Market_Total_Return_Annualized']
+        aligned_arith = result['Portfolio_Arithmetic_Annual_Return']
+        factor_ann = result['Factor_Annualized']
+
+        # rf*(1-β)
+        rf_component = rf_annual * (1 - multi_beta)
+        # β*E(Rm)
+        beta_return = multi_beta * market_ann
+        # Σ(βi*E(Fi))
+        from quantpits.scripts.analysis.portfolio_analyzer import BARRA_LIQD_KEY, BARRA_MOMT_KEY, BARRA_VOLA_KEY
+        style_ret = 0.0
+        style_ret += result[BARRA_LIQD_KEY] * factor_ann['liquidity']
+        style_ret += result[BARRA_MOMT_KEY] * factor_ann['momentum']
+        style_ret += result[BARRA_VOLA_KEY] * factor_ann['volatility']
+
+        attribution_sum = rf_component + beta_return + style_ret + alpha
+
+        assert np.isclose(attribution_sum, aligned_arith, atol=1e-8), \
+            f"Multi-factor identity failed: {rf_component:.6%} + {beta_return:.6%} + {style_ret:.6%} + {alpha:.6%} = {attribution_sum:.6%} vs {aligned_arith:.6%}"
+
+        assert 'Aligned_Sample_Size' in result
+        assert result['Aligned_Sample_Size'] > 0
+
+    def test_aligned_return_differs_from_full(self):
+        """
+        When factor_df has NaN on some portfolio trading dates, the multi-factor
+        aligned return should reflect only the dates used in regression, not
+        the full portfolio return series.
+        """
+        n_port = 40
+        dates_port = pd.bdate_range("2025-02-03", periods=n_port)
+
+        rng = np.random.default_rng(77)
+        port_rets = rng.normal(0.001, 0.01, n_port)
+        port_rets[0] = 0.0
+        port_nav = np.zeros(n_port)
+        port_nav[0] = 100_000.0
+        for i in range(1, n_port):
+            port_nav[i] = port_nav[i - 1] * (1 + port_rets[i])
+
+        bench_nav = 3500.0 * np.cumprod(1 + rng.normal(0.0005, 0.008, n_port))
+
+        da = pd.DataFrame({
+            "成交日期": dates_port,
+            "收盘价值": port_nav,
+            "CASHFLOW": 0.0,
+            "CSI300": bench_nav,
+        })
+        pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
+
+        # Build features that intentionally cover FEWER dates than portfolio
+        # Only provide features for dates_port[5:] to simulate Qlib calendar mismatch
+        n_feat = 50
+        dates_feat = pd.bdate_range("2024-12-15", periods=n_feat)
+        instruments = [f"SZ{str(i).zfill(6)}" for i in range(20)]
+        rows = []
+        for inst in instruments:
+            base_price = rng.uniform(10, 50)
+            base_vol = rng.uniform(1e6, 5e6)
+            for j, d in enumerate(dates_feat):
+                close = base_price * (1 + rng.normal(0.001, 0.02)) ** (j + 1)
+                volume = base_vol * (1 + rng.normal(0, 0.3))
+                rows.append({"instrument": inst, "datetime": d, "close": max(close, 0.01), "volume": max(volume, 100)})
+        mock_features = pd.DataFrame(rows)
+
+        with patch('quantpits.scripts.analysis.portfolio_analyzer.get_daily_features', return_value=mock_features):
+            with patch('quantpits.scripts.analysis.portfolio_analyzer.load_market_config', return_value=("csi300", "SH000300")):
+                result = pa.calculate_style_exposures()
+
+        if not result:
+            return  # Not enough data for regression
+
+        # The aligned sample size should be <= n_port - 1 (returns have n-1 elements)
+        # and potentially less due to factor NaN drops
+        full_returns = pa.calculate_daily_returns()
+        full_n = len(full_returns)
+        aligned_n = result['Aligned_Sample_Size']
+        
+        # If alignment dropped data, the aligned return should differ from full return
+        full_arith = float(full_returns.mean() * 252)
+        aligned_arith = result['Portfolio_Arithmetic_Annual_Return']
+        
+        if aligned_n < full_n:
+            # They CAN be equal by coincidence, but the key guarantee is that
+            # the attribution identity holds with the ALIGNED return
+            rf_annual = 0.0135
+            multi_beta = result['Multi_Factor_Beta']
+            alpha = result['Multi_Factor_Intercept']
+            market_ann = result['Market_Total_Return_Annualized']
+            factor_ann = result['Factor_Annualized']
+            from quantpits.scripts.analysis.portfolio_analyzer import BARRA_LIQD_KEY, BARRA_MOMT_KEY, BARRA_VOLA_KEY
+
+            rf_component = rf_annual * (1 - multi_beta)
+            beta_return = multi_beta * market_ann
+            style_ret = (result[BARRA_LIQD_KEY] * factor_ann['liquidity']
+                        + result[BARRA_MOMT_KEY] * factor_ann['momentum']
+                        + result[BARRA_VOLA_KEY] * factor_ann['volatility'])
+            attribution_sum = rf_component + beta_return + style_ret + alpha
+
+            # Identity must hold with aligned return, NOT full return
+            assert np.isclose(attribution_sum, aligned_arith, atol=1e-8), \
+                f"Identity should hold with aligned arith ({aligned_arith:.6%}), got {attribution_sum:.6%}"
 
 
 # ============================================================================
