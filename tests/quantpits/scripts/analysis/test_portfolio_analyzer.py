@@ -44,17 +44,15 @@ def test_calculate_daily_returns():
 
     returns = pa.calculate_daily_returns()
     assert not returns.empty
-    assert len(returns) == 5
+    # Day 0 is now dropped since it has no previous day for return calculation.
+    assert len(returns) == 4
 
-    # Day 0 (2026-01-08): prev_nav is NaN, return is 0 (due to fillna)
-    assert returns.iloc[0] == 0.0
+    # The new first element is Day 1 (2026-01-09): (102000 - 100000 - 0) / 100000 = 0.02
+    assert np.isclose(returns.iloc[0], 0.02)
 
-    # Day 1 (2026-01-09): (102000 - 100000 - 0) / 100000 = 0.02
-    assert np.isclose(returns.iloc[1], 0.02)
-
-    # Day 2 (2026-01-10): CF is -1000
+    # The new second element is Day 2 (2026-01-10): CF is -1000
     # Ret = (98000 - 102000 - (-1000)) / (102000 + (-1000)) = -3000 / 101000
-    assert np.isclose(returns.iloc[2], -3000.0 / 101000.0)
+    assert np.isclose(returns.iloc[1], -3000.0 / 101000.0)
 
 
 def test_calculate_daily_returns_empty():
@@ -232,14 +230,20 @@ def test_calculate_annualization_basis():
     )
     metrics = pa.calculate_traditional_metrics()
     
-    # Absolute return is based on the full series
-    abs_ret_expected = (1.001**251 - 1.0) # 251 steps for 252 rows
+    # Absolute return is based on the full series of returns
+    # We have 252 rows, which means 251 return intervals.
+    abs_ret_expected = (1.001**251 - 1.0)
     assert np.isclose(metrics['Absolute_Return'], abs_ret_expected, atol=1e-5)
     
-    # CAGR_252 should be (1 + abs_ret)^(1 / (252/252)) - 1 = abs_ret
-    assert np.isclose(metrics['CAGR_252'], abs_ret_expected, atol=1e-5)
+    # CAGR_252 should be (1 + abs_ret)^(252 / 251) - 1
+    # because 'years_252' = days / 252 = 251 / 252.
+    expected_cagr = (1 + abs_ret_expected)**(252/251) - 1
+    assert np.isclose(metrics['CAGR_252'], expected_cagr, atol=1e-5)
     
     # Benchmark checks
     bench_abs_ret_expected = (1.0005**251 - 1.0)
     assert np.isclose(metrics['Benchmark_Absolute_Return'], bench_abs_ret_expected, atol=1e-5)
-    assert np.isclose(metrics['Benchmark_CAGR_252'], bench_abs_ret_expected, atol=1e-5)
+    
+    # Bench CAGR should also use (252 / 251)
+    expected_bench_cagr = (1 + bench_abs_ret_expected)**(252/251) - 1
+    assert np.isclose(metrics['Benchmark_CAGR_252'], expected_bench_cagr, atol=1e-5)

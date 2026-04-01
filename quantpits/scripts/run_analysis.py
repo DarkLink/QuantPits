@@ -377,6 +377,13 @@ def main():
                     report.append(f"- **{k}**: {format_fuzzy_days(v)}")
                 else:
                     report.append(f"- **{k}**: {v:.0f}")
+            elif 'Daily_Profit_Factor' in k:
+                # Handle both Returns and PnL versions
+                name = k.replace('_', ' ')
+                if args.shareable:
+                    report.append(f"- **{name}**: {v:.1f}")
+                else:
+                    report.append(f"- **{name}**: {v:.4f}")
             else:
                 if args.shareable:
                     report.append(f"- **{k}**: {v:.1f}")
@@ -410,12 +417,15 @@ def main():
         if metrics.get('CAGR_252') is not None and metrics.get('Benchmark_CAGR_252') is not None and not pd.isna(metrics.get('CAGR_252')):
             cagr = metrics['CAGR_252']
             
-            # Market_Annualized helps align the attribution product with the exposure section.
-            # It's an arithmetic annualized excess return.
-            market_ann = exposure.get('Market_Annualized', metrics.get('Benchmark_CAGR_252', 0))
+            # Market_Total_Return_Annualized is the arithmetic mean of daily total market returns * 252.
+            # This should be > Benchmark_CAG_252 due to volatility drag.
+            # Market_Excess_Return_Annualized is used for CAPM-based attribution.
+            market_ann_total = exposure.get('Market_Total_Return_Annualized', metrics.get('Benchmark_CAGR_252', 0))
+            market_ann_excess = exposure.get('Market_Excess_Return_Annualized', market_ann_total - 0.0135)
             
             # Single-Factor Alpha & Beta Return
-            beta_ret_single = beta * market_ann
+            # We use Total Return for the Beta component to stay closer to CAGR components.
+            beta_ret_single = beta * market_ann_total
             idio_alpha_single = exposure.get('Annualized_Alpha', 0)
             
             # Multi-Factor Component Calculations
@@ -427,7 +437,7 @@ def main():
                 
             idio_alpha_multi = exposure.get('Multi_Factor_Intercept', 0)
             multi_beta = exposure.get('Multi_Factor_Beta', 0)
-            beta_ret_multi = multi_beta * market_ann
+            beta_ret_multi = multi_beta * market_ann_total
             
             # Compute Residual Gaps (Compound/Math mismatch)
             # For Single-Factor, Style Alpha is explicitly zero.

@@ -61,8 +61,9 @@ def _expected_returns_from_nav(nav, cf):
     """Independently compute daily returns: (NAV(t) - NAV(t-1) - CF(t)) / (NAV(t-1) + CF(t))."""
     prev = np.roll(nav, 1)
     ret = (nav - prev - cf) / (prev + cf)
-    ret[0] = 0.0  # first day is NaN → fillna(0)
-    return ret
+    # The first day is NaN after the calculation and is dropped by the analyzer.
+    # Therefore, we should exclude the first element to match the analyzer's output.
+    return ret[1:]
 
 
 # ============================================================================
@@ -87,9 +88,8 @@ class TestDailyReturns:
 
         nav = da["收盘价值"].values
         expected_pct = np.diff(nav) / nav[:-1]
-        # First element is 0 (fillna), rest should match pct_change
-        np.testing.assert_allclose(returns.values[1:], expected_pct, atol=1e-12)
-        assert returns.values[0] == 0.0
+        # The first element (which would be 0 or NaN) is now dropped.
+        np.testing.assert_allclose(returns.values, expected_pct, atol=1e-12)
 
     def test_date_filtering(self):
         """start_date / end_date should filter returned series."""
@@ -187,11 +187,13 @@ class TestTraditionalMetrics:
 
         pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
 
-        # Expected returns: first is 0 (NaN→fill), rest from pct_change of NAV
-        expected_rets = np.zeros(n)
-        expected_rets[1:] = np.diff(nav) / nav[:-1]
-
-        return pa, expected_rets, bench_rets, bench_nav, n
+        # Expected returns: drop the first day (NaN) to match dropna() behavior
+        expected_rets = np.diff(nav) / nav[:-1]
+        
+        # Benchmark returns for intervals
+        bench_rets_intervals = np.diff(bench_nav) / bench_nav[:-1]
+        
+        return pa, expected_rets, bench_rets_intervals, bench_nav, n - 1
 
     def test_absolute_return(self, setup):
         pa, rets, _, _, _ = setup
@@ -260,39 +262,42 @@ class TestTraditionalMetrics:
         
         gross_profit = daily_pnl[daily_pnl > 0].sum()
         gross_loss = abs(daily_pnl[daily_pnl < 0].sum())
-        expected_pf = gross_profit / gross_loss
-        assert np.isclose(metrics["Daily_Profit_Factor"], expected_pf, atol=1e-10)
+        expected_pf_pnl = gross_profit / gross_loss
+        assert np.isclose(metrics["Daily_Profit_Factor_(PnL)"], expected_pf_pnl, atol=1e-10)
+        
+        expected_pf_ret = rets[rets > 0].sum() / abs(rets[rets < 0].sum())
+        assert np.isclose(metrics["Daily_Profit_Factor_(Returns)"], expected_pf_ret, atol=1e-10)
         assert pd.isna(metrics["Trade_Profit_Factor"])
         assert pd.isna(metrics["Realized_Trade_Win_Rate"])
 
-    def test_benchmark_cagr(self, setup):
-        pa, _, bench_rets, bench_nav, n = setup
+        pa, _, bench_rets, bench_nav, n_intervals = setup
         metrics = pa.calculate_traditional_metrics()
-        bench_cum = bench_nav / bench_nav[0]
-        years = n / 252.0
+        # benchmark_abs_ret is (P_end / P_start) - 1 where start is index[0] of returns
+        # which corresponds to the 'previous day' of the first return.
+        # But in setup, rets starts from index 1.
+        bench_cum = np.cumprod(1 + bench_rets)
+        years = n_intervals / 252.0
         expected_bench_cagr = bench_cum[-1] ** (1 / years) - 1
         assert np.isclose(metrics["Benchmark_CAGR_252"], expected_bench_cagr, atol=1e-10)
 
     def test_excess_return_cagr(self, setup):
-        pa, rets, bench_rets, bench_nav, n = setup
+        pa, rets, bench_rets, bench_nav, n_intervals = setup
         metrics = pa.calculate_traditional_metrics()
         cum = np.cumprod(1 + rets)
-        years = n / 252.0
+        years = n_intervals / 252.0
         cagr = cum[-1] ** (1 / years) - 1
-        bench_cum = bench_nav / bench_nav[0]
+        bench_cum = np.cumprod(1 + bench_rets)
         bench_cagr = bench_cum[-1] ** (1 / years) - 1
         expected_excess = (1 + cagr) / (1 + bench_cagr) - 1
         assert np.isclose(metrics["Excess_Return_CAGR_252"], expected_excess, atol=1e-10)
 
     def test_tracking_error_and_ir(self, setup):
-        pa, rets, bench_rets, bench_nav, n = setup
+        pa, rets, bench_rets, bench_nav, n_intervals = setup
         metrics = pa.calculate_traditional_metrics()
 
-        # The analyzer uses pct_change of the benchmark NAV for bench_ret
-        bench_ret = np.zeros(n)
-        bench_ret[1:] = np.diff(bench_nav) / bench_nav[:-1]
-
-        active_ret = rets - bench_ret
+        # The analyzer now uses shift-then-slice for benchmark as well,
+        # so bench_rets already has the correct intervals.
+        active_ret = rets - bench_rets
         expected_te = np.std(active_ret, ddof=1) * np.sqrt(252)
         expected_ir = (np.mean(active_ret) * 252) / expected_te
 
@@ -376,10 +381,10 @@ class TestFactorExposure:
 
         # Independent reference: replicate analyzer's logic exactly
         actual_returns = pa.calculate_daily_returns()
-        market_close = pa.daily_amount["CSI300"].astype(float)
-        market_close = market_close.loc[actual_returns.index].dropna()
-        # Since bench_nav values > 2.0, market_return = pct_change
-        mkt_ret_series = market_close.pct_change().fillna(0)
+        # market_return in analyzer is calculated on the FULL market series and then aligned
+        market_close_full = pd.Series(bench_nav, index=dates)
+        market_return_full = market_close_full.pct_change().dropna()
+        mkt_ret_series = market_return_full.loc[market_return_full.index.intersection(actual_returns.index)]
         
         rf_daily = 0.0135 / 252
         port_excess = actual_returns - rf_daily
@@ -400,6 +405,9 @@ class TestFactorExposure:
             f"Beta: {result['Beta_Market']} vs {expected_beta}"
         assert np.isclose(result["R_Squared"], expected_r2, atol=1e-10), \
             f"R²: {result['R_Squared']} vs {expected_r2}"
+        
+        expected_market_total = mkt_ret_series.mean() * 252
+        assert np.isclose(result["Market_Total_Return_Annualized"], expected_market_total, atol=1e-10)
 
     def test_ols_qlib_fallback_branch(self):
         """
@@ -502,12 +510,11 @@ class TestFactorExposure:
             result = pa.calculate_factor_exposure()
 
         # Independent: after constructor, CSI300 is cumprod NAV
-        # downstream code now always takes pct_change directly, ignoring < 2.0 check
+        # downstream code now always takes pct_change directly
         actual_rets = pa.calculate_daily_returns()
         internal_bench = pa.daily_amount["CSI300"].astype(float)
-        internal_bench = internal_bench.loc[actual_rets.index].dropna()
-
-        market_ret = internal_bench.pct_change().fillna(0)
+        market_return_full = internal_bench.pct_change().dropna()
+        market_ret = market_return_full.loc[market_return_full.index.intersection(actual_rets.index)]
         rf_daily = 0.0135 / 252
 
         aligned = pd.concat([actual_rets - rf_daily, market_ret - rf_daily], axis=1).dropna()
@@ -607,9 +614,9 @@ class TestStyleExposures:
 
         # Full regression check
         actual_rets = pa.calculate_daily_returns()
-        market_close = pa.daily_amount["CSI300"].astype(float)
-        market_close = market_close.loc[actual_rets.index].dropna()
-        market_ret = market_close.pct_change().fillna(0)
+        market_close_full = pd.Series(bench_nav, index=dates_port)
+        market_return_full = market_close_full.pct_change().dropna()
+        market_ret = market_return_full.loc[market_return_full.index.intersection(actual_rets.index)]
 
         aligned = pd.concat([actual_rets - (0.0135/252), market_ret - (0.0135/252), factor_df], axis=1).dropna()
         if len(aligned) < 2:
@@ -628,6 +635,8 @@ class TestStyleExposures:
 
         expected_intercept = float(model_ref.params.get("const", 0)) * 252
         assert np.isclose(result["Multi_Factor_Intercept"], expected_intercept, atol=1e-8)
+        assert "Market_Total_Return_Annualized" in result
+        assert "Market_Excess_Return_Annualized" in result
 
 
 # ============================================================================
@@ -736,8 +745,7 @@ class TestEdgeCases:
         })
         pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
         returns = pa.calculate_daily_returns()
-        assert len(returns) == 1
-        assert returns.iloc[0] == 0.0
+        assert len(returns) == 0 # First day dropped
         # Traditional metrics requires >=2 days
         assert pa.calculate_traditional_metrics() == {}
 

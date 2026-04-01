@@ -88,7 +88,9 @@ class PortfolioAnalyzer:
             # Ret = (NAV(t) - NAV(t-1) - CF(t)) / (NAV(t-1) + CF(t))
             # 采用“资金发生于期初并参与全天交易”口径 (Beginning of Day CF assumption)
             ret = (nav - prev_nav - flow) / (prev_nav + flow)
-            ret = ret.fillna(0)
+            # Drop the very first NaN (the very first day in history has no return)
+            # This ensures len(ret) correctly reflects the number of return intervals.
+            ret = ret.dropna()
             
             # Now filter the dates returning only what the user requested
             if getattr(self, 'start_date', None) is not None:
@@ -143,33 +145,29 @@ class PortfolioAnalyzer:
         information_ratio_arithmetic = np.nan
         information_ratio_geometric = np.nan
         annualized_active_return_arithmetic = np.nan
-        rf_daily = 0.0135 / self.periods_per_year
-        benchmark_abs_ret = np.nan
-        benchmark_volatility = np.nan
-        benchmark_sharpe = np.nan
-        benchmark_max_dd = np.nan
-        benchmark_calmar = np.nan
-        benchmark_max_tuw = np.nan
-        benchmark_avg_tuw = np.nan
-        
         if self.benchmark_col in self.daily_amount.columns:
             market_close = self.daily_amount[self.benchmark_col].astype(float)
-            market_close = market_close.loc[returns.index].dropna()
-            if len(market_close) >= 2:
-                # Use NAV directly to avoid double-compounding bugs
-                bench_cum = market_close / market_close.iloc[0]
-                benchmark_abs_ret = float(bench_cum.iloc[-1] - 1)
+            
+            # CRITICAL: We must compute returns on the FULL market series FIRST,
+            # then slice by the portfolio returns' index. 
+            # This ensures the first day of the slice correctly captures the return from the previous day.
+            market_return_full = market_close.pct_change().dropna()
+            bench_ret = market_return_full.loc[market_return_full.index.intersection(returns.index)]
+            
+            if len(bench_ret) >= 1:
+                # Use returns to build a consistent cumulative series starting from 1.0
+                # at (Start Date - 1 day), effectively.
+                bench_cum = (1 + bench_ret).cumprod()
+                benchmark_abs_ret = float(bench_cum.iloc[-1] - 1) if not bench_cum.empty else 0.0
                 
-                # Use returns only for volatility/Sharpe
-                bench_ret = market_close.pct_change().fillna(0)
+                benchmark_cagr_252 = (bench_cum.iloc[-1]) ** (1 / years_252) - 1 if (not bench_cum.empty and bench_cum.iloc[-1] > 0) else -1
+                benchmark_cagr_calendar = (bench_cum.iloc[-1]) ** (1 / years_calendar) - 1 if (not bench_cum.empty and bench_cum.iloc[-1] > 0) else -1
                 
-                benchmark_cagr_252 = (bench_cum.iloc[-1]) ** (1 / years_252) - 1 if bench_cum.iloc[-1] > 0 else -1
-                benchmark_cagr_calendar = (bench_cum.iloc[-1]) ** (1 / years_calendar) - 1 if bench_cum.iloc[-1] > 0 else -1
                 excess_cagr_252 = ((1 + cagr_252) / (1 + benchmark_cagr_252)) - 1 if benchmark_cagr_252 != -1 else np.nan
                 excess_cagr_calendar = ((1 + cagr_calendar) / (1 + benchmark_cagr_calendar)) - 1 if benchmark_cagr_calendar != -1 else np.nan
                 
                 # Active return = Portfolio return - Benchmark return
-                active_return_daily = returns - bench_ret
+                active_return_daily = returns.loc[bench_ret.index] - bench_ret
                 tracking_error = float(active_return_daily.std() * np.sqrt(self.periods_per_year))
                 if tracking_error != 0 and not pd.isna(tracking_error):
                     annualized_active_return_arithmetic = float(active_return_daily.mean() * self.periods_per_year)
@@ -179,13 +177,12 @@ class PortfolioAnalyzer:
                     information_ratio_geometric = float(excess_cagr_252 / tracking_error)
                     
                 # Calculate Benchmark Metrics
-                benchmark_abs_ret = float(bench_cum.iloc[-1] - 1.0) if bench_cum.iloc[-1] > 0 else 0.0
-                
                 bench_rolling_max = bench_cum.cummax()
                 bench_drawdowns = bench_cum / bench_rolling_max - 1.0
                 benchmark_max_dd = bench_drawdowns.min()
                 
                 benchmark_volatility = bench_ret.std() * np.sqrt(self.periods_per_year)
+                rf_daily = 0.0135 / self.periods_per_year
                 benchmark_sharpe = ((bench_ret.mean() - rf_daily) / bench_ret.std()) * np.sqrt(self.periods_per_year) if bench_ret.std() != 0 else 0
                 benchmark_calmar = benchmark_cagr_252 / abs(benchmark_max_dd) if benchmark_max_dd < 0 and benchmark_max_dd != 0 else np.nan
                 
@@ -226,7 +223,14 @@ class PortfolioAnalyzer:
             gross_profit = returns[returns > 0].sum()
             gross_loss = abs(returns[returns < 0].sum())
             
-        daily_profit_factor = float(gross_profit / gross_loss) if gross_loss != 0 else np.nan
+        daily_profit_factor_pnl = float(gross_profit / gross_loss) if gross_loss != 0 else np.nan
+        
+        # Calculate Return-Based Profit Factor (for Signal Quality Evaluation)
+        # Gross profit sum from returns / abs(Gross loss sum from returns)
+        # This is AUM-agnostic.
+        gross_profit_ret = returns[returns > 0].sum()
+        gross_loss_ret = abs(returns[returns < 0].sum())
+        daily_profit_factor_returns = float(gross_profit_ret / gross_loss_ret) if gross_loss_ret != 0 else np.nan
         
         # ----------------------------------------------------
         # Calculate Trade-Based Profit Factor (Closed-Loop FIFO)
@@ -390,7 +394,8 @@ class PortfolioAnalyzer:
             'Trade_Win/Loss_Ratio': float(trade_win_loss_ratio),
             'Daily_Return_Win_Rate': float(win_rate),
             'Daily_Return_Win/Loss_Ratio': float(win_loss_ratio),
-            'Daily_Profit_Factor': float(daily_profit_factor),
+            'Daily_Profit_Factor_(Returns)': float(daily_profit_factor_returns),
+            'Daily_Profit_Factor_(PnL)': float(daily_profit_factor_pnl),
             'Trade_Profit_Factor': float(trade_profit_factor),
             'Turnover_Rate_Annual': turnover_annual
         }
@@ -412,10 +417,9 @@ class PortfolioAnalyzer:
         # Priority: use pre-existing benchmark in daily_amount to guarantee correct date alignment
         if self.benchmark_col in self.daily_amount.columns:
             market_close = self.daily_amount[self.benchmark_col].astype(float)
-            # align to our returns index specifically
-            market_close = market_close.loc[returns.index].dropna()
-            # market_close is definitively a NAV series since __init__ converts it
-            market_return = market_close.pct_change().fillna(0)
+            market_return_full = market_close.pct_change().dropna()
+            # Align to our returns index specifically
+            market_return = market_return_full.loc[market_return_full.index.intersection(returns.index)]
             aligned = pd.concat([returns, market_return], axis=1).dropna()
             aligned.columns = ['Portfolio', 'Market']
         else:
@@ -443,6 +447,7 @@ class PortfolioAnalyzer:
             
         # Deduct risk-free rate for true excess-return CAPM regression
         rf_daily = 0.0135 / self.periods_per_year
+        market_ret_total = aligned['Market'].copy()
         aligned['Portfolio'] = aligned['Portfolio'] - rf_daily
         aligned['Market'] = aligned['Market'] - rf_daily
             
@@ -458,7 +463,8 @@ class PortfolioAnalyzer:
             'Beta_Market': float(beta),
             'Annualized_Alpha': float(alpha),
             'R_Squared': float(model.rsquared),
-            'Market_Annualized': float(aligned['Market'].mean() * self.periods_per_year)
+            'Market_Total_Return_Annualized': float(market_ret_total.mean() * self.periods_per_year),
+            'Market_Excess_Return_Annualized': float(aligned['Market'].mean() * self.periods_per_year)
         }
 
     def calculate_style_exposures(self, market=None):
@@ -537,9 +543,8 @@ class PortfolioAnalyzer:
         # We need Market Return. 
         if self.benchmark_col in self.daily_amount.columns:
             market_close = self.daily_amount[self.benchmark_col].astype(float)
-            market_close = market_close.loc[returns.index].dropna()
-            # market_close is definitively a NAV series
-            market_return = market_close.pct_change().fillna(0)
+            market_return_full = market_close.pct_change().dropna()
+            market_return = market_return_full.loc[market_return_full.index.intersection(returns.index)]
         else:
             market_return = features.groupby('datetime')['ret'].mean()
             
@@ -551,6 +556,7 @@ class PortfolioAnalyzer:
             
         # Deduct risk-free rate from Portfolio and Market for Excess-Return multi-factor regression
         rf_daily = 0.0135 / self.periods_per_year
+        market_ret_total = aligned['Market'].copy()
         aligned['Portfolio'] = aligned['Portfolio'] - rf_daily
         aligned['Market'] = aligned['Market'] - rf_daily
             
@@ -565,7 +571,8 @@ class PortfolioAnalyzer:
             BARRA_VOLA_KEY: float(model.params.get('volatility', 0)),
             'Barra_Style_R_Squared': float(model.rsquared),
             'Factor_Annualized': factor_annualized,
-            'Market_Annualized': float(aligned['Market'].mean() * self.periods_per_year)
+            'Market_Total_Return_Annualized': float(market_ret_total.mean() * self.periods_per_year),
+            'Market_Excess_Return_Annualized': float(aligned['Market'].mean() * self.periods_per_year)
         }
 
     def calculate_holding_metrics(self):
