@@ -123,14 +123,26 @@ class PortfolioAnalyzer:
         # Consistent with project's '252-day basis' philosophy:
         # years are calculated based on the number of trading days.
         # We always expect daily frequency for the records internally.
-        years = days / 252.0
+        years_252 = days / 252.0
         
-        cagr = (cum_ret.iloc[-1]) ** (1 / years) - 1 if cum_ret.iloc[-1] > 0 else -1
+        # Calculate calendar years if dates are available
+        years_calendar = years_252 # Fallback
+        if len(returns) >= 2:
+            calendar_days = (returns.index[-1] - returns.index[0]).days
+            if calendar_days > 0:
+                years_calendar = calendar_days / 365.25
         
-        benchmark_cagr = np.nan
-        excess_cagr = np.nan
+        cagr_252 = (cum_ret.iloc[-1]) ** (1 / years_252) - 1 if cum_ret.iloc[-1] > 0 else -1
+        cagr_calendar = (cum_ret.iloc[-1]) ** (1 / years_calendar) - 1 if cum_ret.iloc[-1] > 0 else -1
+        
+        benchmark_cagr_252 = np.nan
+        benchmark_cagr_calendar = np.nan
+        excess_cagr_252 = np.nan
+        excess_cagr_calendar = np.nan
         tracking_error = np.nan
-        information_ratio = np.nan
+        information_ratio_arithmetic = np.nan
+        information_ratio_geometric = np.nan
+        annualized_active_return_arithmetic = np.nan
         rf_daily = 0.0135 / self.periods_per_year
         benchmark_abs_ret = np.nan
         benchmark_volatility = np.nan
@@ -151,15 +163,20 @@ class PortfolioAnalyzer:
                 # Use returns only for volatility/Sharpe
                 bench_ret = market_close.pct_change().fillna(0)
                 
-                benchmark_cagr = (bench_cum.iloc[-1]) ** (1 / years) - 1 if bench_cum.iloc[-1] > 0 else -1
-                excess_cagr = ((1 + cagr) / (1 + benchmark_cagr)) - 1 if benchmark_cagr != -1 else np.nan
+                benchmark_cagr_252 = (bench_cum.iloc[-1]) ** (1 / years_252) - 1 if bench_cum.iloc[-1] > 0 else -1
+                benchmark_cagr_calendar = (bench_cum.iloc[-1]) ** (1 / years_calendar) - 1 if bench_cum.iloc[-1] > 0 else -1
+                excess_cagr_252 = ((1 + cagr_252) / (1 + benchmark_cagr_252)) - 1 if benchmark_cagr_252 != -1 else np.nan
+                excess_cagr_calendar = ((1 + cagr_calendar) / (1 + benchmark_cagr_calendar)) - 1 if benchmark_cagr_calendar != -1 else np.nan
                 
                 # Active return = Portfolio return - Benchmark return
                 active_return_daily = returns - bench_ret
                 tracking_error = float(active_return_daily.std() * np.sqrt(self.periods_per_year))
                 if tracking_error != 0 and not pd.isna(tracking_error):
-                    # IR = annualized active return mean / tracking error
-                    information_ratio = float((active_return_daily.mean() * self.periods_per_year) / tracking_error)
+                    annualized_active_return_arithmetic = float(active_return_daily.mean() * self.periods_per_year)
+                    # IR (Arithmetic) = annualized arithmetic mean of daily active returns / tracking error
+                    information_ratio_arithmetic = float(annualized_active_return_arithmetic / tracking_error)
+                    # IR (Geometric) = geometric excess return (CAGR) / tracking error
+                    information_ratio_geometric = float(excess_cagr_252 / tracking_error)
                     
                 # Calculate Benchmark Metrics
                 benchmark_abs_ret = float(bench_cum.iloc[-1] - 1.0) if bench_cum.iloc[-1] > 0 else 0.0
@@ -170,7 +187,7 @@ class PortfolioAnalyzer:
                 
                 benchmark_volatility = bench_ret.std() * np.sqrt(self.periods_per_year)
                 benchmark_sharpe = ((bench_ret.mean() - rf_daily) / bench_ret.std()) * np.sqrt(self.periods_per_year) if bench_ret.std() != 0 else 0
-                benchmark_calmar = benchmark_cagr / abs(benchmark_max_dd) if benchmark_max_dd < 0 and benchmark_max_dd != 0 else np.nan
+                benchmark_calmar = benchmark_cagr_252 / abs(benchmark_max_dd) if benchmark_max_dd < 0 and benchmark_max_dd != 0 else np.nan
                 
                 bench_is_under_water = bench_drawdowns < 0
                 bench_under_water_blocks = bench_is_under_water.ne(bench_is_under_water.shift()).cumsum()
@@ -183,7 +200,7 @@ class PortfolioAnalyzer:
 
         volatility = returns.std() * np.sqrt(self.periods_per_year)
         sharpe = ((returns.mean() - rf_daily) / returns.std()) * np.sqrt(self.periods_per_year) if returns.std() != 0 else 0
-        calmar = cagr / abs(max_dd) if max_dd < 0 and max_dd != 0 else np.nan
+        calmar = cagr_252 / abs(max_dd) if max_dd < 0 and max_dd != 0 else np.nan
         
         downside_dev = np.sqrt(np.mean(np.minimum(0, returns)**2))
         sortino = ((returns.mean() - rf_daily) / downside_dev) * np.sqrt(self.periods_per_year) if downside_dev != 0 else 0
@@ -224,6 +241,8 @@ class PortfolioAnalyzer:
                 
             gross_trade_profit = 0.0
             gross_trade_loss = 0.0
+            trade_wins = 0
+            trade_losses = 0
             positions = {} # instrument -> list of {'price': p, 'qty': q, 'fees': f}
             
             t_log = t_log.sort_values('成交日期')
@@ -268,13 +287,23 @@ class PortfolioAnalyzer:
                             
                     if realized_pnl > 0:
                         gross_trade_profit += realized_pnl
-                    else:
+                        trade_wins += 1
+                    elif realized_pnl < 0:
                         gross_trade_loss += abs(realized_pnl)
+                        trade_losses += 1
                         
             if gross_trade_loss != 0:
                 trade_profit_factor = float(gross_trade_profit / gross_trade_loss)
             elif gross_trade_profit > 0:
                 trade_profit_factor = np.inf
+                
+            trade_win_rate = float(trade_wins / (trade_wins + trade_losses)) if (trade_wins + trade_losses) > 0 else np.nan
+            trade_avg_win = float(gross_trade_profit / trade_wins) if trade_wins > 0 else 0.0
+            trade_avg_loss = float(gross_trade_loss / trade_losses) if trade_losses > 0 else 1e-9
+            trade_win_loss_ratio = float(trade_avg_win / trade_avg_loss) if trade_avg_loss > 0 else np.nan
+        else:
+            trade_win_rate = np.nan
+            trade_win_loss_ratio = np.nan
         
         avg_win = returns[returns > 0].mean() if not returns[returns > 0].empty else 0
         avg_loss = abs(returns[returns < 0].mean()) if not returns[returns < 0].empty else 1e-9
@@ -333,9 +362,12 @@ class PortfolioAnalyzer:
         return {
             'Absolute_Return': abs_ret,
             'Benchmark_Absolute_Return': float(benchmark_abs_ret),
-            'CAGR': float(cagr),
-            'Benchmark_CAGR': float(benchmark_cagr),
-            'Excess_Return_CAGR': float(excess_cagr),
+            'CAGR_252': float(cagr_252),
+            'CAGR_Calendar': float(cagr_calendar),
+            'Benchmark_CAGR_252': float(benchmark_cagr_252),
+            'Benchmark_CAGR_Calendar': float(benchmark_cagr_calendar),
+            'Excess_Return_CAGR_252': float(excess_cagr_252),
+            'Excess_Return_CAGR_Calendar': float(excess_cagr_calendar),
             'Volatility': float(volatility),
             'Benchmark_Volatility': float(benchmark_volatility),
             'Tracking_Error': float(tracking_error),
@@ -344,7 +376,9 @@ class PortfolioAnalyzer:
             'Sortino': float(sortino),
             'Calmar': float(calmar),
             'Benchmark_Calmar': float(benchmark_calmar),
-            'Information_Ratio': float(information_ratio),
+            'Information_Ratio_(Arithmetic)': float(information_ratio_arithmetic),
+            'Information_Ratio_(Geometric_252)': float(information_ratio_geometric),
+            'Annualized_Active_Return_(Arithmetic)': float(annualized_active_return_arithmetic),
             'Max_Drawdown': float(max_dd),
             'Benchmark_Max_Drawdown': float(benchmark_max_dd),
             'Max_Time_Under_Water_Days': float(max_time_under_water),
@@ -352,8 +386,10 @@ class PortfolioAnalyzer:
             'Avg_Time_Under_Water_Days': float(avg_time_under_water),
             'Benchmark_Avg_Time_Under_Water_Days': float(benchmark_avg_tuw),
             'Days_Below_Initial_Capital': int(days_below_initial_capital),
-            'Realized_Trade_Win_Rate': float(win_rate),
-            'Win/Loss_Ratio': float(win_loss_ratio),
+            'Realized_Trade_Win_Rate': float(trade_win_rate),
+            'Trade_Win/Loss_Ratio': float(trade_win_loss_ratio),
+            'Daily_Return_Win_Rate': float(win_rate),
+            'Daily_Return_Win/Loss_Ratio': float(win_loss_ratio),
             'Daily_Profit_Factor': float(daily_profit_factor),
             'Trade_Profit_Factor': float(trade_profit_factor),
             'Turnover_Rate_Annual': turnover_annual

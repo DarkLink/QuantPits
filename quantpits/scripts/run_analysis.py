@@ -330,12 +330,19 @@ def main():
             return f"{lower}-{upper} days"
 
         for k, v in metrics.items():
-            if k in ['CAGR', 'Excess_Return_CAGR']:
+            if 'CAGR_252' in k:
+                name = k.replace('_252', ' (252-day basis)')
                 if args.shareable:
-                    report.append(f"- **{k} (252-day basis)**: {v:.1%}")
+                    report.append(f"- **{name}**: {v:.1%}")
                 else:
-                    report.append(f"- **{k} (252-day basis)**: {v:.2%}")
-            elif k in ['Absolute_Return', 'Benchmark_Absolute_Return', 'Benchmark_CAGR', 'Volatility', 'Benchmark_Volatility', 'Tracking_Error', 'Max_Drawdown', 'Benchmark_Max_Drawdown', 'Realized_Trade_Win_Rate']:
+                    report.append(f"- **{name}**: {v:.2%}")
+            elif 'CAGR_Calendar' in k:
+                name = k.replace('_Calendar', ' (Calendar basis)')
+                if args.shareable:
+                    report.append(f"- **{name}**: {v:.1%}")
+                else:
+                    report.append(f"- **{name}**: {v:.2%}")
+            elif k in ['Absolute_Return', 'Benchmark_Absolute_Return', 'Volatility', 'Benchmark_Volatility', 'Tracking_Error', 'Max_Drawdown', 'Benchmark_Max_Drawdown', 'Realized_Trade_Win_Rate', 'Daily_Return_Win_Rate', 'Annualized_Active_Return_(Arithmetic)']:
                 if args.shareable:
                     report.append(f"- **{k}**: {v:.1%}")
                 else:
@@ -380,11 +387,11 @@ def main():
                 else:
                     report.append(f"- **{k}**: {v:.4f}")
                 
-        if metrics.get('CAGR') is not None and metrics.get('Benchmark_CAGR') is not None and not pd.isna(metrics.get('CAGR')):
-            cagr = metrics['CAGR']
+        if metrics.get('CAGR_252') is not None and metrics.get('Benchmark_CAGR_252') is not None and not pd.isna(metrics.get('CAGR_252')):
+            cagr = metrics['CAGR_252']
             
             # Use Benchmark_CAGR and standalone Beta_Market to match expectations intuitively
-            beta_ret = beta * metrics.get('Benchmark_CAGR', 0)
+            beta_ret_single = beta * metrics.get('Benchmark_CAGR_252', 0)
             
             style_ret = 0.0
             if 'liquidity' in factor_ann and 'momentum' in factor_ann and 'volatility' in factor_ann:
@@ -395,24 +402,45 @@ def main():
             # Intercept is already Annualized since we multiply by 252 in portfolio_analyzer
             idio_alpha = exposure.get('Multi_Factor_Intercept', 0)
             
+            # Multi-factor variant avoids explaining multi-factor returns with single-factor market constraints
+            multi_beta = exposure.get('Multi_Factor_Beta', 0)
+            beta_ret_multi = multi_beta * metrics.get('Benchmark_CAGR_252', 0)
+            
             # The arithmetic sum of components vs actual geometric CAGR gap
             # This completely patches the "Yield Leakage" by fully resolving the math
-            arithmetic_total = beta_ret + style_ret + idio_alpha
-            cagr_gap = cagr - arithmetic_total
+            arithmetic_total_single = beta_ret_single + style_ret + idio_alpha
+            cagr_gap_single = cagr - arithmetic_total_single
             
-            report.append("\n### Performance Attribution")
+            arithmetic_total_multi = beta_ret_multi + style_ret + idio_alpha
+            cagr_gap_multi = cagr - arithmetic_total_multi
+            
+            report.append("\n### Performance Attribution (Single-Factor Market Beta)")
             if args.shareable:
                 report.append(f"- **Total Strategy CAGR**: {cagr:.1%}")
-                report.append(f"  - Beta Return (Exposure to Market): {beta_ret:.1%}")
+                report.append(f"  - Beta Return (Exposure to Market): {beta_ret_single:.1%}")
                 report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.1%}")
                 report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.1%}")
-                report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap:.1%}")
+                report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap_single:.1%}")
             else:
                 report.append(f"- **Total Strategy CAGR**: {cagr:.2%}")
-                report.append(f"  - Beta Return (Exposure to Market): {beta_ret:.2%}")
+                report.append(f"  - Beta Return (Exposure to Market): {beta_ret_single:.2%}")
                 report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.2%}")
                 report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.2%}")
-                report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap:.2%}")
+                report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap_single:.2%}")
+                
+            report.append("\n### Performance Attribution (Multi-Factor Strict Alignment)")
+            if args.shareable:
+                report.append(f"- **Total Strategy CAGR**: {cagr:.1%}")
+                report.append(f"  - Beta Return (Multi-Factor Exposure to Market): {beta_ret_multi:.1%}")
+                report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.1%}")
+                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.1%}")
+                report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap_multi:.1%}")
+            else:
+                report.append(f"- **Total Strategy CAGR**: {cagr:.2%}")
+                report.append(f"  - Beta Return (Multi-Factor Exposure to Market): {beta_ret_multi:.2%}")
+                report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.2%}")
+                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.2%}")
+                report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap_multi:.2%}")
             
     # 5. Trade Classification & Manual Impact
     print("Analyzing Trade Classification & Manual Impact...")

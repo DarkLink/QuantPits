@@ -40,11 +40,11 @@ def test_run_single_backtest_oos_success(mock_env):
                         mock_run.return_value = (mock_report, None)
                         
                         mock_eval.return_value = {
-                            "CAGR": 0.1,
+                            "CAGR_252": 0.1,
                             "Max_Drawdown": -0.05,
                             "Absolute_Return": 0.01,
                             "Benchmark_Absolute_Return": 0.005,
-                            "Excess_Return_CAGR": 0.05,
+                            "Excess_Return_CAGR_252": 0.05,
                             "Calmar": 2.0
                         }
                         

@@ -81,22 +81,22 @@ class TestProductionTraditionalMetrics:
         m = analyzer.calculate_traditional_metrics()
         assert m, "Metrics should not be empty"
 
-        for key in ["CAGR", "Volatility", "Sharpe", "Max_Drawdown",
+        for key in ["CAGR_252", "Volatility", "Sharpe", "Max_Drawdown",
                      "Absolute_Return", "Turnover_Rate_Annual"]:
             assert key in m, f"Missing key: {key}"
             assert np.isfinite(m[key]), f"{key} is not finite: {m[key]}"
 
     def test_sign_constraints(self, analyzer):
         m = analyzer.calculate_traditional_metrics()
-        assert -1 < m["CAGR"] < 10, f"CAGR out of range: {m['CAGR']}"
+        assert -1 < m["CAGR_252"] < 10, f"CAGR_252 out of range: {m['CAGR_252']}"
         assert m["Volatility"] >= 0, f"Volatility negative: {m['Volatility']}"
         assert m["Max_Drawdown"] <= 0, f"MaxDD should be <= 0: {m['Max_Drawdown']}"
         assert 0 <= m["Realized_Trade_Win_Rate"] <= 1
 
     def test_benchmark_metrics_present(self, analyzer):
         m = analyzer.calculate_traditional_metrics()
-        for key in ["Benchmark_CAGR", "Benchmark_Volatility", "Benchmark_Sharpe",
-                     "Benchmark_Max_Drawdown", "Tracking_Error", "Information_Ratio"]:
+        for key in ["Benchmark_CAGR_252", "Benchmark_Volatility", "Benchmark_Sharpe",
+                     "Benchmark_Max_Drawdown", "Tracking_Error", "Information_Ratio_(Arithmetic)"]:
             assert key in m, f"Missing benchmark key: {key}"
             assert np.isfinite(m[key]), f"{key} is not finite: {m[key]}"
 
@@ -152,9 +152,9 @@ class TestProductionStyleExposures:
         se = analyzer.calculate_style_exposures(market="csi300")
         if se:
             assert "Multi_Factor_Beta" in se
-            assert "Barra_Liquidity_Exp" in se
-            assert "Barra_Momentum_Exp" in se
-            assert "Barra_Volatility_Exp" in se
+            assert "Barra_Liquidity_Exp_(High-Low)" in se
+            assert "Barra_Momentum_Exp_(High-Low)" in se
+            assert "Barra_Volatility_Exp_(High-Low)" in se
             assert "Barra_Style_R_Squared" in se
             assert 0 <= se["Barra_Style_R_Squared"] <= 1
 

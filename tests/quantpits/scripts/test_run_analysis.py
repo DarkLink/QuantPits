@@ -87,7 +87,7 @@ def test_main_full(mock_port, mock_exec, mock_ens, mock_single,
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
-    mock_pa.calculate_traditional_metrics.return_value = {"CAGR": 0.15, "Volatility": 0.20}
+    mock_pa.calculate_traditional_metrics.return_value = {"CAGR_252": 0.15, "Volatility": 0.20}
     mock_pa.calculate_factor_exposure.return_value = {"Beta_Market": 1.0}
     mock_pa.calculate_style_exposures.return_value = {}
     mock_pa.calculate_holding_metrics.return_value = {"Turnover": 0.1}
@@ -202,7 +202,7 @@ def test_main_shareable(mock_port, mock_exec, mock_ens, mock_single,
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
-    mock_pa.calculate_traditional_metrics.return_value = {"CAGR": 0.15, "Volatility": 0.20}
+    mock_pa.calculate_traditional_metrics.return_value = {"CAGR_252": 0.15, "Volatility": 0.20}
     mock_pa.calculate_factor_exposure.return_value = {"Beta_Market": 1.0}
     mock_pa.calculate_style_exposures.return_value = {}
     mock_pa.calculate_holding_metrics.return_value = {"Turnover": 0.1}
@@ -301,7 +301,7 @@ def test_main_coverage_edges(mock_port, mock_exec, mock_ens, mock_single,
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
     mock_pa.calculate_traditional_metrics.return_value = {
-        "CAGR": 0.15, "Volatility": 0.20, 
+        "CAGR_252": 0.15, "Volatility": 0.20, 
         "Turnover_Rate_Annual": 1500.2,
         "Max_Time_Under_Water_Days": 1
     }
@@ -427,8 +427,8 @@ def test_main_performance_attribution(mock_exec, mock_port, mock_fwd, mock_load_
     # Mock data to trigger lines 374-405
     # CAGR must be not None and not NaN
     mock_pa.calculate_traditional_metrics.return_value = {
-        "CAGR": 0.25, 
-        "Benchmark_CAGR": 0.1,
+        "CAGR_252": 0.25, 
+        "Benchmark_CAGR_252": 0.1,
         "Volatility": 0.15,
         "Turnover_Rate_Annual": 2.5,
         "Max_Time_Under_Water_Days": 10
@@ -652,8 +652,8 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
     mock_pa.calculate_traditional_metrics.return_value = {
-        "CAGR": 0.15, 
-        "Benchmark_CAGR": 0.05,
+        "CAGR_252": 0.15, 
+        "Benchmark_CAGR_252": 0.05,
         "Volatility": 0.1,
         "Turnover_Rate_Annual": 1.5,
         "Max_Time_Under_Water_Days": 42
@@ -686,9 +686,27 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
 @patch('quantpits.scripts.run_analysis.load_model_predictions')
 @patch('quantpits.scripts.run_analysis.get_forward_returns')
 @patch('quantpits.scripts.run_analysis.SingleModelAnalyzer')
-def test_main_helper_coverage(mock_single, mock_fwd, mock_load_pred, mock_market, mock_init, mock_env):
+@patch('quantpits.scripts.run_analysis.ExecutionAnalyzer')
+@patch('quantpits.scripts.run_analysis.PortfolioAnalyzer')
+def test_main_helper_coverage(mock_port, mock_exec, mock_single, mock_fwd, mock_load_pred, mock_market, mock_init, mock_env):
     ra, workspace = mock_env
     mock_market.return_value = ("csi300", "SH000300")
+    
+    mock_pa = MagicMock()
+    mock_port.return_value = mock_pa
+    mock_pa.calculate_traditional_metrics.return_value = {}
+    mock_pa.calculate_factor_exposure.return_value = {}
+    mock_pa.calculate_style_exposures.return_value = {}
+    mock_pa.calculate_holding_metrics.return_value = {}
+    mock_pa.calculate_classified_returns.return_value = {"class_df": pd.DataFrame(), "manual_buys": pd.DataFrame(), "manual_sells": pd.DataFrame()}
+
+    mock_ex = MagicMock()
+    mock_exec.return_value = mock_ex
+    mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame()
+    mock_ex.calculate_path_dependency.return_value = pd.DataFrame()
+    mock_ex.analyze_explicit_costs.return_value = {}
+    mock_ex.analyze_order_discrepancies.return_value = {}
+    mock_ex.trade_log = pd.DataFrame()
     
     # Coverage for format_date_range different seasons and exceptions (lines 51-66)
     # Coverage for format_adv different ranges (lines 79-83)
@@ -711,58 +729,51 @@ def test_main_helper_coverage(mock_single, mock_fwd, mock_load_pred, mock_market
     
     # 2. Test format_adv ranges and format_count cases (lines 73-75)
     # Need ExecutionAnalyzer to return specific values
-    with patch('quantpits.scripts.run_analysis.ExecutionAnalyzer') as mock_exec:
-        mock_ex = MagicMock()
-        mock_exec.return_value = mock_ex
-        # Test each case of format_adv: < 0.1%, < 1.0%, < 5.0%, > 5.0%
-        mock_ex.calculate_path_dependency.return_value = pd.DataFrame()
-        mock_ex.analyze_explicit_costs.return_value = {}
-        mock_ex.analyze_order_discrepancies.return_value = {}
-        mock_ex.trade_log = pd.DataFrame()
+    # Test each case of format_adv: < 0.1%, < 1.0%, < 5.0%, > 5.0%
 
-        # Case 1: < 0.1%
-        mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
-            "Delay_Cost": [0], "Exec_Slippage": [0], "Total_Friction": [0], "成交金额": [1000], "交易类别": ["买入"],
-            "ADV_Participation_Rate": [0.0005], "trade_class": ["S"]
-        })
-        with patch.object(sys, 'argv', ['script.py', '--output', 'output/adv1.md', '--shareable']):
-            ra.main()
-        with open(workspace / "output" / "adv1.md", "r") as f:
-            content_adv = f.read()
-        assert "< 0.1%" in content_adv
+    # Case 1: < 0.1%
+    mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
+        "Delay_Cost": [0], "Exec_Slippage": [0], "Total_Friction": [0], "成交金额": [1000], "交易类别": ["买入"],
+        "ADV_Participation_Rate": [0.0005], "trade_class": ["S"]
+    })
+    with patch.object(sys, 'argv', ['script.py', '--output', 'output/adv1.md', '--shareable']):
+        ra.main()
+    with open(workspace / "output" / "adv1.md", "r") as f:
+        content_adv = f.read()
+    assert "< 0.1%" in content_adv
 
-        # Case 2: < 1.0%
-        mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
-            "Delay_Cost": [0], "Exec_Slippage": [0], "Total_Friction": [0], "成交金额": [1000], "交易类别": ["买入"],
-            "ADV_Participation_Rate": [0.005], "trade_class": ["S"]
-        })
-        with patch.object(sys, 'argv', ['script.py', '--output', 'output/adv2.md', '--shareable']):
-            ra.main()
-        with open(workspace / "output" / "adv2.md", "r") as f:
-            content_adv = f.read()
-        assert "< 1.0%" in content_adv
+    # Case 2: < 1.0%
+    mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
+        "Delay_Cost": [0], "Exec_Slippage": [0], "Total_Friction": [0], "成交金额": [1000], "交易类别": ["买入"],
+        "ADV_Participation_Rate": [0.005], "trade_class": ["S"]
+    })
+    with patch.object(sys, 'argv', ['script.py', '--output', 'output/adv2.md', '--shareable']):
+        ra.main()
+    with open(workspace / "output" / "adv2.md", "r") as f:
+        content_adv = f.read()
+    assert "< 1.0%" in content_adv
 
-        # Case 3: < 5.0%
-        mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
-            "Delay_Cost": [0], "Exec_Slippage": [0], "Total_Friction": [0], "成交金额": [1000], "交易类别": ["买入"],
-            "ADV_Participation_Rate": [0.03], "trade_class": ["S"]
-        })
-        with patch.object(sys, 'argv', ['script.py', '--output', 'output/adv3.md', '--shareable']):
-            ra.main()
-        with open(workspace / "output" / "adv3.md", "r") as f:
-            content_adv = f.read()
-        assert "< 5.0%" in content_adv
+    # Case 3: < 5.0%
+    mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
+        "Delay_Cost": [0], "Exec_Slippage": [0], "Total_Friction": [0], "成交金额": [1000], "交易类别": ["买入"],
+        "ADV_Participation_Rate": [0.03], "trade_class": ["S"]
+    })
+    with patch.object(sys, 'argv', ['script.py', '--output', 'output/adv3.md', '--shareable']):
+        ra.main()
+    with open(workspace / "output" / "adv3.md", "r") as f:
+        content_adv = f.read()
+    assert "< 5.0%" in content_adv
 
-        # Case 4: > 5.0%
-        mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
-            "Delay_Cost": [0], "Exec_Slippage": [0], "Total_Friction": [0], "成交金额": [1000], "交易类别": ["买入"],
-            "ADV_Participation_Rate": [0.08], "trade_class": ["S"]
-        })
-        with patch.object(sys, 'argv', ['script.py', '--output', 'output/adv4.md', '--shareable']):
-            ra.main()
-        with open(workspace / "output" / "adv4.md", "r") as f:
-            content_adv = f.read()
-        assert "> 5.0%" in content_adv
+    # Case 4: > 5.0%
+    mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
+        "Delay_Cost": [0], "Exec_Slippage": [0], "Total_Friction": [0], "成交金额": [1000], "交易类别": ["买入"],
+        "ADV_Participation_Rate": [0.08], "trade_class": ["S"]
+    })
+    with patch.object(sys, 'argv', ['script.py', '--output', 'output/adv4.md', '--shareable']):
+        ra.main()
+    with open(workspace / "output" / "adv4.md", "r") as f:
+        content_adv = f.read()
+    assert "> 5.0%" in content_adv
 
     # 3. Test Spring and Summer seasons (lines 65-66)
     with patch.object(sys, 'argv', ['script.py', '--start-date', '2024-04-01', '--end-date', '2024-07-01', '--output', 'output/seasons.md', '--shareable']):
@@ -773,30 +784,27 @@ def test_main_helper_coverage(mock_single, mock_fwd, mock_load_pred, mock_market
     assert "Summer 2024" in content_seasons
 
     # 4. Coverage for else blocks in metrics (lines 345-348) and R_Squared shareable (line 360)
-    with patch('quantpits.scripts.run_analysis.PortfolioAnalyzer') as mock_port:
-        mock_pa = MagicMock()
-        mock_port.return_value = mock_pa
-        # Need a metric that goes to 'else' block (line 344)
-        mock_pa.calculate_traditional_metrics.return_value = {"Sharpe": 2.1}
-        mock_pa.calculate_factor_exposure.return_value = {"Multi_Factor_R_Squared": 0.85}
-        mock_pa.calculate_style_exposures.return_value = {}
-        mock_pa.calculate_holding_metrics.return_value = {}
-        mock_pa.calculate_classified_returns.return_value = {"class_df": pd.DataFrame(), "manual_buys": pd.DataFrame(), "manual_sells": pd.DataFrame()}
+    # Need a metric that goes to 'else' block (line 344)
+    mock_pa.calculate_traditional_metrics.return_value = {"Sharpe": 2.1}
+    mock_pa.calculate_factor_exposure.return_value = {"Multi_Factor_R_Squared": 0.85}
+    mock_pa.calculate_style_exposures.return_value = {}
+    mock_pa.calculate_holding_metrics.return_value = {}
+    mock_pa.calculate_classified_returns.return_value = {"class_df": pd.DataFrame(), "manual_buys": pd.DataFrame(), "manual_sells": pd.DataFrame()}
 
-        # 4a. Shareable mode
-        with patch.object(sys, 'argv', ['script.py', '--output', 'output/extra.md', '--shareable']):
-            ra.main()
-        with open(workspace / "output" / "extra.md", "r") as f:
-            content_extra = f.read()
+    # 4a. Shareable mode
+    with patch.object(sys, 'argv', ['script.py', '--output', 'output/extra.md', '--shareable']):
+        ra.main()
+    with open(workspace / "output" / "extra.md", "r") as f:
+        content_extra = f.read()
         assert "Sharpe**: 2.1" in content_extra
         assert "Multi_Factor_R_Squared**: 0.85" in content_extra
 
-        # 4b. Non-shareable mode (line 348)
-        with patch.object(sys, 'argv', ['script.py', '--output', 'output/extra2.md']):
-            ra.main()
-        with open(workspace / "output" / "extra2.md", "r") as f:
-            content_extra2 = f.read()
-        assert "Sharpe**: 2.1000" in content_extra2
+    # 4b. Non-shareable mode (line 348)
+    with patch.object(sys, 'argv', ['script.py', '--output', 'output/extra2.md']):
+        ra.main()
+    with open(workspace / "output" / "extra2.md", "r") as f:
+        content_extra2 = f.read()
+    assert "Sharpe**: 2.1000" in content_extra2
 
     # 5. Coverage for exception block in format_date_range (line 66)
     with patch.object(sys, 'argv', ['script.py', '--start-date', 'INVALID', '--end-date', 'INVALID', '--output', 'output/invalid_date.md', '--shareable']):

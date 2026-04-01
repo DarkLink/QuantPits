@@ -99,10 +99,10 @@ def run_single_backtest(
         return {
             "models": ",".join(combo_models),
             "n_models": len(combo_models),
-            "Ann_Ret": metrics.get("CAGR", 0),
+            "Ann_Ret": metrics.get("CAGR_252", 0),
             "Max_DD": metrics.get("Max_Drawdown", 0),
             "Excess_Ret": metrics.get("Absolute_Return", 0) - metrics.get("Benchmark_Absolute_Return", 0),
-            "Ann_Excess": metrics.get("Excess_Return_CAGR", 0),
+            "Ann_Excess": metrics.get("Excess_Return_CAGR_252", 0),
             "Total_Ret": metrics.get("Absolute_Return", 0),
             "Final_NAV": report.iloc[-1]["account"],
             "Calmar": metrics.get("Calmar", 0) if pd.notna(metrics.get("Calmar")) else 0,

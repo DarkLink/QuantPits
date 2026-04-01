@@ -206,7 +206,7 @@ class TestTraditionalMetrics:
         cum = np.cumprod(1 + rets)
         years = n / 252.0
         expected_cagr = cum[-1] ** (1 / years) - 1
-        assert np.isclose(metrics["CAGR"], expected_cagr, atol=1e-10)
+        assert np.isclose(metrics["CAGR_252"], expected_cagr, atol=1e-10)
 
     def test_volatility(self, setup):
         pa, rets, _, _, _ = setup
@@ -253,7 +253,7 @@ class TestTraditionalMetrics:
         pa, rets, _, _, _ = setup
         metrics = pa.calculate_traditional_metrics()
         expected_win_rate = (rets > 0).mean()
-        assert np.isclose(metrics["Realized_Trade_Win_Rate"], expected_win_rate, atol=1e-10)
+        assert np.isclose(metrics["Daily_Return_Win_Rate"], expected_win_rate, atol=1e-10)
 
         nav = pd.Series(pa.daily_amount['收盘价值'].values)
         daily_pnl = nav - nav.shift(1).fillna(nav)
@@ -263,6 +263,7 @@ class TestTraditionalMetrics:
         expected_pf = gross_profit / gross_loss
         assert np.isclose(metrics["Daily_Profit_Factor"], expected_pf, atol=1e-10)
         assert pd.isna(metrics["Trade_Profit_Factor"])
+        assert pd.isna(metrics["Realized_Trade_Win_Rate"])
 
     def test_benchmark_cagr(self, setup):
         pa, _, bench_rets, bench_nav, n = setup
@@ -270,7 +271,7 @@ class TestTraditionalMetrics:
         bench_cum = bench_nav / bench_nav[0]
         years = n / 252.0
         expected_bench_cagr = bench_cum[-1] ** (1 / years) - 1
-        assert np.isclose(metrics["Benchmark_CAGR"], expected_bench_cagr, atol=1e-10)
+        assert np.isclose(metrics["Benchmark_CAGR_252"], expected_bench_cagr, atol=1e-10)
 
     def test_excess_return_cagr(self, setup):
         pa, rets, bench_rets, bench_nav, n = setup
@@ -281,7 +282,7 @@ class TestTraditionalMetrics:
         bench_cum = bench_nav / bench_nav[0]
         bench_cagr = bench_cum[-1] ** (1 / years) - 1
         expected_excess = (1 + cagr) / (1 + bench_cagr) - 1
-        assert np.isclose(metrics["Excess_Return_CAGR"], expected_excess, atol=1e-10)
+        assert np.isclose(metrics["Excess_Return_CAGR_252"], expected_excess, atol=1e-10)
 
     def test_tracking_error_and_ir(self, setup):
         pa, rets, bench_rets, bench_nav, n = setup
@@ -296,7 +297,7 @@ class TestTraditionalMetrics:
         expected_ir = (np.mean(active_ret) * 252) / expected_te
 
         assert np.isclose(metrics["Tracking_Error"], expected_te, atol=1e-10)
-        assert np.isclose(metrics["Information_Ratio"], expected_ir, atol=1e-10)
+        assert np.isclose(metrics["Information_Ratio_(Arithmetic)"], expected_ir, atol=1e-10)
 
     def test_time_under_water(self, setup):
         pa, rets, _, _, _ = setup
@@ -756,13 +757,13 @@ class TestEdgeCases:
         })
         pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
         m = pa.calculate_traditional_metrics()
-        assert m["CAGR"] < 0
+        assert m["CAGR_252"] < 0
         assert m["Max_Drawdown"] < 0
         assert m["Sharpe"] < 0
         # Because downside deviation is cleanly defined around target=0, and numerator is negative,
         # Sortino should definitely be negative.
         assert m["Sortino"] < 0
-        assert m["Realized_Trade_Win_Rate"] == 0.0
+        assert m["Daily_Return_Win_Rate"] == 0.0
 
     def test_zero_volatility_returns(self):
         """Zero-std returns should not crash."""

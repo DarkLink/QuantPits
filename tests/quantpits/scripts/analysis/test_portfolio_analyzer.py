@@ -72,14 +72,15 @@ def test_calculate_traditional_metrics():
     metrics = pa.calculate_traditional_metrics()
     
     assert metrics is not None
-    assert "CAGR" in metrics
-    assert "Benchmark_CAGR" in metrics
+    assert "CAGR_252" in metrics
+    assert "CAGR_Calendar" in metrics
+    assert "Benchmark_CAGR_252" in metrics
     assert "Sharpe" in metrics
     assert "Max_Drawdown" in metrics
     assert "Turnover_Rate_Annual" in metrics
 
     # Basic validity checks
-    assert not pd.isna(metrics["CAGR"])
+    assert not pd.isna(metrics["CAGR_252"])
     assert metrics["Absolute_Return"] != 0.0
 
 
@@ -235,12 +236,10 @@ def test_calculate_annualization_basis():
     abs_ret_expected = (1.001**251 - 1.0) # 251 steps for 252 rows
     assert np.isclose(metrics['Absolute_Return'], abs_ret_expected, atol=1e-5)
     
-    # CAGR should be (1 + abs_ret)^(1 / (252/252)) - 1 = abs_ret
-    # Wait, PA uses years = len(returns) / 252.0. returns has 252 rows.
-    # So years = 1.0.
-    assert np.isclose(metrics['CAGR'], abs_ret_expected, atol=1e-5)
+    # CAGR_252 should be (1 + abs_ret)^(1 / (252/252)) - 1 = abs_ret
+    assert np.isclose(metrics['CAGR_252'], abs_ret_expected, atol=1e-5)
     
     # Benchmark checks
     bench_abs_ret_expected = (1.0005**251 - 1.0)
     assert np.isclose(metrics['Benchmark_Absolute_Return'], bench_abs_ret_expected, atol=1e-5)
-    assert np.isclose(metrics['Benchmark_CAGR'], bench_abs_ret_expected, atol=1e-5)
+    assert np.isclose(metrics['Benchmark_CAGR_252'], bench_abs_ret_expected, atol=1e-5)

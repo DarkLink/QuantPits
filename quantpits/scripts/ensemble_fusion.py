@@ -357,7 +357,7 @@ def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt
     if report_df is not None:
         metrics = standard_evaluate_portfolio(report_df, benchmark, freq)
         
-        annualized_return = metrics.get('CAGR', 0)
+        annualized_return = metrics.get('CAGR_252', 0)
         max_drawdown = metrics.get('Max_Drawdown', 0)
         bench_cum_ret = metrics.get('Benchmark_Absolute_Return', 0)
         total_return = metrics.get('Absolute_Return', 0)
@@ -468,22 +468,22 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
         risk_strat = pd.Series({
             'mean': r_strat.mean(),
             'std': r_strat.std(),
-            'annualized_return': metrics.get('CAGR', 0),
-            'information_ratio': metrics.get('Information_Ratio', 0),
+            'annualized_return': metrics.get('CAGR_252', 0),
+            'information_ratio': metrics.get('Information_Ratio_(Arithmetic)', 0),
             'max_drawdown': metrics.get('Max_Drawdown', 0)
         })
         risk_bench = pd.Series({
             'mean': r_bench.mean(),
             'std': r_bench.std(),
-            'annualized_return': metrics.get('Benchmark_CAGR', 0),
+            'annualized_return': metrics.get('Benchmark_CAGR_252', 0),
             'information_ratio': metrics.get('Benchmark_Sharpe', 0),
             'max_drawdown': metrics.get('Benchmark_Max_Drawdown', 0)
         })
         risk_excess = pd.Series({
             'mean': r_excess.mean(),
             'std': r_excess.std(),
-            'annualized_return': metrics.get('Excess_Return_CAGR', 0),
-            'information_ratio': metrics.get('Information_Ratio', 0),
+            'annualized_return': metrics.get('Excess_Return_CAGR_252', 0),
+            'information_ratio': metrics.get('Information_Ratio_(Arithmetic)', 0),
             'max_drawdown': (report_df['account']/report_df['account'].cummax() - (1+r_bench).cumprod()/((1+r_bench).cumprod().cummax())).min() # rough proxy
         })
         # Note: excess max drawdown is harder, but the core ones are annualized_return and IR
@@ -496,7 +496,7 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
 
         # 添加到排行榜
         metrics_for_lb = risk_strat.to_dict()
-        metrics_for_lb['annualized_excess'] = metrics.get('Excess_Return_CAGR', 0)
+        metrics_for_lb['annualized_excess'] = metrics.get('Excess_Return_CAGR_252', 0)
         metrics_for_lb['name'] = 'Ensemble'
         leaderboard_data.append(metrics_for_lb)
         all_reports['Ensemble'] = report_df
@@ -553,9 +553,9 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
                 
                 metrics = {
                     'name': model_name,
-                    'annualized_return': sub_metrics_pa.get('CAGR', 0),
-                    'annualized_excess': sub_metrics_pa.get('Excess_Return_CAGR', 0),
-                    'information_ratio': sub_metrics_pa.get('Information_Ratio', 0),
+                    'annualized_return': sub_metrics_pa.get('CAGR_252', 0),
+                    'annualized_excess': sub_metrics_pa.get('Excess_Return_CAGR_252', 0),
+                    'information_ratio': sub_metrics_pa.get('Information_Ratio_(Arithmetic)', 0),
                     'max_drawdown': sub_metrics_pa.get('Max_Drawdown', 0)
                 }
                 leaderboard_data.append(metrics)
@@ -714,8 +714,8 @@ def compare_combos(combo_results, anchor_date, output_dir, freq):
             
             row.update({
                 'total_return': round(metrics.get('Absolute_Return', 0) * 100, 2),
-                'annualized_return': round(metrics.get('CAGR', 0) * 100, 2),
-                'annualized_excess': round(metrics.get('Excess_Return_CAGR', 0) * 100, 2),
+                'annualized_return': round(metrics.get('CAGR_252', 0) * 100, 2),
+                'annualized_excess': round(metrics.get('Excess_Return_CAGR_252', 0) * 100, 2),
                 'max_drawdown': round(metrics.get('Max_Drawdown', 0) * 100, 2),
                 'calmar_ratio': round(metrics.get('Calmar', 1.0) if not pd.isna(metrics.get('Calmar')) else 0.0, 4),
                 'excess_return': round(metrics.get('Absolute_Return', 0) * 100 - metrics.get('Benchmark_Absolute_Return', 0) * 100, 2),

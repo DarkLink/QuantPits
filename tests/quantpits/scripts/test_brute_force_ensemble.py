@@ -570,7 +570,7 @@ def test_run_single_backtest_non_datetime_index(mock_pa, mock_st_create, mock_bt
     mock_bt_loop.return_value = (report, None)
     
     mock_pa_inst = MagicMock()
-    mock_pa_inst.calculate_traditional_metrics.return_value = {"CAGR": 0.1}
+    mock_pa_inst.calculate_traditional_metrics.return_value = {"CAGR_252": 0.1}
     mock_pa.return_value = mock_pa_inst
     
     idx = pd.MultiIndex.from_product([pd.to_datetime(dates), ["A"]], names=["datetime", "instrument"])
