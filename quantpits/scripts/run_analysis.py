@@ -183,21 +183,33 @@ def main():
     order_dir = os.path.join(ROOT_DIR, "data", "order_history")
     discrepancy = exec_a.analyze_order_discrepancies(order_dir, market="all")
     
-    report.append("\n## 3. Execution Friction & Path Dependency")
+    report.append("\n## 3. Execution Friction & Path Dependency (Quantitative Only)")
     quant_slip_df = pd.DataFrame() # Initialize to avoid UnboundLocalError
     if not slip_df.empty:
         # Drop NaNs across all components simultaneously so denominators exactly match
         slip_df = slip_df.dropna(subset=['Delay_Cost', 'Exec_Slippage', 'Total_Friction', '成交金额'])
         
+        # Count total trades for reconciliation context
+        if '交易类别' in exec_a.trade_log.columns:
+            all_trades_count = len(exec_a.trade_log[exec_a.trade_log['交易类别'].str.contains('买入|卖出', na=False)])
+        else:
+            all_trades_count = 0
+            
         # Exclude manual trades from quant execution friction
         if 'trade_class' in slip_df.columns:
             quant_slip_df = slip_df[slip_df['trade_class'] != 'M'].copy()
+            manual_count = len(slip_df[slip_df['trade_class'] == 'M'])
         else:
             quant_slip_df = slip_df.copy()
+            manual_count = 0
             
         buy_slip = quant_slip_df[quant_slip_df['交易类别'].str.contains('买入', na=False)]
         sell_slip = quant_slip_df[quant_slip_df['交易类别'].str.contains('卖出', na=False)]
+        analyzed_count = len(buy_slip) + len(sell_slip)
         
+        if not args.shareable:
+            report.append(f"- **Note**: Analyzing {analyzed_count} quantitative trades. {manual_count} manual trade(s) excluded for friction accuracy.")
+
         def weighted_avg(df, col, weight_col='成交金额'):
             if df.empty or df[weight_col].sum() == 0: return 0.0
             return (df[col] * df[weight_col]).sum() / df[weight_col].sum()
@@ -210,9 +222,13 @@ def main():
             report.append(f"  - Vol-Weighted Delay Cost (Signal Close -> Exec Open): {weighted_avg(buy_slip, 'Delay_Cost'):.4%}")
             report.append(f"  - Vol-Weighted Exec Slippage (Exec Open -> Exec): {weighted_avg(buy_slip, 'Exec_Slippage'):.4%}")
             report.append(f"  - Vol-Weighted Total Friction (Buy): {weighted_avg(buy_slip, 'Total_Friction'):.4%}")
+        
         if 'Absolute_Slippage_Amount' in buy_slip.columns and not args.shareable:
             abs_slip_buy = buy_slip['Absolute_Slippage_Amount'].sum()
-            report.append(f"  - Absolute Slippage Amount: {abs_slip_buy:.2f}")
+            report.append(f"  - Absolute Slippage Amount (Total): {abs_slip_buy:.2f}")
+            report.append(f"    - Component (Delay Cost): {buy_slip['Abs_Delay_Cost'].sum():+.2f}")
+            report.append(f"    - Component (Exec Slippage): {buy_slip['Abs_Exec_Slippage'].sum():+.2f}")
+
         if 'ADV_Participation_Rate' in buy_slip.columns:
             buy_adv = buy_slip['ADV_Participation_Rate'].dropna()
             if not buy_adv.empty:
@@ -226,9 +242,13 @@ def main():
             report.append(f"  - Vol-Weighted Delay Cost (Signal Close -> Exec Open): {weighted_avg(sell_slip, 'Delay_Cost'):.4%}")
             report.append(f"  - Vol-Weighted Exec Slippage (Exec Open -> Exec): {weighted_avg(sell_slip, 'Exec_Slippage'):.4%}")
             report.append(f"  - Vol-Weighted Total Friction (Sell): {weighted_avg(sell_slip, 'Total_Friction'):.4%}")
+
         if 'Absolute_Slippage_Amount' in sell_slip.columns and not args.shareable:
             abs_slip_sell = sell_slip['Absolute_Slippage_Amount'].sum()
-            report.append(f"  - Absolute Slippage Amount: {abs_slip_sell:.2f}")
+            report.append(f"  - Absolute Slippage Amount (Total): {abs_slip_sell:.2f}")
+            report.append(f"    - Component (Delay Cost): {sell_slip['Abs_Delay_Cost'].sum():+.2f}")
+            report.append(f"    - Component (Exec Slippage): {sell_slip['Abs_Exec_Slippage'].sum():+.2f}")
+
         if 'ADV_Participation_Rate' in sell_slip.columns:
             sell_adv = sell_slip['ADV_Participation_Rate'].dropna()
             if not sell_adv.empty:
@@ -390,42 +410,45 @@ def main():
         if metrics.get('CAGR_252') is not None and metrics.get('Benchmark_CAGR_252') is not None and not pd.isna(metrics.get('CAGR_252')):
             cagr = metrics['CAGR_252']
             
-            # Use Benchmark_CAGR and standalone Beta_Market to match expectations intuitively
-            beta_ret_single = beta * metrics.get('Benchmark_CAGR_252', 0)
+            # Market_Annualized helps align the attribution product with the exposure section.
+            # It's an arithmetic annualized excess return.
+            market_ann = exposure.get('Market_Annualized', metrics.get('Benchmark_CAGR_252', 0))
             
+            # Single-Factor Alpha & Beta Return
+            beta_ret_single = beta * market_ann
+            idio_alpha_single = exposure.get('Annualized_Alpha', 0)
+            
+            # Multi-Factor Component Calculations
             style_ret = 0.0
             if 'liquidity' in factor_ann and 'momentum' in factor_ann and 'volatility' in factor_ann:
                 style_ret += exposure.get(BARRA_LIQD_KEY, 0) * factor_ann['liquidity']
                 style_ret += exposure.get(BARRA_MOMT_KEY, 0) * factor_ann['momentum']
                 style_ret += exposure.get(BARRA_VOLA_KEY, 0) * factor_ann['volatility']
                 
-            # Intercept is already Annualized since we multiply by 252 in portfolio_analyzer
-            idio_alpha = exposure.get('Multi_Factor_Intercept', 0)
-            
-            # Multi-factor variant avoids explaining multi-factor returns with single-factor market constraints
+            idio_alpha_multi = exposure.get('Multi_Factor_Intercept', 0)
             multi_beta = exposure.get('Multi_Factor_Beta', 0)
-            beta_ret_multi = multi_beta * metrics.get('Benchmark_CAGR_252', 0)
+            beta_ret_multi = multi_beta * market_ann
             
-            # The arithmetic sum of components vs actual geometric CAGR gap
-            # This completely patches the "Yield Leakage" by fully resolving the math
-            arithmetic_total_single = beta_ret_single + style_ret + idio_alpha
+            # Compute Residual Gaps (Compound/Math mismatch)
+            # For Single-Factor, Style Alpha is explicitly zero.
+            arithmetic_total_single = beta_ret_single + 0.0 + idio_alpha_single
             cagr_gap_single = cagr - arithmetic_total_single
             
-            arithmetic_total_multi = beta_ret_multi + style_ret + idio_alpha
+            arithmetic_total_multi = beta_ret_multi + style_ret + idio_alpha_multi
             cagr_gap_multi = cagr - arithmetic_total_multi
             
             report.append("\n### Performance Attribution (Single-Factor Market Beta)")
             if args.shareable:
                 report.append(f"- **Total Strategy CAGR**: {cagr:.1%}")
                 report.append(f"  - Beta Return (Exposure to Market): {beta_ret_single:.1%}")
-                report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.1%}")
-                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.1%}")
+                report.append(f"  - Style Alpha (Exposure to Risk Factors): 0.0%")
+                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha_single:.1%}")
                 report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap_single:.1%}")
             else:
                 report.append(f"- **Total Strategy CAGR**: {cagr:.2%}")
                 report.append(f"  - Beta Return (Exposure to Market): {beta_ret_single:.2%}")
-                report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.2%}")
-                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.2%}")
+                report.append(f"  - Style Alpha (Exposure to Risk Factors): 0.00%")
+                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha_single:.2%}")
                 report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap_single:.2%}")
                 
             report.append("\n### Performance Attribution (Multi-Factor Strict Alignment)")
@@ -433,13 +456,13 @@ def main():
                 report.append(f"- **Total Strategy CAGR**: {cagr:.1%}")
                 report.append(f"  - Beta Return (Multi-Factor Exposure to Market): {beta_ret_multi:.1%}")
                 report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.1%}")
-                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.1%}")
+                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha_multi:.1%}")
                 report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap_multi:.1%}")
             else:
                 report.append(f"- **Total Strategy CAGR**: {cagr:.2%}")
                 report.append(f"  - Beta Return (Multi-Factor Exposure to Market): {beta_ret_multi:.2%}")
                 report.append(f"  - Style Alpha (Exposure to Risk Factors): {style_ret:.2%}")
-                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha:.2%}")
+                report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha_multi:.2%}")
                 report.append(f"  - Math/Compounding Gap (Residual): {cagr_gap_multi:.2%}")
             
     # 5. Trade Classification & Manual Impact

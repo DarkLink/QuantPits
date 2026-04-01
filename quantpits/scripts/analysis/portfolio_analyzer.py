@@ -457,7 +457,8 @@ class PortfolioAnalyzer:
         return {
             'Beta_Market': float(beta),
             'Annualized_Alpha': float(alpha),
-            'R_Squared': float(model.rsquared)
+            'R_Squared': float(model.rsquared),
+            'Market_Annualized': float(aligned['Market'].mean() * self.periods_per_year)
         }
 
     def calculate_style_exposures(self, market=None):

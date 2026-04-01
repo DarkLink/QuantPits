@@ -359,6 +359,8 @@ def test_main_friction_and_discrepancy_comprehensive(mock_port, mock_exec, mock_
         "成交金额": [100000, 200000, 300000, 400000],
         "交易类别": ["买入", "卖出", "买入", "卖出"],
         "Absolute_Slippage_Amount": [50.0, 60.0, 70.0, 80.0],
+        "Abs_Delay_Cost": [25.0, 30.0, 35.0, 40.0],
+        "Abs_Exec_Slippage": [25.0, 30.0, 35.0, 40.0],
         "ADV_Participation_Rate": [0.0005, 0.005, 0.03, 0.06], # triggers < 0.1%, < 1.0%, < 5.0%, > 5.0%
         "trade_class": ["S", "S", "A", "A"] # All quant
     })
@@ -392,8 +394,10 @@ def test_main_friction_and_discrepancy_comprehensive(mock_port, mock_exec, mock_
     assert os.path.exists(report_path)
     with open(report_path, "r") as f:
         content = f.read()
-    assert "Absolute Slippage Amount: 120.00" in content # 50 + 70
-    assert "Absolute Slippage Amount: 140.00" in content # 60 + 80
+    assert "Absolute Slippage Amount (Total): 120.00" in content # 50 + 70
+    assert "Component (Delay Cost): +60.00" in content # 25 + 35
+    assert "Absolute Slippage Amount (Total): 140.00" in content # 60 + 80
+    assert "Component (Exec Slippage): +70.00" in content # 30 + 40
     # format_adv in non-shareable is f"{val:.4%}"
     # Buy ADVMean: (0.0005+0.03)/2 = 0.01525 -> 1.5250%
     # Buy ADVMax: 0.03 -> 3.0000%
