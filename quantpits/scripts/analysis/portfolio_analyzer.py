@@ -127,12 +127,22 @@ class PortfolioAnalyzer:
         # We always expect daily frequency for the records internally.
         years_252 = days / 252.0
         
+        # Arithmetic annual return: independently-computed constant for attribution display
+        portfolio_arith_annual = float(returns.mean() * self.periods_per_year)
+        
         # Calculate calendar years if dates are available
+        # Use the first NAV date (base of the first return) rather than returns.index[0]
+        # to avoid shortening the period by weekends/holidays at the start.
         years_calendar = years_252 # Fallback
         if len(returns) >= 2:
-            calendar_days = (returns.index[-1] - returns.index[0]).days
+            nav_dates_before_first_ret = self.daily_amount.index[self.daily_amount.index < returns.index[0]]
+            if len(nav_dates_before_first_ret) > 0:
+                start_nav_date = nav_dates_before_first_ret[-1]
+            else:
+                start_nav_date = returns.index[0]
+            calendar_days = (returns.index[-1] - start_nav_date).days
             if calendar_days > 0:
-                years_calendar = calendar_days / 365.25
+                years_calendar = calendar_days / 365.0
         
         cagr_252 = (cum_ret.iloc[-1]) ** (1 / years_252) - 1 if cum_ret.iloc[-1] > 0 else -1
         cagr_calendar = (cum_ret.iloc[-1]) ** (1 / years_calendar) - 1 if cum_ret.iloc[-1] > 0 else -1
@@ -366,6 +376,7 @@ class PortfolioAnalyzer:
         return {
             'Absolute_Return': abs_ret,
             'Benchmark_Absolute_Return': float(benchmark_abs_ret),
+            'Portfolio_Arithmetic_Annual_Return': portfolio_arith_annual,
             'CAGR_252': float(cagr_252),
             'CAGR_Calendar': float(cagr_calendar),
             'Benchmark_CAGR_252': float(benchmark_cagr_252),

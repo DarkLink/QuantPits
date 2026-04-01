@@ -88,9 +88,10 @@ class ExecutionAnalyzer:
         features = features.reset_index()
         features['datetime'] = pd.to_datetime(features['datetime'])
         
-        # Calculate prev_close
+        # Calculate prev_close (adjusted) and prev_unadj_close (unadjusted)
         features = features.sort_values(['instrument', 'datetime'])
         features['prev_close'] = features.groupby('instrument')['close'].shift(1)
+        features['prev_unadj_close'] = features.groupby('instrument')['unadj_close'].shift(1)
         
         merged = pd.merge(
             df, 
@@ -125,9 +126,12 @@ class ExecutionAnalyzer:
         merged.loc[is_buy, 'Abs_Exec_Slippage'] = ideal_open_amount - merged['成交金额']
         merged.loc[is_sell, 'Abs_Exec_Slippage'] = merged['成交金额'] - ideal_open_amount
         
-        # Abs Delay Cost: Convert theoretical percentage into absolute monetary offset based on expected open value
-        merged.loc[is_buy, 'Abs_Delay_Cost'] = ideal_open_amount * (merged['Delay_Cost'] / (1 - merged['Delay_Cost']))
-        merged.loc[is_sell, 'Abs_Delay_Cost'] = ideal_open_amount * (merged['Delay_Cost'] / (1 + merged['Delay_Cost']))
+        # Abs Delay Cost: Direct unadjusted monetary computation.
+        # Uses unadjusted prices so that Σ(Abs_Delay) / Σ(成交金額) is directly reconcilable
+        # with the vol-weighted percentage. Note: Delay_Cost% still uses adjusted prices
+        # for correct economic return measurement (handles corporate actions properly).
+        merged.loc[is_buy, 'Abs_Delay_Cost'] = trade_qty * (merged['prev_unadj_close'] - merged['unadj_open'])
+        merged.loc[is_sell, 'Abs_Delay_Cost'] = trade_qty * (merged['unadj_open'] - merged['prev_unadj_close'])
         
         merged['Absolute_Slippage_Amount'] = merged['Abs_Delay_Cost'] + merged['Abs_Exec_Slippage']
         

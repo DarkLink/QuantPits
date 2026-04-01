@@ -428,17 +428,19 @@ def test_main_performance_attribution(mock_exec, mock_port, mock_fwd, mock_load_
 
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
-    # Mock data to trigger lines 374-405
+    # Mock data to trigger attribution section
     # CAGR must be not None and not NaN
     mock_pa.calculate_traditional_metrics.return_value = {
         "CAGR_252": 0.25, 
         "Benchmark_CAGR_252": 0.1,
+        "Portfolio_Arithmetic_Annual_Return": 0.27,  # AM > GM
         "Volatility": 0.15,
         "Turnover_Rate_Annual": 2.5,
         "Max_Time_Under_Water_Days": 10
     }
     mock_pa.calculate_factor_exposure.return_value = {
         "Beta_Market": 1.2,
+        "Market_Total_Return_Annualized": 0.12,
         BARRA_LIQD_KEY: 0.5,
         BARRA_MOMT_KEY: -0.2,
         BARRA_VOLA_KEY: 0.1,
@@ -451,8 +453,8 @@ def test_main_performance_attribution(mock_exec, mock_port, mock_fwd, mock_load_
         "Multi_Factor_R_Squared": 0.85,
         "Alpha": 0.05
     }
-    mock_pa.calculate_style_exposures.return_value = {"Style_Extra": 0.1} # covers line 295
-    mock_pa.calculate_holding_metrics.return_value = {"Avg_Daily_Holdings_Count": 42.4} # covers line 307
+    mock_pa.calculate_style_exposures.return_value = {"Style_Extra": 0.1}
+    mock_pa.calculate_holding_metrics.return_value = {"Avg_Daily_Holdings_Count": 42.4}
     mock_pa.calculate_classified_returns.return_value = {"class_df": pd.DataFrame(), "manual_buys": pd.DataFrame(), "manual_sells": pd.DataFrame()}
 
     report_path = str(workspace / "output" / "attribution.md")
@@ -463,11 +465,17 @@ def test_main_performance_attribution(mock_exec, mock_port, mock_fwd, mock_load_
     with open(report_path, "r") as f:
         content = f.read()
     assert "Performance Attribution" in content
-    assert "Beta Return (Exposure to Market): 12.00%" in content
-    assert "Idiosyncratic Alpha (Stock Selection / Timing): 8.00%" in content
-    assert "Avg_Daily_Holdings_Count**: 42.4" in content # format 1f (line 307)
-    assert "Multi_Factor_R_Squared**: 0.8500" in content # format 4f (line 361)
-    assert "Alpha**: 5.0000%" in content # format 4% (line 366)
+    # Portfolio_Arithmetic_Annual_Return = 0.27 = 27.00%, shown consistently in BOTH sections
+    assert content.count("Portfolio Arithmetic Annual Return**: 27.00%") == 2
+    # Beta=1.2, single-factor market_ann = 0.12 (from calculate_factor_exposure)
+    # beta_ret_single = 1.2 * 0.12 = 0.144 = 14.40%
+    assert "Beta Return (Exposure to Market): 14.40%" in content
+    # rf(1-β) = 0.0135 * (1-1.2) = -0.0027 = -0.27%
+    assert "Risk-Free Component" in content
+    assert "Avg_Daily_Holdings_Count**: 42.4" in content
+    assert "Multi_Factor_R_Squared**: 0.8500" in content
+    assert "Alpha**: 5.0000%" in content
+
 
 @patch('quantpits.scripts.run_analysis.init_qlib')
 @patch('quantpits.scripts.run_analysis.load_market_config')
@@ -658,6 +666,7 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
     mock_pa.calculate_traditional_metrics.return_value = {
         "CAGR_252": 0.15, 
         "Benchmark_CAGR_252": 0.05,
+        "Portfolio_Arithmetic_Annual_Return": 0.16,
         "Volatility": 0.1,
         "Turnover_Rate_Annual": 1.5,
         "Max_Time_Under_Water_Days": 42
@@ -683,7 +692,8 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
     assert "**Avg_Daily_Holdings_Count**: ~10" in content # holding shareable (line 305)
     assert "**CAGR (252-day basis)**: 15.0%" in content # CAGR shareable (line 325)
     assert "**Max_Time_Under_Water_Days**: 35-45 days" in content # fuzzy days shareable (line 320, 340)
-    assert "Math/Compounding Gap (Residual): 10.0%" in content # Attribution shareable (line 399)
+    # Attribution: Portfolio_Arithmetic_Annual_Return = 0.16 = 16.0%
+    assert "Portfolio Arithmetic Annual Return**: 16.0%" in content
 
 @patch('quantpits.scripts.run_analysis.init_qlib')
 @patch('quantpits.scripts.run_analysis.load_market_config')

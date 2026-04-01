@@ -210,6 +210,18 @@ class TestTraditionalMetrics:
         expected_cagr = cum[-1] ** (1 / years) - 1
         assert np.isclose(metrics["CAGR_252"], expected_cagr, atol=1e-10)
 
+    def test_arithmetic_annual_return(self, setup):
+        """Portfolio_Arithmetic_Annual_Return = mean(daily_returns) * 252.
+        AM-GM: daily arithmetic mean > daily geometric mean for positive volatility."""
+        pa, rets, _, _, _ = setup
+        metrics = pa.calculate_traditional_metrics()
+        expected_arith = float(np.mean(rets) * 252)
+        assert np.isclose(metrics["Portfolio_Arithmetic_Annual_Return"], expected_arith, atol=1e-10)
+        # AM > GM at the daily level (before annualization)
+        daily_am = np.mean(rets)
+        daily_gm = np.prod(1 + rets) ** (1 / len(rets)) - 1
+        assert daily_am > daily_gm
+
     def test_volatility(self, setup):
         pa, rets, _, _, _ = setup
         metrics = pa.calculate_traditional_metrics()
@@ -324,6 +336,33 @@ class TestTraditionalMetrics:
 
         assert np.isclose(metrics["Max_Time_Under_Water_Days"], expected_max_tuw, atol=1e-10)
         assert np.isclose(metrics["Avg_Time_Under_Water_Days"], expected_avg_tuw, atol=1e-10)
+
+    def test_calendar_cagr_uses_nav_date(self):
+        """Calendar CAGR should use the first NAV date (base of first return)
+        rather than returns.index[0], avoiding fencepost error."""
+        # Build 5 trading days starting on a Monday
+        # NAV dates: Mon 01-06, Tue 01-07, Wed 01-08, Thu 01-09, Fri 01-10
+        dates = pd.bdate_range("2025-01-06", periods=5)
+        nav = [100_000.0, 100_500, 101_000, 100_800, 101_200]
+        da = pd.DataFrame({
+            "成交日期": dates,
+            "收盘价值": nav,
+            "CASHFLOW": 0.0,
+            "CSI300": [3500, 3510, 3520, 3515, 3525],
+        })
+        pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
+        metrics = pa.calculate_traditional_metrics()
+        
+        returns = pa.calculate_daily_returns()
+        cum_ret = (1 + returns).cumprod()
+        
+        # Calendar days should span from first NAV date to last return date
+        # First NAV date = 2025-01-06, last return date = 2025-01-10
+        # Calendar days = (01-10 - 01-06) = 4 days
+        expected_cal_days = (dates[-1] - dates[0]).days  # 4
+        expected_years_cal = expected_cal_days / 365.0
+        expected_cagr_cal = cum_ret.iloc[-1] ** (1 / expected_years_cal) - 1
+        assert np.isclose(metrics["CAGR_Calendar"], expected_cagr_cal, atol=1e-10)
 
 
 # ============================================================================

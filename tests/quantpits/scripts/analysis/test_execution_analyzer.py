@@ -117,6 +117,21 @@ def test_calculate_slippage_and_delay(mock_get_features, ea_factory):
     # Delay Cost = (20.2 - 20.0) / 20.0 = 0.01
     assert np.isclose(result.loc[result['证券代码'] == 'SZ000002', 'Delay_Cost'].iloc[0], 0.01)
 
+    # ── Abs_Delay_Cost (unadjusted prices) ──
+    # SZ000001 Buy: prev_unadj_close=10.0, unadj_open=10.2, qty=1050/10.5=100
+    # Abs_Delay_Cost = 100 * (10.0 - 10.2) = -20.0
+    buy_row = result.loc[result['证券代码'] == 'SZ000001']
+    assert np.isclose(buy_row['Abs_Delay_Cost'].iloc[0], 100 * (10.0 - 10.2))
+    # Abs_Exec_Slippage = ideal_open - amount = 10.2*100 - 1050 = -30.0
+    assert np.isclose(buy_row['Abs_Exec_Slippage'].iloc[0], 10.2 * 100 - 1050)
+
+    # SZ000002 Sell: prev_unadj_close=20.0, unadj_open=20.2, qty=4020/20.1=200
+    # Abs_Delay_Cost = 200 * (20.2 - 20.0) = 40.0
+    sell_row = result.loc[result['证券代码'] == 'SZ000002']
+    assert np.isclose(sell_row['Abs_Delay_Cost'].iloc[0], 200 * (20.2 - 20.0))
+    # Abs_Exec_Slippage = amount - ideal_open = 4020 - 20.2*200 = -20.0
+    assert np.isclose(sell_row['Abs_Exec_Slippage'].iloc[0], 4020 - 20.2 * 200)
+
 def test_calculate_slippage_and_delay_null_dates(ea_factory):
     trade_log = pd.DataFrame({"成交日期": [pd.NaT], "证券代码": ["A"]})
     ea = ea_factory(trade_log_df=trade_log)
