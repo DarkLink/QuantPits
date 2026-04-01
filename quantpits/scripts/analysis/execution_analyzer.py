@@ -225,7 +225,7 @@ class ExecutionAnalyzer:
             'total_dividend': total_dividend
         }
 
-    def analyze_order_discrepancies(self, order_dir, market=None):
+    def analyze_order_discrepancies(self, order_dir, market=None, buy_suggestion_factor=None):
         """
         Analyze substitution bias (missed buys vs actual buys).
         order_dir: Path to {workspace}/data/order_suggestions or similar.
@@ -236,10 +236,25 @@ class ExecutionAnalyzer:
             market, _ = load_market_config()
         import os
         import glob
-        from .utils import get_forward_returns
+        import math
+        import json as _json
+        from .utils import get_forward_returns, ROOT_DIR
         
         if self.trade_log.empty or not os.path.exists(order_dir):
             return {}
+        
+        # Load buy_suggestion_factor from config if not provided
+        # (same logic as trade_classifier for consistency)
+        if buy_suggestion_factor is None:
+            config_file = os.path.join(ROOT_DIR, "config", "prod_config.json")
+            buy_suggestion_factor = 3  # default
+            if os.path.exists(config_file):
+                try:
+                    with open(config_file, "r") as f:
+                        cfg = _json.load(f)
+                    buy_suggestion_factor = cfg.get("buy_suggestion_factor", 3)
+                except Exception:
+                    pass
             
         buy_files = sorted(glob.glob(os.path.join(order_dir, "buy_suggestion_*.csv")))
         
@@ -266,6 +281,7 @@ class ExecutionAnalyzer:
         daily_sub_theo_avgs = []
         daily_sub_real_avgs = []
         total_missed_count = 0
+        total_substitute_count = 0
         total_days_with_misses = 0
         
         for f in buy_files:
@@ -278,8 +294,7 @@ class ExecutionAnalyzer:
                 continue
                 
             actual_instruments = set(day_log['证券代码'].unique())
-            k = len(actual_instruments)
-            if k == 0:
+            if not actual_instruments:
                 continue
                 
             sugg_df = pd.read_csv(f)
@@ -288,13 +303,25 @@ class ExecutionAnalyzer:
             
             if 'action' in sugg_df.columns:
                 sugg_df = sugg_df[sugg_df['action'] == 'BUY']
-            top_k_sugg = sugg_df.head(k)['instrument'].tolist()
-            missed_targets = set(top_k_sugg) - actual_instruments
-            substitute_targets = actual_instruments - set(top_k_sugg)
+            
+            # Use algorithmic signal count (same as trade_classifier)
+            # instead of actual buy count, for consistency with
+            # Trade Classification (Section 5)
+            alg_n_buy = math.ceil(len(sugg_df) / buy_suggestion_factor)
+            if alg_n_buy == 0:
+                continue
+            
+            top_k_sugg = set(sugg_df.head(alg_n_buy)['instrument'].tolist())
+            all_suggested = set(sugg_df['instrument'].tolist())
+            missed_targets = top_k_sugg - actual_instruments
+            # Only count actual buys that appear in suggestion but ranked
+            # below signal threshold (matches classifier's SUBSTITUTE/A)
+            substitute_targets = actual_instruments.intersection(all_suggested) - top_k_sugg
             
             if missed_targets:
                 total_missed_count += len(missed_targets)
                 total_days_with_misses += 1
+            total_substitute_count += len(substitute_targets)
             
             day_missed_returns = []
             day_sub_theoretical_returns = []
@@ -360,5 +387,6 @@ class ExecutionAnalyzer:
             'realized_avg_substitute_return': avg_real_sub_return,
             'avg_missed_buys_return': avg_missed_return,
             'total_missed_count': total_missed_count,
+            'total_substitute_count': total_substitute_count,
             'total_days_with_misses': total_days_with_misses
         }

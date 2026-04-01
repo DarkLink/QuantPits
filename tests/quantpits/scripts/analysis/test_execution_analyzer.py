@@ -217,9 +217,10 @@ def test_analyze_order_discrepancies(mock_fwd_returns, mock_get_features, tmp_pa
     order_dir = tmp_path / "order_suggestions"
     order_dir.mkdir()
     
-    # Actually bought SZ000001, but the suggestion was for SZ000999 (Missed Buy)
-    # SZ000001 is the Substitute.
-    sugg_content = "instrument,score,action\nSZ000999,0.95,BUY\n"
+    # 3 entries with default factor=3 → alg_n_buy = ceil(3/3) = 1
+    # SZ000999 is top-1 (intended buy, but missed — not actually bought)
+    # SZ000001 is rank 1 (SUBSTITUTE — in suggestion but below threshold)
+    sugg_content = "instrument,score,action\nSZ000999,0.95,BUY\nSZ000001,0.80,BUY\nSZ000888,0.70,BUY\n"
     (order_dir / "buy_suggestion_20260110.csv").write_text(sugg_content)
 
     # Mock forward returns
@@ -246,6 +247,7 @@ def test_analyze_order_discrepancies(mock_fwd_returns, mock_get_features, tmp_pa
 
     assert "theoretical_substitute_bias_impact" in result
     assert result["total_missed_count"] == 1
+    assert result["total_substitute_count"] == 1
     assert result["total_days_with_misses"] == 1
     
     assert np.isclose(float(result["avg_missed_buys_return"]), 0.10)

@@ -288,14 +288,14 @@ def main():
             if args.shareable:
                 report.append(f"- **Substitution Bias ({theo_bias_str}) (Theoretical)**: {theo_bias_val:.1%}")
                 report.append(f"- **Substitution Bias ({real_bias_str}) (Realized with Cost)**: {real_bias_val:.1%}")
-                report.append(f"  - Scope: Missed Top Buy Occurrences: {format_count(discrepancy.get('total_missed_count', 0))}.")
+                report.append(f"  - Scope: Missed Top Buy Occurrences: {format_count(discrepancy.get('total_missed_count', 0))}, Substitute Buy Occurrences: {format_count(discrepancy.get('total_substitute_count', 0))}.")
                 report.append(f"  - Avg Missed Top Buys Expected Return: {discrepancy.get('avg_missed_buys_return', 0):.1%}")
                 report.append(f"  - Avg Actual Substitute Buys Return (Theoretical): {discrepancy.get('theoretical_avg_substitute_return', 0):.1%}")
                 report.append(f"  - Avg Actual Substitute Buys Return (Realized): {discrepancy.get('realized_avg_substitute_return', 0):.1%}")
             else:
                 report.append(f"- **Substitution Bias ({theo_bias_str}) (Theoretical)**: {theo_bias_val:.4%}")
                 report.append(f"- **Substitution Bias ({real_bias_str}) (Realized with Cost)**: {real_bias_val:.4%}")
-                report.append(f"  - Scope: Missed Top Buy Occurrences: {format_count(discrepancy.get('total_missed_count', 0))}, spread across {days_str} trading days.")
+                report.append(f"  - Scope: Missed Top Buy Occurrences: {format_count(discrepancy.get('total_missed_count', 0))}, Substitute Buy Occurrences: {format_count(discrepancy.get('total_substitute_count', 0))}, spread across {days_str} trading days.")
                 report.append(f"  - Avg Missed Top Buys Expected Return: {discrepancy.get('avg_missed_buys_return', 0):.4%}")
                 report.append(f"  - Avg Actual Substitute Buys Return (Theoretical): {discrepancy.get('theoretical_avg_substitute_return', 0):.4%}")
                 report.append(f"  - Avg Actual Substitute Buys Return (Realized): {discrepancy.get('realized_avg_substitute_return', 0):.4%}")
