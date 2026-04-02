@@ -369,7 +369,7 @@ def main():
                     report.append(f"- **{name}**: {v:.1%}")
                 else:
                     report.append(f"- **{name}**: {v:.2%}")
-            elif k in ['Absolute_Return', 'Benchmark_Absolute_Return', 'Volatility', 'Benchmark_Volatility', 'Tracking_Error', 'Max_Drawdown', 'Benchmark_Max_Drawdown', 'Realized_Trade_Win_Rate', 'Daily_Return_Win_Rate', 'Annualized_Active_Return_(Arithmetic)']:
+            elif k in ['Absolute_Return', 'Benchmark_Absolute_Return', 'Volatility', 'Benchmark_Volatility', 'Tracking_Error', 'Max_Drawdown', 'Benchmark_Max_Drawdown', 'Max_Daily_Drop', 'Realized_Trade_Win_Rate', 'Daily_Return_Win_Rate', 'Annualized_Active_Return_(Arithmetic)']:
                 if args.shareable:
                     report.append(f"- **{k}**: {v:.1%}")
                 else:
@@ -395,7 +395,12 @@ def main():
                 if args.shareable:
                     report.append(f"- **{k}**: {v:.1f}")
                 else:
-                    report.append(f"- **{k}**: {v:.4f}")
+                    if k == 'Trade_Profit_Factor':
+                        report.append(f"- **{k}**: {v:.4f} *(已实现FIFO，不含期末持仓浮盈亏)*")
+                    elif k == 'Trade_Profit_Factor_MTM':
+                        report.append(f"- **{k}**: {v:.4f} *(盯市口径，含期末持仓浮盈亏)*")
+                    else:
+                        report.append(f"- **{k}**: {v:.4f}")
                 
     if exposure:
         factor_ann = exposure.pop('Factor_Annualized', {})
@@ -475,6 +480,7 @@ def main():
                 report.append(f"  - Idiosyncratic Alpha (Stock Selection / Timing): {idio_alpha_single:.2%}")
                 
             report.append("\n### Performance Attribution (Multi-Factor Strict Alignment)")
+            report.append("- **Note**: 因子采用原始分位Long-Short代理构造，未经行业中性化或正交化处理，数值仅供参考*")
             # Detect if multi-factor alignment truncated data
             alignment_note = ""
             if (single_factor_sample_size is not None and multi_factor_sample_size is not None

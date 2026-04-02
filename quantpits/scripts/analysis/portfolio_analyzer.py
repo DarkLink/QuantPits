@@ -330,6 +330,49 @@ class PortfolioAnalyzer:
             elif gross_trade_profit > 0:
                 trade_profit_factor = np.inf
                 
+            # ----------------------------------------------------
+            # Calculate MTM Profit Factor (Includes Open Positions)
+            # ----------------------------------------------------
+            gross_trade_profit_mtm = gross_trade_profit
+            gross_trade_loss_mtm = gross_trade_loss
+            
+            if not self.holding_log.empty:
+                # Use the last day of the analysis period to value open positions
+                last_date = returns.index[-1] if not returns.empty else None
+                if last_date:
+                    for inst, lots in positions.items():
+                        total_qty = sum(l['qty'] for l in lots)
+                        if total_qty <= 1e-5: continue
+                        
+                        # Find terminal price from holding log
+                        # We look for the price on last_date, fallback to the latest available
+                        inst_holdings = self.holding_log[self.holding_log['证券代码'] == inst]
+                        if not inst_holdings.empty:
+                            last_price_row = inst_holdings[inst_holdings['成交日期'] <= last_date].sort_values('成交日期').iloc[-1]
+                            # Use '收盘价格' if available, otherwise derive from '收盘价值' / '持仓数量'
+                            terminal_price = last_price_row.get('收盘价格')
+                            if pd.isna(terminal_price):
+                                val = last_price_row.get('收盘价值', 0)
+                                q = last_price_row.get('持仓数量', 0)
+                                terminal_price = val / q if q > 0 else 0
+                            
+                            unrealized_pnl = 0.0
+                            for lot in lots:
+                                if lot['qty'] <= 1e-5: continue
+                                # Simplified MTM PnL (ignoring proportional fees from buy as they were already deducted if we follow standard PnL)
+                                # Actually, realized_pnl = sell_val - buy_val - buy_fee - sell_fee
+                                # So unrealized_pnl = virtual_sell_val - buy_val - buy_fee
+                                unrealized_pnl += (lot['qty'] * terminal_price - lot['qty'] * lot['price'] - lot['fees'])
+                                
+                            if unrealized_pnl > 0:
+                                gross_trade_profit_mtm += unrealized_pnl
+                            elif unrealized_pnl < 0:
+                                gross_trade_loss_mtm += abs(unrealized_pnl)
+                                
+            trade_profit_factor_mtm = float(gross_trade_profit_mtm / gross_trade_loss_mtm) if gross_trade_loss_mtm != 0 else np.nan
+            if gross_trade_loss_mtm == 0 and gross_trade_profit_mtm > 0:
+                trade_profit_factor_mtm = np.inf
+
             trade_win_rate = float(trade_wins / (trade_wins + trade_losses)) if (trade_wins + trade_losses) > 0 else np.nan
             trade_avg_win = float(gross_trade_profit / trade_wins) if trade_wins > 0 else 0.0
             trade_avg_loss = float(gross_trade_loss / trade_losses) if trade_losses > 0 else 1e-9
@@ -337,6 +380,7 @@ class PortfolioAnalyzer:
         else:
             trade_win_rate = np.nan
             trade_win_loss_ratio = np.nan
+            trade_profit_factor_mtm = np.nan
         
         avg_win = returns[returns > 0].mean() if not returns[returns > 0].empty else 0
         avg_loss = abs(returns[returns < 0].mean()) if not returns[returns < 0].empty else 1e-9
@@ -361,6 +405,8 @@ class PortfolioAnalyzer:
         avg_time_under_water = float(under_water_only.mean()) if not under_water_only.empty else 0
         
         days_below_initial_capital = int((cum_ret < 1.0).sum())
+
+        max_daily_drop = float(returns.min())
         
         turnover_annual = 0.0
         if not self.trade_log.empty and not self.daily_amount.empty:
@@ -421,6 +467,7 @@ class PortfolioAnalyzer:
             'Avg_Time_Under_Water_Days': float(avg_time_under_water),
             'Benchmark_Avg_Time_Under_Water_Days': float(benchmark_avg_tuw),
             'Days_Below_Initial_Capital': int(days_below_initial_capital),
+            'Max_Daily_Drop': max_daily_drop,
             'Realized_Trade_Win_Rate': float(trade_win_rate),
             'Trade_Win/Loss_Ratio': float(trade_win_loss_ratio),
             'Daily_Return_Win_Rate': float(win_rate),
@@ -428,6 +475,7 @@ class PortfolioAnalyzer:
             'Daily_Profit_Factor_(Returns)': float(daily_profit_factor_returns),
             'Daily_Profit_Factor_(PnL)': float(daily_profit_factor_pnl),
             'Trade_Profit_Factor': float(trade_profit_factor),
+            'Trade_Profit_Factor_MTM': float(trade_profit_factor_mtm),
             'Turnover_Rate_Annual': turnover_annual
         }
 

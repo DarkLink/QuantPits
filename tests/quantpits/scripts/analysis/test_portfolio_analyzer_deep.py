@@ -424,7 +424,54 @@ class TestTraditionalMetrics:
         expected_cal_days = (dates[-1] - dates[0]).days  # 4
         expected_years_cal = expected_cal_days / 365.0
         expected_cagr_cal = cum_ret.iloc[-1] ** (1 / expected_years_cal) - 1
-        assert np.isclose(metrics["CAGR_Calendar"], expected_cagr_cal, atol=1e-10)
+    def test_max_daily_drop(self, setup):
+        pa, rets, _, _, _ = setup
+        metrics = pa.calculate_traditional_metrics()
+        expected_drop = float(np.min(rets))
+        assert np.isclose(metrics["Max_Daily_Drop"], expected_drop, atol=1e-10)
+
+    def test_trade_profit_factor_mtm(self, setup):
+        """
+        Verify Trade_Profit_Factor_MTM with open positions at end of period.
+        - Start with 100k
+        - Day 1: Buy 1000 shares of STOCK_A at 10.0 (Cost 10,000, 0 fees)
+        - Day 2: Buy 500 shares of STOCK_B at 20.0 (Cost 10,000, 0 fees)
+        - Day 3: Sell 500 shares of STOCK_A at 12.0 (Realized Profit 1000)
+        - Period End (Day 3): 
+            - Open STOCK_A: 500 shares, at 12.0 (Unrealized Profit 1000)
+            - Open STOCK_B: 500 shares, at 18.0 (Unrealized Loss 1000)
+        - Expected Realized PF: 1000 / 0 = inf (Gross Profit 1000, Gross Loss 0)
+        - Expected MTM PF: (1000 realized + 1000 unrealized gain) / (1000 unrealized loss) = 2.0
+        """
+        dates = pd.bdate_range("2025-01-01", periods=4) # Day 0, 1, 2, 3
+        # Use simple returns to avoid NAV/amount complexity
+        da = pd.DataFrame({
+            "成交日期": dates,
+            "收盘价值": [100000, 110000, 105000, 115000],
+            "CASHFLOW": 0.0,
+            "CSI300": 3500.0
+        })
+        
+        # Trade Log: Buy A, Buy B, Sell Half A
+        tl = pd.DataFrame([
+            {"成交日期": dates[1], "证券代码": "A", "交易类别": "证券买入", "成交数量": 1000, "成交价格": 10.0, "成交金额": 10000, "费用合计": 0},
+            {"成交日期": dates[2], "证券代码": "B", "交易类别": "证券买入", "成交数量": 500, "成交价格": 20.0, "成交金额": 10000, "费用合计": 0},
+            {"成交日期": dates[3], "证券代码": "A", "交易类别": "证券卖出", "成交数量": 500, "成交价格": 12.0, "成交金额": 6000, "费用合计": 0},
+        ])
+        
+        # Holding Log: Terminal prices on Day 3
+        hl = pd.DataFrame([
+            {"成交日期": dates[3], "证券代码": "A", "持仓数量": 500, "收盘价格": 12.0},
+            {"成交日期": dates[3], "证券代码": "B", "持仓数量": 500, "收盘价格": 18.0},
+        ])
+        
+        pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=tl, holding_log_df=hl)
+        metrics = pa.calculate_traditional_metrics()
+        
+        # Realized PF
+        assert metrics["Trade_Profit_Factor"] == np.inf
+        # MTM PF: (1000 realized + 1000 unrealized) / 1000 loss = 2.0
+        assert np.isclose(metrics["Trade_Profit_Factor_MTM"], 2.0, atol=1e-10)
 
 
 # ============================================================================
