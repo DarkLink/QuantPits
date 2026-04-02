@@ -115,7 +115,8 @@ class TestBenchmarkConversion:
     def test_returns_to_nav_conversion(self):
         """When benchmark starts near 0, it should be auto-converted to cumulative NAV."""
         dates = pd.bdate_range("2025-01-02", periods=5)
-        bench_returns = [0.0, 0.01, -0.005, 0.02, 0.003]
+        # Use a non-zero first return to test for chain-break issues
+        bench_returns = [0.01, 0.02, -0.005, 0.02, 0.003]
         da = pd.DataFrame({
             "成交日期": dates,
             "收盘价值": [100000, 101000, 100500, 102000, 102500],
@@ -124,19 +125,22 @@ class TestBenchmarkConversion:
         })
         pa = PortfolioAnalyzer(daily_amount_df=da, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
 
-        # After conversion, first value should be 1.0 (baseline), rest cumulative
+        # After conversion, first value should be (1 + r1). 
+        # We NO LONGER force index 0 to 1.0 to preserve the chain.
         internal = pa.daily_amount["CSI300"].values
-        assert internal[0] == 1.0
-        # Manual cumprod: 1.0, (1+0.01)=1.01, 1.01*(1-0.005)=1.00495, ...
-        expected = np.array([1.0, 1.01, 1.01 * 0.995, 1.01 * 0.995 * 1.02, 1.01 * 0.995 * 1.02 * 1.003])
-        # Note: the code sets first value to 1.0 AFTER cumprod, so index 0 is forced to 1.0
-        # cumprod starts from (1+0.0)=1.0 anyway for the first element
-        # Let's verify the actual logic: bench_returns[0] = 0.0 (abs < 0.5 triggers conversion)
-        # (1 + [0.0, 0.01, -0.005, 0.02, 0.003]).cumprod() = [1.0, 1.01, 1.00495, 1.02505, 1.02813]
-        # Then iloc[0] is set to 1.0 (it's already 1.0)
         expected_cumprod = np.cumprod(1 + np.array(bench_returns))
-        expected_cumprod[0] = 1.0  # forced by code
+        
+        # Verify first element is indeed 1.01
+        assert np.isclose(internal[0], 1.01, atol=1e-12)
+        
+        # Element-wise match
         np.testing.assert_allclose(internal, expected_cumprod, atol=1e-12)
+        
+        # CRITICAL: Verify that the second day's return derived from this NAV matches the input.
+        derived_returns = pd.Series(internal).pct_change().dropna().values
+        # bench_returns: [0.01, 0.02, -0.005, 0.02, 0.003]
+        # derived_returns should be: [0.02, -0.005, 0.02, 0.003]
+        np.testing.assert_allclose(derived_returns, bench_returns[1:], atol=1e-12)
 
     def test_nav_mode_passthrough(self):
         """When benchmark values are large (> 0.5), no conversion should happen."""

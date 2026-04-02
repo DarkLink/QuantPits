@@ -30,8 +30,9 @@ class PortfolioAnalyzer:
                     if (bench_series.min() < 0) or (bench_series.mean() < 0.2 and bench_series.max() < 0.5):
                         # Convert Returns to cumulative NAV
                         self.daily_amount[self.benchmark_col] = (1 + self.daily_amount[self.benchmark_col].fillna(0)).cumprod()
-                        # Ensure baseline is 1.0
-                        self.daily_amount.iloc[0, self.daily_amount.columns.get_loc(self.benchmark_col)] = 1.0
+                        # NOTE: We DO NOT force the first element to 1.0 (iloc[0] = 1.0)
+                        # because it breaks the return chain for the second element when using pct_change().
+                        # If bench_returns[0] = r1, then iloc[0] = 1 + r1 is correct.
 
             if start_date:
                 self.start_date = pd.to_datetime(start_date)
