@@ -472,6 +472,463 @@ def generate_summary_md(ctx, meta, df, oos_df=None, top_n=10):
         f.write("\n".join(lines))
     print(f"\n📋 Summary 已保存: {summary_path}")
 
+    # Generate HTML summary to avoid truncation
+    html_lines = [
+        "<!DOCTYPE html>",
+        "<html>",
+        "<head>",
+        "<meta charset='utf-8'>",
+        "<style>",
+        "body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif; margin: 20px; line-height: 1.6; }",
+        "table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 14px; }",
+        "th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }",
+        "th { background-color: #f6f8fa; }",
+        "h1, h2 { border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }",
+        "</style>",
+        "</head>",
+        "<body>",
+        f"<h1>Ensemble Search Report — {anchor_date}</h1>",
+        "<h2>Run Info</h2>",
+        "<ul>",
+        f"<li><b>Script</b>: <code>{script_used}</code></li>",
+        f"<li><b>IS Period</b>: {meta.get('is_start_date', '?')} ~ {meta.get('is_end_date', '?')}</li>"
+    ]
+    if meta.get("oos_start_date") and str(meta.get("oos_start_date")).lower() != "none":
+        html_lines.append(f"<li><b>OOS Period</b>: {meta['oos_start_date']} ~ {meta['oos_end_date']}</li>")
+    else:
+        html_lines.append("<li><b>OOS Period</b>: <i>(not configured)</i></li>")
+    html_lines.append(f"<li><b>Anchor Date</b>: {anchor_date}</li>")
+    html_lines.append(f"<li><b>Total Combinations Evaluated</b>: {len(df)}</li>")
+    html_lines.append("</ul>")
+
+    html_lines.append("<h2>IS Highlights</h2>")
+    if df.empty or "Calmar" not in df.columns:
+        html_lines.append("<p><i>(No IS results available)</i></p>")
+    else:
+        html_lines.append("<table>")
+        html_lines.append("<tr><th>Rank</th><th>Models</th><th>Ann_Excess</th><th>Max_DD</th><th>Calmar</th></tr>")
+        for rank, (_, row) in enumerate(top_is.iterrows(), 1):
+            models_full = row['models']
+            ann_excess = f"{row['Ann_Excess']:.2%}" if pd.notna(row.get("Ann_Excess")) else "?"
+            max_dd = f"{row['Max_DD']:.2%}" if pd.notna(row.get("Max_DD")) else "?"
+            calmar = f"{row['Calmar']:.2f}" if pd.notna(row.get("Calmar")) else "?"
+            html_lines.append(f"<tr><td>{rank}</td><td>{models_full}</td><td>{ann_excess}</td><td>{max_dd}</td><td>{calmar}</td></tr>")
+        html_lines.append("</table>")
+
+    if oos_df is not None and not oos_df.empty:
+        html_lines.append("<h2>OOS Validation</h2>")
+        html_lines.append("<table>")
+        html_lines.append("<tr><th>Rank</th><th>Models</th><th>OOS_Excess</th><th>OOS_MaxDD</th><th>IS&rarr;OOS</th><th>Pool</th></tr>")
+        for rank, (_, row) in enumerate(oos_sorted.iterrows(), 1):
+            models_full = row['models']
+            oos_excess = f"{row['Ann_Excess']:.2%}" if pd.notna(row.get("Ann_Excess")) else "?"
+            oos_dd = f"{row['Max_DD']:.2%}" if pd.notna(row.get("Max_DD")) else "?"
+            is_excess = f"{row.get('IS_Ann_Excess', '?'):.2%}" if pd.notna(row.get("IS_Ann_Excess")) else "?"
+            arrow = f"{is_excess} &rarr; {oos_excess}"
+            pool = str(row.get("Pool_Sources", ""))
+            html_lines.append(f"<tr><td>{rank}</td><td>{models_full}</td><td>{oos_excess}</td><td>{oos_dd}</td><td>{arrow}</td><td>{pool}</td></tr>")
+        html_lines.append("</table>")
+
+    html_lines.append("<h2>Files in This Run</h2><ul>")
+    for subdir_name, subdir_path in [("is", ctx.is_dir), ("oos", ctx.oos_dir), ("root", ctx.run_dir)]:
+        if os.path.isdir(subdir_path):
+            files = sorted(os.listdir(subdir_path))
+            files = [f for f in files if os.path.isfile(os.path.join(subdir_path, f))]
+            if files:
+                for fname in files:
+                    if subdir_name == "root":
+                        html_lines.append(f"<li><code>{fname}</code></li>")
+                    else:
+                        html_lines.append(f"<li><code>{subdir_name}/{fname}</code></li>")
+    html_lines.append("</ul></body></html>")
+
+    html_path = ctx.run_path("summary.html")
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(html_lines))
+    print(f"📋 Summary HTML 已保存: {html_path}")
+
+
+# ==========================================
+# OOS HTML REPORT
+# ==========================================
+
+POOL_COLORS = {
+    "Yield_Top":       ("#f59e0b", "#78350f"),   # amber
+    "Robust_Top":      ("#10b981", "#064e3b"),   # emerald
+    "Defensive_Top":   ("#3b82f6", "#1e3a5f"),   # blue
+    "Golden_Diversity":("#a855f7", "#4c1d95"),   # purple
+    "MVP_Base":        ("#6b7280", "#1f2937"),   # gray
+}
+
+
+def _pool_badge_html(pool_name: str) -> str:
+    """Return a styled <span> badge for a pool name."""
+    fg, bg = POOL_COLORS.get(pool_name, ("#e5e7eb", "#374151"))
+    return (
+        f'<span style="background:{bg};color:{fg};border:1px solid {fg};'
+        f'border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;'
+        f'white-space:nowrap;">{pool_name}</span>'
+    )
+
+
+def _pool_sources_html(pool_sources_str: str) -> str:
+    """Convert e.g. 'Yield_Top | Robust_Top' to badge HTML."""
+    pools = [p.strip() for p in str(pool_sources_str).split("|") if p.strip()]
+    return " ".join(_pool_badge_html(p) for p in pools)
+
+
+def _is_oos_arrow_html(is_val: float, oos_val: float) -> str:
+    """IS → OOS arrow with colour coding."""
+    is_str = f"{is_val:.1%}" if pd.notna(is_val) else "?"
+    oos_str = f"{oos_val:.1%}" if pd.notna(oos_val) else "?"
+    if pd.notna(oos_val) and oos_val >= 0:
+        color = "#10b981"
+    else:
+        color = "#ef4444"
+    return f'<span style="color:#9ca3af">{is_str}</span> → <span style="color:{color};font-weight:600">{oos_str}</span>'
+
+
+def _oos_table_rows(sub_df: pd.DataFrame, show_rank: bool = True) -> str:
+    """Generate <tr> rows for OOS result table."""
+    rows = []
+    for rank, (_, row) in enumerate(sub_df.iterrows(), 1):
+        models = row.get("models", "")
+        n = int(row.get("n_models", 1))
+        ann_excess = row.get("Ann_Excess", float("nan"))
+        max_dd = row.get("Max_DD", float("nan"))
+        calmar = row.get("Calmar", float("nan"))
+        is_ann = row.get("IS_Ann_Excess", float("nan"))
+        is_calmar = row.get("IS_Calmar", float("nan"))
+        pool_sources = row.get("Pool_Sources", "")
+        pool_count = int(row.get("_pool_count", 1))
+
+        calmar_str = f"{calmar:.2f}" if pd.notna(calmar) else "?"
+        is_calmar_str = f"{is_calmar:.2f}" if pd.notna(is_calmar) else "?"
+        max_dd_str = f"{max_dd:.1%}" if pd.notna(max_dd) else "?"
+
+        oos_color = "#10b981" if pd.notna(ann_excess) and ann_excess >= 0 else "#ef4444"
+
+        rank_td = f'<td style="color:#6b7280;font-size:12px">{rank}</td>' if show_rank else ""
+
+        pool_count_badge = ""
+        if pool_count >= 2:
+            pc_color = "#f59e0b" if pool_count >= 3 else "#60a5fa"
+            pool_count_badge = f' <span style="background:{pc_color};color:#000;border-radius:10px;padding:1px 6px;font-size:10px;font-weight:700">{pool_count}×</span>'
+
+        rows.append(
+            f"<tr>"
+            f"{rank_td}"
+            f'<td style="font-size:11px;max-width:320px;word-break:break-all">'
+            f"{models}{pool_count_badge}</td>"
+            f'<td style="text-align:center;color:#9ca3af">{n}</td>'
+            f'<td style="text-align:right">{_is_oos_arrow_html(is_ann, ann_excess)}</td>'
+            f'<td style="text-align:right;color:#9ca3af">{max_dd_str}</td>'
+            f'<td style="text-align:right;color:#e5e7eb">{calmar_str}</td>'
+            f'<td style="text-align:right;color:#9ca3af;font-size:11px">{is_calmar_str}</td>'
+            f'<td style="font-size:11px">{_pool_sources_html(pool_sources)}</td>'
+            f"</tr>"
+        )
+    return "\n".join(rows)
+
+
+TABLE_HEADER = (
+    "<thead><tr>"
+    "<th>#</th>"
+    "<th>Models</th>"
+    "<th style='text-align:center'>N</th>"
+    "<th style='text-align:right'>IS→OOS Excess</th>"
+    "<th style='text-align:right'>Max DD</th>"
+    "<th style='text-align:right'>OOS Calmar</th>"
+    "<th style='text-align:right'>IS Calmar</th>"
+    "<th>Pools</th>"
+    "</tr></thead>"
+)
+
+
+def generate_oos_html_report(oos_df: pd.DataFrame, oos_dir: str, anchor_date: str) -> str:
+    """
+    生成富交互式 OOS 分析 HTML 报告。
+
+    核心特性:
+    - 跨维度共识面板 (Consensus Panel): 同时上榜 2+ 个派系的组合优先展示
+    - 各派系独立 Tab: 快速按维度浏览各派系的 Top 候选
+    - 彩色 Pool 徽章 + IS→OOS 收益双色箭头
+
+    返回保存的 HTML 文件路径。
+    """
+    print("\n🌐 === 生成 OOS 富交互 HTML 报告 ===")
+
+    df = oos_df.copy()
+
+    # ---- 预处理 ----
+    for col in ["Ann_Excess", "Max_DD", "Calmar", "IS_Ann_Excess", "IS_Calmar", "n_models"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # 计算每个组合出现的派系数量
+    df["_pools_list"] = df["Pool_Sources"].apply(
+        lambda x: [p.strip() for p in str(x).split("|") if p.strip()]
+    )
+    df["_pool_count"] = df["_pools_list"].apply(len)
+
+    # 所有出现的派系（按出现频次排序）
+    all_pools = sorted(
+        set(p for pools in df["_pools_list"] for p in pools),
+        key=lambda p: list(POOL_COLORS.keys()).index(p) if p in POOL_COLORS else 99
+    )
+
+    total = len(df)
+    oos_positive = int((df["Ann_Excess"] > 0).sum())
+    multi_dim = int((df["_pool_count"] >= 2).sum())
+
+    # ---- 共识排序: pool_count DESC, Calmar DESC ----
+    consensus_df = df.sort_values(["_pool_count", "Calmar"], ascending=[False, False])
+    multi_df = consensus_df[consensus_df["_pool_count"] >= 2]
+
+    # ---- 构建各派系 Tab 内容 ----
+    tabs_nav = []
+    tabs_content = []
+    for i, pool in enumerate(all_pools):
+        fg, bg = POOL_COLORS.get(pool, ("#e5e7eb", "#374151"))
+        pool_subset = df[df["_pools_list"].apply(lambda pl: pool in pl)].sort_values("Calmar", ascending=False)
+        tab_id = f"tab_{pool}"
+        pane_id = f"pane_{pool}"
+        count = len(pool_subset)
+        pos_count = int((pool_subset["Ann_Excess"] > 0).sum())
+
+        tabs_nav.append(
+            f'<button class="tab-btn" id="{tab_id}" onclick="showTab(\'{pane_id}\')" '
+            f'style="border-left:3px solid {fg}">'
+            f'<span style="color:{fg};font-weight:700">{pool}</span>'
+            f'<span style="color:#6b7280;font-size:11px;margin-left:6px">{count} combos / {pos_count} OOS+</span>'
+            f'</button>'
+        )
+
+        rows_html = _oos_table_rows(pool_subset.head(30), show_rank=True)
+        tabs_content.append(
+            f'<div class="tab-pane" id="{pane_id}" style="display:none">'
+            f'<h3 style="color:{fg};margin:0 0 12px">{pool} &mdash; Top {min(30, count)} by OOS Calmar</h3>'
+            f'<table>{TABLE_HEADER}<tbody>{rows_html}</tbody></table>'
+            f'</div>'
+        )
+
+    # ---- Pool 覆盖统计 ----
+    pool_stats_rows = []
+    for pool in all_pools:
+        fg, _ = POOL_COLORS.get(pool, ("#e5e7eb", "#374151"))
+        sub = df[df["_pools_list"].apply(lambda pl: pool in pl)]
+        count = len(sub)
+        pos = int((sub["Ann_Excess"] > 0).sum())
+        pos_rate = pos / count if count else 0
+        median_calmar = sub["Calmar"].median()
+        pool_stats_rows.append(
+            f"<tr>"
+            f'<td>{_pool_badge_html(pool)}</td>'
+            f'<td style="text-align:center">{count}</td>'
+            f'<td style="text-align:center;color:{"#10b981" if pos_rate >= 0.5 else "#ef4444"}">{pos}/{count} ({pos_rate:.0%})</td>'
+            f'<td style="text-align:center">{median_calmar:.2f}</td>'
+            f"</tr>"
+        )
+    pool_stats_html = "\n".join(pool_stats_rows)
+
+    # ---- 构建最终 HTML ----
+    consensus_rows_html = _oos_table_rows(multi_df, show_rank=True)
+    all_rows_html = _oos_table_rows(consensus_df, show_rank=True)  # full table sorted consensus-first
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OOS Multi-Pool Analysis &mdash; {anchor_date}</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+    padding: 0 0 60px;
+}}
+.hero {{
+    background: linear-gradient(135deg, #1e1b4b 0%, #0f172a 60%);
+    border-bottom: 1px solid #334155;
+    padding: 28px 32px 20px;
+}}
+.hero h1 {{ font-size: 22px; font-weight: 700; color: #f1f5f9; }}
+.hero p {{ color: #94a3b8; font-size: 13px; margin-top: 4px; }}
+.metrics-bar {{
+    display: flex; gap: 24px; margin-top: 16px; flex-wrap: wrap;
+}}
+.metric-card {{
+    background: rgba(255,255,255,0.05);
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 10px 18px;
+    min-width: 120px;
+}}
+.metric-card .val {{ font-size: 24px; font-weight: 700; color: #f8fafc; }}
+.metric-card .lbl {{ font-size: 11px; color: #64748b; margin-top: 2px; }}
+.container {{ max-width: 1400px; margin: 0 auto; padding: 24px 24px 0; }}
+section {{ margin-bottom: 36px; }}
+section > h2 {{
+    font-size: 16px; font-weight: 700; color: #cbd5e1;
+    border-left: 4px solid #6366f1;
+    padding-left: 12px;
+    margin-bottom: 14px;
+}}
+.panel {{
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    overflow: hidden;
+}}
+table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}}
+thead tr {{ background: #0f172a; }}
+th {{
+    padding: 9px 12px;
+    color: #64748b;
+    font-weight: 600;
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    border-bottom: 1px solid #334155;
+}}
+td {{
+    padding: 8px 12px;
+    border-bottom: 1px solid #1e293b;
+    vertical-align: middle;
+}}
+tr:hover td {{ background: #1e3a5f22; }}
+.pools-sidebar {{
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+}}
+.tab-list {{
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 200px;
+    flex-shrink: 0;
+}}
+.tab-btn {{
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 10px 14px;
+    cursor: pointer;
+    text-align: left;
+    color: #e2e8f0;
+    font-size: 12px;
+    transition: background .15s;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}}
+.tab-btn:hover, .tab-btn.active {{ background: #334155; }}
+.tab-panes {{ flex: 1; min-width: 0; }}
+.tab-pane .panel {{ border-radius: 8px; }}
+.badge-multi {{
+    display: inline-block;
+    background: linear-gradient(90deg, #7c3aed, #f59e0b);
+    color: #fff;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    margin-left: 4px;
+}}
+</style>
+</head>
+<body>
+<div class="hero">
+  <h1>🔭 OOS Multi-Pool Analysis &mdash; {anchor_date}</h1>
+  <p>Out-of-Sample validation across {len(all_pools)} selection dimensions. Combos sorted by cross-dimensional consensus first.</p>
+  <div class="metrics-bar">
+    <div class="metric-card"><div class="val">{total}</div><div class="lbl">Total OOS Combos</div></div>
+    <div class="metric-card"><div class="val" style="color:#10b981">{oos_positive}</div><div class="lbl">OOS Positive Excess</div></div>
+    <div class="metric-card"><div class="val" style="color:#f59e0b">{multi_dim}</div><div class="lbl">Cross-Dim Consensus (2+)</div></div>
+    <div class="metric-card"><div class="val">{len(all_pools)}</div><div class="lbl">Selection Pools</div></div>
+  </div>
+</div>
+<div class="container">
+
+<!-- === POOL STATS === -->
+<section>
+<h2>Pool Coverage Overview</h2>
+<div class="panel">
+<table>
+<thead><tr><th>Pool</th><th style='text-align:center'>Combos</th><th style='text-align:center'>OOS Positive</th><th style='text-align:center'>Median Calmar</th></tr></thead>
+<tbody>{pool_stats_html}</tbody>
+</table>
+</div>
+</section>
+
+<!-- === CONSENSUS PANEL === -->
+<section>
+<h2>🏆 Cross-Dimension Consensus (appearing in 2+ pools)</h2>
+<div class="panel">
+{'<table>' + TABLE_HEADER + '<tbody>' + consensus_rows_html + '</tbody></table>' if not multi_df.empty else '<p style="padding:20px;color:#64748b">No combos appear in 2+ pools.</p>'}
+</div>
+</section>
+
+<!-- === PER-POOL TABS === -->
+<section>
+<h2>Per-Pool Breakdown</h2>
+<div class="pools-sidebar">
+  <div class="tab-list" id="tabList">
+    {''.join(tabs_nav)}
+  </div>
+  <div class="tab-panes" id="tabPanes">
+    {''.join(f'<div class="panel" style="padding:16px">{c}</div>' for c in tabs_content)}
+  </div>
+</div>
+</section>
+
+<!-- === FULL TABLE === -->
+<section>
+<h2>All OOS Results (Consensus-First Ordering)</h2>
+<div class="panel">
+<table>{TABLE_HEADER}<tbody>{all_rows_html}</tbody></table>
+</div>
+</section>
+
+</div>
+<script>
+function showTab(paneId) {{
+  document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  var pane = document.getElementById(paneId);
+  if (pane) pane.style.display = 'block';
+  // find matching button
+  document.querySelectorAll('.tab-btn').forEach(b => {{
+    if (b.getAttribute('onclick') && b.getAttribute('onclick').includes(paneId)) {{
+      b.classList.add('active');
+    }}
+  }});
+}}
+// Show first tab by default
+var firstPane = document.querySelector('.tab-pane');
+if (firstPane) firstPane.style.display = 'block';
+var firstBtn = document.querySelector('.tab-btn');
+if (firstBtn) firstBtn.classList.add('active');
+</script>
+</body>
+</html>
+"""
+
+    out_path = os.path.join(oos_dir, "oos_report.html")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"🌐 OOS HTML 报告已保存: {out_path}")
+    return out_path
+
 
 def main():
     parser = argparse.ArgumentParser(description="多维度组合分析及 OOS 验证")
@@ -721,6 +1178,13 @@ def main():
         
     print(f"\n✅ 完整分析报告已保存: {report_path}")
     print(f"📊 详细聚合明细已保存: {out_csv}")
+
+    # 7b. 生成 OOS 富交互 HTML 报告
+    try:
+        generate_oos_html_report(oos_df, ctx.oos_dir, anchor_date)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        print(f"OOS HTML 报告生成失败 (非致命): {e}")
 
     # 8. 生成 summary.md
     generate_summary_md(ctx, meta, df, oos_df=oos_df)

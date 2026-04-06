@@ -465,3 +465,83 @@ def test_oos_norm_df_empty_exits(mock_env, tmp_path):
             with patch('quantpits.utils.predict_utils.load_predictions_from_recorder', return_value=(norm_df, None, None)):
                 with pytest.raises(SystemExit):
                     analyze.main()
+
+def test_html_report_helpers(mock_env):
+    """Test the small HTML helper functions."""
+    analyze, _ = mock_env
+    
+    # 1. _pool_badge_html
+    badge = analyze._pool_badge_html("Yield_Top")
+    assert "Yield_Top" in badge
+    assert "#78350f" in badge  # Correct bg color
+    
+    # 2. _pool_sources_html
+    sources = analyze._pool_sources_html("Yield_Top | Robust_Top")
+    assert sources.count("<span") == 2
+    assert "Yield_Top" in sources
+    assert "Robust_Top" in sources
+    
+    # 3. _is_oos_arrow_html
+    # Positive OOS
+    arrow_pos = analyze._is_oos_arrow_html(0.1, 0.05)
+    assert "#10b981" in arrow_pos  # Green
+    assert "10.0%" in arrow_pos
+    assert "5.0%" in arrow_pos
+    
+    # Negative OOS
+    arrow_neg = analyze._is_oos_arrow_html(0.1, -0.05)
+    assert "#ef4444" in arrow_neg  # Red
+    
+    # Missing IS
+    arrow_miss = analyze._is_oos_arrow_html(float('nan'), 0.05)
+    assert "?" in arrow_miss
+
+def test_oos_table_rows(mock_env):
+    """Test table row generation."""
+    analyze, _ = mock_env
+    df = pd.DataFrame({
+        "models": ["model_A", "model_B"],
+        "n_models": [1, 2],
+        "Ann_Excess": [0.05, -0.01],
+        "Max_DD": [-0.1, -0.2],
+        "Calmar": [0.5, -0.05],
+        "IS_Ann_Excess": [0.1, 0.15],
+        "IS_Calmar": [1.0, 1.5],
+        "Pool_Sources": ["Yield_Top", "Robust_Top | Defensive_Top"],
+        "_pool_count": [1, 2] 
+    })
+    
+    rows = analyze._oos_table_rows(df)
+    assert "model_A" in rows
+    assert "model_B" in rows
+    assert rows.count("<tr>") == 2
+    assert "2×" in rows 
+
+def test_generate_oos_html_report(mock_env, tmp_path):
+    """Test full HTML report generation."""
+    analyze, _ = mock_env
+    oos_df = pd.DataFrame({
+        "models": ["m1", "m2"],
+        "n_models": [1, 2],
+        "Ann_Excess": [0.1, -0.05],
+        "Max_DD": [-0.05, -0.1],
+        "Calmar": [2.0, -0.5],
+        "IS_Ann_Excess": [0.15, 0.2],
+        "IS_Calmar": [3.0, 4.0],
+        "Pool_Sources": ["Yield_Top", "Yield_Top | Robust_Top"]
+    })
+    
+    oos_dir = str(tmp_path)
+    report_path = analyze.generate_oos_html_report(oos_df, oos_dir, "2026-04-03")
+    
+    assert os.path.exists(report_path)
+    with open(report_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        assert "OOS Multi-Pool Analysis" in content
+        assert "m1" in content
+        assert "m2" in content
+        assert "Yield_Top" in content
+        assert "Robust_Top" in content
+        assert "Cross-Dimension Consensus" in content
+        assert "2026-04-03" in content
+
