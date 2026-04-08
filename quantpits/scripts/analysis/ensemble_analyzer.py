@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import spearmanr
 import warnings
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR
 
 class EnsembleAnalyzer:
     def __init__(self, models_preds):
@@ -92,8 +93,8 @@ class EnsembleAnalyzer:
             daily_returns = df.groupby(level='datetime').apply(_top_ret).dropna()
             if len(daily_returns) < 2 or daily_returns.std() == 0:
                 return 0.0
-            rf_daily = 0.0135 / 252
-            return ((daily_returns.mean() - rf_daily) / daily_returns.std()) * np.sqrt(252)
+            rf_daily = 0.0135 / float(TRADING_DAYS_PER_YEAR)
+            return ((daily_returns.mean() - rf_daily) / daily_returns.std()) * np.sqrt(TRADING_DAYS_PER_YEAR)
 
         full_sharpe = _score_to_sharpe(full_score)
         marginal_contributions = {}
@@ -117,8 +118,8 @@ class EnsembleAnalyzer:
             ret_series = ret_series.dropna()
             if len(ret_series) < 2 or ret_series.std() == 0:
                 return 0.0
-            rf_daily = 0.0135 / 252
-            return ((ret_series.mean() - rf_daily) / ret_series.std()) * np.sqrt(252)
+            rf_daily = 0.0135 / float(TRADING_DAYS_PER_YEAR)
+            return ((ret_series.mean() - rf_daily) / ret_series.std()) * np.sqrt(TRADING_DAYS_PER_YEAR)
             
         is_sharpe = _sharpe(full_backtest_returns_series)
         oos_sharpe = _sharpe(realtime_returns_series)

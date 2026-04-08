@@ -44,6 +44,7 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
 from quantpits.utils import env
+from quantpits.utils.constants import MONTHS_PER_YEAR
 os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -97,7 +98,7 @@ def generate_rolling_windows(rolling_start, train_years, valid_years,
     anchor = datetime.strptime(anchor_date, "%Y-%m-%d")
 
     # Convert Z to total months for easy multiplication
-    z_months = (Z.years or 0) * 12 + (Z.months or 0)
+    z_months = (Z.years or 0) * MONTHS_PER_YEAR + (Z.months or 0)
 
     windows = []
     n = 0

@@ -2,6 +2,7 @@ import os
 import json
 import yaml
 from pathlib import Path
+from quantpits.utils.constants import MONTHS_PER_YEAR
 
 def load_workspace_config(workspace_path):
     """
@@ -86,12 +87,12 @@ def load_rolling_config(workspace_path):
     if not cfg:
         return None
 
-    # Parse test_step: "3M" -> 3 months, "1Y" -> 12 months
+    # Parse test_step: "3M" -> 3 months, "1Y" -> {MONTHS_PER_YEAR} months
     step_str = str(cfg.get('test_step', '3M')).strip().upper()
     if step_str.endswith('M'):
         step_months = int(step_str[:-1])
     elif step_str.endswith('Y'):
-        step_months = int(step_str[:-1]) * 12
+        step_months = int(step_str[:-1]) * MONTHS_PER_YEAR
     else:
         raise ValueError(f"Invalid test_step format: '{cfg['test_step']}'. "
                          f"Expected integer months (e.g. 3M) or years (e.g. 1Y)")

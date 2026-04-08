@@ -11,6 +11,7 @@ from scipy.stats import spearmanr
 from unittest.mock import patch, MagicMock
 
 from quantpits.scripts.analysis.ensemble_analyzer import EnsembleAnalyzer
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -151,8 +152,8 @@ class TestMarginalContribution:
             daily_rets = df.groupby(level="datetime").apply(_top_ret).dropna()
             if len(daily_rets) < 2 or daily_rets.std() == 0:
                 return 0.0
-            rf_daily = 0.0135 / 252
-            return ((daily_rets.mean() - rf_daily) / daily_rets.std()) * np.sqrt(252)
+            rf_daily = 0.0135 / TRADING_DAYS_PER_YEAR
+            return ((daily_rets.mean() - rf_daily) / daily_rets.std()) * np.sqrt(TRADING_DAYS_PER_YEAR)
 
         expected_full_sharpe = _score_to_sharpe(full_score)
         assert np.isclose(result["Full_Ensemble_Sharpe"], expected_full_sharpe, atol=1e-10), \
@@ -189,9 +190,9 @@ class TestOOSDrift:
         result = ea.track_oos_vs_is_drift(pd.Series(is_rets), pd.Series(oos_rets))
 
         # Independent Sharpe
-        rf_daily = 0.0135 / 252
-        is_s = ((is_rets.mean() - rf_daily) / is_rets.std(ddof=1)) * np.sqrt(252)
-        oos_s = ((oos_rets.mean() - rf_daily) / oos_rets.std(ddof=1)) * np.sqrt(252)
+        rf_daily = 0.0135 / TRADING_DAYS_PER_YEAR
+        is_s = ((is_rets.mean() - rf_daily) / is_rets.std(ddof=1)) * np.sqrt(TRADING_DAYS_PER_YEAR)
+        oos_s = ((oos_rets.mean() - rf_daily) / oos_rets.std(ddof=1)) * np.sqrt(TRADING_DAYS_PER_YEAR)
 
         assert np.isclose(result["IS_Sharpe"], is_s, atol=1e-8)
         assert np.isclose(result["OOS_Sharpe"], oos_s, atol=1e-8)

@@ -11,6 +11,7 @@ import statsmodels.api as sm
 from unittest.mock import patch
 
 from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -210,16 +211,16 @@ class TestTraditionalMetrics:
         pa, rets, _, _, n = setup
         metrics = pa.calculate_traditional_metrics()
         cum = np.cumprod(1 + rets)
-        years = n / 252.0
+        years = n / float(TRADING_DAYS_PER_YEAR)
         expected_cagr = cum[-1] ** (1 / years) - 1
         assert np.isclose(metrics["CAGR_252"], expected_cagr, atol=1e-10)
 
     def test_arithmetic_annual_return(self, setup):
-        """Portfolio_Arithmetic_Annual_Return = mean(daily_returns) * 252.
+        """Portfolio_Arithmetic_Annual_Return = mean(daily_returns) * TRADING_DAYS_PER_YEAR.
         AM-GM: daily arithmetic mean > daily geometric mean for positive volatility."""
         pa, rets, _, _, _ = setup
         metrics = pa.calculate_traditional_metrics()
-        expected_arith = float(np.mean(rets) * 252)
+        expected_arith = float(np.mean(rets) * TRADING_DAYS_PER_YEAR)
         assert np.isclose(metrics["Portfolio_Arithmetic_Annual_Return"], expected_arith, atol=1e-10)
         # AM > GM at the daily level (before annualization)
         daily_am = np.mean(rets)
@@ -229,22 +230,22 @@ class TestTraditionalMetrics:
     def test_volatility(self, setup):
         pa, rets, _, _, _ = setup
         metrics = pa.calculate_traditional_metrics()
-        expected_vol = np.std(rets, ddof=1) * np.sqrt(252)
+        expected_vol = np.std(rets, ddof=1) * np.sqrt(TRADING_DAYS_PER_YEAR)
         assert np.isclose(metrics["Volatility"], expected_vol, atol=1e-10)
 
     def test_sharpe(self, setup):
         pa, rets, _, _, _ = setup
         metrics = pa.calculate_traditional_metrics()
-        rf_daily = 0.0135 / 252
-        expected_sharpe = ((np.mean(rets) - rf_daily) / np.std(rets, ddof=1)) * np.sqrt(252)
+        rf_daily = 0.0135 / TRADING_DAYS_PER_YEAR
+        expected_sharpe = ((np.mean(rets) - rf_daily) / np.std(rets, ddof=1)) * np.sqrt(TRADING_DAYS_PER_YEAR)
         assert np.isclose(metrics["Sharpe"], expected_sharpe, atol=1e-10)
 
     def test_sortino(self, setup):
         pa, rets, _, _, _ = setup
         metrics = pa.calculate_traditional_metrics()
-        rf_daily = 0.0135 / 252
+        rf_daily = 0.0135 / TRADING_DAYS_PER_YEAR
         downside_dev = np.sqrt(np.mean(np.minimum(0, rets)**2))
-        expected_sortino = ((np.mean(rets) - rf_daily) / downside_dev) * np.sqrt(252)
+        expected_sortino = ((np.mean(rets) - rf_daily) / downside_dev) * np.sqrt(TRADING_DAYS_PER_YEAR)
         assert np.isclose(metrics["Sortino"], expected_sortino, atol=1e-10)
 
     def test_max_drawdown(self, setup):
@@ -260,7 +261,7 @@ class TestTraditionalMetrics:
         pa, rets, _, _, n = setup
         metrics = pa.calculate_traditional_metrics()
         cum = np.cumprod(1 + rets)
-        years = n / 252.0
+        years = n / float(TRADING_DAYS_PER_YEAR)
         cagr = cum[-1] ** (1 / years) - 1
         running_max = np.maximum.accumulate(cum)
         maxdd = (cum / running_max - 1).min()
@@ -292,7 +293,7 @@ class TestTraditionalMetrics:
         # which corresponds to the 'previous day' of the first return.
         # But in setup, rets starts from index 1.
         bench_cum = np.cumprod(1 + bench_rets)
-        years = n_intervals / 252.0
+        years = n_intervals / float(TRADING_DAYS_PER_YEAR)
         expected_bench_cagr = bench_cum[-1] ** (1 / years) - 1
         assert np.isclose(metrics["Benchmark_CAGR_252"], expected_bench_cagr, atol=1e-10)
 
@@ -300,7 +301,7 @@ class TestTraditionalMetrics:
         pa, rets, bench_rets, bench_nav, n_intervals = setup
         metrics = pa.calculate_traditional_metrics()
         cum = np.cumprod(1 + rets)
-        years = n_intervals / 252.0
+        years = n_intervals / float(TRADING_DAYS_PER_YEAR)
         cagr = cum[-1] ** (1 / years) - 1
         bench_cum = np.cumprod(1 + bench_rets)
         bench_cagr = bench_cum[-1] ** (1 / years) - 1
@@ -314,8 +315,8 @@ class TestTraditionalMetrics:
         # The analyzer now uses shift-then-slice for benchmark as well,
         # so bench_rets already has the correct intervals.
         active_ret = rets - bench_rets
-        expected_te = np.std(active_ret, ddof=1) * np.sqrt(252)
-        expected_ir = (np.mean(active_ret) * 252) / expected_te
+        expected_te = np.std(active_ret, ddof=1) * np.sqrt(TRADING_DAYS_PER_YEAR)
+        expected_ir = (np.mean(active_ret) * TRADING_DAYS_PER_YEAR) / expected_te
 
         assert np.isclose(metrics["Tracking_Error"], expected_te, atol=1e-10)
         assert np.isclose(metrics["Information_Ratio_(Arithmetic)"], expected_ir, atol=1e-10)
@@ -326,8 +327,8 @@ class TestTraditionalMetrics:
 
         # Log-based active returns: ln(1+Rp) - ln(1+Rb)
         log_active_ret = np.log((1 + rets) / (1 + bench_rets))
-        expected_te_geo = np.std(log_active_ret, ddof=1) * np.sqrt(252)
-        expected_ir_log = (np.mean(log_active_ret) * 252) / expected_te_geo
+        expected_te_geo = np.std(log_active_ret, ddof=1) * np.sqrt(TRADING_DAYS_PER_YEAR)
+        expected_ir_log = (np.mean(log_active_ret) * TRADING_DAYS_PER_YEAR) / expected_te_geo
 
         assert np.isclose(metrics["Tracking_Error_(Geometric)"], expected_te_geo, atol=1e-10)
         assert np.isclose(metrics["Information_Ratio_(Log_Based)"], expected_ir_log, atol=1e-10)
@@ -534,7 +535,7 @@ class TestFactorExposure:
         market_return_full = market_close_full.pct_change().dropna()
         mkt_ret_series = market_return_full.loc[market_return_full.index.intersection(actual_returns.index)]
         
-        rf_daily = 0.0135 / 252
+        rf_daily = 0.0135 / TRADING_DAYS_PER_YEAR
         port_excess = actual_returns - rf_daily
         mkt_excess = mkt_ret_series - rf_daily
 
@@ -543,7 +544,7 @@ class TestFactorExposure:
         X = sm.add_constant(aligned["Market"])
         model_ref = sm.OLS(aligned["Portfolio"], X).fit()
 
-        expected_alpha = model_ref.params["const"] * 252
+        expected_alpha = model_ref.params["const"] * TRADING_DAYS_PER_YEAR
         expected_beta = model_ref.params["Market"]
         expected_r2 = model_ref.rsquared
 
@@ -554,7 +555,7 @@ class TestFactorExposure:
         assert np.isclose(result["R_Squared"], expected_r2, atol=1e-10), \
             f"R²: {result['R_Squared']} vs {expected_r2}"
         
-        expected_market_total = mkt_ret_series.mean() * 252
+        expected_market_total = mkt_ret_series.mean() * TRADING_DAYS_PER_YEAR
         assert np.isclose(result["Market_Total_Return_Annualized"], expected_market_total, atol=1e-10)
 
     def test_ols_qlib_fallback_branch(self):
@@ -604,7 +605,7 @@ class TestFactorExposure:
 
         actual_rets = pa.calculate_daily_returns()
         
-        rf_daily = 0.0135 / 252
+        rf_daily = 0.0135 / TRADING_DAYS_PER_YEAR
         port_excess = actual_rets - rf_daily
         mkt_excess = market_return - rf_daily
         
@@ -616,7 +617,7 @@ class TestFactorExposure:
             model_ref = sm.OLS(aligned["Portfolio"], X).fit()
 
             assert np.isclose(result["Beta_Market"], model_ref.params["Market"], atol=1e-10)
-            expected_alpha = model_ref.params["const"] * 252
+            expected_alpha = model_ref.params["const"] * TRADING_DAYS_PER_YEAR
             assert np.isclose(result["Annualized_Alpha"], expected_alpha, atol=1e-10)
             assert np.isclose(result["R_Squared"], model_ref.rsquared, atol=1e-10)
 
@@ -663,7 +664,7 @@ class TestFactorExposure:
         internal_bench = pa.daily_amount["CSI300"].astype(float)
         market_return_full = internal_bench.pct_change().dropna()
         market_ret = market_return_full.loc[market_return_full.index.intersection(actual_rets.index)]
-        rf_daily = 0.0135 / 252
+        rf_daily = 0.0135 / TRADING_DAYS_PER_YEAR
 
         aligned = pd.concat([actual_rets - rf_daily, market_ret - rf_daily], axis=1).dropna()
         aligned.columns = ["Portfolio", "Market"]
@@ -811,7 +812,7 @@ class TestStyleExposures:
         market_return_full = market_close_full.pct_change().dropna()
         market_ret = market_return_full.loc[market_return_full.index.intersection(actual_rets.index)]
 
-        aligned = pd.concat([actual_rets - (0.0135/252), market_ret - (0.0135/252), factor_df], axis=1).dropna()
+        aligned = pd.concat([actual_rets - (0.0135/TRADING_DAYS_PER_YEAR), market_ret - (0.0135/TRADING_DAYS_PER_YEAR), factor_df], axis=1).dropna()
         if len(aligned) < 2:
             # Not enough aligned data for regression — pass silently.
             return
@@ -820,7 +821,7 @@ class TestStyleExposures:
 
         # Check Factor_Annualized — must be computed from ALIGNED data (same sample as regression)
         for col in factor_df.columns:
-            expected_ann = float(aligned[col].mean() * 252)
+            expected_ann = float(aligned[col].mean() * TRADING_DAYS_PER_YEAR)
             if "Factor_Annualized" in result:
                 assert np.isclose(result["Factor_Annualized"][col], expected_ann, atol=1e-8), \
                     f"Factor_Annualized[{col}]: {result['Factor_Annualized'][col]} vs {expected_ann}"
@@ -834,7 +835,7 @@ class TestStyleExposures:
         assert np.isclose(result["Barra_Volatility_Exp_(High-Low)"], model_ref.params.get("volatility", 0), atol=1e-8)
         assert np.isclose(result["Barra_Style_R_Squared"], model_ref.rsquared, atol=1e-8)
 
-        expected_intercept = float(model_ref.params.get("const", 0)) * 252
+        expected_intercept = float(model_ref.params.get("const", 0)) * TRADING_DAYS_PER_YEAR
         assert np.isclose(result["Multi_Factor_Intercept"], expected_intercept, atol=1e-8)
         assert "Market_Total_Return_Annualized" in result
         assert "Market_Excess_Return_Annualized" in result
@@ -970,7 +971,7 @@ class TestStyleExposures:
         aligned_n = result['Aligned_Sample_Size']
         
         # If alignment dropped data, the aligned return should differ from full return
-        full_arith = float(full_returns.mean() * 252)
+        full_arith = float(full_returns.mean() * TRADING_DAYS_PER_YEAR)
         aligned_arith = result['Portfolio_Arithmetic_Annual_Return']
         
         if aligned_n < full_n:
@@ -1077,7 +1078,7 @@ class TestTurnover:
         aligned.columns = ["NAV", "Trade_Amount"]
         aligned["NAV"] = aligned["NAV"].replace(0, 1e-9)
         daily_to = (aligned["Trade_Amount"] / 2) / aligned["NAV"]
-        expected_annual = float(daily_to.mean() * 252)
+        expected_annual = float(daily_to.mean() * TRADING_DAYS_PER_YEAR)
 
         assert np.isclose(metrics["Turnover_Rate_Annual"], expected_annual, atol=1e-8)
 

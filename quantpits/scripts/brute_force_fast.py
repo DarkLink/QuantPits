@@ -52,6 +52,7 @@ from tqdm.auto import tqdm
 # 路径设置
 # ---------------------------------------------------------------------------
 from quantpits.utils import env
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR
 os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -509,8 +510,8 @@ def compute_metrics(net_returns, bench_returns_np, freq="day"):
     Returns:
         dict: 指标字典
     """
-    # 收益率序列始终是日频，计算年数时始终使用 252
-    periods_per_year = 252
+    # 收益率序列始终是日频，计算年数时始终使用 TRADING_DAYS_PER_YEAR
+    periods_per_year = TRADING_DAYS_PER_YEAR
     days = len(net_returns)
     if days == 0:
         return {}
@@ -544,7 +545,7 @@ def compute_metrics(net_returns, bench_returns_np, freq="day"):
     calmar = ann_ret / abs(max_dd) if max_dd != 0 else 0
 
     # Sharpe (简化版，维持日频波动率年化)
-    periods = 252 # 波动率计算通常用日频基准
+    periods = TRADING_DAYS_PER_YEAR # 波动率计算通常用日频基准
     if np.std(net_returns) > 0:
         sharpe = np.mean(net_returns) / np.std(net_returns) * np.sqrt(periods)
     else:

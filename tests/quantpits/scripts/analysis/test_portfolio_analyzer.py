@@ -7,6 +7,7 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 
 from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR
 
 
 def _make_daily_amount_df():
@@ -206,12 +207,12 @@ def test_calculate_classified_returns(tmp_path):
 
 
 def test_calculate_annualization_basis():
-    # 252 days of 0.1% return each. 
-    # Total return = (1.001)^252 - 1 = 0.2863 (28.63%)
-    dates = pd.date_range(start="2025-01-01", periods=252, freq='D')
+    # TRADING_DAYS_PER_YEAR days of 0.1% return each. 
+    # Total return = (1.001)^TRADING_DAYS_PER_YEAR - 1 = 0.2863 (28.63%)
+    dates = pd.date_range(start="2025-01-01", periods=TRADING_DAYS_PER_YEAR, freq='D')
     # Qlib reconstructions usually have NAV. 
-    nav = [100000.0 * (1.001**i) for i in range(252)]
-    bench_returns = [0.0005] * 252 # 0.05% bench return daily
+    nav = [100000.0 * (1.001**i) for i in range(TRADING_DAYS_PER_YEAR)]
+    bench_returns = [0.0005] * TRADING_DAYS_PER_YEAR # 0.05% bench return daily
     bench_nav = (1 + pd.Series(bench_returns)).cumprod()
     
     da_df = pd.DataFrame({
@@ -231,21 +232,21 @@ def test_calculate_annualization_basis():
     metrics = pa.calculate_traditional_metrics()
     
     # Absolute return is based on the full series of returns
-    # We have 252 rows, which means 251 return intervals.
+    # We have TRADING_DAYS_PER_YEAR rows, which means 251 return intervals.
     abs_ret_expected = (1.001**251 - 1.0)
     assert np.isclose(metrics['Absolute_Return'], abs_ret_expected, atol=1e-5)
     
-    # CAGR_252 should be (1 + abs_ret)^(252 / 251) - 1
-    # because 'years_252' = days / 252 = 251 / 252.
-    expected_cagr = (1 + abs_ret_expected)**(252/251) - 1
+    # CAGR_252 should be (1 + abs_ret)^(TRADING_DAYS_PER_YEAR / 251) - 1
+    # because 'years_252' = days / TRADING_DAYS_PER_YEAR = 251 / TRADING_DAYS_PER_YEAR.
+    expected_cagr = (1 + abs_ret_expected)**(TRADING_DAYS_PER_YEAR/251) - 1
     assert np.isclose(metrics['CAGR_252'], expected_cagr, atol=1e-5)
     
     # Benchmark checks
     bench_abs_ret_expected = (1.0005**251 - 1.0)
     assert np.isclose(metrics['Benchmark_Absolute_Return'], bench_abs_ret_expected, atol=1e-5)
     
-    # Bench CAGR should also use (252 / 251)
-    expected_bench_cagr = (1 + bench_abs_ret_expected)**(252/251) - 1
+    # Bench CAGR should also use (TRADING_DAYS_PER_YEAR / 251)
+    expected_bench_cagr = (1 + bench_abs_ret_expected)**(TRADING_DAYS_PER_YEAR/251) - 1
     assert np.isclose(metrics['Benchmark_CAGR_252'], expected_bench_cagr, atol=1e-5)
 
 # ── New Tests for Missing Coverage ───────────────────────────────────────

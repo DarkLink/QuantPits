@@ -18,6 +18,7 @@ import json
 import yaml
 import shutil
 from datetime import datetime, timedelta
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR, TRADING_WEEKS_PER_YEAR, AVERAGE_CALENDAR_DAYS_PER_YEAR
 
 # 注意: qlib 相关导入（D, init_instance_by_config, R）在需要的函数内部延迟导入，
 # 这样 --list, --show-state 等不需要训练的命令可以在没有 qlib 的环境中运行。
@@ -245,7 +246,7 @@ def calculate_dates():
     def add_year_with_nextday(input_date, n):
         input_date_obj = datetime.strptime(input_date, "%Y-%m-%d")
         # 允许 fractional years
-        delta_days = int(n * 365.25)
+        delta_days = int(n * AVERAGE_CALENDAR_DAYS_PER_YEAR)
         target_date = input_date_obj + timedelta(days=delta_days)
         next_day = target_date + timedelta(days=1)
         return target_date.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d")
@@ -529,7 +530,7 @@ def inject_config(yaml_path, params, model_name=None, no_pretrain=False):
         for r_cfg in config['task']['record']:
             if r_cfg.get('class') == 'SigAnaRecord':
                 if 'kwargs' not in r_cfg: r_cfg['kwargs'] = {}
-                r_cfg['kwargs']['ann_scaler'] = 52 if freq == 'week' else 252
+                r_cfg['kwargs']['ann_scaler'] = TRADING_WEEKS_PER_YEAR if freq == 'week' else TRADING_DAYS_PER_YEAR
 
     # 4. 注入预训练 model_path
     if 'task' in config and 'model' in config['task']:

@@ -13,6 +13,7 @@ import os
 import pytest
 import pandas as pd
 import numpy as np
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR
 
 WORKSPACE = os.environ.get("QLIB_WORKSPACE_DIR", "")
 

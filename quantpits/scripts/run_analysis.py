@@ -9,6 +9,7 @@ from datetime import datetime
 
 # Adjust path so we can import analysis module
 from quantpits.utils import env
+from quantpits.utils.constants import MONTHS_PER_YEAR
 os.chdir(env.ROOT_DIR)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,7 +55,7 @@ def main():
         try:
             start_dt = pd.to_datetime(start_idx)
             end_dt = pd.to_datetime(end_idx)
-            months = (end_dt.year - start_dt.year) * 12 + end_dt.month - start_dt.month
+            months = (end_dt.year - start_dt.year) * MONTHS_PER_YEAR + end_dt.month - start_dt.month
             
             def season(month):
                 if month in [12, 1, 2]: return "Winter"

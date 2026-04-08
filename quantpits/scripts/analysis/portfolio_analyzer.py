@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 from .utils import load_daily_amount, get_daily_features, load_holding_log, load_market_config
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR, TRADING_WEEKS_PER_YEAR, CALENDAR_DAYS_PER_YEAR
 
 # Metric Keys Contract
 BARRA_LIQD_KEY = 'Barra_Liquidity_Exp_(High-Low)'
@@ -14,7 +15,7 @@ class PortfolioAnalyzer:
         self.end_date = None
         self.benchmark_col = benchmark_col
         self.freq = freq
-        self.periods_per_year = 252 if freq == 'day' else 52
+        self.periods_per_year = TRADING_DAYS_PER_YEAR if freq == 'day' else TRADING_WEEKS_PER_YEAR
         if daily_amount_df is None:
             daily_amount_df = load_daily_amount()
         if not daily_amount_df.empty:
@@ -126,7 +127,7 @@ class PortfolioAnalyzer:
         # Consistent with project's '252-day basis' philosophy:
         # years are calculated based on the number of trading days.
         # We always expect daily frequency for the records internally.
-        years_252 = days / 252.0
+        years_252 = days / float(TRADING_DAYS_PER_YEAR)
         
         # Arithmetic annual return: independently-computed constant for attribution display
         portfolio_arith_annual = float(returns.mean() * self.periods_per_year)
@@ -143,7 +144,7 @@ class PortfolioAnalyzer:
                 start_nav_date = returns.index[0]
             calendar_days = (returns.index[-1] - start_nav_date).days
             if calendar_days > 0:
-                years_calendar = calendar_days / 365.0
+                years_calendar = calendar_days / float(CALENDAR_DAYS_PER_YEAR)
         
         cagr_252 = (cum_ret.iloc[-1]) ** (1 / years_252) - 1 if cum_ret.iloc[-1] > 0 else -1
         cagr_calendar = (cum_ret.iloc[-1]) ** (1 / years_calendar) - 1 if cum_ret.iloc[-1] > 0 else -1

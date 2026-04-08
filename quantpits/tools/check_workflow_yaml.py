@@ -18,6 +18,7 @@ import yaml
 import argparse
 
 from quantpits.utils import env
+from quantpits.utils.constants import TRADING_DAYS_PER_YEAR, TRADING_WEEKS_PER_YEAR
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
@@ -31,11 +32,11 @@ def check_yamls(freq="week"):
     if freq == "week":
         expected_label = ["Ref($close, -6) / Ref($close, -1) - 1"]
         expected_time_per_step = "week"
-        expected_ann_scaler = 52
+        expected_ann_scaler = TRADING_WEEKS_PER_YEAR
     else:
         expected_label = ["Ref($close, -2) / Ref($close, -1) - 1"]
         expected_time_per_step = "day"
-        expected_ann_scaler = 252
+        expected_ann_scaler = TRADING_DAYS_PER_YEAR
     files = glob.glob(os.path.join(CONFIG_DIR, "workflow_config_*.yaml"))
     anomalies = {}
     
@@ -130,11 +131,11 @@ def fix_yamls(freq="week"):
     
     if freq == "week":
         target_label = 'label: ["Ref($close, -6) / Ref($close, -1) - 1"]'
-        target_ann_scaler = 'ann_scaler: 52'
+        target_ann_scaler = f'ann_scaler: {TRADING_WEEKS_PER_YEAR}'
         target_time_per_step = 'time_per_step: "week"'
     else:
         target_label = 'label: ["Ref($close, -2) / Ref($close, -1) - 1"]'
-        target_ann_scaler = 'ann_scaler: 252'
+        target_ann_scaler = f'ann_scaler: {TRADING_DAYS_PER_YEAR}'
         target_time_per_step = 'time_per_step: "day"'
     files = glob.glob(os.path.join(CONFIG_DIR, "workflow_config_*.yaml"))
     fixed_count = 0
@@ -169,7 +170,7 @@ def fix_yamls(freq="week"):
                         flags=re.DOTALL
                     )
             
-            # 2. 替换 ann_scaler (252 -> 52)
+            # 2. 替换 ann_scaler ({TRADING_DAYS_PER_YEAR} -> {TRADING_WEEKS_PER_YEAR})
             line = re.sub(r'ann_scaler:\s*\d+', target_ann_scaler, line)
             
             # 3. 替换 time_per_step (day/step -> week)
