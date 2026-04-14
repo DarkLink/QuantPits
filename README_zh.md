@@ -151,4 +151,6 @@ python -m quantpits.scripts.init_workspace \
 所有文档均已提供中文与纯正的英文(`en/`)双语版本支持。
 
 ## 📜 授权协议
-MIT License.
+
+* **系统代码:** MIT License。
+* **研究论文 (`Publication/`):** Creative Commons Attribution-ShareAlike 4.0 International (CC-BY-SA 4.0) 协议。

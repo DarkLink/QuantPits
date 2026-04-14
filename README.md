@@ -152,4 +152,6 @@ For a deep dive into each module, refer to the documentation in `docs/`:
 All documentation is available in both Chinese and English (`docs/en/`).
 
 ## 📜 License
-MIT License.
+
+* **Codebase:** MIT License.
+* **Research Paper (`Publication/`):** Creative Commons Attribution-ShareAlike 4.0 International (CC-BY-SA 4.0) License.
