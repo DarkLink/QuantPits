@@ -98,7 +98,11 @@ def test_calculate_factor_exposure():
         metrics = pa.calculate_factor_exposure()
 
     assert "Beta_Market" in metrics
+    assert "Beta_Market_t" in metrics
+    assert "Beta_Market_p" in metrics
     assert "Annualized_Alpha" in metrics
+    assert "Annualized_Alpha_t" in metrics
+    assert "Annualized_Alpha_p" in metrics
     assert "R_Squared" in metrics
 
 
@@ -146,6 +150,11 @@ def test_calculate_style_exposures(mock_get_features):
 
     if metrics:  # It might still be empty if the mocked random data yields no overlap
         assert "Multi_Factor_Intercept" in metrics
+        assert "Multi_Factor_Intercept_t" in metrics
+        assert "Multi_Factor_Intercept_p" in metrics
+        assert "Multi_Factor_Beta" in metrics
+        assert "Multi_Factor_Beta_t" in metrics
+        assert "Multi_Factor_Beta_p" in metrics
         assert "Barra_Liquidity_Exp_(High-Low)" in metrics
         assert "Barra_Style_R_Squared" in metrics
 

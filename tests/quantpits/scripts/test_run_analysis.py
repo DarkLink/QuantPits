@@ -203,7 +203,14 @@ def test_main_shareable(mock_port, mock_exec, mock_ens, mock_single,
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
     mock_pa.calculate_traditional_metrics.return_value = {"CAGR_252": 0.15, "Volatility": 0.20}
-    mock_pa.calculate_factor_exposure.return_value = {"Beta_Market": 1.0}
+    mock_pa.calculate_factor_exposure.return_value = {
+        "Beta_Market": 1.0, 
+        "Beta_Market_t": 1.234, 
+        "Beta_Market_p": 0.0567,
+        "Annualized_Alpha": 0.01,
+        "Annualized_Alpha_t": 0.5,
+        "Annualized_Alpha_p": 0.6
+    }
     mock_pa.calculate_style_exposures.return_value = {}
     mock_pa.calculate_holding_metrics.return_value = {"Turnover": 0.1}
     mock_pa.calculate_classified_returns.return_value = {
@@ -226,6 +233,8 @@ def test_main_shareable(mock_port, mock_exec, mock_ens, mock_single,
     assert "Total explicit fees amount" not in content
     assert "Dividend Offset as % of Total Slippage" in content
     assert "50.00%" in content # 25 / 50
+    assert "Beta_Market**: 1.00 *(OLS: t=1.2, p=0.06 *)" in content
+    assert "Annualized_Alpha**: 1.0% *(OLS: t=0.5, p=0.60)*" in content
 
 
 @patch('quantpits.scripts.run_analysis.init_qlib')
@@ -676,8 +685,24 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
         "Turnover_Rate_Annual": 1.5,
         "Max_Time_Under_Water_Days": 42
     }
-    mock_pa.calculate_factor_exposure.return_value = {"Beta_Market": 1.0, "Portfolio_Arithmetic_Annual_Return": 0.16, "Aligned_Sample_Size": 40}
-    mock_pa.calculate_style_exposures.return_value = {}
+    mock_pa.calculate_factor_exposure.return_value = {
+        "Beta_Market": 1.0, 
+        "Beta_Market_t": 20.123,
+        "Beta_Market_p": 0.0001,
+        "Annualized_Alpha": 0.02,
+        "Annualized_Alpha_t": 1.5,
+        "Annualized_Alpha_p": 0.15,
+        "Portfolio_Arithmetic_Annual_Return": 0.16, 
+        "Aligned_Sample_Size": 40
+    }
+    mock_pa.calculate_style_exposures.return_value = {
+        "Multi_Factor_Intercept": 0.03,
+        "Multi_Factor_Intercept_t": 2.5,
+        "Multi_Factor_Intercept_p": 0.01,
+        "Multi_Factor_Beta": 0.9,
+        "Multi_Factor_Beta_t": 15.0,
+        "Multi_Factor_Beta_p": 0.0000
+    }
     mock_pa.calculate_holding_metrics.return_value = {"Avg_Daily_Holdings_Count": 10.5}
     mock_pa.calculate_classified_returns.return_value = {"class_df": pd.DataFrame({"S": [0.1]}), "manual_buys": pd.DataFrame(), "manual_sells": pd.DataFrame()}
 
@@ -702,6 +727,12 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
     assert "Portfolio Arithmetic Annual Return**: 16.0%" in content
     # Multi-factor section shows "Portfolio Arithmetic Annual Return (aligned)"
     assert "Portfolio Arithmetic Annual Return (aligned)**: 16.0%" in content
+    
+    # OLS checks in shareable full
+    assert "Beta_Market**: 1.00 *(OLS: t=20.1, p=0.00 ***)*" in content
+    assert "Annualized_Alpha**: 2.0% *(OLS: t=1.5, p=0.15)*" in content
+    assert "Multi_Factor_Intercept**: 3.0% *(OLS: t=2.5, p=0.01 **)*" in content
+    assert "Multi_Factor_Beta**: 0.90 *(OLS: t=15.0, p=0.00 ***)*" in content
 
 @patch('quantpits.scripts.run_analysis.init_qlib')
 @patch('quantpits.scripts.run_analysis.load_market_config')

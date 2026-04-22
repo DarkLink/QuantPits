@@ -326,6 +326,11 @@ def main():
     single_factor_market_ann = exposure.get('Market_Total_Return_Annualized')
     single_factor_aligned_arith = exposure.get('Portfolio_Arithmetic_Annual_Return')
     single_factor_sample_size = exposure.get('Aligned_Sample_Size')
+    # Save OLS stats before they are overwritten
+    sf_beta_t = exposure.get('Beta_Market_t', float('nan'))
+    sf_beta_p = exposure.get('Beta_Market_p', float('nan'))
+    sf_alpha_t = exposure.get('Annualized_Alpha_t', float('nan'))
+    sf_alpha_p = exposure.get('Annualized_Alpha_p', float('nan'))
     style_exposure = port_a.calculate_style_exposures()
     if style_exposure:
         exposure.update(style_exposure)
@@ -405,7 +410,27 @@ def main():
                 
     if exposure:
         factor_ann = exposure.pop('Factor_Annualized', {})
+        # Pop OLS inference stat keys so they don't enter the generic display loop
+        sf_ols_keys = {'Beta_Market_t', 'Beta_Market_p', 'Annualized_Alpha_t', 'Annualized_Alpha_p',
+                       'Multi_Factor_Intercept_t', 'Multi_Factor_Intercept_p',
+                       'Multi_Factor_Beta_t', 'Multi_Factor_Beta_p'}
+        mf_intercept_t = exposure.pop('Multi_Factor_Intercept_t', float('nan'))
+        mf_intercept_p = exposure.pop('Multi_Factor_Intercept_p', float('nan'))
+        mf_beta_t      = exposure.pop('Multi_Factor_Beta_t', float('nan'))
+        mf_beta_p      = exposure.pop('Multi_Factor_Beta_p', float('nan'))
+        for k in sf_ols_keys - {'Multi_Factor_Intercept_t', 'Multi_Factor_Intercept_p',
+                                 'Multi_Factor_Beta_t', 'Multi_Factor_Beta_p'}:
+            exposure.pop(k, None)
         beta = exposure.get('Beta_Market', 0)
+        
+        def fmt_ols_stat(t, p):
+            """Format OLS t-stat and p-value, with significance stars."""
+            if pd.isna(t) or pd.isna(p):
+                return "N/A"
+            stars = '***' if p < 0.01 else ('**' if p < 0.05 else ('*' if p < 0.10 else ''))
+            if args.shareable:
+                return f"t={t:.1f}, p={p:.2f}{(' ' + stars) if stars else ''}"
+            return f"t={t:.3f}, p={p:.4f}{(' ' + stars) if stars else ''}"
         
         report.append(f"\n### Factor Exposure ({'Redacted' if args.shareable else market} Basis)")
         # Removed format_factor qualitative rounding
@@ -417,10 +442,32 @@ def main():
                 else:
                     report.append(f"- **{k}**: {v:.4f}")
             elif 'Alpha' in k or 'Intercept' in k:
-                if args.shareable:
-                    report.append(f"- **{k}**: {v:.1%}")
+                # Append OLS stats inline for alpha/intercept
+                if k == 'Annualized_Alpha':
+                    ols_str = fmt_ols_stat(sf_alpha_t, sf_alpha_p)
+                    fmt = ".1%" if args.shareable else ".4%"
+                    report.append(f"- **{k}**: {v:{fmt}} *(OLS: {ols_str})*")
+                elif k == 'Multi_Factor_Intercept':
+                    ols_str = fmt_ols_stat(mf_intercept_t, mf_intercept_p)
+                    fmt = ".1%" if args.shareable else ".4%"
+                    report.append(f"- **{k}**: {v:{fmt}} *(OLS: {ols_str})*")
                 else:
-                    report.append(f"- **{k}**: {v:.4%}")
+                    if args.shareable:
+                        report.append(f"- **{k}**: {v:.1%}")
+                    else:
+                        report.append(f"- **{k}**: {v:.4%}")
+            elif k == 'Beta_Market':
+                ols_str = fmt_ols_stat(sf_beta_t, sf_beta_p)
+                if args.shareable:
+                    report.append(f"- **{k}**: {v:.2f} *(OLS: {ols_str})*")
+                else:
+                    report.append(f"- **{k}**: {v:.4f} *(OLS: {ols_str})*")
+            elif k == 'Multi_Factor_Beta':
+                ols_str = fmt_ols_stat(mf_beta_t, mf_beta_p)
+                if args.shareable:
+                    report.append(f"- **{k}**: {v:.2f} *(OLS: {ols_str})*")
+                else:
+                    report.append(f"- **{k}**: {v:.4f} *(OLS: {ols_str})*")
             else:
                 if args.shareable:
                     report.append(f"- **{k}**: {v:.2f}")

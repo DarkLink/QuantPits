@@ -541,9 +541,21 @@ class PortfolioAnalyzer:
         alpha = model.params['const'] * self.periods_per_year
         beta = model.params['Market']
         
+        # OLS inference statistics for alpha and beta
+        # t-stat for alpha is scale-invariant (daily or annualized gives same t),
+        # so we use the raw daily intercept's t-stat directly.
+        alpha_tstat = float(model.tvalues['const'])
+        beta_tstat  = float(model.tvalues['Market'])
+        alpha_pvalue = float(model.pvalues['const'])
+        beta_pvalue  = float(model.pvalues['Market'])
+        
         return {
             'Beta_Market': float(beta),
+            'Beta_Market_t': beta_tstat,
+            'Beta_Market_p': beta_pvalue,
             'Annualized_Alpha': float(alpha),
+            'Annualized_Alpha_t': alpha_tstat,
+            'Annualized_Alpha_p': alpha_pvalue,
             'R_Squared': float(model.rsquared),
             'Market_Total_Return_Annualized': float(market_ret_total.mean() * self.periods_per_year),
             'Market_Excess_Return_Annualized': float(aligned['Market'].mean() * self.periods_per_year),
@@ -651,9 +663,19 @@ class PortfolioAnalyzer:
         X = sm.add_constant(aligned[['Market', 'liquidity', 'momentum', 'volatility']])
         model = sm.OLS(aligned.iloc[:, 0], X).fit()
         
+        # OLS inference statistics for multi-factor model
+        mf_alpha_tstat  = float(model.tvalues.get('const', float('nan')))
+        mf_beta_tstat   = float(model.tvalues.get('Market', float('nan')))
+        mf_alpha_pvalue = float(model.pvalues.get('const', float('nan')))
+        mf_beta_pvalue  = float(model.pvalues.get('Market', float('nan')))
+        
         return {
             'Multi_Factor_Intercept': float(model.params.get('const', 0)) * self.periods_per_year,
+            'Multi_Factor_Intercept_t': mf_alpha_tstat,
+            'Multi_Factor_Intercept_p': mf_alpha_pvalue,
             'Multi_Factor_Beta': float(model.params.get('Market', 0)),
+            'Multi_Factor_Beta_t': mf_beta_tstat,
+            'Multi_Factor_Beta_p': mf_beta_pvalue,
             BARRA_LIQD_KEY: float(model.params.get('liquidity', 0)),
             BARRA_MOMT_KEY: float(model.params.get('momentum', 0)),
             BARRA_VOLA_KEY: float(model.params.get('volatility', 0)),
