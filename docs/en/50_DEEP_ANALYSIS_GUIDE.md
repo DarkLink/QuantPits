@@ -11,17 +11,17 @@ prioritized, actionable recommendations.
 
 ```bash
 # Activate workspace
-source workspaces/CSI300_Base/run_env.sh
+source workspaces/Example_Workspace/run_env.sh
 
 # Basic rule-based analysis
 python -m quantpits.scripts.run_deep_analysis
 
-# With frequency-change cutoff (recommended for CSI300_Base)
-python -m quantpits.scripts.run_deep_analysis --freq-change-date 2024-10-21
+# With frequency-change cutoff
+python -m quantpits.scripts.run_deep_analysis --freq-change-date YYYY-MM-DD
 
 # With LLM-powered executive summary
 OPENAI_API_KEY=sk-xxx python -m quantpits.scripts.run_deep_analysis \
-    --llm openai --freq-change-date 2024-10-21
+    --llm openai --freq-change-date YYYY-MM-DD
 
 # With operator notes
 python -m quantpits.scripts.run_deep_analysis \
@@ -113,7 +113,7 @@ This ensures analysis uses all available historical data regardless of archival 
 
 ## Frequency-Change Cutoff
 
-When `--freq-change-date` is set (e.g., `2024-10-21` for CSI300_Base's daily→weekly switch):
+When `--freq-change-date` is set (e.g., `YYYY-MM-DD` for a daily→weekly switch):
 - A special `weekly_era` window is auto-generated from that date onward
 - Shorter windows (1y, 6m, etc.) work normally
 - The `full` window still covers all data but flags pre-cutoff data
@@ -121,7 +121,7 @@ When `--freq-change-date` is set (e.g., `2024-10-21` for CSI300_Base's daily→w
 Configuration can be persisted in `config/deep_analysis_config.json`:
 ```json
 {
-    "freq_change_date": "2024-10-21"
+    "freq_change_date": "YYYY-MM-DD"
 }
 ```
 
