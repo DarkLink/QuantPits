@@ -49,8 +49,8 @@ class ModelHealthAgent(BaseAgent):
                 }
                 continue
 
-            ic_arr = np.array(ic_values)
-            x = np.arange(len(ic_arr))
+            ic_arr = np.array(ic_values, dtype=float)
+            x = np.arange(len(ic_arr), dtype=float)
 
             # Linear regression for trend
             slope, intercept = np.polyfit(x, ic_arr, 1)

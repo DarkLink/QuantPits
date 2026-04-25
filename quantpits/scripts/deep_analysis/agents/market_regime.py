@@ -40,8 +40,8 @@ class MarketRegimeAgent(BaseAgent):
 
         # Linear regression slope on all available data in the window
         lookback = len(bench)
-        y = bench.values
-        x = np.arange(lookback)
+        y = np.array(bench.values, dtype=float)
+        x = np.arange(lookback, dtype=float)
         slope = np.polyfit(x, y, 1)[0] if lookback > 1 else 0
         slope_pct = slope / bench.iloc[0] * 100 * 252 if bench.iloc[0] != 0 else 0.0 # Annualized slope %
 

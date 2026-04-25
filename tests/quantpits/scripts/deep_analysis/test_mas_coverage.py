@@ -365,30 +365,158 @@ def test_portfolio_risk_agent_edge_cases(mock_analysis_context):
         findings = agent.analyze(mock_analysis_context)
         assert findings.agent_name == "Portfolio Risk"
 
-# def test_model_health_agent_edge_cases(mock_analysis_context):
-#     from quantpits.scripts.deep_analysis.agents.model_health import ModelHealthAgent
-#     agent = ModelHealthAgent()
+def test_model_health_agent_comprehensive(mock_analysis_context, tmp_path):
+    from quantpits.scripts.deep_analysis.agents.model_health import ModelHealthAgent
+    agent = ModelHealthAgent()
     
-#     # 1. No performance files
-#     ctx_empty = MagicMock()
-#     ctx_empty.model_performance_files = []
-#     findings = agent.analyze(ctx_empty)
-#     assert findings.agent_name == "Model Health"
-#     assert any('No model performance logs' in f.title for f in findings.findings)
+    # 1. No performance data (lines 31-34)
+    ctx_empty = MagicMock()
+    ctx_empty.model_performance_files = []
+    ctx_empty.window_label = 'full'
+    findings = agent.analyze(ctx_empty)
+    assert any('No model performance data' in f.title for f in findings.findings)
+
+    # 2. Setup mock data
+    ws = tmp_path / "workspace"
+    ws.mkdir()
     
-#     # 2. Declining IC
-#     with patch('json.load') as mock_json, patch('builtins.open', MagicMock()):
-#         # Mock 3 snapshots with declining IC
-#         mock_json.side_effect = [
-#             {'all': {'IC_Mean': 0.10, 'ICIR': 1.0}},
-#             {'all': {'IC_Mean': 0.05, 'ICIR': 0.5}},
-#             {'all': {'IC_Mean': 0.01, 'ICIR': 0.1}}
-#         ]
-        
-#         ctx_decl = MagicMock()
-#         ctx_decl.model_performance_files = ['f1.json', 'f2.json', 'f3.json']
-#         ctx_decl.window_label = 'full'
-#         ctx_decl.workspace_root = mock_analysis_context.workspace_root
-        
-#         findings = agent.analyze(ctx_decl)
-#         assert any('declining' in f.title.lower() for f in findings.findings)
+    # invalid date (line 185)
+    f_invalid_date = ws / "model_performance_invalid.json"
+    f_invalid_date.write_text("{}")
+    
+    # invalid json (lines 189-190)
+    f_invalid_json = ws / "model_performance_2026-01-01.json"
+    f_invalid_json.write_text("{invalid")
+    
+    # 3. Model with < 2 snapshots (lines 44-50)
+    # Model with std=0, slope=0 (line 65, 72)
+    # Model with improving trend (line 68)
+    # Model with negative IC (lines 93-104)
+    # Model with stable trend but IC mean < 0.02 (lines 276-277)
+    # Check retrains and predict_only (lines 118-119, 223-235, 244, 247, 265)
+    
+    f1 = ws / "model_performance_2026-01-02.json"
+    f1.write_text(json.dumps({
+        "model_short": {"IC_Mean": 0.05, "ICIR": 0.5, "record_id": "r1"},
+        "model_flat": {"IC_Mean": 0.05, "ICIR": 0.5, "record_id": "r2"},
+        "model_improving": {"IC_Mean": -0.01, "ICIR": -0.1, "record_id": "r3"},
+        "model_negative": {"IC_Mean": -0.05, "ICIR": -0.5, "record_id": "r4"},
+        "model_stable": {"IC_Mean": 0.01, "ICIR": 0.1, "record_id": "r5"},
+        "model_top": {"IC_Mean": 0.10, "ICIR": 1.0, "record_id": "r6"}
+    }))
+    
+    f2 = ws / "model_performance_2026-01-03.json"
+    f2.write_text(json.dumps({
+        "model_flat": {"IC_Mean": 0.05, "ICIR": 0.5, "record_id": "r2_new"},
+        "model_improving": {"IC_Mean": 0.01, "ICIR": 0.1, "record_id": "r3"},
+        "model_negative": {"IC_Mean": -0.06, "ICIR": -0.6, "record_id": "r4_new"},
+        "model_stable": {"IC_Mean": 0.012, "ICIR": 0.12, "record_id": "r5"},
+        "model_top": {"IC_Mean": 0.11, "ICIR": 1.1, "record_id": "r6_predict"}
+    }))
+
+    f3 = ws / "model_performance_2026-01-04.json"
+    f3.write_text(json.dumps({
+        "model_flat": {"IC_Mean": 0.05, "ICIR": 0.5, "record_id": "r2_new"},
+        "model_improving": {"IC_Mean": 0.05, "ICIR": 0.5, "record_id": "r3"},
+        "model_negative": {"IC_Mean": -0.055, "ICIR": -0.55, "record_id": "r4_new"},
+        "model_stable": {"IC_Mean": 0.009, "ICIR": 0.09, "record_id": "r5"},
+        "model_top": {"IC_Mean": 0.12, "ICIR": 1.2, "record_id": "r6_predict2"}
+    }))
+    
+    # 4. Mock mlruns for predict_only tag
+    mlruns = ws / "mlruns"
+    mlruns.mkdir()
+    def make_mlrun(rid, mode):
+        (mlruns / "0" / rid / "tags").mkdir(parents=True)
+        (mlruns / "0" / rid / "tags" / "mode").write_text(mode)
+    
+    make_mlrun("r6_predict", "predict_only")
+    make_mlrun("r6_predict2", "predict_only")
+    make_mlrun("r2_new", "train")
+    
+    # 5. Mock config files (lines 299, 305-306)
+    config_dir = ws / "config"
+    config_dir.mkdir()
+    
+    bad_yaml = config_dir / "workflow_config_bad.yaml"
+    bad_yaml.write_text("invalid: [yaml")
+    
+    good_yaml = config_dir / "workflow_config_m1.yaml"
+    good_yaml.write_text(yaml.dump({
+        "task": {"model": {"class": "LGBModel", "kwargs": {"learning_rate": 0.01}}},
+        "data_handler_config": {"label": ["LABEL0"]}
+    }))
+    
+    # 6. Mock rolling status (lines 152, 337-346)
+    latest_train = ws / "latest_train_records.json"
+    latest_train.write_text(json.dumps({
+        "models": {
+            "model_flat": "r2",
+            "model_flat@rolling": "r2_new"
+        }
+    }))
+    
+    ctx = MagicMock()
+    ctx.model_performance_files = [
+        str(f_invalid_date), str(f_invalid_json), 
+        str(f1), str(f2), str(f3)
+    ]
+    ctx.workspace_root = str(ws)
+    ctx.window_label = 'full'
+    
+    findings = agent.analyze(ctx)
+    
+    # Assertions
+    titles = [f.title for f in findings.findings]
+    assert any('Negative IC' in t for t in titles)
+    assert any('improving' in t for t in titles)
+    assert any('Retrained' in t for t in titles) # for r2 -> r2_new
+    assert any('Model ranking summary' in t for t in titles) # top/bottom
+    
+    # Check retrains
+    retrain_events = findings.raw_metrics.get('retrain_events', [])
+    retrained_models = [e['model'] for e in retrain_events]
+    assert 'model_flat' in retrained_models
+    assert 'model_top' not in retrained_models # filtered out because mode=predict_only
+    
+    # Check stale models
+    stale = findings.raw_metrics.get('stale_models', {})
+    assert 'model_stable' in stale # stable trend but ic_mean < 0.02
+    
+    # check rolling
+    assert findings.raw_metrics.get('rolling_status') == 'active'
+    
+    # Check hyperparams
+    hp = findings.raw_metrics.get('hyperparams', {})
+    assert 'm1' in hp
+    assert hp['m1']['learning_rate'] == 0.01
+    assert hp['m1']['label'] == 'LABEL0'
+
+def test_model_health_agent_not_active(tmp_path):
+    from quantpits.scripts.deep_analysis.agents.model_health import ModelHealthAgent
+    agent = ModelHealthAgent()
+    ws = tmp_path / "ws2"
+    ws.mkdir()
+    latest_train = ws / "latest_train_records.json"
+    latest_train.write_text(json.dumps({
+        "models": {
+            "model_flat": "r2"
+        }
+    }))
+    
+    # Need a dummy performance file so it doesn't exit early
+    f1 = ws / "model_performance_2026-01-02.json"
+    f1.write_text(json.dumps({
+        "model_flat": {"IC_Mean": 0.05, "ICIR": 0.5, "record_id": "r2"}
+    }))
+    
+    ctx = MagicMock()
+    ctx.workspace_root = str(ws)
+    ctx.model_performance_files = [str(f1)]
+    ctx.window_label = 'full'
+    
+    findings = agent.analyze(ctx)
+    assert findings.raw_metrics.get('rolling_status') == 'not_active'
+    titles = [f.title for f in findings.findings]
+    assert any('Rolling training not active' in t for t in titles)
+
