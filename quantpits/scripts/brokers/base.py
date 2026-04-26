@@ -45,6 +45,20 @@ class BaseBrokerAdapter(ABC):
         """
         pass
 
+    def read_orders(self, file_path: str) -> pd.DataFrame:
+        """
+        读取当日委托记录文件并标准化格式。
+        默认返回空 DataFrame，供子类按需实现。
+        """
+        return pd.DataFrame()
+
+    def read_trades(self, file_path: str) -> pd.DataFrame:
+        """
+        读取当日成交记录文件并标准化格式。
+        默认返回空 DataFrame，供子类按需实现。
+        """
+        return pd.DataFrame()
+
     def validate(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         校验输出的 DataFrame 是否满足必须的标准 Scheme

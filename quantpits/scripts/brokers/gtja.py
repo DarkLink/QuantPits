@@ -40,3 +40,33 @@ class GtjaAdapter(BaseBrokerAdapter):
         except Exception as e:
             print(f"  [WARN] [{self.name}] Error loading {file_path}: {e}")
             return pd.DataFrame()
+
+    def _read_and_filter(self, file_path: str) -> pd.DataFrame:
+        try:
+            df = pd.read_excel(
+                file_path, 
+                sheet_name="Sheet1", 
+                skiprows=5, 
+                dtype={"证券代码": str}
+            )
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].astype(str).str.lstrip("\t").str.strip()
+            
+            if "证券代码" in df.columns:
+                df = df[df["证券代码"].notna() & (df["证券代码"] != "nan")].copy()
+                df["证券代码"] = df["证券代码"].apply(lambda x: str(x).split(".")[0].zfill(6))
+                df = df[df["证券代码"].str.startswith(("6", "0"))].copy()
+            
+            return df
+        except Exception as e:
+            print(f"  [WARN] [{self.name}] Error loading {file_path}: {e}")
+            return pd.DataFrame()
+
+    def read_orders(self, file_path: str) -> pd.DataFrame:
+        """读取并清洗国泰君安委托单"""
+        return self._read_and_filter(file_path)
+
+    def read_trades(self, file_path: str) -> pd.DataFrame:
+        """读取并清洗国泰君安成交单"""
+        return self._read_and_filter(file_path)
