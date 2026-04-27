@@ -12,7 +12,7 @@ class OperatorLog:
     格式: 一行一条 JSON，追加写入，永不覆盖。
     """
     def __init__(self, script_name: str, args: list = None, 
-                 tags: list[str] = None, notes: str = "",
+                 tags: list = None, notes: str = "",
                  log_file: str = None):
         """
         script_name: 脚本名，如 "static_train", "brute_force_fast"

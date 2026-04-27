@@ -18,6 +18,7 @@ import json
 import yaml
 import shutil
 import time
+import pandas as pd
 from datetime import datetime, timedelta
 from quantpits.utils.constants import TRADING_DAYS_PER_YEAR, TRADING_WEEKS_PER_YEAR, AVERAGE_CALENDAR_DAYS_PER_YEAR
 
@@ -697,28 +698,77 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
             dataset = init_instance_by_config(dataset_cfg)
             
             # 训练
+            # 捕获收敛信息
+            evals_result = {}
             print(f"[{model_name}] Training...")
             t0 = time.time()
-            model.fit(dataset=dataset)
+            # 传入 evals_result 以捕获训练过程数据
+            try:
+                model.fit(dataset=dataset, evals_result=evals_result)
+            except TypeError:
+                # 兼容不支持 evals_result 的旧版或特殊模型
+                model.fit(dataset=dataset)
+            
             duration = time.time() - t0
 
-            # 捕获收敛信息
+            # 提取训练统计信息
             actual_epochs = None
             configured_epochs = None
+            final_train_loss = None
+            best_epoch = None
+            best_score = None
+
             try:
-                # 尝试获取实际运行的 epoch 数
-                if hasattr(model, 'fitted_model_') and hasattr(model.fitted_model_, 'best_iteration'):
-                    # LightGBM / CatBoost
-                    actual_epochs = model.fitted_model_.best_iteration
-                elif hasattr(model, 'model') and hasattr(model.model, 'n_epochs_fitted_'):
-                    # Qlib NN models
-                    actual_epochs = model.model.n_epochs_fitted_
+                # 1. 尝试从 evals_result 提取 (最通用)
+                if evals_result:
+                    # 找到第一个非空的指标序列
+                    first_key = next(iter(evals_result))
+                    if isinstance(evals_result[first_key], dict):
+                        # GBDT 结构: {'train': {'l2': [...]}, 'valid': {...}}
+                        first_sub_key = next(iter(evals_result[first_key]))
+                        history = evals_result[first_key][first_sub_key]
+                        actual_epochs = len(history)
+                        final_train_loss = float(history[-1]) if history else None
+                    elif isinstance(evals_result[first_key], list):
+                        # NN 结构: {'train': [...], 'valid': [...]}
+                        actual_epochs = len(evals_result[first_key])
+                        # 注意: NN 模型中 evals_result 存的是 score (通常是 -loss)
+                        # 我们尽量找 train loss
+                        if 'train' in evals_result:
+                            # Heuristic to determine if we should minimize or maximize
+                            # Qlib GeneralPTNN and DNNModelPytorch use raw loss (minimize)
+                            # Qlib LSTM/GRU/etc use -loss (maximize)
+                            class_name = type(model).__name__.lower()
+                            is_minimizing = "general" in class_name or "dnn" in class_name
+                            
+                            valid_history = evals_result.get('valid', [])
+                            if valid_history:
+                                if is_minimizing:
+                                    best_score = float(min(valid_history))
+                                else:
+                                    best_score = float(max(valid_history))
+                                best_epoch = valid_history.index(best_score)
+                            else:
+                                best_score = None
+                                best_epoch = None
+
+                            # 转换 score 为 loss (如果是负值)
+                            last_val = evals_result['train'][-1]
+                            final_train_loss = float(-last_val if last_val < 0 else last_val)
+
+                # 2. 如果 evals_result 为空，尝试从对象属性提取 (回退方案)
+                if actual_epochs is None:
+                    if hasattr(model, 'fitted_model_') and hasattr(model.fitted_model_, 'best_iteration'):
+                        actual_epochs = model.fitted_model_.best_iteration
+                    elif hasattr(model, 'model') and hasattr(model.model, 'n_epochs_fitted_'):
+                        actual_epochs = model.model.n_epochs_fitted_
                 
-                # 从配置中获取设定的 epoch 数
-                if 'model' in task_config['task'] and 'kwargs' in task_config['task']['model']:
-                    configured_epochs = task_config['task']['model']['kwargs'].get('n_epochs')
+                # 3. 获取设定的 epoch 数
+                model_kwargs = task_config['task'].get('model', {}).get('kwargs', {})
+                configured_epochs = model_kwargs.get('n_epochs') or model_kwargs.get('num_boost_round')
+                
             except Exception as e:
-                print(f"[{model_name}] Warning: Could not capture epoch info: {e}")
+                print(f"[{model_name}] Warning: Could not capture detailed epoch info: {e}")
 
             early_stopped = False
             if actual_epochs is not None and configured_epochs is not None:
@@ -733,8 +783,10 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
                 "early_stopped": early_stopped,
                 "actual_epochs": actual_epochs,
                 "configured_epochs": configured_epochs,
+                "best_epoch": best_epoch,
+                "best_score": best_score,
                 "converged": (actual_epochs == configured_epochs) if (actual_epochs is not None and configured_epochs is not None) else None,
-                "final_train_loss": None,
+                "final_train_loss": final_train_loss,
             }
             
             # 预测
@@ -761,9 +813,10 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
                 r_obj = init_instance_by_config(r_cfg, recorder=recorder)
                 r_obj.generate()
             
-            # 获取模型成绩（IC等）
+            # 获取模型成绩（IC等及回测指标）
             performance = {}
             try:
+                # 1. IC 指标
                 ic_series = recorder.load_object("sig_analysis/ic.pkl")
                 ic_mean = ic_series.mean()
                 ic_std = ic_series.std()
@@ -773,13 +826,38 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
                     "ICIR": float(ic_ir) if ic_ir else None,
                     "record_id": recorder.info['id']
                 }
+
+                # 2. 回测指标 (Ann_Excess, Max_DD)
+                try:
+                    port_analysis = recorder.load_object("portfolio_analysis/port_analysis_1week.pkl")
+                    if isinstance(port_analysis, pd.DataFrame):
+                        # 查找 excess_return_without_cost 组
+                        # 支持 MultiIndex 或单层 Index
+                        if "excess_return_without_cost" in port_analysis.index:
+                            metrics = port_analysis.loc["excess_return_without_cost"]
+                            if isinstance(metrics, pd.DataFrame):
+                                # 如果是多行，取 risk 列
+                                val_col = "risk" if "risk" in metrics.columns else metrics.columns[0]
+                                performance["Ann_Excess"] = float(metrics.loc["annualized_return", val_col])
+                                performance["Max_DD"] = float(metrics.loc["max_drawdown", val_col])
+                                performance["Information_Ratio"] = float(metrics.loc["information_ratio", val_col])
+                            else:
+                                # 只有一行
+                                performance["Ann_Excess"] = float(metrics.get("annualized_return"))
+                                performance["Max_DD"] = float(metrics.get("max_drawdown"))
+                                performance["Information_Ratio"] = float(metrics.get("information_ratio"))
+                except Exception as pa_e:
+                    print(f"[{model_name}] Note: Could not load portfolio analysis (backtest may have been skipped): {pa_e}")
+
             except Exception as e:
                 print(f"[{model_name}] Could not get IC metrics: {e}")
                 performance = {"record_id": recorder.info['id']}
             
-            # 注入收敛日志到 performance
-            convergence_log["IC_Mean"] = performance.get("IC_Mean")
-            convergence_log["ICIR"] = performance.get("ICIR")
+            # 注入所有指标到 convergence_log (用于 training_history.jsonl)
+            for k, v in performance.items():
+                if k != "convergence":
+                    convergence_log[k] = v
+            
             performance["convergence"] = convergence_log
 
             # 追加到 training_history.jsonl

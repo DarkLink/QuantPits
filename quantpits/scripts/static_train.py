@@ -593,6 +593,11 @@ def main():
         else:
             run_incremental_train(args, targets)
 
+        oplog.set_result({
+            "n_targets": len(targets),
+            "predict_only": args.predict_only
+        })
+
 
 if __name__ == "__main__":
     main()
