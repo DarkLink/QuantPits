@@ -652,7 +652,10 @@ class BestScoreCaptureHandler(logging.Handler):
         super().__init__()
         self.best_score = None
         self.best_epoch = None
-    
+        self.last_epoch = None
+        self.last_train_loss = None
+        self.epoch_early_stopped = False
+
     def emit(self, record):
         try:
             msg = record.getMessage()
@@ -662,6 +665,17 @@ class BestScoreCaptureHandler(logging.Handler):
                 if m:
                     self.best_score = float(m.group(1))
                     self.best_epoch = int(m.group(2))
+
+            m = re.search(r"Epoch(\d+):", msg)
+            if m:
+                self.last_epoch = int(m.group(1))
+
+            m = re.search(r"\b(?:loss|mse)/train:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", msg)
+            if m:
+                self.last_train_loss = float(m.group(1))
+
+            if "early stop" in msg.lower():
+                self.epoch_early_stopped = True
         except Exception:
             pass
 
@@ -850,17 +864,26 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
                         best_score = None
                         configured_epochs = None
                     
-                # 3. 使用 Qlib Logger 截获的 best_score 作为最终补充
+                # 3. 使用 Qlib Logger 截获的 best_score/epoch 作为补充
                 if best_score is None and score_handler.best_score is not None:
                     best_score = score_handler.best_score
                     best_epoch = score_handler.best_epoch
-                    
+
+                # 4. 使用 Logger 截获的 epoch 计数和 loss 作为补充 (如 ADD 等自定义训练循环的模型)
+                if actual_epochs is None and score_handler.last_epoch is not None:
+                    actual_epochs = score_handler.last_epoch + 1
+
+                if final_train_loss is None and score_handler.last_train_loss is not None:
+                    final_train_loss = score_handler.last_train_loss
+
             except Exception as e:
                 print(f"[{model_name}] Warning: Could not capture detailed epoch info: {e}")
 
             early_stopped = False
             if actual_epochs is not None and configured_epochs is not None:
                 early_stopped = actual_epochs < configured_epochs
+            elif score_handler.epoch_early_stopped:
+                early_stopped = True
 
             convergence_log = {
                 "experiment_name": experiment_name,

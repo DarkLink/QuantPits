@@ -281,3 +281,66 @@ def test_convergence_log_log_capture(mock_env_constants, mock_qlib, mock_params,
         conv = result['performance']['convergence']
         assert conv['best_score'] == 0.063768
         assert conv['best_epoch'] == 7
+
+
+def test_convergence_log_add_model_capture(mock_env_constants, mock_qlib, mock_params, tmp_path):
+    """ADD model with custom training loop: logs epochs/loss/early-stop to logger, not evals_result."""
+    train_utils, _ = mock_env_constants
+    from quantpits.utils.train_utils import train_single_model
+    mock_init, mock_r, mock_recorder = mock_qlib
+
+    import logging
+
+    class ADDModel:
+        def fit(self, **kwargs):
+            logger = logging.getLogger("qlib.ADD")
+            for step in range(17):
+                logger.info("Epoch%d:", step)
+                logger.info("training...")
+                logger.info("evaluating...")
+                logger.info(
+                    "pre_excess_loss/train: 0.97, loss/train: -0.97, "
+                    "mse/train: -0.97, ic/train: 0.18"
+                )
+            logger.info("Epoch17:")
+            logger.info("training...")
+            logger.info("evaluating...")
+            logger.info(
+                "pre_excess_loss/train: 0.97, loss/train: -0.970555, "
+                "mse/train: -0.970555, ic/train: 0.18"
+            )
+            logger.info("early stop")
+            logger.info("bootstrap_fit best score: 0.063768 @ 7")
+
+        def predict(self, **kwargs):
+            return MagicMock()
+
+    mock_model = ADDModel()
+    mock_init.side_effect = [mock_model, MagicMock()]
+
+    yaml_content = {
+        'task': {
+            'model': {'kwargs': {'n_epochs': 200}},
+            'dataset': {'kwargs': {'segments': {}}}
+        },
+        'data_handler_config': {}
+    }
+    yaml_file = tmp_path / "test.yaml"
+    import yaml
+    with open(yaml_file, 'w') as f:
+        yaml.dump(yaml_content, f)
+
+    with patch('quantpits.utils.train_utils.ROOT_DIR', str(tmp_path)), \
+         patch('quantpits.utils.train_utils.os.path.exists', return_value=True):
+
+        result = train_single_model("add_Alpha360", str(yaml_file), mock_params, "test_exp")
+
+        assert result['success'] is True
+        conv = result['performance']['convergence']
+        assert conv['actual_epochs'] == 18, f"Expected 18 epochs, got {conv['actual_epochs']}"
+        assert conv['configured_epochs'] == 200
+        assert conv['early_stopped'] is True
+        assert conv['converged'] is False
+        assert conv['best_score'] == 0.063768
+        assert conv['best_epoch'] == 7
+        assert conv['final_train_loss'] == -0.970555
