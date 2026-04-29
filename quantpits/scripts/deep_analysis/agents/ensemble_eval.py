@@ -101,8 +101,7 @@ class EnsembleEvolutionAgent(BaseAgent):
                 "Review ensemble composition — correlation structure has changed, "
                 "which may affect diversification benefits."
             )
-
-        # --- 4. Model Contribution from Leaderboards ---
+        # --- 4. Model Contribution Analysis ---
         contributions = self._analyze_contributions(ctx)
         raw_metrics['model_contributions'] = contributions
 
@@ -116,6 +115,28 @@ class EnsembleEvolutionAgent(BaseAgent):
                 recommendations.append(
                     f"Consider removing {model} from its ensemble combo(s)."
                 )
+
+        # --- 5. OOS History Analysis ---
+        oos_trend = self._load_oos_history(ctx)
+        raw_metrics['oos_trend'] = oos_trend
+        
+        if oos_trend and oos_trend.get('latest_oos_calmar'):
+            slope = oos_trend.get('oos_calmar_slope', 0)
+            if slope < -0.1:
+                findings.append(self._make_finding(
+                    'warning', 'OOS performance degrading',
+                    f"OOS Calmar ratio is declining (slope={slope:.3f}). "
+                    f"Latest: {oos_trend['latest_oos_calmar']:.2f}, Best: {oos_trend['best_oos_calmar']:.2f}.",
+                    oos_trend
+                ))
+            
+            if oos_trend.get('latest_oos_calmar', 0) < oos_trend.get('best_oos_calmar', 0) * 0.8:
+                findings.append(self._make_finding(
+                    'warning', 'Significant OOS drawdown',
+                    f"Latest OOS Calmar ({oos_trend['latest_oos_calmar']:.2f}) is more than 20% below "
+                    f"historical best ({oos_trend['best_oos_calmar']:.2f}).",
+                    oos_trend
+                ))
 
         return AgentFindings(self.name, ctx.window_label, findings, recommendations, raw_metrics)
 
@@ -278,9 +299,11 @@ class EnsembleEvolutionAgent(BaseAgent):
             return {'significant_drift': False, 'error': str(e)}
 
     def _analyze_contributions(self, ctx: AnalysisContext) -> dict:
-        """Analyze model contributions from leaderboard files."""
+        """Analyze model contributions from leaderboard and LOO contribution files."""
         model_excess = {}  # model -> list of excess returns
+        loo_deltas = {}    # model -> list of LOO deltas
 
+        # 1. From leaderboards
         for path in ctx.leaderboard_files:
             try:
                 df = pd.read_csv(path)
@@ -296,15 +319,99 @@ class EnsembleEvolutionAgent(BaseAgent):
             except Exception:
                 continue
 
+        # 2. From LOO contribution files
+        for path in ctx.model_contribution_files:
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                contribs = data.get('contributions', {})
+                for model, metrics in contribs.items():
+                    delta = metrics.get('delta', 0)
+                    if model not in loo_deltas:
+                        loo_deltas[model] = []
+                    loo_deltas[model].append(delta)
+            except Exception:
+                continue
+
         consistently_negative = []
-        for model, excesses in model_excess.items():
-            if len(excesses) >= 2 and all(e < 0 for e in excesses):
+        # Check both metrics: negative excess return AND negative LOO delta (drag on ensemble)
+        all_models = set(list(model_excess.keys()) + list(loo_deltas.keys()))
+        
+        for model in all_models:
+            excesses = model_excess.get(model, [])
+            deltas = loo_deltas.get(model, [])
+            
+            # Consistently negative if:
+            # - Excess return is negative across snapshots
+            # - OR LOO delta is negative (meaning removing it IMPROVES the ensemble)
+            is_neg = False
+            if excesses and len(excesses) >= 2 and all(e < 0 for e in excesses):
+                is_neg = True
+            if deltas and len(deltas) >= 2 and all(d < 0 for d in deltas):
+                is_neg = True
+                
+            if is_neg:
                 consistently_negative.append(model)
 
         return {
             'model_excess': {k: {'mean': np.mean(v), 'count': len(v)}
                             for k, v in model_excess.items()},
+            'loo_deltas': {k: {'mean': np.mean(v), 'count': len(v)}
+                          for k, v in loo_deltas.items()},
             'consistently_negative': consistently_negative,
+        }
+
+    def _load_oos_history(self, ctx: AnalysisContext) -> dict:
+        """Load OOS metrics from run_metadata.json files."""
+        ensemble_dir = os.path.join(ctx.workspace_root, 'output', 'ensemble')
+        if not os.path.isdir(ensemble_dir):
+            return {}
+
+        runs = []
+        # Search for run_metadata.json in all subdirectories of output/ensemble/
+        import glob
+        metadata_paths = glob.glob(os.path.join(ensemble_dir, '**', 'run_metadata.json'), recursive=True)
+        
+        for path in metadata_paths:
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                oos = data.get('oos_metrics') or data.get('oos')
+                if not oos: continue
+                
+                # Try to extract date from path or metadata
+                date_str = self._extract_date(path) or data.get('run_date')
+                if not date_str: continue
+                
+                runs.append({
+                    'date': date_str,
+                    'oos_calmar': oos.get('oos_calmar', oos.get('calmar')),
+                    'oos_excess': oos.get('oos_excess_return', oos.get('excess_return')),
+                    'combo': data.get('combo_name')
+                })
+            except Exception:
+                continue
+
+        if not runs: return {}
+
+        runs.sort(key=lambda x: x['date'])
+        
+        calmars = [r['oos_calmar'] for r in runs if r['oos_calmar'] is not None]
+        if len(calmars) < 2:
+            latest = calmars[-1] if calmars else None
+            return {'latest_oos_calmar': latest, 'runs_analyzed': len(runs)}
+
+        # Trend calculation (slope)
+        x = np.arange(len(calmars))
+        y = np.array(calmars)
+        slope, _ = np.polyfit(x, y, 1)
+
+        return {
+            'runs_analyzed': len(runs),
+            'oos_calmar_slope': float(slope),
+            'best_oos_calmar': float(np.max(calmars)),
+            'latest_oos_calmar': float(calmars[-1]),
+            'history': runs[-5:] # Last 5 runs
         }
 
     def _identify_best_combo(self, combo_trends: Dict[str, list]) -> Optional[dict]:

@@ -218,6 +218,47 @@ def generate_ensemble_signal(norm_df, final_weights, static_weights, is_dynamic)
     return _gen(norm_df, final_weights, static_weights, is_dynamic)
 
 
+def calculate_loo_contribution(norm_df, final_score):
+    """
+    计算 Leave-One-Out (LOO) 贡献度。
+    
+    使用 IC(LOO_score, final_score) 作为代理指标，衡量剔除该模型后，
+    融合信号与原始融合信号的相关性变化。相关性下降越多（delta 越大），
+    说明该模型对最终信号的贡献越大。
+    
+    Returns:
+        dict: {model_name: {"loo_ic": float, "full_ic": float, "delta": float}}
+    """
+    import numpy as np
+    models = norm_df.columns.tolist()
+    if len(models) <= 1:
+        return {}
+
+    contributions = {}
+    # Full ensemble: equal-weight average of ALL models
+    full_ensemble = norm_df.mean(axis=1)
+    full_ic = float(full_ensemble.corr(final_score))
+
+    for m in models:
+        # LOO score: 剩余模型的等权平均
+        other_models = [mod for mod in models if mod != m]
+        loo_score = norm_df[other_models].mean(axis=1)
+        
+        # 计算相关性
+        # 注意：norm_df 和 final_score 的 index 应对齐（level 0: datetime, level 1: instrument）
+        # 这里直接用 corr()
+        loo_ic = float(loo_score.corr(final_score))
+        delta = full_ic - loo_ic
+        
+        contributions[m] = {
+            "loo_ic": round(loo_ic, 6),
+            "full_ic": round(full_ic, 6),
+            "delta": round(delta, 6)
+        }
+        
+    return contributions
+
+
 # ============================================================================
 # Stage 5: 保存预测结果
 # ============================================================================
@@ -869,6 +910,24 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
             args.freq, anchor_date, combo_output_dir, combo_name=combo_name
         )
 
+    # ---- Stage 9: 模型贡献度分析 (LOO) ----
+    print(f"\n{'='*60}")
+    print("Stage 9: 模型贡献度分析 (LOO)")
+    print(f"{'='*60}")
+    contributions = calculate_loo_contribution(combo_norm_df, final_score)
+    if contributions:
+        contrib_out = {
+            "combo": combo_name or "default",
+            "anchor_date": anchor_date,
+            "method": "loo_ic_proxy",
+            "contributions": contributions
+        }
+        suffix = f"_{combo_name}" if combo_name else ""
+        contrib_file = os.path.join(combo_output_dir, f"model_contribution{suffix}_{anchor_date}.json")
+        with open(contrib_file, 'w') as f:
+            json.dump(contrib_out, f, indent=4, ensure_ascii=False)
+        print(f"模型贡献度已保存: {contrib_file}")
+
     return {
         'name': combo_name or 'default',
         'models': combo_models,
@@ -877,6 +936,7 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
         'pred_file': pred_file,
         'report_df': report_df,
         'leaderboard_df': leaderboard_df,
+        'contributions': contributions
     }
 
 

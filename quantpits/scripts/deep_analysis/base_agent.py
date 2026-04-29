@@ -77,6 +77,7 @@ class AnalysisContext:
     model_opinions_files: List[str] = field(default_factory=list)
     buy_suggestion_files: List[str] = field(default_factory=list)
     sell_suggestion_files: List[str] = field(default_factory=list)
+    model_contribution_files: List[str] = field(default_factory=list)
 
     # Frequency change info
     freq_change_date: Optional[str] = None

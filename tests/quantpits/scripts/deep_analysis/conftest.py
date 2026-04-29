@@ -74,7 +74,16 @@ def mock_workspace(tmp_path):
     # --- Create more mock files for agent coverage ---
     
     # 1. Model Performance JSONs
-    perf_data = {'ic': 0.05, 'rank_ic': 0.06, 'all': {'return': 0.1, 'IC_Mean': 0.05, 'ICIR': 0.5, 'record_id': 'abc12345'}}
+    perf_data = {
+        'ic': 0.05, 'rank_ic': 0.06, 
+        'all': {'return': 0.1, 'IC_Mean': 0.05, 'ICIR': 0.5, 'record_id': 'abc12345'},
+        'convergence': {
+            'early_stopped': True,
+            'epochs_done': 20,
+            'configured_epochs': 200,
+            'duration_s': 150
+        }
+    }
     for d in ["2026-01-15", "2026-02-15", "2026-03-15"]:
         with open(workspace / "output" / f"model_performance_{d}.json", 'w') as f:
             json.dump(perf_data, f)
@@ -126,6 +135,40 @@ def mock_workspace(tmp_path):
             json.dump(opinions, f)
         opinions_csv.to_csv(workspace / "output" / f"model_opinions_{d}.csv", index=False)
 
+    # 8. Training History JSONL
+    history_line = {
+        "model_name": "model_a", "record_id": "abc12345", 
+        "trained_at": "2026-03-10", "duration_seconds": 150,
+        "early_stopped": True, "actual_epochs": 20, "configured_epochs": 200
+    }
+    with open(workspace / "data" / "training_history.jsonl", 'w') as f:
+        f.write(json.dumps(history_line) + "\n")
+
+    # 9. Model Contribution JSONs
+    contrib_data = {
+        "combo": "combo1", "anchor_date": "2026-03-20",
+        "contributions": {
+            "model_a": {"loo_ic": 0.8, "full_ic": 1.0, "delta": 0.2},
+            "model_b": {"loo_ic": 1.1, "full_ic": 1.0, "delta": -0.1}
+        }
+    }
+    with open(ensemble_dir / "model_contribution_combo1_2026-03-20.json", 'w') as f:
+        json.dump(contrib_data, f)
+
+    # 10. Run Metadata (for OOS history)
+    metadata = {
+        "combo_name": "combo1", "run_date": "2026-03-20",
+        "oos_metrics": {"oos_calmar": 2.5, "oos_excess_return": 0.1}
+    }
+    (ensemble_dir / "run1").mkdir()
+    with open(ensemble_dir / "run1" / "run_metadata.json", 'w') as f:
+        json.dump(metadata, f)
+    metadata["run_date"] = "2026-03-25"
+    metadata["oos_metrics"]["oos_calmar"] = 2.2
+    (ensemble_dir / "run2").mkdir()
+    with open(ensemble_dir / "run2" / "run_metadata.json", 'w') as f:
+        json.dump(metadata, f)
+
     return str(workspace)
 
 @pytest.fixture
@@ -154,5 +197,6 @@ def mock_analysis_context(mock_workspace):
         correlation_matrix_files=_get_files("output/ensemble/correlation_matrix_*.csv"),
         buy_suggestion_files=_get_files("output/buy_suggestion_*.csv"),
         sell_suggestion_files=_get_files("output/sell_suggestion_*.csv"),
-        model_opinions_files=_get_files("output/model_opinions_*.json")
+        model_opinions_files=_get_files("output/model_opinions_*.json"),
+        model_contribution_files=_get_files("output/ensemble/model_contribution_*.json")
     )

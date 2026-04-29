@@ -119,6 +119,18 @@ class PredictionAuditAgent(BaseAgent):
                 retrospective
             ))
 
+        # --- 5. Per-model Hit Rate Analysis ---
+        per_model = self._analyze_per_model_hit_rate(ctx)
+        raw_metrics['per_model_hit_rate'] = per_model
+        
+        if per_model and per_model.get('underperformers'):
+            findings.append(self._make_finding(
+                'warning', 'Individual models underperforming ensemble',
+                f"Models {', '.join(per_model['underperformers'])} have significantly lower hit rates "
+                "than the ensemble average.",
+                per_model
+            ))
+
         return AgentFindings(self.name, ctx.window_label, findings, recommendations, raw_metrics)
 
     # ------------------------------------------------------------------
@@ -383,6 +395,61 @@ class PredictionAuditAgent(BaseAgent):
             'summary': summary,
             'n_holdings': n_holdings,
             'latest_date': latest_date.strftime('%Y-%m-%d'),
+        }
+
+    def _analyze_per_model_hit_rate(self, ctx: AnalysisContext) -> dict:
+        """
+        Analyze hit rate for each individual model.
+        
+        Uses IC proxy (correlation with ensemble final score) to identify
+        models that are consistently providing poor or counter-productive signals.
+        """
+        if not ctx.model_opinions_files:
+            return {}
+
+        per_model_stats = {}
+        all_models = set()
+        
+        # We need to correlate individual model columns with the ensemble 'score'
+        # in the model_opinions_{date}.csv files.
+        for path in ctx.model_opinions_files[-3:]: # Last 3 snapshots
+            csv_path = path.replace('.json', '.csv')
+            if not os.path.exists(csv_path): continue
+            
+            try:
+                df = pd.read_csv(csv_path)
+                if 'score' not in df.columns: continue
+                
+                model_cols = [c for c in df.columns if c.startswith('model_')]
+                for col in model_cols:
+                    model_name = col.replace('model_', '')
+                    all_models.add(model_name)
+                    
+                    # Calculate correlation (IC proxy)
+                    # We might need to handle BUY/SELL string conversion if they are not floats
+                    # But usually model_opinions.csv has raw scores in these columns
+                    if df[col].dtype == object:
+                        # Skip if it's purely labels for now, or try to parse
+                        continue
+                    
+                    ic = float(df[col].corr(df['score']))
+                    if model_name not in per_model_stats:
+                        per_model_stats[model_name] = []
+                    per_model_stats[model_name].append(ic)
+            except Exception:
+                continue
+
+        if not per_model_stats: return {}
+
+        avg_ic = {m: np.mean(v) for m, v in per_model_stats.items()}
+        overall_avg = np.mean(list(avg_ic.values()))
+        
+        underperformers = [m for m, ic in avg_ic.items() if ic < overall_avg - 0.2]
+
+        return {
+            "ensemble_overall_proxy_ic": float(overall_avg),
+            "per_model_ic": avg_ic,
+            "underperformers": underperformers
         }
 
     @staticmethod

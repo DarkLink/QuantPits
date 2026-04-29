@@ -192,6 +192,8 @@ class Coordinator:
                 suggestion_dirs, 'buy_suggestion', '.csv'),
             'sell_suggestion': _scan_dated_files(
                 suggestion_dirs, 'sell_suggestion', '.csv'),
+            'model_contribution': _scan_dated_files(
+                ensemble_dirs, 'model_contribution', '.json'),
         }
 
         # Leaderboard files: leaderboard_{combo}_{date}.csv
@@ -320,6 +322,7 @@ class Coordinator:
             model_opinions_files=_filter('model_opinions'),
             buy_suggestion_files=_filter('buy_suggestion'),
             sell_suggestion_files=_filter('sell_suggestion'),
+            model_contribution_files=_filter('model_contribution'),
             freq_change_date=self.freq_change_date,
             is_pre_cutoff_window=window.get('is_pre_cutoff', False),
         )

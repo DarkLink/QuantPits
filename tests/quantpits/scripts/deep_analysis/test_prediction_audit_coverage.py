@@ -289,9 +289,106 @@ def test_analyze_holding_retrospective_edge_cases(agent):
     assert 'Win rate' not in res['summary']
 
     # 5. Empty current_holdings after date filter (line 368) - Hard to trigger since we take max date
-    # But if latest_date is NaT? 
+    # But if latest_date is NaT?
     # Actually if latest_date = df['成交日期'].max() and df is not empty, current_holdings shouldn't be empty.
     # Unless... wait. If latest_date is somehow not in the dates? impossible.
     # What if we mock the max() to return something not in the df?
     with patch('pandas.Series.max', return_value=pd.Timestamp('2099-01-01')):
          assert agent._analyze_holding_retrospective(ctx) == {}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Per-Model Hit Rate Tests
+# ---------------------------------------------------------------------------
+
+def test_analyze_per_model_hit_rate(tmp_path):
+    """Test _analyze_per_model_hit_rate computes per-model IC and identifies underperformers."""
+    agent = PredictionAuditAgent()
+
+    ws = tmp_path / "ws"
+    output_dir = ws / "output"
+    output_dir.mkdir(parents=True)
+
+    # Create CSVs with numeric model columns + score column
+    np.random.seed(42)
+    for d in ["2026-01-15", "2026-02-15", "2026-03-15"]:
+        df = pd.DataFrame({
+            "instrument": [f"{i:06d}.SH" for i in range(20)],
+            "score": np.random.randn(20),
+            "model_gru": np.random.randn(20),
+            "model_alstm": np.random.randn(20),
+            "model_linear": np.random.randn(20),
+        })
+        df.to_csv(output_dir / f"model_opinions_{d}.csv", index=False)
+        # Create empty JSON as placeholder
+        (output_dir / f"model_opinions_{d}.json").write_text("{}")
+
+    ctx = MagicMock(spec=AnalysisContext)
+    ctx.model_opinions_files = sorted(
+        str(output_dir / f"model_opinions_{d}.json")
+        for d in ["2026-01-15", "2026-02-15", "2026-03-15"]
+    )
+
+    result = agent._analyze_per_model_hit_rate(ctx)
+
+    assert "per_model_ic" in result
+    assert "ensemble_overall_proxy_ic" in result
+    assert "underperformers" in result
+
+    # All 3 models should have IC values
+    for m in ["gru", "alstm", "linear"]:
+        assert m in result["per_model_ic"]
+        assert -1.0 <= result["per_model_ic"][m] <= 1.0
+
+
+def test_analyze_per_model_hit_rate_no_files():
+    """Test _analyze_per_model_hit_rate with no model_opinions files."""
+    agent = PredictionAuditAgent()
+    ctx = MagicMock(spec=AnalysisContext)
+    ctx.model_opinions_files = []
+    result = agent._analyze_per_model_hit_rate(ctx)
+    assert result == {}
+
+
+def test_analyze_per_model_hit_rate_no_score_column(mock_analysis_context, tmp_path):
+    """Test _analyze_per_model_hit_rate when CSV has no 'score' column."""
+    agent = PredictionAuditAgent()
+
+    # Create model_opinions file with a CSV that has no score column
+    json_file = tmp_path / "model_opinions_2026-03-20.json"
+    json_file.write_text("{}")
+    csv_file = tmp_path / "model_opinions_2026-03-20.csv"
+    csv_file.write_text("instrument,model_a\n600000.SH,0.5")
+
+    ctx = MagicMock(spec=AnalysisContext)
+    ctx.model_opinions_files = [str(json_file)]
+    result = agent._analyze_per_model_hit_rate(ctx)
+    # No score column → skipped → empty result
+    assert result == {}
+
+
+def test_analyze_per_model_hit_rate_finding(mock_analysis_context):
+    """Test that underperforming per-model hit rate produces a warning Finding."""
+    agent = PredictionAuditAgent()
+
+    # Mock _analyze_per_model_hit_rate to return clear underperformers
+    with patch.object(agent, '_analyze_suggestion_hits', return_value={}), \
+         patch.object(agent, '_analyze_consensus', return_value={}), \
+         patch.object(agent, '_analyze_holding_retrospective', return_value={}), \
+         patch.object(agent, '_analyze_per_model_hit_rate') as mock_pmhr:
+
+        mock_pmhr.return_value = {
+            "ensemble_overall_proxy_ic": 0.6,
+            "per_model_ic": {
+                "gru": 0.55,
+                "alstm": 0.58,
+                "linear": 0.20  # way below -> underperformer
+            },
+            "underperformers": ["linear"]
+        }
+
+        findings = agent.analyze(mock_analysis_context)
+        titles = [f.title for f in findings.findings]
+
+        assert any("Individual models underperforming ensemble" in t for t in titles)
+        assert "per_model_hit_rate" in findings.raw_metrics

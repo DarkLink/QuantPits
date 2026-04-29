@@ -110,7 +110,27 @@ class ModelHealthAgent(BaseAgent):
 
         raw_metrics['scorecard'] = scorecard
 
-        # --- 3. Retrain Detection ---
+        # --- 3. Convergence Analysis ---
+        convergence_summary = self._analyze_convergence(perf_series)
+        raw_metrics['convergence_summary'] = convergence_summary
+        
+        if convergence_summary:
+            for model_name in convergence_summary.get('underfitting_candidates', []):
+                findings.append(self._make_finding(
+                    'warning', f'{model_name}: Potential underfitting',
+                    f"Model early-stopped prematurely (epochs_done={convergence_summary['model_details'][model_name]['epochs_done']}). "
+                    "Consider adjusting early stopping patience or learning rate.",
+                    {'model': model_name, 'convergence': convergence_summary['model_details'][model_name]}
+                ))
+            for model_name in convergence_summary.get('full_epoch_models', []):
+                findings.append(self._make_finding(
+                    'info', f'{model_name}: Hit maximum epochs',
+                    "Model trained for full duration without early stopping. "
+                    "Check if it converged or if it's overfitting.",
+                    {'model': model_name, 'convergence': convergence_summary['model_details'][model_name]}
+                ))
+
+        # --- 4. Retrain Detection ---
         retrain_events = self._detect_retrains(ctx)
         raw_metrics['retrain_events'] = retrain_events
 
@@ -209,6 +229,21 @@ class ModelHealthAgent(BaseAgent):
         events = []
         perf_series = self._load_performance_series(ctx)
 
+        # Load training history for enriched trace
+        history_map = {}
+        history_path = os.path.join(ctx.workspace_root, 'data', 'training_history.jsonl')
+        if os.path.exists(history_path):
+            try:
+                with open(history_path, 'r') as f:
+                    for line in f:
+                        if not line.strip(): continue
+                        record = json.loads(line)
+                        rid = record.get('record_id')
+                        if rid:
+                            history_map[rid] = record
+            except Exception:
+                pass
+
         record_mode_cache = {}
 
         def is_predict_only(record_id: str) -> bool:
@@ -244,15 +279,74 @@ class ModelHealthAgent(BaseAgent):
                         continue
                         
                     if prev_record and curr_record != prev_record:
-                        events.append({
+                        event = {
                             'model': model_name,
                             'date': entry['_date'],
                             'old_record': prev_record,
                             'new_record': curr_record,
-                        })
+                        }
+                        # Enrich with history
+                        if curr_record in history_map:
+                            h = history_map[curr_record]
+                            event['train_date_from_history'] = h.get('trained_at')
+                            event['duration_s'] = h.get('duration_seconds')
+                            event['exp_name'] = h.get('experiment_name')
+                        
+                        events.append(event)
                     prev_record = curr_record
 
         return sorted(events, key=lambda x: x['date'])
+
+    def _analyze_convergence(self, perf_series: Dict[str, list]) -> dict:
+        """Analyze convergence status from model performance metadata."""
+        details = {}
+        total_models = 0
+        early_stopped_count = 0
+        durations = []
+        underfitting = []
+        full_epoch = []
+
+        for model_name, series in perf_series.items():
+            if not series: continue
+            latest = series[-1]
+            conv = latest.get('convergence', {})
+            if not conv and 'early_stopped' in latest:
+                # Fallback if convergence is flat in the dictionary
+                conv = {
+                    'early_stopped': latest.get('early_stopped'),
+                    'epochs_done': latest.get('epochs_done', latest.get('actual_epochs')),
+                    'configured_epochs': latest.get('configured_epochs'),
+                    'duration_s': latest.get('duration_s', latest.get('duration_seconds'))
+                }
+            
+            if not conv: continue
+            
+            total_models += 1
+            es = conv.get('early_stopped')
+            epochs_done = conv.get('epochs_done')
+            configured = conv.get('configured_epochs')
+            duration = conv.get('duration_s')
+            
+            if es: early_stopped_count += 1
+            if duration: durations.append(duration)
+            
+            details[model_name] = conv
+            
+            if es and epochs_done and configured and epochs_done < configured * 0.5:
+                underfitting.append(model_name)
+            elif es == False:
+                full_epoch.append(model_name)
+
+        if total_models == 0: return {}
+
+        return {
+            "total_models": total_models,
+            "pct_early_stopped": early_stopped_count / total_models,
+            "avg_duration_s": np.mean(durations) if durations else None,
+            "underfitting_candidates": underfitting,
+            "full_epoch_models": full_epoch,
+            "model_details": details
+        }
 
     def _check_staleness(self, ctx: AnalysisContext,
                          retrain_events: List[dict],

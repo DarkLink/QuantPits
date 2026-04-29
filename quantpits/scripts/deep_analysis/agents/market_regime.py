@@ -131,6 +131,24 @@ class MarketRegimeAgent(BaseAgent):
             raw_metrics
         ))
 
+        # --- Sliding Window Regime Switch Detection ---
+        switches = self._detect_regime_switches(bench)
+        raw_metrics['regime_switches'] = switches
+        
+        if switches.get('switch_count', 0) >= 3:
+            findings.append(self._make_finding(
+                'warning', 'Frequent market regime switching',
+                f"Market has switched regimes {switches['switch_count']} times in this window, "
+                "indicating high instability and potential model generalization pressure.",
+                switches
+            ))
+        elif switches.get('current_streak_days', 0) > 30:
+            findings.append(self._make_finding(
+                'info', 'Stable market regime',
+                f"Current regime ({regime}) has been stable for {switches['current_streak_days']} days.",
+                switches
+            ))
+
         return AgentFindings(
             agent_name=self.name,
             window_label=ctx.window_label,
@@ -138,3 +156,51 @@ class MarketRegimeAgent(BaseAgent):
             recommendations=recommendations,
             raw_metrics=raw_metrics,
         )
+
+    def _detect_regime_switches(self, bench: pd.Series, window: int = 20, step: int = 5) -> dict:
+        """Detect transitions between market regimes using a sliding window."""
+        switches = []
+        last_regime = None
+        
+        # We need at least 'window' days to start
+        if len(bench) < window:
+            return {"switch_count": 0, "current_streak_days": len(bench)}
+
+        # Iterate with sliding window
+        for i in range(0, len(bench) - window + 1, step):
+            segment = bench.iloc[i : i + window]
+            seg_ret = segment.iloc[-1] / segment.iloc[0] - 1
+            
+            # Simple regime labeling for the segment
+            if seg_ret > 0.02:
+                reg = "Bullish"
+            elif seg_ret < -0.02:
+                reg = "Bearish"
+            else:
+                reg = "Sideways"
+            
+            if last_regime and reg != last_regime:
+                switches.append({
+                    "from": last_regime,
+                    "to": reg,
+                    "approx_date": segment.index[-1].strftime('%Y-%m-%d')
+                })
+            last_regime = reg
+
+        # Calculate current streak: days since the last regime switch
+        current_streak = 0
+        if last_regime:
+            last_date = bench.index[-1]
+            if switches:
+                switch_date = pd.Timestamp(switches[-1]['approx_date'])
+                current_streak = (last_date - switch_date).days
+            else:
+                # No switches — current regime covers the entire window
+                current_streak = len(bench)
+        
+        return {
+            "switch_count": len(switches),
+            "switches": switches,
+            "current_streak_days": current_streak,
+            "current_regime": last_regime
+        }
