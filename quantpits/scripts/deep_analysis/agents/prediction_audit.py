@@ -397,60 +397,88 @@ class PredictionAuditAgent(BaseAgent):
             'latest_date': latest_date.strftime('%Y-%m-%d'),
         }
 
+    @staticmethod
+    def _parse_opinion_rank(value) -> Optional[float]:
+        """Parse numeric rank from model_opinions label like 'HOLD (7)' -> 7.0."""
+        if isinstance(value, (int, float)) and not pd.isna(value):
+            return float(value)
+        if isinstance(value, str):
+            m = re.search(r'\((\d+)\)', value)
+            if m:
+                return float(m.group(1))
+        return None
+
     def _analyze_per_model_hit_rate(self, ctx: AnalysisContext) -> dict:
         """
-        Analyze hit rate for each individual model.
-        
-        Uses IC proxy (correlation with ensemble final score) to identify
-        models that are consistently providing poor or counter-productive signals.
+        Analyze per-model prediction quality via rank correlation with ensemble.
+
+        The model_opinions CSV uses string labels like 'BUY (3)', 'HOLD (7)'
+        where the number is the intra-model prediction rank (lower = stronger).
+        We parse the rank, then compute Spearman correlation between each
+        model's ranking and the ensemble order_basis ranking as an IC proxy.
         """
         if not ctx.model_opinions_files:
             return {}
 
         per_model_stats = {}
         all_models = set()
-        
-        # We need to correlate individual model columns with the ensemble 'score'
-        # in the model_opinions_{date}.csv files.
-        for path in ctx.model_opinions_files[-3:]: # Last 3 snapshots
+
+        for path in ctx.model_opinions_files[-3:]:
             csv_path = path.replace('.json', '.csv')
-            if not os.path.exists(csv_path): continue
-            
+            if not os.path.exists(csv_path):
+                continue
             try:
                 df = pd.read_csv(csv_path)
-                if 'score' not in df.columns: continue
-                
-                model_cols = [c for c in df.columns if c.startswith('model_')]
-                for col in model_cols:
-                    model_name = col.replace('model_', '')
-                    all_models.add(model_name)
-                    
-                    # Calculate correlation (IC proxy)
-                    # We might need to handle BUY/SELL string conversion if they are not floats
-                    # But usually model_opinions.csv has raw scores in these columns
-                    if df[col].dtype == object:
-                        # Skip if it's purely labels for now, or try to parse
-                        continue
-                    
-                    ic = float(df[col].corr(df['score']))
-                    if model_name not in per_model_stats:
-                        per_model_stats[model_name] = []
-                    per_model_stats[model_name].append(ic)
             except Exception:
                 continue
 
-        if not per_model_stats: return {}
+            # Use order_basis as reference, then combo_, then score as fallback
+            ref_col = None
+            for candidate in ['order_basis'] + \
+                             [c for c in df.columns if c.startswith('combo_')] + \
+                             ['score']:
+                if candidate in df.columns:
+                    ref_col = candidate
+                    break
+
+            if ref_col is None:
+                continue
+
+            ref_ranks = df[ref_col].apply(self._parse_opinion_rank)
+            valid_ref = ref_ranks.notna()
+            if valid_ref.sum() < 5:
+                continue
+
+            model_cols = [c for c in df.columns if c.startswith('model_')]
+            for col in model_cols:
+                model_name = col.replace('model_', '')
+                all_models.add(model_name)
+
+                model_ranks = df[col].apply(self._parse_opinion_rank)
+                valid = valid_ref & model_ranks.notna()
+                if valid.sum() < 5:
+                    continue
+
+                # Spearman rank correlation as IC proxy
+                ic = float(ref_ranks[valid].corr(model_ranks[valid], method='spearman'))
+                if model_name not in per_model_stats:
+                    per_model_stats[model_name] = []
+                per_model_stats[model_name].append(ic)
+
+        if not per_model_stats:
+            return {}
 
         avg_ic = {m: np.mean(v) for m, v in per_model_stats.items()}
         overall_avg = np.mean(list(avg_ic.values()))
-        
+
         underperformers = [m for m, ic in avg_ic.items()
-                          if ic < overall_avg * 0.5 and ic < overall_avg - 0.02]
+                          if ic < overall_avg * 0.5 and ic < overall_avg - 0.05]
 
         return {
             "ensemble_overall_proxy_ic": float(overall_avg),
-            "per_model_ic": avg_ic,
-            "underperformers": underperformers
+            "per_model_ic": {m: round(v, 4) for m, v in avg_ic.items()},
+            "underperformers": underperformers,
+            "snapshots_analyzed": len(per_model_stats.get(list(per_model_stats.keys())[0], [])) if per_model_stats else 0,
         }
 
     @staticmethod

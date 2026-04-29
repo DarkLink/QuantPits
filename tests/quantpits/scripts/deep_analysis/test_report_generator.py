@@ -33,7 +33,7 @@ def test_report_generator_full():
         window_label='test_window',
         findings=[],
         raw_metrics={
-            'combo_trends': {'combo1': [{'total_return': 5.0, 'calmar_ratio': 2.0, 'excess_return': 1.0}]},
+            'combo_trends': {'combo1': [{'_date': '2026-04-24', 'total_return': 5.0, 'calmar_ratio': 2.0, 'excess_return': 1.0}]},
             'change_events': [
                 {'type': 'active_switch', 'date': '2026-01-05', 'detail': 'switched to combo1'},
                 {'type': 'composition_change', 'date': '2026-01-06', 'combo': 'combo2'}

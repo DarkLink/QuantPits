@@ -227,6 +227,15 @@ class EnsembleEvolutionAgent(BaseAgent):
                             'max_drawdown', 'calmar_ratio', 'excess_return', 'models']:
                     if col in row:
                         entry[col] = row[col]
+                # Normalize CSV metrics to match ledger convention:
+                # CSV total_return/excess_return are cumulative; ledger uses annualized.
+                if 'annualized_return' in entry:
+                    entry['total_return'] = float(entry['annualized_return'])
+                if 'annualized_excess' in entry:
+                    entry['excess_return'] = float(entry['annualized_excess'])
+                else:
+                    # CSV may lack annualized_excess; don't mix cumulative with annualized
+                    entry['excess_return'] = None
                 result.setdefault(combo, []).append(entry)
 
         for combo in result:

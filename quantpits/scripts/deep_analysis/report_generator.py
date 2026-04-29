@@ -84,6 +84,16 @@ class ReportGenerator:
                 lines.append(f"- **Annualized Volatility:** {window_vol*100:.1f}%")
             lines.append(f"- **Max Drawdown:** {max_dd*100:.1f}% (Current: {curr_dd*100:.1f}%)")
 
+            # Regime switches (per-window)
+            regime_switches = af.raw_metrics.get('regime_switches', {})
+            if regime_switches.get('switch_count', 0) > 0:
+                lines.append(f"\n- **Regime Switches:** {regime_switches['switch_count']} detected")
+                lines.append(f"  (current {regime_switches.get('current_regime', '?')} "
+                            f"streak: {regime_switches.get('current_streak_days', '?')} days)")
+                for sw in regime_switches.get('switches', [])[:5]:
+                    lines.append(f"  - {sw.get('approx_date', '?')}: "
+                               f"{sw.get('from', '?')} → {sw.get('to', '?')}")
+
         return "\n".join(lines)
 
     def _section_model_health(self) -> str:
@@ -123,8 +133,18 @@ class ReportGenerator:
         retrain_events = best_af.raw_metrics.get('retrain_events', [])
         if retrain_events:
             lines.append("\n### 2.2 Retrain History")
-            for event in retrain_events[-10:]:
-                lines.append(f"- **{event['date']}**: {event['model']} retrained")
+            # Group by date for readability
+            from collections import defaultdict
+            by_date = defaultdict(list)
+            for event in retrain_events:
+                by_date[event['date']].append(event['model'])
+            for date in sorted(by_date.keys(), reverse=True):
+                models = by_date[date]
+                if len(models) <= 5:
+                    lines.append(f"- **{date}**: {', '.join(models)} retrained")
+                else:
+                    lines.append(f"- **{date}**: {len(models)} models retrained "
+                               f"({', '.join(models[:3])}, ...)")
 
         # 2.3 Hyperparameter Snapshot
         hyperparams = best_af.raw_metrics.get('hyperparams', {})
@@ -140,6 +160,21 @@ class ReportGenerator:
                 param_str = ", ".join(f"{k}={v}" for k, v in list(params.items())[:5])
                 lines.append(f"| {model} | {cls} | {param_str} |")
 
+        # 2.4 Convergence Summary
+        convergence = best_af.raw_metrics.get('convergence_summary', {})
+        if convergence and convergence.get('total_models', 0) > 0:
+            lines.append("\n### 2.4 Convergence Summary")
+            lines.append(f"- **Models tracked:** {convergence['total_models']}")
+            lines.append(f"- **Early-stopped:** {convergence['pct_early_stopped']*100:.0f}%")
+            lines.append(f"- **Avg duration:** {convergence['avg_duration_s']:.0f}s")
+            underfitting = convergence.get('underfitting_candidates', [])
+            if underfitting:
+                lines.append(f"- **Underfitting candidates:** {', '.join(underfitting)} "
+                           f"(early-stopped < 50% of configured epochs)")
+            full_epoch = convergence.get('full_epoch_models', [])
+            if full_epoch:
+                lines.append(f"- **Full-epoch models:** {', '.join(full_epoch)}")
+
         return "\n".join(lines)
 
     def _section_ensemble(self) -> str:
@@ -149,36 +184,91 @@ class ReportGenerator:
 
         lines = ["## 3. Ensemble Evolution"]
 
-        for af in findings:
-            # 3.1 Combo Performance
-            trends = af.raw_metrics.get('combo_trends', {})
-            if trends:
-                lines.append(f"\n### 3.1 Combo Performance (Window: {af.window_label})")
-                for combo, series in trends.items():
-                    if series:
-                        latest = series[-1]
-                        ret = latest.get('total_return')
-                        cal = latest.get('calmar_ratio')
-                        exc = latest.get('excess_return')
-                        ret = float(ret) if ret is not None else 0.0
-                        cal = float(cal) if cal is not None else 0.0
-                        exc = float(exc) if exc is not None else 0.0
-                        lines.append(
-                            f"- **{combo}**: Return={ret:.2f}%, "
-                            f"Calmar={cal:.2f}, "
-                            f"Excess={exc:.2f}%"
-                        )
+        af = findings[0]  # Use first (most comprehensive) window
 
-            # 3.2 Change Events
-            events = af.raw_metrics.get('change_events', [])
-            if events:
-                lines.append("\n### 3.2 Change Event Log")
-                for e in events:
-                    etype = e.get('type', '?')
-                    icon = "🔄" if etype == 'composition_change' else "🔀" if etype == 'active_switch' else "📝"
-                    lines.append(f"- {icon} **{e.get('date', '?')}** [{etype}]: "
-                               f"{e.get('detail', e.get('combo', ''))}")
-            break  # Only show first window for these
+        # 3.1 Combo Performance — per-combo latest snapshot with trend indicator.
+        # Metrics are annualized full-period backtest results; change over time
+        # reflects how the combo's evaluation evolves as new data comes in.
+        trends = af.raw_metrics.get('combo_trends', {})
+        if trends:
+            lines.append("\n### 3.1 Combo Performance")
+            lines.append("| Combo | Return | Calmar | Excess | Period | Trend |")
+            lines.append("|-------|--------|--------|--------|--------|-------|")
+            # Sort: default first if present, then by latest calmar desc
+            def _sort_key(item):
+                name, series = item
+                is_default = 0 if name == 'default' else 1
+                latest_cal = series[-1].get('calmar_ratio') if series else 0
+                latest_cal = float(latest_cal) if latest_cal is not None else 0
+                return (is_default, -latest_cal)
+            for combo, series in sorted(trends.items(), key=_sort_key):
+                if not series:
+                    continue
+                latest = series[-1]
+                first = series[0]
+                ret = latest.get('total_return')
+                cal = latest.get('calmar_ratio')
+                exc = latest.get('excess_return')
+                ret_str = f"{float(ret):.1f}%" if ret is not None else "N/A"
+                cal_str = f"{float(cal):.2f}" if cal is not None else "N/A"
+                exc_str = f"{float(exc):.1f}%" if exc is not None else "N/A"
+
+                # Date range
+                first_date = first.get('_date', '?')
+                latest_date = latest.get('_date', '?')
+                if first_date == latest_date:
+                    period_str = first_date
+                else:
+                    period_str = f"{first_date}→{latest_date}"
+
+                # Trend arrow: compare first vs latest return
+                first_ret = first.get('total_return')
+                trend_str = "➡️"
+                if first_ret is not None and ret is not None and len(series) >= 2:
+                    delta = float(ret) - float(first_ret)
+                    if delta > 1:
+                        trend_str = f"📈 +{delta:.1f}pp"
+                    elif delta < -1:
+                        trend_str = f"📉 {delta:.1f}pp"
+                    else:
+                        trend_str = "➡️ flat"
+
+                lines.append(
+                    f"| **{combo}** | {ret_str} | {cal_str} | {exc_str} "
+                    f"| {period_str} | {trend_str} |"
+                )
+
+        # 3.2 Change Events (from first window only)
+        lines.append("\n### 3.2 Change Event Log")
+        events = af.raw_metrics.get('change_events', [])
+        if events:
+            for e in events:
+                etype = e.get('type', '?')
+                icon = "🔄" if etype == 'composition_change' else "🔀" if etype == 'active_switch' else "📝"
+                lines.append(f"- {icon} **{e.get('date', '?')}** [{etype}]: "
+                           f"{e.get('detail', e.get('combo', ''))}")
+        else:
+            lines.append("- No ensemble composition changes detected in this period.")
+
+        # 3.3 OOS Performance Trend
+        oos_trend = af.raw_metrics.get('oos_trend', {})
+        if oos_trend and oos_trend.get('oos_runs', 0) > 0:
+            lines.append("\n### 3.3 OOS Performance Trend")
+            lines.append(f"- **OOS runs analyzed:** {oos_trend['oos_runs']}")
+            slope = oos_trend.get('oos_calmar_slope')
+            if slope is not None:
+                direction = "improving" if slope > 0 else "degrading"
+                lines.append(f"- **Calmar slope:** {slope:.3f} ({direction})")
+            latest = oos_trend.get('latest_oos_calmar')
+            best = oos_trend.get('best_oos_calmar')
+            if latest is not None and best is not None:
+                lines.append(f"- **Latest OOS Calmar:** {latest:.2f}, **Best:** {best:.2f}")
+            decay = oos_trend.get('is_oos_decay', [])
+            if decay:
+                lines.append(f"- **IS→OOS Decay:**")
+                for d in decay:
+                    lines.append(f"  - {d['combo']}: {d['decay_ratio']*100:.1f}% "
+                               f"(IS={d['full_calmar']:.2f}, OOS={d['oos_calmar']:.2f})")
 
         return "\n".join(lines)
 
@@ -301,6 +391,21 @@ class ReportGenerator:
                     f"High-divergence: {cons.get('high_divergence_avg_return', 0)*100:.2f}%"
                 )
 
+        # Per-model IC proxy: data is identical across windows (same model_opinions),
+        # so render once after all windows.
+        af0 = findings[0]
+        pm = af0.raw_metrics.get('per_model_hit_rate', {})
+        if pm and pm.get('per_model_ic'):
+            lines.append(f"\n### 6.1 Per-Model IC Proxy")
+            lines.append(f"- **Ensemble overall proxy IC:** {pm.get('ensemble_overall_proxy_ic', 0):.4f}")
+            sorted_models = sorted(pm['per_model_ic'].items(), key=lambda x: x[1], reverse=True)
+            for model, ic in sorted_models[:10]:
+                flag = " ⚠️" if model in pm.get('underperformers', []) else ""
+                lines.append(f"  - {model}: {ic:.4f}{flag}")
+            underperformers = pm.get('underperformers', [])
+            if underperformers:
+                lines.append(f"- **Underperformers:** {', '.join(underperformers)}")
+
         return "\n".join(lines)
 
     def _section_trade_pattern(self) -> str:
@@ -332,16 +437,33 @@ class ReportGenerator:
             return ""
 
         lines = ["## 8. Holistic Change Impact Assessment"]
-        for ci in impact[:10]:
-            event = ci.get('event', {})
-            etype = event.get('type', '?')
-            lines.append(
-                f"- **{event.get('date', '?')}** [{etype}]: "
-                f"{event.get('model', event.get('combo', '?'))}"
-            )
 
-        lines.append(f"\n*{len(impact)} change events detected. "
-                    f"See multi-window metrics above for before/after comparison.*")
+        # Group by event type
+        from collections import Counter
+        type_counts = Counter(ci.get('event', {}).get('type', '?') for ci in impact)
+        lines.append(f"\n*{len(impact)} total change events detected.*")
+        lines.append(f"\nBreakdown by type:")
+        for etype, count in type_counts.most_common():
+            lines.append(f"- **{etype}**: {count} events")
+
+        # Show non-retrain events first (retrains already covered in 2.2)
+        non_retrain = [ci for ci in impact
+                      if ci.get('event', {}).get('type') != 'retrain']
+        if non_retrain:
+            lines.append(f"\n### Non-Retrain Changes")
+            for ci in non_retrain[:15]:
+                event = ci.get('event', {})
+                etype = event.get('type', '?')
+                date = event.get('date', '?')
+                detail = event.get('detail', event.get('model', event.get('combo', '?')))
+                lines.append(f"- **{date}** [{etype}]: {detail}")
+
+        # Summarize retrains (already detailed in 2.2)
+        retrain_count = type_counts.get('retrain', 0)
+        if retrain_count:
+            lines.append(f"\n*Retrain events ({retrain_count} total) are detailed in "
+                        f"Section 2.2 (Retrain History).*")
+
         return "\n".join(lines)
 
     def _section_recommendations(self) -> str:

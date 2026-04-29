@@ -351,19 +351,27 @@ class ModelHealthAgent(BaseAgent):
     def _check_staleness(self, ctx: AnalysisContext,
                          retrain_events: List[dict],
                          scorecard: dict) -> Dict[str, dict]:
-        """Check if models are stale (long since retrain + declining IC)."""
+        """Check if models are stale (long since retrain + declining/low IC)."""
         stale = {}
         # Build last retrain date per model
         last_retrain = {}
         for event in retrain_events:
             last_retrain[event['model']] = event['date']
 
+        # Determine the latest retrain date across all models — if a model was
+        # retrained in the most recent batch, retraining again won't help.
+        all_dates = sorted(set(last_retrain.values()))
+        latest_batch = all_dates[-1] if all_dates else None
+
         for model_name, sc in scorecard.items():
             lr_date = last_retrain.get(model_name)
             trend = sc.get('ic_trend', 'stable')
 
-            # Recommend retrain if IC is degrading and we know the model hasn't been retrained
-            # or if there's no retrain record at all (always static)
+            # Don't recommend retraining if the model was just retrained in the
+            # latest batch — the real issue is likely hyperparameters, not freshness.
+            if lr_date and lr_date == latest_batch:
+                continue
+
             recommend = False
             if trend == 'degrading':
                 recommend = True
