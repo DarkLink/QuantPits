@@ -1154,14 +1154,20 @@ def merge_performance_file(new_performances, anchor_date, output_dir=None):
         with open(perf_file, 'r') as f:
             existing = json.load(f)
     
-    # 合并
+    # 合并（保留已有 convergence 数据，predict-only 不会产生新的 convergence）
     merged = existing.copy()
-    merged.update(new_performances)
-    
+    for model_name, new_perf in new_performances.items():
+        if model_name in merged:
+            old_entry = merged[model_name]
+            # Carry forward convergence from last training run if new entry lacks it
+            if 'convergence' in old_entry and 'convergence' not in new_perf:
+                new_perf['convergence'] = old_entry['convergence']
+        merged[model_name] = new_perf
+
     # 保存
     with open(perf_file, 'w') as f:
         json.dump(merged, f, indent=4)
-    
+
     return merged
 
 

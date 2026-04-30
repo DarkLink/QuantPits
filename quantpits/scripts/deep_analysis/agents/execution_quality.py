@@ -193,7 +193,6 @@ class ExecutionQualityAgent(BaseAgent):
 
         # --- 4. Execution Timing ---
         try:
-            import os
             import pandas as pd
             order_log_path = os.path.join(ctx.workspace_root, 'data', 'raw_order_log_full.csv')
             trade_log_path = os.path.join(ctx.workspace_root, 'data', 'raw_trade_log_full.csv')
