@@ -8,11 +8,11 @@ Usage:
     # Rule-based full analysis
     python -m quantpits.scripts.run_deep_analysis
 
-    # With LLM synthesis
-    python -m quantpits.scripts.run_deep_analysis --llm openai
+    # With LLM synthesis (reads model/endpoint from config/llm_config.json)
+    python -m quantpits.scripts.run_deep_analysis --llm
 
     # With external notes
-    python -m quantpits.scripts.run_deep_analysis --llm openai \\
+    python -m quantpits.scripts.run_deep_analysis --llm \\
         --notes "Retrained catboost last week."
 
     # Specific agents only
@@ -54,17 +54,17 @@ def parse_args():
         '--output', type=str, default='output/deep_analysis_report.md',
         help='Output report path (default: output/deep_analysis_report.md)')
     parser.add_argument(
-        '--llm', type=str, default='none', choices=['none', 'openai'],
-        help='LLM backend for synthesis (default: none)')
+        '--llm', action='store_true',
+        help='Enable LLM-powered executive summary (reads model/endpoint from config/llm_config.json)')
     parser.add_argument(
-        '--llm-model', type=str, default='gpt-4',
-        help='LLM model name (default: gpt-4)')
+        '--llm-model', type=str, default=None,
+        help='Override LLM model for summary (default: use llm_config.json summary_model)')
     parser.add_argument(
         '--api-key', type=str, default=None,
-        help='OpenAI API key (default: $OPENAI_API_KEY)')
+        help='API key override (default: reads env var from llm_config.json api_key_env)')
     parser.add_argument(
         '--base-url', type=str, default=None,
-        help='OpenAI API base URL (for compatible endpoints)')
+        help='API base URL override (default: use llm_config.json base_url)')
     parser.add_argument(
         '--agents', type=str, default='all',
         help='Comma-separated agent names to run (default: all)')
@@ -83,6 +83,12 @@ def parse_args():
     parser.add_argument(
         '--no-snapshot', action='store_true',
         help='Skip config snapshot')
+    parser.add_argument(
+        '--critic', action='store_true',
+        help='Enable Critic mode: generate ActionItems from signals')
+    parser.add_argument(
+        '--critic-dry-run', action='store_true',
+        help='Generate ActionItems but do not persist to files (preview mode)')
     return parser.parse_args()
 
 
@@ -183,24 +189,69 @@ def main():
     n_recs = len(synthesis_result.get('recommendations', []))
     print(f"   → {n_cross} cross-agent findings, {n_recs} recommendations")
 
+    # --- 5.5. Signal Extraction ---
+    print("\n📡 Extracting structured signals...")
+    from quantpits.scripts.deep_analysis.signal_extractor import SignalExtractor
+
+    signal_extractor = SignalExtractor()
+    signals = signal_extractor.extract(all_findings, synthesis_result)
+    print(f"   → {len(signals)} signals extracted")
+
+    # --- 5.6–5.8. Critic + Validation + Persist (if --critic) ---
+    if args.critic or args.critic_dry_run:
+        print("\n🧪 Running LLM Critic...")
+        from quantpits.scripts.deep_analysis.action_items import (
+            ActionItemValidator, persist_action_items,
+        )
+
+        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface as _LLMInterface
+        critic_llm = _LLMInterface(
+            api_key=args.api_key,
+            model=args.llm_model,
+            base_url=args.base_url,
+        )
+        action_items = critic_llm.generate_action_items(signals, workspace_root)
+        print(f"   → {len(action_items)} action items generated")
+
+        # Validate
+        print("\n🔍 Validating action items...")
+        import os as _os
+        validator = ActionItemValidator(
+            feedback_scope_path=_os.path.join(workspace_root, 'config', 'feedback_scope.json'),
+            hyperparam_bounds_path=_os.path.join(workspace_root, 'config', 'hyperparam_bounds.json'),
+            workspace_root=workspace_root,
+        )
+        action_items = validator.validate(action_items)
+        n_in = sum(1 for a in action_items if a.scope_status == 'in_scope')
+        n_out = sum(1 for a in action_items if a.scope_status == 'out_of_scope')
+        n_rej = sum(1 for a in action_items if a.scope_status == 'rejected')
+        print(f"   → {n_in} in-scope, {n_out} out-of-scope, {n_rej} rejected")
+
+        # Persist
+        if not args.critic_dry_run:
+            print("\n💾 Persisting action items...")
+            snap_path = persist_action_items(action_items, workspace_root)
+            print(f"   → Saved to {snap_path}")
+        else:
+            print("\n🏜️  Dry-run mode — action items not persisted.")
+            for ai in action_items:
+                status_icon = {'in_scope': '✅', 'out_of_scope': '⚠️', 'rejected': '❌'}.get(ai.scope_status, '❓')
+                print(f"   {status_icon} [{ai.scope_status}] {ai.action_type}: {ai.target} — {ai.reason[:80]}")
+
     # --- 6. LLM Executive Summary ---
     print("\n📝 Generating executive summary...")
     from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
 
-    if args.llm == 'openai':
+    if args.llm:
         llm = LLMInterface(
             api_key=args.api_key,
             model=args.llm_model,
             base_url=args.base_url,
         )
-        if llm.is_available():
-            print(f"   Using OpenAI API (model: {args.llm_model})")
-        else:
-            print("   ⚠️  No API key found. Using template-based summary.")
     else:
         llm = LLMInterface()  # No API key → template mode
 
-    executive_summary = llm.generate_executive_summary(synthesis_result)
+    executive_summary = llm.generate_executive_summary(synthesis_result, workspace_root)
 
     # --- 7. Generate Report ---
     print("\n📊 Generating report...")

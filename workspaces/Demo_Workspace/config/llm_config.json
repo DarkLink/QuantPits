@@ -1,0 +1,12 @@
+{
+    "_comment": "LLM 配置模板 — 请根据实际环境修改",
+    "critic_model": "gpt-4o",
+    "summary_model": "gpt-4o",
+    "available_models": ["gpt-4o"],
+    "api_key_env": "OPENAI_API_KEY",
+    "base_url": null,
+    "temperature": 0.3,
+    "max_tokens": 4000,
+    "mcp_enabled": false,
+    "mcp_tools": []
+}

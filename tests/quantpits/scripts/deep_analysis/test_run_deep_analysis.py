@@ -15,15 +15,27 @@ def test_parse_args():
     with patch('sys.argv', ['run_deep_analysis.py']):
         args = run_deep_analysis.parse_args()
         assert args.windows == 'full,weekly_era,1y,6m,3m,1m'
-        assert args.llm == 'none'
+        assert args.llm is False
         assert args.agents == 'all'
+        assert args.critic is False
+        assert args.critic_dry_run is False
 
     # Test custom args
-    with patch('sys.argv', ['run_deep_analysis.py', '--windows', '1m', '--llm', 'openai', '--agents', 'model_health']):
+    with patch('sys.argv', ['run_deep_analysis.py', '--windows', '1m', '--llm', '--agents', 'model_health']):
         args = run_deep_analysis.parse_args()
         assert args.windows == '1m'
-        assert args.llm == 'openai'
+        assert args.llm is True
         assert args.agents == 'model_health'
+
+    # Test critic args
+    with patch('sys.argv', ['run_deep_analysis.py', '--critic']):
+        args = run_deep_analysis.parse_args()
+        assert args.critic is True
+        assert args.critic_dry_run is False
+
+    with patch('sys.argv', ['run_deep_analysis.py', '--critic-dry-run']):
+        args = run_deep_analysis.parse_args()
+        assert args.critic_dry_run is True
 
 def test_load_deep_analysis_config(tmp_path):
     workspace = tmp_path / "ws"
@@ -67,7 +79,7 @@ def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_sn
     args.windows = '1m,3m'
     args.freq_change_date = None
     args.output = 'output/report.md'
-    args.llm = 'openai'
+    args.llm = True
     args.llm_model = 'gpt-4'
     args.api_key = 'sk-test'
     args.base_url = None
@@ -77,30 +89,32 @@ def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_sn
     args.snapshot_config = True
     args.no_snapshot = False
     args.shareable = False
+    args.critic = False
+    args.critic_dry_run = False
     mock_parse_args.return_value = args
-    
+
     mock_load_config.return_value = {'freq_change_date': '2024-01-01'}
     mock_exists.side_effect = lambda x: x == 'notes.txt' or x.endswith('config/deep_analysis_config.json')
-    
+
     # Mock notes file content
     mock_open_file.return_value.read.return_value = "notes from file"
-    
+
     mock_coord_inst = mock_coord.return_value
     mock_coord_inst.run.return_value = [MagicMock()]
-    
+
     mock_synth_inst = mock_synth.return_value
     mock_synth_inst.synthesize.return_value = {'health_status': 'Healthy', 'cross_findings': [], 'recommendations': []}
-    
+
     mock_llm_inst = mock_llm.return_value
     mock_llm_inst.is_available.return_value = True
     mock_llm_inst.generate_executive_summary.return_value = "Executive Summary"
-    
+
     mock_report_gen_inst = mock_report_gen.return_value
     mock_report_gen_inst.generate.return_value = "# Deep Analysis Report"
-    
+
     # Run main
     result = run_deep_analysis.main()
-    
+
     assert result == 0
     mock_coord.assert_called_once()
     mock_synth.assert_called_once()
@@ -155,8 +169,10 @@ def test_main_snapshot_failure(mock_exists, mock_snap_configs, mock_report_gen, 
     args.no_snapshot = False
     args.notes_file = None
     args.notes = ''
-    args.llm = 'none'
+    args.llm = False
     args.output = 'report.md'
+    args.critic = False
+    args.critic_dry_run = False
     mock_parse_args.return_value = args
     mock_load_config.return_value = {}
     
@@ -191,8 +207,10 @@ def test_main_llm_not_available(mock_exists, mock_report_gen, mock_llm,
     args.no_snapshot = True
     args.notes_file = None
     args.notes = ''
-    args.llm = 'openai'
+    args.llm = True
     args.output = 'report.md'
+    args.critic = False
+    args.critic_dry_run = False
     mock_parse_args.return_value = args
     mock_load_config.return_value = {}
     
@@ -210,4 +228,3 @@ def test_main_llm_not_available(mock_exists, mock_report_gen, mock_llm,
         result = run_deep_analysis.main()
     
     assert result == 0
-    mock_llm_inst.is_available.assert_called_once()

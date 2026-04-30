@@ -41,16 +41,23 @@ QLIB_DATA_DIR = os.environ.get("QLIB_DATA_DIR", "~/.qlib/qlib_data/cn_data")
 QLIB_REGION = os.environ.get("QLIB_REGION", "cn")
 
 
+_qlib_initialized = False
+
+
 def init_qlib():
     """
-    集中初始化 Qlib 环境。
+    Initialize Qlib environment once. Subsequent calls are no-ops.
 
-    数据路径和区域通过环境变量控制：
-      - QLIB_DATA_DIR: Qlib 数据目录 (默认 ~/.qlib/qlib_data/cn_data)
-      - QLIB_REGION:   Qlib 区域     (默认 cn)
+    Data path and region are controlled via environment variables:
+      - QLIB_DATA_DIR: Qlib data dir (default ~/.qlib/qlib_data/cn_data)
+      - QLIB_REGION:   Qlib region     (default cn)
 
-    在各 workspace 的 run_env.sh 中可按需设置这两个变量来实现数据分离。
+    Set these in each workspace's run_env.sh to separate data.
     """
+    global _qlib_initialized
+    if _qlib_initialized:
+        return
+
     import qlib
     from qlib.constant import REG_CN, REG_US
 
@@ -58,6 +65,7 @@ def init_qlib():
     region = region_map.get(QLIB_REGION.lower(), REG_CN)
 
     qlib.init(provider_uri=QLIB_DATA_DIR, region=region)
+    _qlib_initialized = True
 
 
 def safeguard(script_name="Pipeline"):
