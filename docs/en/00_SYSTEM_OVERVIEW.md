@@ -33,9 +33,11 @@ Every step in this system is **optional and combinable**. Only "Prediction" and 
 | ⑤ Post-Trade | ✅ Every time | Processes last period's live data to update holdings and cash |
 | ⑥ Order Generation | ✅ Every time | Generates buy/sell suggestions and multi-model opinions based on fused predictions and current holdings |
 | ⑦ Signal Ranking | Optional | Normalizes scores into Top N rankings, suitable for sharing |
+| ⑧ Deep Analysis | Recommended weekly | Multi-agent automated analysis + OOM-RL feedback (from analysis to auto-execution) |
+| ⑨ Feedback Loop | On-demand | Execute LLM Critic ActionItems, validate in Playground, promote to production |
 
 > [!IMPORTANT]
-> Training is not required every time, but prediction is mandatory. **Ensemble Search** is a "heavy-duty" operation, and selected model combos can be used for a long time. The minimal routine operation loop is: **Prediction → Fusion → Post-Trade → Order Generation**.
+> Training is not required every time, but prediction is mandatory. **Ensemble Search** is a "heavy-duty" operation, and selected model combos can be used for a long time. The minimal routine operation loop is: **Prediction → Fusion → Post-Trade → Order Generation**. Run Deep Analysis weekly to monitor system health and get optimization recommendations.
 
 ---
 
@@ -82,6 +84,8 @@ flowchart TB
 
     subgraph ANALYSIS["⑧ Comprehensive Analysis (Monitoring)"]
         AN["run_analysis.py<br/>Full Review of Models/Fusions/Hazards"]
+        DA["run_deep_analysis.py<br/>Multi-Agent Deep Analysis + OOM-RL"]
+        FB["run_feedback_loop.py<br/>ActionItem Execution + Promotion"]
     end
 
     REG["model_registry.yaml<br/>Model Registry"]
@@ -90,6 +94,7 @@ flowchart TB
     PRED_REC["output/predictions/<br/>Prediction Recorders"]
     ER["ensemble_records.json<br/>Fusion Record Pointer"]
     WC["prod_config.json<br/>Holdings/Cash"]
+    AI["action_items_{date}.json<br/>OOM-RL ActionItems"]
 
     REG --> TRAIN
     REG --> PREDICT
@@ -114,6 +119,11 @@ flowchart TB
     PT --> WC
     WC --> ORDERGEN
     WC -.->|daily_amount| AN
+    LTR --> DA
+    WC -.->|daily_amount| DA
+    DA --> AI
+    AI --> FB
+    FB -.->|promote config| REG
 ```
 
 ---
@@ -230,6 +240,33 @@ python quantpits/scripts/ensemble_fusion.py \
 
 > For daily operation, simply run: `python quantpits/scripts/rolling_train.py --all-enabled` (auto-detects whether to train or predict)
 
+### Scenario F: OOM-RL Closed-Loop Feedback (Deep Analysis → Auto-Execute)
+
+For scenarios where weekly analysis reveals models needing hyperparameter tuning.
+
+```bash
+# ⑧ Deep Analysis + LLM Critic → produce ActionItems
+python -m quantpits.scripts.run_deep_analysis --critic
+
+# ⑨ Preview what the Feedback Loop will do (with priority sorting)
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --report-only
+
+# ⑨ Execute in Playground sandbox (high-priority models only)
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --execute --max-duration-minutes 30
+
+# ⑨ Promote validated changes to production
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --promote
+
+# ① Next training cycle picks up the new config automatically
+python -m quantpits.scripts.static_train --all-enabled
+```
+
 ---
 
 ## Module Cheat Sheet
@@ -342,6 +379,39 @@ python quantpits/scripts/ensemble_fusion.py \
 - Supports generation by combo (`--all-combos` / `--combo`)
 - Independent from order generation, suitable for distributing to others
 
+### ⑧ Deep Analysis Module (MAS + OOM-RL)
+
+> See [50_DEEP_ANALYSIS_GUIDE.md](50_DEEP_ANALYSIS_GUIDE.md), [51_OOMRL_FEEDBACK_OVERVIEW.md](51_OOMRL_FEEDBACK_OVERVIEW.md)
+
+| Script | Purpose |
+|------|------|
+| `run_deep_analysis.py` | Multi-Agent post-trade analysis: 7 specialist agents × multiple time windows |
+| `run_deep_analysis.py --critic` | **OOM-RL Phase 3** — LLM Critic generates executable ActionItems |
+| `run_feedback_loop.py` | **OOM-RL Phase 4** — Sandboxed Playground execution, validation, promotion |
+
+- **Agent System**: Market Regime / Model Health / Ensemble Eval / Execution Quality / Portfolio Risk / Prediction Audit / Trade Pattern
+- **OOM-RL feedback loop**: Signal Extractor (rules) → LLM Critic (decisions) → ActionItem (executable) → Feedback Loop (execute + validate + promote)
+- **Playground isolation**: All experiments run in an independent sandbox workspace
+- **Priority scheduling**: Auto-sorted by signal severity, confidence, and training cost
+- **Rollback safety**: Production workspace is a standalone Git repo — `git checkout` to revert
+- **Complete audit trail**: JSONL records + human-readable Markdown reports + CHANGELOG.md
+
+### ⑨ Feedback Loop Module
+
+> See [54_OOMRL_FEEDBACK_LOOP.md](54_OOMRL_FEEDBACK_LOOP.md)
+
+| Script | Purpose |
+|------|------|
+| `run_feedback_loop.py --report-only` | Preview mode: sort + preview, no execution |
+| `run_feedback_loop.py --execute` | Execute mode: apply changes in Playground and validate |
+| `run_feedback_loop.py --promote` | Promote mode: push validated config to production |
+| `run_feedback_loop.py --auto-promote` | Fully automatic (not yet implemented in Phase 4) |
+
+- `--models` / `--skip-models` for manual model selection
+- `--max-duration-minutes` for time-budget control
+- `--dry-run` to preview adapter changes without writing files
+- `--skip-retrain` to modify configs without retraining
+
 ---
 
 ## Data Flow
@@ -408,6 +478,11 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | `ensemble_records.json` | Fusion Record Pointer: Mapping from combo to recorder_id + default flag | Fusion, Order Gen, Ranking |
 | `rolling_config.yaml` | Rolling Training Params: Start date, train/valid years, step size | Rolling Train |
 | `workflow_config_*.yaml` | Qlib Workflows: Training configurations for each model | Train |
+| `feedback_scope.json` | OOM-RL Feedback Scope: Controls which domains the LLM Critic can influence | Deep Analysis, Feedback Loop |
+| `hyperparam_bounds.json` | Hyperparameter bounds and per-change magnitude limits | LLM Critic, Training Adapter |
+| `llm_config.json` | LLM API config: model, endpoint, key | Deep Analysis, LLM Critic |
+| `oos_config.json` | OOS evaluation parameters: exclusion period | Deep Analysis |
+| `config/skills/` | LLM Critic system prompts (Markdown) | LLM Critic |
 
 ### Output Files (`output/`)
 
@@ -422,6 +497,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | `model_opinions_*_linechart.png` | Multi-model ranking visualization charts |
 | `buy/sell_suggestion_*.csv` | Target buy/sell execution orders |
 | `model_performance_*.json` | Model IC/ICIR metrics |
+| `deep_analysis/` | Deep Analysis and OOM-RL outputs (action_items, feedback_report) |
 
 ### Running State (`data/`)
 
@@ -435,6 +511,14 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | `trade_log_full.csv` | Cumulative trade log (both buys and sells) |
 | `holding_log_full.csv` | Cumulative holdings log |
 | `daily_amount_log_full.csv` | Daily capital summary |
+| `training_history.jsonl` | Training convergence log (one record appended per training run) |
+| `operator_log.jsonl` | Operation audit log (one record per script execution) |
+| `fusion_run_ledger.jsonl` | Fusion run ledger (one record per backtest) |
+| `action_item_history.jsonl` | OOM-RL ActionItem audit trail |
+| `promote_history.jsonl` | Config promotion audit records |
+| `CHANGELOG.md` | Human-readable changelog |
+| `promote_history/` | Detailed Markdown reports for each promotion |
+| `config_history/` | Configuration snapshot history |
 
 ### Archive Directory (`archive/`)
 
@@ -458,6 +542,11 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | 07 | [SIGNAL_RANKING_GUIDE](07_SIGNAL_RANKING_GUIDE.md) | Top N signal recommendation |
 | 08 | [ANALYSIS_GUIDE](08_ANALYSIS_GUIDE.md) | Single model quality, fusion correlations, slippage costs and comprehensive multi-factor risk assessments |
 | **30** | **[ROLLING_TRAINING_GUIDE](30_ROLLING_TRAINING_GUIDE.md)** | **Rolling training: sliding windows, cold start, crash recovery** |
+| **50** | **[DEEP_ANALYSIS_GUIDE](50_DEEP_ANALYSIS_GUIDE.md)** | **Multi-Agent Deep Analysis + OOM-RL LLM Critic** |
+| **51** | **[OOMRL_OVERVIEW](51_OOMRL_FEEDBACK_OVERVIEW.md)** | **OOM-RL closed-loop feedback system overview** |
+| **52** | **[OOMRL_DATA](52_OOMRL_DATA_INFRASTRUCTURE.md)** | **Feedback data infrastructure** |
+| **53** | **[OOMRL_CRITIC](53_OOMRL_CRITIC_GUIDE.md)** | **LLM Critic: Signal + ActionItem + Skills** |
+| **54** | **[OOMRL_LOOP](54_OOMRL_FEEDBACK_LOOP.md)** | **Feedback Loop Execution: Playground + Adapter + Promote** |
 | 70 | [WALKTHROUGH](70_WALKTHROUGH.md) | **End-to-End Hands-On Walkthrough (Start Here!)** |
 
 ---
@@ -473,7 +562,8 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `config_loader.py` | Workspace-level config loading | Global |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
 | `backtest_utils.py` | Qlib backtest execution and evaluation | Ensemble Search, Fusion, Analysis |
-| `env.py` | Qlib initialization, working directory management | Global |
+| `env.py` | Qlib initialization, workspace management, `set_root_dir()` runtime switching | Global |
+| `operator_log.py` | Operation audit log: auto-records every script execution | Global (7 scripts integrated) |
 | `ensemble_utils.py` | Ensemble config parsing, combo management, records loading | Fusion, Signal Ranking, Order Gen |
 | `search_utils.py` | Combo search shared logic: signal handling, backtest core, IS/OOS splitting, grouped combinations | Ensemble Search (Standard/Fast), MinEntropy, Analysis |
 | `run_context.py` | Encapsulates per-run output directory management and IS/OOS stratifications | Ensemble Search, Analysis |
@@ -511,12 +601,20 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 - Repeated underperformance sequentially over weeks
 - Recommended routine reviews (e.g. at a monthly cadence)
 
+### When should I run the OOM-RL feedback loop?
+
+- Deep Analysis report shows `severe_underfitting` or `overfitting` models
+- LLM Critic produced executable ActionItems (`action_items_{date}.json` is non-empty)
+- You want to auto-validate hyperparameter tuning effects (Playground sandbox + backtest comparison)
+- You need a human-readable audit trail of configuration changes
+
 ### What is the minimal daily / weekly operation?
 
 ```bash
-# Routine minimal loop (4 commands, assuming workspace is activated)
+# Routine minimal loop (5 commands, assuming workspace is activated)
 python quantpits/scripts/static_train.py --predict-only --all-enabled     # Predict
 python quantpits/scripts/ensemble_fusion.py --from-config-all       # Fuse
 python quantpits/scripts/prod_post_trade.py                      # Post-Trade
 python quantpits/scripts/order_gen.py                              # Generate Orders
+python -m quantpits.scripts.run_deep_analysis                      # Deep Analysis (recommended)
 ```

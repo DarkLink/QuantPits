@@ -4,6 +4,8 @@
 
 深度分析系统是一个多代理系统 (MAS)，用于执行自动化的、多窗口的盘后分析。七个专业代理分析交易系统的不同方面，综合器 (Synthesizer) 交叉引用发现的结果，生成具有优先级的、可操作的建议。
 
+自 Phase 3 起，系统集成了 OOM-RL (Out-of-Money Reinforcement Learning) 反馈能力：LLM Critic 将分析结果转化为可执行的 ActionItem，Phase 4 的 Feedback Loop 在 Playground 沙箱中自动执行并验证这些建议。
+
 ## 快速开始
 
 ```bash
@@ -13,12 +15,17 @@ source workspaces/Example_Workspace/run_env.sh
 # 基础规则分析
 python -m quantpits.scripts.run_deep_analysis
 
+# 使用 LLM 生成执行摘要
+python -m quantpits.scripts.run_deep_analysis --llm
+
+# 运行 Critic 模式 — 生成可执行的 ActionItems (OOM-RL Phase 3)
+python -m quantpits.scripts.run_deep_analysis --critic
+
+# Critic 预览模式 — 生成 ActionItems 但不持久化
+python -m quantpits.scripts.run_deep_analysis --critic-dry-run
+
 # 带频率变更截止日期
 python -m quantpits.scripts.run_deep_analysis --freq-change-date YYYY-MM-DD
-
-# 使用 LLM 生成执行摘要
-OPENAI_API_KEY=sk-xxx python -m quantpits.scripts.run_deep_analysis \
-    --llm openai --freq-change-date YYYY-MM-DD
 
 # 附带操作员笔记
 python -m quantpits.scripts.run_deep_analysis \
@@ -38,15 +45,19 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 | `--windows` | `full,weekly_era,1y,6m,3m,1m` | 逗号分隔的时间窗口 |
 | `--freq-change-date` | 来自配置或 `None` | 日频→周频切换的截止日期 |
 | `--output` | `output/deep_analysis_report.md` | 报告输出路径 |
-| `--llm` | `none` | LLM 后端：`none` 或 `openai` |
-| `--llm-model` | `gpt-4` | OpenAI 模型名称 |
-| `--api-key` | `$OPENAI_API_KEY` | LLM API 密钥 |
-| `--base-url` | `None` | OpenAI 兼容的 API 基础 URL |
+| `--llm` | (flag) | 启用 LLM 执行摘要（模型/endpoint 读取 llm_config.json） |
+| `--llm-model` | (llm_config.json) | 覆盖摘要 LLM 模型 |
+| `--api-key` | (env var) | API 密钥覆盖（默认读取 llm_config.json 中 api_key_env 指向的环境变量） |
+| `--base-url` | (llm_config.json) | API base URL 覆盖 |
+| `--critic` | (flag) | **OOM-RL Phase 3** — 启用 Critic 模式，生成 ActionItems |
+| `--critic-dry-run` | (flag) | Critic 预览模式，生成 ActionItems 但不持久化到文件 |
 | `--agents` | `all` | 逗号分隔的代理名称 |
 | `--notes` | `""` | 自由文本形式的外部上下文 |
 | `--notes-file` | `None` | 包含外部笔记的文件路径 |
 | `--shareable` | `false` | 脱敏敏感数据 |
 | `--no-snapshot` | `false` | 跳过配置快照 |
+
+> **OOM-RL 工作流**: `--critic` 产出 ActionItems 后，通过 `run_feedback_loop.py` 执行。详见 [54 — 反馈闭环执行指南](54_OOMRL_FEEDBACK_LOOP.md)。
 
 ## 代理
 
@@ -181,3 +192,42 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 | 无法交易的信念 | 高替代偏差 + 低胜率 | "首选标的经常无法交易" |
 | 融合价值 | 胜率 > 55% | "融合价值已确认" |
 | 无 Alpha | 所有窗口的 Alpha p>0.1 | "无法拒绝零 Alpha 的零假设 (H₀)" |
+
+## OOM-RL 闭环反馈
+
+从 Phase 3 开始，Deep Analysis 集成了 OOM-RL 反馈能力。启用 `--critic` 标志后，分析结果会通过以下管道转化为可执行的模型优化动作：
+
+```
+Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback Loop
+```
+
+### 相关文档
+
+| 文档 | 内容 |
+|------|------|
+| [51 — OOM-RL 概览](51_OOMRL_FEEDBACK_OVERVIEW.md) | 系统架构、数据流、反馈范围控制 |
+| [52 — 数据基础设施](52_OOMRL_DATA_INFRASTRUCTURE.md) | OperatorLog、Config Ledger、训练收敛日志、Agent 增强 |
+| [53 — LLM Critic 指南](53_OOMRL_CRITIC_GUIDE.md) | Signal 提取、Critic 模式、ActionItem 结构、Skills |
+| [54 — 反馈闭环执行](54_OOMRL_FEEDBACK_LOOP.md) | Playground、Adapter、Orchestrator、Promote、回退 |
+
+### 快速流程
+
+```bash
+# Step 1: Deep Analysis + Critic → 产出 ActionItems
+python -m quantpits.scripts.run_deep_analysis --critic
+
+# Step 2: 预览 Feedback Loop
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --report-only
+
+# Step 3: 在 Playground 中执行
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --execute
+
+# Step 4: 推广到生产
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --promote
+```

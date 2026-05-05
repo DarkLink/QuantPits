@@ -25,6 +25,7 @@ An advanced, production-ready quantitative trading system built on top of [Micro
   - **Extensible Broker Adapters**: Decoupled settlement parser supporting arbitrary broker terminal formats (e.g., Guotai Junan).
 * **Rich Observability**: Two interactive `streamlit` dashboards for macro portfolio performance and micro rolling health monitoring.
 * **Resilient Infrastructure**: Automatic checkpoints, JSON tracking for model registries, and daily/weekly logs.
+* **OOM-RL Intelligent Feedback Loop**: Multi-agent deep analysis + LLM Critic decision-making + sandboxed Playground execution, closing the loop from analysis to automated optimization.
 
 ## 📂 Architecture Overview
 
@@ -112,6 +113,9 @@ python -m quantpits.scripts.prod_post_trade
 
 # 5. Generate new Buy/Sell orders based on current holdings
 python -m quantpits.scripts.order_gen
+
+# 6. Deep Analysis (recommended weekly)
+python -m quantpits.scripts.run_deep_analysis
 ```
 
 ### 5. Launch Dashboards
@@ -147,6 +151,7 @@ For a deep dive into each module, refer to the documentation in `docs/`:
 - `02_BRUTE_FORCE_GUIDE.md`
 - `03_ENSEMBLE_FUSION_GUIDE.md`
 - `30_ROLLING_TRAINING_GUIDE.md` (Rolling Training: Sliding Window Training)
+- `50-54` OOM-RL series: Multi-Agent Deep Analysis, LLM Critic, Playground execution &amp; promotion
 - ...and more.
 
 All documentation is available in both Chinese and English (`docs/en/`).

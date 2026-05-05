@@ -7,6 +7,11 @@ multi-window post-trade analysis. Seven specialist agents analyze different aspe
 of the trading system and a Synthesizer cross-references findings to produce 
 prioritized, actionable recommendations.
 
+Starting from Phase 3, the system integrates OOM-RL (Out-of-Money Reinforcement
+Learning) feedback capabilities: an LLM Critic converts analysis findings into
+executable ActionItems, and the Phase 4 Feedback Loop automatically executes and
+validates these recommendations in a sandboxed Playground workspace.
+
 ## Quick Start
 
 ```bash
@@ -16,12 +21,17 @@ source workspaces/Example_Workspace/run_env.sh
 # Basic rule-based analysis
 python -m quantpits.scripts.run_deep_analysis
 
+# LLM-powered executive summary
+python -m quantpits.scripts.run_deep_analysis --llm
+
+# Critic mode — generate executable ActionItems (OOM-RL Phase 3)
+python -m quantpits.scripts.run_deep_analysis --critic
+
+# Critic dry-run — generate ActionItems without persisting to files
+python -m quantpits.scripts.run_deep_analysis --critic-dry-run
+
 # With frequency-change cutoff
 python -m quantpits.scripts.run_deep_analysis --freq-change-date YYYY-MM-DD
-
-# With LLM-powered executive summary
-OPENAI_API_KEY=sk-xxx python -m quantpits.scripts.run_deep_analysis \
-    --llm openai --freq-change-date YYYY-MM-DD
 
 # With operator notes
 python -m quantpits.scripts.run_deep_analysis \
@@ -41,15 +51,20 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 | `--windows` | `full,weekly_era,1y,6m,3m,1m` | Comma-separated time windows |
 | `--freq-change-date` | From config or `None` | Daily→weekly frequency cutoff date |
 | `--output` | `output/deep_analysis_report.md` | Report output path |
-| `--llm` | `none` | LLM backend: `none` or `openai` |
-| `--llm-model` | `gpt-4` | OpenAI model name |
-| `--api-key` | `$OPENAI_API_KEY` | API key for LLM |
-| `--base-url` | `None` | OpenAI-compatible API base URL |
+| `--llm` | (flag) | Enable LLM executive summary (reads model/endpoint from llm_config.json) |
+| `--llm-model` | (llm_config.json) | Override LLM model for summary |
+| `--api-key` | (env var) | API key override (reads env var from llm_config.json api_key_env) |
+| `--base-url` | (llm_config.json) | API base URL override |
+| `--critic` | (flag) | **OOM-RL Phase 3** — Enable Critic mode, generate ActionItems |
+| `--critic-dry-run` | (flag) | Critic preview mode, generate ActionItems without persisting |
 | `--agents` | `all` | Comma-separated agent names |
 | `--notes` | `""` | Free-text external context |
 | `--notes-file` | `None` | File path containing external notes |
 | `--shareable` | `false` | Redact sensitive data |
 | `--no-snapshot` | `false` | Skip config snapshot |
+
+> **OOM-RL workflow**: after `--critic` produces ActionItems, execute them via
+> `run_feedback_loop.py`. See [54 — Feedback Loop Guide](54_OOMRL_FEEDBACK_LOOP.md).
 
 ## Agents
 
@@ -184,3 +199,44 @@ The Synthesizer detects compound patterns across agents:
 | Untradeable convictions | High substitution bias + Low hit rate | "Top picks frequently untradeable" |
 | Ensemble value | Hit rate > 55% | "Fusion value confirmed" |
 | No alpha | Alpha p>0.1 across all windows | "Cannot reject H₀ of zero alpha" |
+
+## OOM-RL Closed-Loop Feedback
+
+Starting from Phase 3, Deep Analysis integrates OOM-RL feedback capabilities.
+When `--critic` is enabled, analysis findings flow through a pipeline that
+converts them into executable model optimization actions:
+
+```
+Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback Loop
+```
+
+### Related Documentation
+
+| Document | Content |
+|----------|---------|
+| [51 — OOM-RL Overview](51_OOMRL_FEEDBACK_OVERVIEW.md) | System architecture, data flow, feedback scope control |
+| [52 — Data Infrastructure](52_OOMRL_DATA_INFRASTRUCTURE.md) | OperatorLog, Config Ledger, training history, agent enhancements |
+| [53 — LLM Critic Guide](53_OOMRL_CRITIC_GUIDE.md) | Signal extraction, Critic mode, ActionItem structure, Skills |
+| [54 — Feedback Loop Guide](54_OOMRL_FEEDBACK_LOOP.md) | Playground, Adapter, Orchestrator, Promote, rollback |
+
+### Quick Flow
+
+```bash
+# Step 1: Deep Analysis + Critic → produce ActionItems
+python -m quantpits.scripts.run_deep_analysis --critic
+
+# Step 2: Preview the Feedback Loop
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --report-only
+
+# Step 3: Execute in Playground
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --execute
+
+# Step 4: Promote to production
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --promote
+```

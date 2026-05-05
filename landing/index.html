@@ -974,9 +974,9 @@
           <span class="zh">组件化流水线</span>
         </h3>
         <p class="feature-card__desc">
-          <span class="en">Modular stages — Train, Predict, Ensemble, Post-Trade, Order Gen — all orchestrable via
-            one-liner Makefile targets or individual scripts.</span>
-          <span class="zh">模块化的流水线步骤——训练、预测、融合、盘后处理、订单生成——均可通过 Makefile 一键调度或单独脚本触发。</span>
+          <span class="en">Modular stages — Train, Predict, Ensemble, Post-Trade, Order Gen — plus Deep Analysis
+            with AI-driven feedback for continuous optimization.</span>
+          <span class="zh">模块化的流水线步骤——训练、预测、融合、盘后处理、订单生成——加上 AI 驱动的深度分析与反馈闭环，实现持续优化。</span>
         </p>
       </div>
     </div>
@@ -1003,7 +1003,7 @@
         <div class="arch-terminal__title">~/QuantPits</div>
       </div>
       <pre class="arch-terminal__code"><span class="dir">QuantPits/</span>
-├── <span class="dir">docs/</span>              <span class="comment"># System manuals (00-08) + Walkthrough (70)</span>
+├── <span class="dir">docs/</span>              <span class="comment"># System manuals (00-08, 30, 50-54) + Walkthrough (70)</span>
 ├── <span class="dir">ui/</span>                <span class="comment"># Streamlit dashboards</span>
 │   ├── <span class="file">dashboard.py</span>     <span class="comment"># Portfolio performance</span>
 │   └── <span class="file">rolling_dashboard.py</span>
@@ -1160,6 +1160,10 @@
         quantpits.scripts.ensemble_fusion <span class="flag">--from-config-all</span>
         <span class="prompt">$ </span><span class="cmd">python</span> <span class="flag">-m</span>
         quantpits.scripts.order_gen
+
+        <span class="cmt"># Deep Analysis + AI feedback (recommended weekly)</span>
+        <span class="prompt">$ </span><span class="cmd">python</span> <span class="flag">-m</span>
+        quantpits.scripts.run_deep_analysis <span class="flag">--critic</span>
 
         <span class="cmt"># Launch dashboards</span>
         <span class="prompt">$ </span><span class="cmd">streamlit run</span> ui/dashboard.py

@@ -35,9 +35,11 @@
 | ⑤ Post-Trade | ✅ 每次 | 处理上周期实盘数据,更新持仓和资金 |
 | ⑥ 订单生成 | ✅ 每次 | 基于融合预测和当前持仓,输出买卖建议 + 多模型判断 |
 | ⑦ 信号排名 | 可选 | 归一化分数生成 Top N 排名，适合分享 |
+| ⑧ 深度分析 | 推荐每周 | 多 Agent 自动分析 + OOM-RL 反馈（从分析到自动执行） |
+| ⑨ 反馈闭环 | 按需 | 执行 LLM Critic 产出的 ActionItem，Playground 验证后推广到生产 |
 
 > [!IMPORTANT]
-> 训练不必每周都做，但预测每次必须。组合搜索是"重资产"操作，选定的模型组合可以用很久。日常操作的最小闭环是：**预测 → 融合 → Post-Trade → 订单生成**。
+> 训练不必每周都做，但预测每次必须。组合搜索是"重资产"操作，选定的模型组合可以用很久。日常操作的最小闭环是：**预测 → 融合 → Post-Trade → 订单生成**。推荐每周运行一次深度分析以监控系统健康度并获取优化建议。
 
 ---
 
@@ -84,6 +86,8 @@ flowchart TB
 
     subgraph ANALYSIS["⑧ 综合分析（监控用）"]
         AN["run_analysis.py<br/>单模型/融合/风控全面审查"]
+        DA["run_deep_analysis.py<br/>多 Agent 深度分析 + OOM-RL"]
+        FB["run_feedback_loop.py<br/>ActionItem 执行 + 推广"]
     end
 
     REG["model_registry.yaml<br/>模型注册表"]
@@ -92,6 +96,7 @@ flowchart TB
     PRED_REC["output/predictions/<br/>预测 Recorders"]
     ER["ensemble_records.json<br/>融合记录指针"]
     WC["prod_config.json<br/>持仓/现金"]
+    AI["action_items_{date}.json<br/>OOM-RL ActionItems"]
 
     REG --> TRAIN
     REG --> PREDICT
@@ -116,6 +121,11 @@ flowchart TB
     PT --> WC
     WC --> ORDERGEN
     WC -.->|daily_amount| AN
+    LTR --> DA
+    WC -.->|daily_amount| DA
+    DA --> AI
+    AI --> FB
+    FB -.->|promote config| REG
 ```
 
 ---
@@ -234,6 +244,33 @@ python quantpits/scripts/ensemble_fusion.py \
 
 > 日常运行只需：`python quantpits/scripts/rolling_train.py --all-enabled`（自动判断训练/预测）
 
+### 场景 F：OOM-RL 闭环反馈流（Deep Analysis → 自动执行）
+
+适用于每周分析后发现需要调参的场景。
+
+```bash
+# ⑧ 深度分析 + LLM Critic → 产出 ActionItems
+python -m quantpits.scripts.run_deep_analysis --critic
+
+# ⑨ 预览 Feedback Loop 将要执行的操作（含优先级排序）
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --report-only
+
+# ⑨ 在 Playground 沙箱中执行（挑高优先级模型）
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --execute --max-duration-minutes 30
+
+# ⑨ 验证通过后推广到生产
+python -m quantpits.scripts.run_feedback_loop \
+    --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
+    --promote
+
+# ① 下次训练周期自动应用新配置
+python -m quantpits.scripts.static_train --all-enabled
+```
+
 ---
 
 ## 模块速查
@@ -346,6 +383,40 @@ python quantpits/scripts/ensemble_fusion.py \
 - 支持按 combo 组合生成（`--all-combos` / `--combo`）
 - 独立于订单生成，适合分享给他人
 
+### ⑧ 深度分析模块 (MAS + OOM-RL)
+
+> 详见 [50_DEEP_ANALYSIS_GUIDE.md](50_DEEP_ANALYSIS_GUIDE.md)、[51_OOMRL_FEEDBACK_OVERVIEW.md](51_OOMRL_FEEDBACK_OVERVIEW.md)
+
+| 脚本 | 用途 |
+|------|------|
+| `run_deep_analysis.py` | 多 Agent 盘后分析：7 个专业代理 × 多时间窗口 |
+| `run_deep_analysis.py --critic` | **OOM-RL Phase 3** — LLM Critic 从分析结果生成可执行的 ActionItems |
+| `run_feedback_loop.py` | **OOM-RL Phase 4** — Playground 沙箱执行 ActionItems，验证后推广到生产 |
+
+- **Agent 系统**：Market Regime / Model Health / Ensemble Eval / Execution Quality / Portfolio Risk / Prediction Audit / Trade Pattern 七个代理
+- **OOM-RL 反馈闭环**：Signal Extractor（规则层）→ LLM Critic（决策层）→ ActionItem（可执行建议）→ Feedback Loop（自动执行 + 验证 + 推广）
+- **Playground 隔离**：所有实验在独立的 Playground 工作区中执行，不影响生产
+- **优先级调度**：基于 Signal 严重度、置信度、训练耗时的自动排序
+- **回退安全**：生产 workspace 是独立的 Git 仓库，可随时 `git checkout` 回退配置
+- **审计完整**：每次 promote 生成 JSONL 审计记录 + 人类可读 Markdown 报告 + CHANGELOG.md 自动维护
+- **反馈范围控制**：通过 `config/feedback_scope.json` 逐步放开 LLM 的干预范围
+
+### ⑨ 反馈闭环模块
+
+> 详见 [54_OOMRL_FEEDBACK_LOOP.md](54_OOMRL_FEEDBACK_LOOP.md)
+
+| 脚本 | 用途 |
+|------|------|
+| `run_feedback_loop.py --report-only` | 预览模式：排序 + 预览，不执行 |
+| `run_feedback_loop.py --execute` | 执行模式：Playground 中执行变更并验证 |
+| `run_feedback_loop.py --promote` | 推广模式：将验证通过的配置推送到生产 |
+| `run_feedback_loop.py --auto-promote` | 全自动推广（Phase 4 暂不实现） |
+
+- 支持 `--models` / `--skip-models` 人工筛选模型
+- 支持 `--max-duration-minutes` 时间预算控制
+- 支持 `--dry-run` 预览适配器变更（不写文件）
+- 支持 `--skip-retrain` 仅修改配置不重训
+
 ---
 
 ## 数据流向
@@ -412,6 +483,11 @@ python quantpits/scripts/ensemble_fusion.py \
 | `ensemble_records.json` | 融合记录指针：combo→recorder_id 映射，default 标记 | 融合预测、订单生成、信号排名 |
 | `rolling_config.yaml` | 滚动训练参数：起点、训练/验证年数、步长 | 滚动训练 |
 | `workflow_config_*.yaml` | Qlib 工作流：各模型的训练配置 | 训练 |
+| `feedback_scope.json` | OOM-RL 反馈范围控制：控制 LLM Critic 可干预的环节 | Deep Analysis, Feedback Loop |
+| `hyperparam_bounds.json` | 超参边界与单次最大变更限制 | LLM Critic, Training Adapter |
+| `llm_config.json` | LLM API 配置：模型、endpoint、密钥 | Deep Analysis, LLM Critic |
+| `oos_config.json` | OOS 评估参数：排除周期 | Deep Analysis |
+| `config/skills/` | LLM Critic 系统提示词（Markdown） | LLM Critic |
 
 ### 输出文件 (`output/`)
 
@@ -426,6 +502,7 @@ python quantpits/scripts/ensemble_fusion.py \
 | `model_opinions_*_linechart.png` | 多模型排名可视化折线图 |
 | `buy/sell_suggestion_*.csv` | 买卖订单 |
 | `model_performance_*.json` | 模型 IC/ICIR 指标 |
+| `deep_analysis/` | Deep Analysis 和 OOM-RL 产出（action_items, feedback_report） |
 
 ### 运行状态 (`data/`)
 
@@ -439,6 +516,14 @@ python quantpits/scripts/ensemble_fusion.py \
 | `trade_log_full.csv` | 累计交易日志（含买入和卖出） |
 | `holding_log_full.csv` | 累计持仓日志 |
 | `daily_amount_log_full.csv` | 每日资金汇总 |
+| `training_history.jsonl` | 训练收敛日志（每次训练追加一条） |
+| `operator_log.jsonl` | 操作审计日志（每次脚本运行追加一条） |
+| `fusion_run_ledger.jsonl` | 融合运行分类账（每次回测追加一条） |
+| `action_item_history.jsonl` | OOM-RL ActionItem 审计轨迹 |
+| `promote_history.jsonl` | 配置推广审计记录 |
+| `CHANGELOG.md` | 人类可读变更历史总览 |
+| `promote_history/` | 每次 promote 的详细 Markdown 报告 |
+| `config_history/` | 配置快照历史 |
 
 ### 归档目录 (`archive/`)
 
@@ -462,6 +547,11 @@ python quantpits/scripts/ensemble_fusion.py \
 | 07 | [SIGNAL_RANKING_GUIDE](07_SIGNAL_RANKING_GUIDE.md) | 信号排名 Top N 推荐 |
 | 08 | [ANALYSIS_GUIDE](08_ANALYSIS_GUIDE.md) | 单模型质量、融合相关性、执行滑点成本及多维组合风险综合评测 |
 | **30** | **[ROLLING_TRAINING_GUIDE](30_ROLLING_TRAINING_GUIDE.md)** | **滚动训练：时间窗口滑动训练、冷启动、断点恢复** |
+| **50** | **[DEEP_ANALYSIS_GUIDE](50_DEEP_ANALYSIS_GUIDE.md)** | **多 Agent 深度分析 + OOM-RL LLM Critic** |
+| **51** | **[OOMRL_OVERVIEW](51_OOMRL_FEEDBACK_OVERVIEW.md)** | **OOM-RL 闭环反馈系统概览** |
+| **52** | **[OOMRL_DATA](52_OOMRL_DATA_INFRASTRUCTURE.md)** | **反馈数据基础设施** |
+| **53** | **[OOMRL_CRITIC](53_OOMRL_CRITIC_GUIDE.md)** | **LLM Critic：Signal + ActionItem + Skills** |
+| **54** | **[OOMRL_LOOP](54_OOMRL_FEEDBACK_LOOP.md)** | **反馈闭环执行：Playground + Adapter + Promote** |
 | 70 | [WALKTHROUGH](70_WALKTHROUGH.md) | **端到端实战操作手册（从这里开始！）** |
 
 ---
@@ -477,7 +567,8 @@ python quantpits/scripts/ensemble_fusion.py \
 | `config_loader.py` | Workspace 级配置加载 | 全局 |
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
 | `backtest_utils.py` | Qlib 回测执行与评估 | 穷举、融合、分析 |
-| `env.py` | Qlib 初始化、工作目录管理 | 全局 |
+| `env.py` | Qlib 初始化、工作目录管理、`set_root_dir()` 运行时工作区切换 | 全局 |
+| `operator_log.py` | 操作审计日志：自动记录每次脚本运行 | 全局（7 个脚本已集成） |
 | `ensemble_utils.py` | Ensemble 配置解析、combo 管理、记录加载 | 融合、信号排名、订单生成 |
 | `search_utils.py` | 组合搜索共享逻辑：信号处理、回测核心、IS/OOS 切分、分组穷举 | 组合搜索(标准/快速)、最小熵搜索、组合分析 |
 | `run_context.py` | 每次运行的输出路径管理，封装 IS/OOS 子目录结构 | 组合搜索、组合分析 |
@@ -515,12 +606,20 @@ python quantpits/scripts/ensemble_fusion.py \
 - 当前组合连续多周表现不佳
 - 定期审查（如每月一次）
 
+### 什么时候需要运行 OOM-RL 反馈闭环？
+
+- Deep Analysis 报告中有 `severe_underfitting` 或 `overfitting` 模型
+- LLM Critic 产出了可执行的 ActionItems（`action_items_{date}.json` 非空）
+- 希望自动化验证超参调整的效果（Playground 沙箱 + 回测对照）
+- 需要人类可读的变更审计记录
+
 ### 日常最小操作是什么？
 
 ```bash
-# 每周最小闭环（4 条命令，假设 workspace 已激活）
+# 每周最小闭环（5 条命令，假设 workspace 已激活）
 python quantpits/scripts/static_train.py --predict-only --all-enabled     # 预测
 python quantpits/scripts/ensemble_fusion.py --from-config-all       # 融合
 python quantpits/scripts/prod_post_trade.py                      # Post-Trade
 python quantpits/scripts/order_gen.py                              # 生成订单
+python -m quantpits.scripts.run_deep_analysis                      # 深度分析（推荐）
 ```

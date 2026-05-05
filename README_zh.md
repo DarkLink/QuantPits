@@ -25,6 +25,7 @@
   - **高拓展券商适配器**：通过统一 Schema 实现交割单解析解耦，支持任意券商终端导出格式无缝接入（默认预装国泰君安）。
 * **全息化监测面板**：系统内置两大原生交互式 `streamlit` 数据看板，分别用于追踪“宏观资产组合表现”与“微观滚动策略健康状态监控”。
 * **高可用基础设施**：自动历史备份检查点、由原生 JSON 承载的模型注册表状态追踪、完整规范的日内/周频执行日志。
+* **OOM-RL 智能反馈闭环**：多 Agent 深度分析 + LLM Critic 决策 + Playground 沙箱自动执行，实现从分析到优化的自动化闭环。
 
 ## 📂 架构总览
 
@@ -112,6 +113,9 @@ python -m quantpits.scripts.prod_post_trade
 
 # 5. 根据当前最新的组合建议及最新持仓执行全新订单信号推演
 python -m quantpits.scripts.order_gen
+
+# 6. 多 Agent 深度分析（推荐每周运行）
+python -m quantpits.scripts.run_deep_analysis
 ```
 
 ### 5. 驱动可视化数据面板
@@ -147,6 +151,7 @@ python -m quantpits.scripts.init_workspace \
 - `02_BRUTE_FORCE_GUIDE.md` (穷举回测及GPU加速矩阵操作向导)
 - `03_ENSEMBLE_FUSION_GUIDE.md` ...以此类推。
 - `30_ROLLING_TRAINING_GUIDE.md` (滚动训练：滑动窗口训练、冷启动、断点恢复)
+- `50-54` OOM-RL 系列：多 Agent 深度分析、LLM Critic 决策、Playground 沙箱执行与配置推广
 
 所有文档均已提供中文与纯正的英文(`en/`)双语版本支持。
 
