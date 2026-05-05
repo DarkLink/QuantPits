@@ -85,6 +85,109 @@ def test_init_qlib(monkeypatch, tmp_path):
     assert mock_qlib.provider_uri == "/mock/qlib/data"
     assert mock_qlib.region == MockConstant.REG_CN
 
+# ── set_root_dir() tests ──────────────────────────────────────
+
+def test_set_root_dir_updates_env(monkeypatch, tmp_path):
+    """set_root_dir() should update env.ROOT_DIR and os.environ."""
+    ws1 = tmp_path / "Workspace1"
+    ws1.mkdir()
+    ws2 = tmp_path / "Workspace2"
+    ws2.mkdir()
+    (ws2 / "mlruns").mkdir()
+
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(ws1))
+
+    from quantpits.utils import env
+    importlib.reload(env)
+
+    assert env.ROOT_DIR == str(ws1)
+
+    env.set_root_dir(str(ws2))
+
+    assert env.ROOT_DIR == str(ws2)
+    assert os.environ["QLIB_WORKSPACE_DIR"] == str(ws2)
+    assert "Workspace2" in os.environ["MLFLOW_TRACKING_URI"]
+
+
+def test_set_root_dir_patches_train_utils(monkeypatch, tmp_path):
+    """set_root_dir() should update all train_utils module-level path constants."""
+    ws1 = tmp_path / "Workspace1"
+    ws1.mkdir()
+    ws2 = tmp_path / "Workspace2"
+    ws2.mkdir()
+    (ws2 / "mlruns").mkdir()
+
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(ws1))
+
+    from quantpits.utils import env
+    importlib.reload(env)
+
+    # Force train_utils into sys.modules so set_root_dir patches it
+    from quantpits.utils import train_utils as tu
+    original_root = tu.ROOT_DIR
+
+    env.set_root_dir(str(ws2))
+
+    # All train_utils path constants should now point to ws2
+    assert tu.ROOT_DIR == str(ws2)
+    assert str(ws2) in tu.REGISTRY_FILE
+    assert str(ws2) in tu.MODEL_CONFIG_FILE
+    assert str(ws2) in tu.PROD_CONFIG_FILE
+    assert str(ws2) in tu.RECORD_OUTPUT_FILE
+    assert str(ws2) in tu.PREDICTION_OUTPUT_DIR
+    assert str(ws2) in tu.ROLLING_PREDICTION_DIR
+    assert str(ws2) in tu.HISTORY_DIR
+    assert str(ws2) in tu.RUN_STATE_FILE
+    assert str(ws2) in tu.ROLLING_STATE_FILE
+    assert str(ws2) in tu.LEGACY_ROLLING_RECORD_FILE
+    assert str(ws2) in tu.PRETRAINED_DIR
+
+
+def test_set_root_dir_without_train_utils(monkeypatch, tmp_path):
+    """set_root_dir() should not crash when train_utils is not in sys.modules."""
+    ws1 = tmp_path / "Workspace1"
+    ws1.mkdir()
+    ws2 = tmp_path / "Workspace2"
+    ws2.mkdir()
+
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(ws1))
+
+    from quantpits.utils import env
+    importlib.reload(env)
+
+    # Ensure train_utils is NOT in sys.modules
+    monkeypatch.delitem(sys.modules, "quantpits.utils.train_utils", raising=False)
+
+    # Should not raise
+    env.set_root_dir(str(ws2))
+    assert env.ROOT_DIR == str(ws2)
+
+
+def test_set_root_dir_roundtrip(monkeypatch, tmp_path):
+    """set_root_dir() should support switching back and forth between workspaces."""
+    ws1 = tmp_path / "Workspace1"
+    ws1.mkdir()
+    ws2 = tmp_path / "Workspace2"
+    ws2.mkdir()
+
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(ws1))
+
+    from quantpits.utils import env
+    importlib.reload(env)
+
+    assert env.ROOT_DIR == str(ws1)
+
+    env.set_root_dir(str(ws2))
+    assert env.ROOT_DIR == str(ws2)
+
+    env.set_root_dir(str(ws1))
+    assert env.ROOT_DIR == str(ws1)
+
+
 def test_safeguard(monkeypatch, tmp_path, capsys):
     workspace = tmp_path / "MockWorkspace"
     workspace.mkdir()

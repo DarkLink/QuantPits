@@ -593,6 +593,14 @@ def main():
         else:
             run_incremental_train(args, targets)
 
+        # Update promote status: promoted_pending_retrain → active
+        try:
+            from quantpits.scripts.deep_analysis.promote_config import update_promote_status
+            trained_models = list(targets.keys()) if not args.predict_only else None
+            update_promote_status(ROOT_DIR, model_names=trained_models)
+        except Exception:
+            pass  # Non-critical — don't block main training flow
+
         oplog.set_result({
             "n_targets": len(targets),
             "predict_only": args.predict_only

@@ -85,3 +85,40 @@ def safeguard(script_name="Pipeline"):
     print("Please confirm. (Press Ctrl+C within 3 seconds to abort if this is the wrong workspace!)")
     time.sleep(3)
     print("Executing...")
+
+
+def set_root_dir(path: str):
+    """运行时切换工作区根目录（供 Playground / 多 workspace 场景使用）
+
+    Updates:
+    - env.ROOT_DIR and env.mlruns_dir
+    - os.environ QLIB_WORKSPACE_DIR and MLFLOW_TRACKING_URI
+    - train_utils module-level path constants (they are value copies, not references)
+
+    Args:
+        path: Absolute path to the new workspace root directory.
+    """
+    global ROOT_DIR, mlruns_dir
+    ROOT_DIR = os.path.abspath(path)
+    os.environ["QLIB_WORKSPACE_DIR"] = ROOT_DIR
+    mlruns_dir = os.path.abspath(os.path.join(ROOT_DIR, 'mlruns'))
+    os.environ["MLFLOW_TRACKING_URI"] = f"file://{mlruns_dir}"
+
+    # Synchronize train_utils module-level path constants.
+    # train_utils.ROOT_DIR = env.ROOT_DIR is a value copy (strings are immutable),
+    # so we must explicitly update all derived paths in that module.
+    import sys
+    tu = sys.modules.get("quantpits.utils.train_utils")
+    if tu is not None:
+        tu.ROOT_DIR = ROOT_DIR
+        tu.REGISTRY_FILE = os.path.join(ROOT_DIR, "config", "model_registry.yaml")
+        tu.MODEL_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "model_config.json")
+        tu.PROD_CONFIG_FILE = os.path.join(ROOT_DIR, "config", "prod_config.json")
+        tu.RECORD_OUTPUT_FILE = os.path.join(ROOT_DIR, "latest_train_records.json")
+        tu.PREDICTION_OUTPUT_DIR = os.path.join(ROOT_DIR, "output", "predictions")
+        tu.ROLLING_PREDICTION_DIR = os.path.join(ROOT_DIR, "output", "predictions", "rolling")
+        tu.HISTORY_DIR = os.path.join(ROOT_DIR, "data", "history")
+        tu.RUN_STATE_FILE = os.path.join(ROOT_DIR, "data", "run_state.json")
+        tu.ROLLING_STATE_FILE = os.path.join(ROOT_DIR, "data", "rolling_state.json")
+        tu.LEGACY_ROLLING_RECORD_FILE = os.path.join(ROOT_DIR, "latest_rolling_records.json")
+        tu.PRETRAINED_DIR = os.path.join(ROOT_DIR, "data", "pretrained")

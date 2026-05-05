@@ -1296,6 +1296,14 @@ def main():
             "predict_only": args.predict_only
         })
 
+        # Update promote status: promoted_pending_retrain → active
+        if not args.predict_only and not args.backtest_only:
+            try:
+                from quantpits.scripts.deep_analysis.promote_config import update_promote_status
+                update_promote_status(ROOT_DIR, model_names=list(targets.keys()))
+            except Exception:
+                pass  # Non-critical — don't block main training flow
+
 
 if __name__ == "__main__":
     main()
