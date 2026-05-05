@@ -33,11 +33,32 @@ os.chdir(env.ROOT_DIR)
 DATA_DIR = "data"
 ORDER_LOG_FILE = os.path.join(DATA_DIR, "raw_order_log_full.csv")
 TRADE_LOG_FILE = os.path.join(DATA_DIR, "raw_trade_log_full.csv")
+ORDER_TRADE_STATE_FILE = os.path.join(DATA_DIR, ".order_trade_state.json")
 
 def load_prod_config():
     """使用 config_loader 加载统一配置以获取进度日期等信息"""
     from quantpits.utils.config_loader import load_workspace_config
     return load_workspace_config(env.ROOT_DIR)
+
+
+def load_order_trade_last_date(fallback_date):
+    """加载 order/trade 的最后处理日期，独立于 prod_config。
+
+    避免 prod_post_trade.py（交割）更新 config 后导致本脚本跳过日期。
+    """
+    import json
+    if os.path.exists(ORDER_TRADE_STATE_FILE):
+        with open(ORDER_TRADE_STATE_FILE, "r") as f:
+            state = json.load(f)
+        return state.get("last_processed_date", fallback_date)
+    return fallback_date
+
+
+def save_order_trade_last_date(date_str):
+    """保存 order/trade 最后处理日期到独立状态文件"""
+    import json
+    with open(ORDER_TRADE_STATE_FILE, "w") as f:
+        json.dump({"last_processed_date": date_str}, f)
 
 def get_trade_dates(start_date, end_date):
     """使用 qlib 日历获取交易日列表"""
@@ -103,30 +124,37 @@ def main():
     args = parser.parse_args()
 
     config = load_prod_config()
-    last_processed_date = config.get("last_processed_date", config["current_date"])
-    
+
     broker_name = args.broker or config.get("broker", "gtja")
     try:
         adapter = get_adapter(broker_name)
     except ValueError as e:
         print(f"[ERROR] {e}")
         sys.exit(1)
-        
+
+    # 使用独立的 order/trade 状态日期，避免被 prod_post_trade.py（交割）覆盖
+    config_date = config.get("last_processed_date", config["current_date"])
+    last_processed_date = load_order_trade_last_date(config_date)
+
     start_date = (datetime.strptime(last_processed_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
     end_date = args.end_date or datetime.now().strftime("%Y-%m-%d")
 
     trade_dates = get_trade_dates(start_date, end_date)
-    
-    print(f"Last processed date (from config): {last_processed_date}")
-    print(f"Analytics Date range: {start_date} to {end_date}")
-    
+
+    print(f"Last processed date (order/trade): {last_processed_date}")
+    print(f"Order/Trade Date range: {start_date} to {end_date}")
+
     if not trade_dates:
         print("\nNo trade dates to process.")
         return
 
     for date_str in trade_dates:
         process_analytics_for_day(date_str, adapter, dry_run=args.dry_run)
-        
+
+    # 保存 analytics 自己的进度
+    if not args.dry_run:
+        save_order_trade_last_date(trade_dates[-1])
+
     print(f"\n{'='*50}")
     print("Analytics Batch processing completed!")
     print(f"{'='*50}")
