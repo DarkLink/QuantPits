@@ -325,8 +325,13 @@ class LLMInterface:
         # Build system prompt from skills
         system_prompt = self._load_skills(workspace_root, active_scopes)
 
+        # Load current hyperparameter values so the LLM has accurate 'from' values
+        current_params = self._load_current_params(workspace_root, signals)
+
         # Build user prompt
-        user_prompt = self._build_critic_prompt(signals, active_scopes, hyperparam_bounds)
+        user_prompt = self._build_critic_prompt(
+            signals, active_scopes, hyperparam_bounds, current_params,
+        )
 
         # Call LLM
         try:
@@ -431,9 +436,70 @@ class LLMInterface:
         except Exception:
             return {}
 
+    def _load_current_params(
+        self, workspace_root: str, signals: List[Signal],
+    ) -> dict:
+        """Load current hyperparameter values for each model referenced in signals.
+
+        Reads model_registry.yaml to find the YAML file for each model, then
+        extracts task.model.kwargs.  Returns a dict keyed by model name so the
+        LLM Critic can populate accurate ``from`` values in ActionItems.
+        """
+        import yaml
+
+        # Collect unique model targets from signals
+        model_names = set()
+        for s in signals:
+            if s.scope == "hyperparams" and s.target:
+                model_names.add(s.target)
+
+        if not model_names:
+            return {}
+
+        # Load model registry to map model → yaml_file
+        registry_path = os.path.join(
+            workspace_root, "config", "model_registry.yaml",
+        )
+        registry = {}
+        if os.path.exists(registry_path):
+            try:
+                with open(registry_path, "r", encoding="utf-8") as f:
+                    registry = yaml.safe_load(f)
+            except Exception:
+                pass
+        registry = registry.get("models", {}) if isinstance(registry, dict) else {}
+
+        current = {}
+        for model_name in sorted(model_names):
+            model_info = registry.get(model_name, {})
+            yaml_file = model_info.get("yaml_file", "")
+            if not yaml_file:
+                continue
+            yaml_path = os.path.join(workspace_root, yaml_file)
+            if not os.path.exists(yaml_path):
+                continue
+            try:
+                with open(yaml_path, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f)
+                kwargs = (
+                    cfg.get("task", {}).get("model", {}).get("kwargs", {})
+                )
+                # Filter to hyperparameter-relevant keys only
+                clean = {}
+                for k, v in kwargs.items():
+                    if isinstance(v, (int, float, str, bool, type(None))):
+                        clean[k] = v
+                if clean:
+                    current[model_name] = clean
+            except Exception:
+                pass
+
+        return current
+
     def _build_critic_prompt(
         self, signals: List[Signal], active_scopes: List[str],
         hyperparam_bounds: Optional[dict] = None,
+        current_params: Optional[dict] = None,
     ) -> str:
         """Build the user prompt for the Critic LLM call."""
         signals_json = json.dumps(
@@ -458,6 +524,15 @@ class LLMInterface:
                 f"Your suggestions must respect these limits. "
                 f"`max_change_pct: null` means no percentage-change limit.\n"
                 f"```json\n{json.dumps(bounds_summary, indent=2, ensure_ascii=False)}\n```"
+            )
+
+        if current_params:
+            parts.append(
+                f"## Current Hyperparameter Values\n"
+                f"These are the CURRENT values for each model. "
+                f"Use them EXACTLY as the `from` value in your `params` fields. "
+                f"Do NOT guess or invent parameter values.\n"
+                f"```json\n{json.dumps(current_params, indent=2, ensure_ascii=False)}\n```"
             )
 
         parts.append(

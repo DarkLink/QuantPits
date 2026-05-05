@@ -317,3 +317,97 @@ class TestCriticMode:
         )]
         items = interface.generate_action_items(signals, str(ws))
         assert items == []
+
+
+class TestLoadCurrentParams:
+    """Tests for _load_current_params — reads YAML hyperparams for signals."""
+
+    def test_extracts_params_for_signal_models(self, tmp_path):
+        """Should return current hyperparams for each model in signals."""
+        ws = tmp_path / "TestWorkspace"
+        ws.mkdir()
+        config_dir = ws / "config"
+        config_dir.mkdir()
+
+        # model_registry.yaml
+        import yaml as _yaml
+        registry = {
+            "models": {
+                "gru_Alpha158": {
+                    "algorithm": "gru", "dataset": "Alpha158",
+                    "yaml_file": "config/workflow_config_gru_Alpha158.yaml",
+                },
+                "linear_Alpha158": {
+                    "algorithm": "linear", "dataset": "Alpha158",
+                    "yaml_file": "config/workflow_config_linear_Alpha158.yaml",
+                },
+            },
+        }
+        with open(config_dir / "model_registry.yaml", "w") as f:
+            _yaml.dump(registry, f)
+
+        # Workflow YAML for gru_Alpha158
+        gru_config = {
+            "task": {
+                "model": {
+                    "class": "GRU",
+                    "kwargs": {"n_epochs": 200, "dropout": 0.0, "lr": 0.001},
+                },
+            },
+        }
+        with open(config_dir / "workflow_config_gru_Alpha158.yaml", "w") as f:
+            _yaml.dump(gru_config, f)
+
+        # Workflow YAML for linear_Alpha158 (no kwargs)
+        lin_config = {
+            "task": {"model": {"class": "LinearModel", "kwargs": {"estimator": "ols"}}},
+        }
+        with open(config_dir / "workflow_config_linear_Alpha158.yaml", "w") as f:
+            _yaml.dump(lin_config, f)
+
+        interface = LLMInterface(api_key="fake_key")
+        signals = [
+            Signal("underfitting", "warning", "hyperparams", "Test", "gru_Alpha158", context="test"),
+            Signal("overfitting", "warning", "hyperparams", "Test", "linear_Alpha158", context="test"),
+        ]
+        result = interface._load_current_params(str(ws), signals)
+
+        assert "gru_Alpha158" in result
+        assert result["gru_Alpha158"]["dropout"] == 0.0
+        assert result["gru_Alpha158"]["n_epochs"] == 200
+        assert "linear_Alpha158" in result
+        assert result["linear_Alpha158"]["estimator"] == "ols"
+        assert "dropout" not in result["linear_Alpha158"]
+
+    def test_ignores_non_hyperparam_signals(self, tmp_path):
+        """Should skip signals that are not in hyperparams scope."""
+        ws = tmp_path / "TestWorkspace"
+        ws.mkdir()
+        (ws / "config").mkdir()
+
+        interface = LLMInterface(api_key="fake_key")
+        signals = [
+            Signal("negative_contribution", "warning", "model_selection", "Test", "m1", context="test"),
+        ]
+        result = interface._load_current_params(str(ws), signals)
+        assert result == {}
+
+    def test_empty_signals(self, tmp_path):
+        """Should handle empty signal list."""
+        ws = tmp_path / "TestWorkspace"
+        ws.mkdir()
+        interface = LLMInterface(api_key="fake_key")
+        assert interface._load_current_params(str(ws), []) == {}
+
+    def test_model_not_in_registry(self, tmp_path):
+        """Should skip models not found in model_registry.yaml."""
+        ws = tmp_path / "TestWorkspace"
+        ws.mkdir()
+        (ws / "config").mkdir()
+
+        interface = LLMInterface(api_key="fake_key")
+        signals = [
+            Signal("underfitting", "warning", "hyperparams", "Test", "ghost_model", context="test"),
+        ]
+        result = interface._load_current_params(str(ws), signals)
+        assert result == {}
