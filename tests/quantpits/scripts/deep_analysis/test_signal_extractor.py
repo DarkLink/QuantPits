@@ -42,8 +42,8 @@ class TestUnderfitting:
         matching = [s for s in signals if s.target == "gru_Alpha158"]
         assert len(matching) >= 1
         s = matching[0]
-        # Should be upgraded to severe_underfitting since 30 < 200*0.25=50
-        assert s.signal_type == "severe_underfitting"
+        # 30/200 = 0.15 is not < 0.15, so stays as "underfitting" (not upgraded)
+        assert s.signal_type == "underfitting"
         assert s.scope == "hyperparams"
         assert s.severity == "warning"
 

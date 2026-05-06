@@ -129,12 +129,16 @@ class SignalExtractor:
                     ),
                 ))
 
-            # Rule 2: severe_underfitting — actual < configured * 0.25
+            # Rule 2: severe_underfitting — actual < configured * 0.15
+            # Using 0.15 instead of 0.25 to reduce false positives from
+            # models that share the same global early_stop default.
+            # At n_epochs=200, 0.15 threshold means epoch < 30 triggers
+            # severe (vs epoch < 50 with 0.25).
             for model, detail in model_details.items():
                 actual = detail.get("actual_epochs")
                 configured = detail.get("configured_epochs")
                 if actual is not None and configured is not None and configured > 0:
-                    if actual < configured * 0.25:
+                    if actual < configured * 0.15:
                         # Avoid duplicate if already flagged as underfitting
                         if not any(
                             s.signal_type == "underfitting" and s.target == model

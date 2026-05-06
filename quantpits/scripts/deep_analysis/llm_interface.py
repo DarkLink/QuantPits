@@ -12,6 +12,7 @@ Skills and system prompts are loaded from workspace config files.
 import json
 import logging
 import os
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 from .action_items import ActionItem
@@ -41,6 +42,47 @@ _DEFAULT_CRITIC_PROMPT = """\
 You are a quantitative strategy optimization expert. Based on structured signals, \
 output a JSON array of ActionItem objects with action_type, scope, target, params, \
 reason, source_signals, expected_outcome, confidence, and risk_level."""
+
+_DEFAULT_TRIAGE_PROMPT = """\
+You are a quantitative strategy triage specialist. Your job is to prioritize which \
+models need intervention, NOT to decide what the intervention should be.
+
+Given aggregated signals across many models, you must:
+1. Identify systemic patterns (e.g., "all models share the same early_stop default")
+2. Prioritize at most 5 models that most need attention
+3. Flag models that should be excluded (already had same intervention recently, \
+   signal too weak, or wait for prior experiment results)
+4. For each prioritized model, suggest an investigation direction (NOT a specific \
+   parameter change — that's the Critic's job)
+
+Key principles:
+- Variety matters: if 12 models all have the same signal, pick the 2-3 WORST ones, \
+  not all 12. The others can wait for the next cycle.
+- History-aware: if a model was already adjusted for the same issue recently, \
+  exclude it unless the situation has significantly worsened.
+- Architecture-aware: NN models and tree models need different approaches. \
+  Don't suggest the same fix for different architectures.
+- Be specific in your rationale: mention exact epoch ratios, IC values, and trends.
+
+Output a JSON object (not an array) with this structure:
+{
+  "systemic_observations": ["observation 1", "observation 2"],
+  "prioritized_targets": [
+    {
+      "target": "model_name",
+      "priority_score": 0-10,
+      "primary_signal": "signal_type",
+      "investigation_direction": "what to investigate (not exact params)",
+      "rationale": "why this model was chosen over others"
+    }
+  ],
+  "excluded_targets": [
+    {
+      "target": "model_name",
+      "reason": "why excluded"
+    }
+  ]
+}"""
 
 
 class LLMInterface:
@@ -273,16 +315,12 @@ class LLMInterface:
         workspace_root: str,
     ) -> List[ActionItem]:
         """
-        Critic mode: generate ActionItems from structured Signals.
+        Two-stage Critic: Triage → Focused ActionItem generation.
 
-        Flow:
-        1. Load llm_config.json for model/API settings
-        2. Load feedback_scope.json for active_scopes
-        3. Load matching skill files from config/skills/
-        4. Build system prompt (critic_system.md + scope skills)
-        5. Build user prompt (signals JSON + active_scopes)
-        6. Call LLM
-        7. Parse JSON output into ActionItem list
+        Stage 1 (Triage): Group signals, check history, prioritize max 5 models.
+        Stage 2 (Focused Critic): Deep per-model analysis for prioritized targets.
+
+        Falls back to single-stage when triage_system.md is absent or signals <= 5.
 
         Args:
             signals: List of Signals from SignalExtractor.
@@ -322,15 +360,52 @@ class LLMInterface:
         # Load hyperparam bounds (if available) so the LLM knows the limits
         hyperparam_bounds = self._load_hyperparam_bounds(workspace_root)
 
-        # Build system prompt from skills
-        system_prompt = self._load_skills(workspace_root, active_scopes)
-
         # Load current hyperparameter values so the LLM has accurate 'from' values
         current_params = self._load_current_params(workspace_root, signals)
 
-        # Build user prompt
+        # Load recent action history for dedup
+        recent_history = self._load_recent_action_history(workspace_root, limit=20)
+
+        # --- Decide: two-stage or single-stage ---
+        triage_skill = self._load_triage_skill(workspace_root)
+        use_triage = (
+            triage_skill is not None
+            and len(signals) > 5
+        )
+
+        if use_triage:
+            print("   Mode: two-stage (Triage → Focused Critic)")
+            combo_membership = self._load_combo_membership(workspace_root)
+            prioritized_signals = self._run_triage(
+                signals=signals,
+                triage_skill=triage_skill,
+                recent_history=recent_history,
+                active_scopes=active_scopes,
+                current_params=current_params,
+                combo_membership=combo_membership,
+                model=critic_model,
+                temperature=temperature,
+                api_key=api_key,
+                base_url=base_url,
+            )
+            if prioritized_signals is None:
+                # Triage failed — fall back to all signals with history context
+                print("   ⚠️  Triage failed, falling back to single-stage with history.")
+                prioritized_signals = signals
+        else:
+            if len(signals) <= 5:
+                print("   Mode: single-stage (≤5 signals, skipping triage)")
+            else:
+                print("   Mode: single-stage (triage_system.md not found)")
+            prioritized_signals = signals
+
+        # Build system prompt from skills
+        system_prompt = self._load_skills(workspace_root, active_scopes)
+
+        # Build user prompt with only prioritized signals + history context
         user_prompt = self._build_critic_prompt(
-            signals, active_scopes, hyperparam_bounds, current_params,
+            prioritized_signals, active_scopes, hyperparam_bounds, current_params,
+            recent_history=recent_history,
         )
 
         # Call LLM
@@ -344,6 +419,9 @@ class LLMInterface:
                 api_key=api_key,
                 base_url=base_url,
             )
+            if not items:
+                print("   ⚠️  Critic returned 0 ActionItems "
+                      f"(from {len(prioritized_signals)} signals)")
             return items
         except Exception as e:
             logger.error("Critic LLM call failed: %s", e)
@@ -424,6 +502,508 @@ class LLMInterface:
 
         return "\n\n---\n\n".join(parts)
 
+    def _load_triage_skill(self, workspace_root: str) -> Optional[str]:
+        """Load triage_system.md from workspace skills. Returns None if absent."""
+        path = os.path.join(
+            workspace_root, "config", "skills", "triage_system.md",
+        )
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if content:
+                    return content
+            except Exception as e:
+                logger.warning("Failed to load triage_system.md: %s", e)
+        return None
+
+    def _load_combo_membership(self, workspace_root: str) -> Dict[str, List[str]]:
+        """Load ensemble_config.json and return {model_name: [combo_names]}.
+
+        Only includes models that are members of at least one active combo.
+        """
+        path = os.path.join(workspace_root, "config", "ensemble_config.json")
+        if not os.path.exists(path):
+            return {}
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            return {}
+
+        combos = config.get("combos", {})
+        default_combo = config.get("default_combo", "")
+
+        membership: Dict[str, List[str]] = {}
+        for combo_name, combo_info in combos.items():
+            if not isinstance(combo_info, dict):
+                continue
+            models = combo_info.get("models", [])
+            for m in models:
+                if isinstance(m, str):
+                    membership.setdefault(m, []).append(combo_name)
+
+        return membership
+
+    def _load_recent_action_history(
+        self, workspace_root: str, limit: int = 20,
+    ) -> List[dict]:
+        """Load recent ActionItems from data/action_item_history.jsonl.
+
+        Returns the most recent ``limit`` entries as a list of dicts,
+        newest first.  Returns an empty list if the file does not exist.
+        """
+        path = os.path.join(workspace_root, "data", "action_item_history.jsonl")
+        if not os.path.exists(path):
+            return []
+
+        entries: List[dict] = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            logger.warning("Failed to read action_item_history: %s", e)
+            return []
+
+        # Return newest first (assumes chronological append; reverse for safety)
+        entries.reverse()
+        return entries[:limit]
+
+    def _aggregate_signals_for_triage(
+        self, signals: List[Signal],
+    ) -> dict:
+        """Group signals by type for a compact triage summary."""
+        by_type: Dict[str, List[dict]] = {}
+        for s in signals:
+            by_type.setdefault(s.signal_type, []).append({
+                "target": s.target,
+                "severity": s.severity,
+                "context": s.context,
+                "metrics": s.metrics,
+            })
+
+        return {
+            signal_type: {
+                "count": len(items),
+                "models": [item["target"] for item in items],
+                "sample_contexts": [
+                    item["context"] for item in items[:3]
+                ],  # first 3 only
+            }
+            for signal_type, items in by_type.items()
+        }
+
+    def _compute_available_interventions(
+        self,
+        in_scope_signals: List[Signal],
+        recent_history: List[dict],
+        current_params: dict,
+    ) -> Dict[str, dict]:
+        """For each model with in-scope signals, compute which params have been
+        recently adjusted vs which are still untouched — purely rule-based.
+
+        Returns {model_name: {recently_adjusted: [...], untouched: [...], exhausted: bool}}
+        Exhausted means every known param was already adjusted within 30 days.
+        """
+        cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        adjusted: Dict[str, set] = {}
+        for entry in recent_history:
+            date = (
+                entry.get("_run_date", "")
+                or entry.get("run_date", "")
+                or entry.get("timestamp", "")
+            )
+            target = entry.get("target", "")
+            params = entry.get("params", {})
+            if date and date >= cutoff and target and params:
+                adjusted.setdefault(target, set()).update(params.keys())
+
+        result: Dict[str, dict] = {}
+        seen: set = set()
+        for s in in_scope_signals:
+            model = s.target
+            if model in seen:
+                continue
+            seen.add(model)
+
+            model_params = set(current_params.get(model, {}).keys())
+            adj = adjusted.get(model, set()) & model_params
+            untouched = sorted(model_params - adj)
+            recently = sorted(adj)
+
+            result[model] = {
+                "recently_adjusted": recently,
+                "untouched": untouched,
+                "exhausted": len(untouched) == 0,
+            }
+
+        return result
+
+    def _run_triage(
+        self,
+        signals: List[Signal],
+        triage_skill: str,
+        recent_history: List[dict],
+        active_scopes: List[str],
+        current_params: dict,
+        combo_membership: Dict[str, List[str]],
+        model: str,
+        temperature: float,
+        api_key: str,
+        base_url: Optional[str],
+    ) -> Optional[List[Signal]]:
+        """Run Stage 1 triage. Returns filtered signals or None on failure.
+
+        Only signals whose scope is in *active_scopes* are eligible for
+        prioritization.  Out-of-scope signals are counted and noted but
+        the triage LLM is instructed not to prioritize them.
+        """
+        active_scope_set = set(active_scopes)
+
+        # Split signals: only in-scope signals can be acted on
+        in_scope = [s for s in signals if s.scope in active_scope_set]
+        out_of_scope = [s for s in signals if s.scope not in active_scope_set]
+
+        if not in_scope:
+            print(
+                f"   ⚠️  Triage: all {len(signals)} signals are outside "
+                f"active_scopes={active_scopes}. Skipping triage."
+            )
+            return signals
+
+        # Rule-based: compute which params are still available per model
+        interventions = self._compute_available_interventions(
+            in_scope, recent_history, current_params,
+        )
+
+        # Build history summary for the prompt
+        history_summary = []
+        for entry in recent_history[:15]:
+            history_summary.append({
+                "date": entry.get("_run_date", entry.get("run_date", entry.get("timestamp", ""))),
+                "target": entry.get("target", ""),
+                "action_type": entry.get("action_type", ""),
+                "params": entry.get("params", {}),
+                "status": entry.get("scope_status", entry.get("status", "")),
+            })
+
+        # Build compact signal type summary from IN-SCOPE signals only
+        signal_summary = self._aggregate_signals_for_triage(in_scope)
+
+        # Count out-of-scope signals by type for awareness
+        oos_counts: Dict[str, int] = {}
+        for s in out_of_scope:
+            oos_counts[s.signal_type] = oos_counts.get(s.signal_type, 0) + 1
+
+        # Note any params that appear to be global defaults
+        param_value_counts: Dict[str, Dict[str, int]] = {}
+        for model_name, params in current_params.items():
+            for param, value in params.items():
+                if isinstance(value, (int, float, str, bool)):
+                    key = str(value)
+                    param_value_counts.setdefault(param, {}).setdefault(
+                        key, 0
+                    )
+                    param_value_counts[param][key] += 1
+
+        global_defaults = []
+        total_models = len(current_params)
+        if total_models >= 5:
+            for param, counts in param_value_counts.items():
+                for value, count in counts.items():
+                    if count >= total_models * 0.7:
+                        global_defaults.append(
+                            f"{param}={value} appears in {count}/{total_models} "
+                            f"models — likely a global default, not per-model tuning"
+                        )
+
+        triage_prompt = self._build_triage_prompt(
+            signal_summary=signal_summary,
+            history_summary=history_summary,
+            global_defaults=global_defaults,
+            active_scopes=active_scopes,
+            total_signals=len(in_scope),
+            out_of_scope_summary=oos_counts,
+            combo_membership=combo_membership,
+            available_interventions=interventions,
+        )
+
+        try:
+            triage_result = self._call_triage_llm(
+                system_prompt=triage_skill,
+                user_prompt=triage_prompt,
+                model=model,
+                temperature=temperature,
+                api_key=api_key,
+                base_url=base_url,
+            )
+        except Exception as e:
+            logger.warning("Triage LLM call failed: %s", e)
+            return None
+
+        if triage_result is None:
+            return None
+
+        # Extract prioritized targets from triage result
+        prioritized = triage_result.get("prioritized_targets", [])
+
+        # Print systemic observations regardless
+        systemic = triage_result.get("systemic_observations", [])
+        for obs in systemic:
+            print(f"   🔍 Systemic: {obs}")
+
+        excluded = triage_result.get("excluded_targets", [])
+        for exc in excluded:
+            print(f"   ⏭️  Excluded: {exc.get('target', '?')} — {exc.get('reason', '?')}")
+
+        if not prioritized:
+            print(
+                "   ⚠️  Triage returned no prioritized targets "
+                f"(all {len(in_scope)} in-scope models recently adjusted or "
+                "signals too weak). Falling back to in-scope signals."
+            )
+            return in_scope if in_scope else signals
+
+        target_names = set()
+        for entry in prioritized:
+            target = entry.get("target", "")
+            if target:
+                target_names.add(target)
+
+        for entry in prioritized:
+            print(
+                f"   ✅ Prioritized: {entry.get('target', '?')} "
+                f"(score={entry.get('priority_score', '?')}, "
+                f"{entry.get('primary_signal', '?')})"
+            )
+
+        # Filter signals to only prioritized targets
+        filtered = [s for s in signals if s.target in target_names]
+        print(f"   Signals: {len(signals)} → {len(filtered)} after triage")
+        return filtered
+
+    def _build_triage_prompt(
+        self,
+        signal_summary: dict,
+        history_summary: List[dict],
+        global_defaults: List[str],
+        active_scopes: List[str],
+        total_signals: int,
+        out_of_scope_summary: Optional[Dict[str, int]] = None,
+        combo_membership: Optional[Dict[str, List[str]]] = None,
+        available_interventions: Optional[Dict[str, dict]] = None,
+    ) -> str:
+        """Build the user prompt for the Triage LLM call."""
+        parts = [
+            f"## Active Scopes (ONLY these can be acted on)\n{json.dumps(active_scopes)}",
+        ]
+
+        if combo_membership:
+            combo_models: Dict[str, List[str]] = {}
+            for model_name, combos in combo_membership.items():
+                for c in combos:
+                    combo_models.setdefault(c, []).append(model_name)
+
+            parts.append(
+                f"\n## Ensemble Combo Membership\n"
+                f"Models in active combos have HIGHER IMPACT — prioritize them.\n"
+                f"```json\n{json.dumps(combo_models, indent=2, ensure_ascii=False)}\n```"
+            )
+
+        if available_interventions:
+            parts.append(
+                f"\n## Per-Model Intervention Availability (RULE-BASED — authoritative)\n"
+                f"For each model with in-scope signals, this shows:\n"
+                f"- **recently_adjusted**: params already changed in the last 30 days. "
+                f"Suggesting a DIFFERENT value for these SAME params should have a high bar "
+                f"(signal significantly worsened since last change).\n"
+                f"- **untouched**: params that have NOT been recently changed and are "
+                f"SAFE TO EXPERIMENT WITH. These are your primary candidates.\n"
+                f"- **exhausted**: true if ALL known params were already adjusted. "
+                f"Only exclude these models — partially explored models should still "
+                f"be prioritized as long as there are untouched params.\n\n"
+                f"A model with ic_decay + 3 untouched params should NOT be excluded "
+                f"just because it had 1-2 other params adjusted recently.\n"
+                f"```json\n{json.dumps(available_interventions, indent=2, ensure_ascii=False)}\n```"
+            )
+
+        parts.append(
+            f"\n## Actionable Signals ({total_signals} in-scope)\n"
+            f"```json\n{json.dumps(signal_summary, indent=2, ensure_ascii=False)}\n```"
+        )
+
+        if out_of_scope_summary:
+            oos_lines = [
+                f"  {stype}: {count} signals" for stype, count in
+                sorted(out_of_scope_summary.items(), key=lambda x: -x[1])
+            ]
+            parts.append(
+                f"\n## Out-of-Scope Signals (REPORT ONLY — DO NOT prioritize)\n"
+                f"These signals belong to disabled scopes. You MUST NOT include "
+                f"their targets in prioritized_targets.\n"
+                + "\n".join(oos_lines)
+            )
+
+        if global_defaults:
+            parts.append(
+                f"\n## ⚠️ Potential Global Defaults\n"
+                f"These parameter values appear in >70% of models and may be "
+                f"system-wide defaults rather than per-model tuning. "
+                f"Batch-adjusting these is rarely the right approach.\n"
+                + "\n".join(f"- {d}" for d in global_defaults)
+            )
+
+        if history_summary:
+            parts.append(
+                f"\n## Recent Action Item History\n"
+                f"These models were ALREADY adjusted recently. "
+                f"Do NOT re-recommend the same change unless the model's "
+                f"condition has significantly worsened.\n"
+                f"```json\n{json.dumps(history_summary, indent=2, ensure_ascii=False)}\n```"
+            )
+
+        parts.append(
+            f"\n## Instructions\n"
+            f"1. Identify systemic patterns across these {total_signals} signals\n"
+            f"2. Pick at most 5 models that most need intervention RIGHT NOW\n"
+            f"3. Exclude models that already had the same fix applied recently\n"
+            f"4. For global defaults, pick 2-3 worst-affected models to experiment on\n"
+            f"5. Output JSON object with keys: systemic_observations, "
+            f"prioritized_targets, excluded_targets"
+        )
+
+        return "\n".join(parts)
+
+    @staticmethod
+    def _extract_json_object(text: str) -> Optional[str]:
+        """Extract the first valid JSON object from text that may contain
+        markdown fences, explanatory prose, or other surrounding content.
+
+        Returns the JSON substring (including outer braces) or None.
+        """
+        if not text:
+            return None
+
+        # Try extracting from markdown code fences first (most common pattern)
+        fence_patterns = [
+            ("```json\n", "\n```"),
+            ("```json", "```"),
+            ("```\n", "\n```"),
+            ("```", "```"),
+        ]
+        for start_fence, end_fence in fence_patterns:
+            if start_fence in text:
+                after_start = text.split(start_fence, 1)[1]
+                if end_fence in after_start:
+                    return after_start.split(end_fence, 1)[0].strip()
+
+        # No fences found — try to find the outermost JSON object braces
+        first_brace = text.find("{")
+        if first_brace == -1:
+            return None
+
+        # Find matching closing brace
+        depth = 0
+        for i in range(first_brace, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[first_brace : i + 1]
+
+        return None
+
+    def _call_triage_llm(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        temperature: float,
+        api_key: str,
+        base_url: Optional[str],
+    ) -> Optional[dict]:
+        """Call the LLM for triage and return parsed JSON dict."""
+        try:
+            import openai
+        except ImportError:
+            raise RuntimeError("openai package not installed. Run: pip install openai")
+
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+
+        client = openai.OpenAI(**kwargs)
+
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=16000,
+            )
+
+            choice = response.choices[0]
+            finish = choice.finish_reason if hasattr(choice, "finish_reason") else "?"
+            content = choice.message.content
+            # Some reasoning models return reasoning_content and leave content empty
+            reasoning = getattr(choice.message, "reasoning_content", None)
+
+            if not content:
+                # Some reasoning models put the final answer in reasoning_content
+                # when max_tokens is exhausted before content can be generated.
+                diag = (
+                    f"   ⚠️  Triage returned empty content. "
+                    f"finish_reason={finish}, "
+                    f"has_reasoning={bool(reasoning)}, "
+                    f"reasoning_len={len(reasoning) if reasoning else 0}"
+                )
+                print(diag)
+                logger.warning(diag)
+                # Fallback: try reasoning_content as the response
+                if reasoning and finish == "length":
+                    print("   🔄 Triage: using reasoning_content as fallback (token limit hit)")
+                    json_str = self._extract_json_object(reasoning)
+                    if json_str:
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError:
+                            pass
+                return None
+
+            # Extract JSON from potentially noisy response
+            json_str = self._extract_json_object(content)
+            if json_str is None:
+                logger.warning(
+                    "Triage response contained no JSON object. "
+                    "finish_reason=%s, raw (first 300 chars): %s",
+                    finish, content[:300],
+                )
+                return None
+
+            return json.loads(json_str)
+
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Triage JSON parse failed: %s. Raw (first 300 chars): %s",
+                e, content[:300] if 'content' in dir() else "N/A",
+            )
+            return None
+        except Exception as e:
+            logger.warning("Triage LLM call failed: %s", e)
+            return None
+
     def _load_hyperparam_bounds(self, workspace_root: str) -> dict:
         """Load hyperparam_bounds from workspace config, returning empty dict on failure."""
         path = os.path.join(workspace_root, "config", "hyperparam_bounds.json")
@@ -500,6 +1080,7 @@ class LLMInterface:
         self, signals: List[Signal], active_scopes: List[str],
         hyperparam_bounds: Optional[dict] = None,
         current_params: Optional[dict] = None,
+        recent_history: Optional[List[dict]] = None,
     ) -> str:
         """Build the user prompt for the Critic LLM call."""
         signals_json = json.dumps(
@@ -535,9 +1116,29 @@ class LLMInterface:
                 f"```json\n{json.dumps(current_params, indent=2, ensure_ascii=False)}\n```"
             )
 
+        if recent_history:
+            # Filter history to only targets present in the current signals
+            signal_targets = {s.target for s in signals}
+            relevant_history = [
+                h for h in recent_history
+                if h.get("target") in signal_targets
+            ]
+            if relevant_history:
+                parts.append(
+                    f"## Recent Action History for These Models\n"
+                    f"These models were recently adjusted. Do NOT repeat the same "
+                    f"change unless their condition has significantly worsened. "
+                    f"If you believe a prior change was insufficient, explain why "
+                    f"and suggest a DIFFERENT approach.\n"
+                    f"```json\n{json.dumps(relevant_history[:10], indent=2, ensure_ascii=False)}\n```"
+                )
+
         parts.append(
             f"## Signals\n```json\n{signals_json}\n```\n\n"
             f"Based on the above signals, generate a JSON array of ActionItems. "
+            f"Generate 2-5 ActionItems — each targeting a different model, each "
+            f"using a DIFFERENT untouched parameter. If a model has ic_decay and "
+            f"several untouched params, you SHOULD suggest one of them. "
             f"Output ONLY the JSON array, no other text."
         )
 
@@ -567,6 +1168,7 @@ class LLMInterface:
 
         max_retries = 2
         last_error = None
+        last_content = None
 
         for attempt in range(max_retries):
             try:
@@ -580,11 +1182,25 @@ class LLMInterface:
                     max_tokens=max_tokens,
                 )
 
-                content = response.choices[0].message.content.strip()
-                return self._parse_action_items(content)
+                content = response.choices[0].message.content
+                if not content:
+                    print("   ⚠️  Critic returned empty response")
+                    return []
+                last_content = content
+                items = self._parse_action_items(content.strip())
+                if not items:
+                    print(
+                        "   ⚠️  Critic parsed successfully but returned 0 ActionItems. "
+                        f"Raw (first 300 chars): {content.strip()[:300]}"
+                    )
+                return items
 
             except json.JSONDecodeError as e:
                 last_error = e
+                print(
+                    f"   ⚠️  Critic JSON parse failed (attempt {attempt+1}/{max_retries}). "
+                    f"Raw (first 200 chars): {last_content[:200] if last_content else 'N/A'}"
+                )
                 logger.warning(
                     "Critic response JSON parse failed (attempt %d/%d): %s",
                     attempt + 1, max_retries, e,
@@ -598,6 +1214,7 @@ class LLMInterface:
                 break  # Don't retry on non-parse errors
 
         logger.error("Critic failed after %d attempts: %s", max_retries, last_error)
+        print(f"   ❌ Critic failed after {max_retries} attempts: {last_error}")
         return []
 
     @staticmethod
