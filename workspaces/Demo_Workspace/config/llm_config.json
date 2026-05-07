@@ -6,7 +6,7 @@
     "api_key_env": "OPENAI_API_KEY",
     "base_url": null,
     "temperature": 0.3,
-    "max_tokens": 4000,
+    "max_tokens": 32768,
     "mcp_enabled": false,
     "mcp_tools": []
 }

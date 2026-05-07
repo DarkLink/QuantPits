@@ -866,12 +866,15 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
                         best_score = None
                         configured_epochs = None
                     
-                # 3. 使用 Qlib Logger 截获的 best_score/epoch 作为补充
-                if best_score is None and score_handler.best_score is not None:
+                # 3. Logger-captured best_score/epoch takes PRIORITY
+                #    The logger directly parses the model's "best score: X @ Y"
+                #    message, which is authoritative.  evals_result min/max can
+                #    be wrong for negated losses (min picks the worst epoch).
+                if score_handler.best_score is not None:
                     best_score = score_handler.best_score
                     best_epoch = score_handler.best_epoch
 
-                # 4. 使用 Logger 截获的 epoch 计数和 loss 作为补充 (如 ADD 等自定义训练循环的模型)
+                # 4. Logger-captured epoch count / train loss as fallback
                 if actual_epochs is None and score_handler.last_epoch is not None:
                     actual_epochs = score_handler.last_epoch + 1
 

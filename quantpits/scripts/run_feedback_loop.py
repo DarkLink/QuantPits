@@ -41,8 +41,8 @@ def main():
     # Required
     parser.add_argument(
         "--action-items",
-        required=True,
-        help="Path to action_items_{date}.json file",
+        default=None,
+        help="Path to action_items_{date}.json file (not required for --playground-only)",
     )
 
     # Mode (mutually exclusive)
@@ -66,6 +66,12 @@ def main():
         "--auto-promote",
         action="store_true",
         help="(Not yet implemented) Auto-promote if validation passes",
+    )
+    mode_group.add_argument(
+        "--playground-only",
+        action="store_true",
+        help="Lightweight: skip ActionItems, let ExperimentAnalyzer drive "
+             "param search directly in Playground. Use with --models.",
     )
 
     # Options
@@ -98,6 +104,18 @@ def main():
         help="Skip retraining (only apply config changes)",
     )
     parser.add_argument(
+        "--max-experiment-rounds",
+        type=int,
+        default=3,
+        help="Max retrain rounds per model in Playground (default: 3, 0 to disable)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip param adjustments already tried in previous experiment; "
+             "continue with ExperimentAnalyzer suggesting new params",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging",
@@ -122,6 +140,8 @@ def main():
         mode = "promote"
     elif args.auto_promote:
         mode = "auto-promote"
+    elif args.playground_only:
+        mode = "playground-only"
     else:
         mode = "report-only"
 
@@ -136,35 +156,45 @@ def main():
     print(f"🔄  RLFF Feedback Loop")
     print(f"Mode           : {mode}")
     print(f"Workspace      : {ROOT_DIR}")
-    print(f"Action Items   : {args.action_items}")
+    if mode != "playground-only":
+        print(f"Action Items   : {args.action_items}")
     if models:
-        print(f"Models filter  : {models}")
+        print(f"Models         : {models}")
     if skip_models:
         print(f"Skip models    : {skip_models}")
     if args.max_duration_minutes:
         print(f"Time budget    : {args.max_duration_minutes} min")
     print("=" * 60)
 
-    # Resolve action items path (relative to workspace if not absolute)
+    # Resolve action items path (not needed for playground-only mode)
     action_items_path = args.action_items
-    if not os.path.isabs(action_items_path):
-        action_items_path = os.path.join(ROOT_DIR, action_items_path)
+    if mode == "playground-only":
+        if not args.models:
+            print("❌ --models is required for --playground-only mode")
+            sys.exit(1)
+        action_items_path = ""  # placeholder
+    else:
+        if not action_items_path:
+            print("❌ --action-items is required for this mode")
+            sys.exit(1)
+        if not os.path.isabs(action_items_path):
+            action_items_path = os.path.join(ROOT_DIR, action_items_path)
+        if not os.path.exists(action_items_path):
+            print(f"❌ ActionItems file not found: {action_items_path}")
+            sys.exit(1)
 
-    if not os.path.exists(action_items_path):
-        print(f"❌ ActionItems file not found: {action_items_path}")
-        sys.exit(1)
-
-    # Import and run
     from quantpits.scripts.deep_analysis.feedback_loop import FeedbackLoop
 
     loop = FeedbackLoop(workspace_root=ROOT_DIR, mode=mode)
     report = loop.run(
-        action_items_path=action_items_path,
+        action_items_path=action_items_path if mode != "playground-only" else "",
         models=models,
         skip_models=skip_models,
         max_duration_minutes=args.max_duration_minutes,
         dry_run=args.dry_run,
         skip_retrain=args.skip_retrain,
+        max_experiment_rounds=args.max_experiment_rounds,
+        resume=args.resume,
     )
 
     # Print summary

@@ -106,6 +106,54 @@ class PlaygroundManager:
             shutil.rmtree(self.playground_root)
             logger.info("Cleaned Playground at %s", self.playground_root)
 
+    def sync_single_config(self, model_name: str) -> bool:
+        """Re-copy a single model's workflow YAML from production to Playground.
+
+        Used by the independent experiment mode to reset a model's config
+        before each round so that only one parameter change is active.
+
+        Returns:
+            True if a file was copied, False if not found.
+        """
+        import glob
+
+        src_config = os.path.join(self.production_root, "config")
+        dst_config = os.path.join(self.playground_root, "config")
+
+        # Try exact match first
+        src_file = os.path.join(src_config, f"workflow_config_{model_name}.yaml")
+        if os.path.exists(src_file):
+            dst_file = os.path.join(dst_config, f"workflow_config_{model_name}.yaml")
+            shutil.copy2(src_file, dst_file)
+            logger.debug("Reset config for %s from production", model_name)
+            return True
+
+        # Fallback: search model_registry.yaml for the yaml_file path
+        registry_path = os.path.join(src_config, "model_registry.yaml")
+        if os.path.exists(registry_path):
+            try:
+                import yaml
+                with open(registry_path, "r", encoding="utf-8") as f:
+                    registry = yaml.safe_load(f) or {}
+                model_info = registry.get("models", {}).get(model_name, {})
+                yaml_rel = model_info.get("yaml_file", "")
+                if yaml_rel:
+                    src_file = os.path.join(self.production_root, yaml_rel)
+                    dst_file = os.path.join(self.playground_root, yaml_rel)
+                    if os.path.exists(src_file):
+                        os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+                        shutil.copy2(src_file, dst_file)
+                        logger.debug(
+                            "Reset config for %s via registry: %s",
+                            model_name, yaml_rel,
+                        )
+                        return True
+            except Exception as e:
+                logger.warning("Failed to look up %s in registry: %s", model_name, e)
+
+        logger.warning("No config file found for model %s", model_name)
+        return False
+
     def get_meta(self) -> dict:
         """Read _playground_meta.json."""
         meta_path = os.path.join(self.playground_root, "_playground_meta.json")

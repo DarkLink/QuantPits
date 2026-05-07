@@ -186,7 +186,7 @@ class LLMInterface:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_tokens=1500,
+            max_tokens=8192,
         )
 
         return response.choices[0].message.content.strip()
@@ -339,7 +339,7 @@ class LLMInterface:
         # Resolve effective settings: CLI args > config file > built-in defaults
         critic_model = ws_config.get("critic_model") or self.model or "gpt-4"
         temperature = ws_config.get("temperature", 0.3)
-        max_tokens = ws_config.get("max_tokens", 4000)
+        max_tokens = ws_config.get("max_tokens", 32768)
         base_url = self.base_url or ws_config.get("base_url")
         api_key_env = ws_config.get("api_key_env", "OPENAI_API_KEY")
 
@@ -601,6 +601,13 @@ class LLMInterface:
             for signal_type, items in by_type.items()
         }
 
+    # Params that are NOT tunable hyperparameters — structural/config choices
+    _NON_TUNABLE_PARAMS = {
+        "metric", "loss", "loss_type", "optimizer", "GPU", "device",
+        "seed", "rnn_type", "d_feat", "class", "module_path", "estimator",
+        "n_jobs", "kernel_type", "num_class",
+    }
+
     def _compute_available_interventions(
         self,
         in_scope_signals: List[Signal],
@@ -610,8 +617,11 @@ class LLMInterface:
         """For each model with in-scope signals, compute which params have been
         recently adjusted vs which are still untouched — purely rule-based.
 
+        Non-tunable params (metric, optimizer, GPU, seed, etc.) are excluded
+        from both untouched and exhausted calculations.
+
         Returns {model_name: {recently_adjusted: [...], untouched: [...], exhausted: bool}}
-        Exhausted means every known param was already adjusted within 30 days.
+        Exhausted means every TUNABLE param was already adjusted within 30 days.
         """
         cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         adjusted: Dict[str, set] = {}
@@ -634,9 +644,10 @@ class LLMInterface:
                 continue
             seen.add(model)
 
-            model_params = set(current_params.get(model, {}).keys())
-            adj = adjusted.get(model, set()) & model_params
-            untouched = sorted(model_params - adj)
+            # Only consider tunable params
+            tunable = set(current_params.get(model, {}).keys()) - self._NON_TUNABLE_PARAMS
+            adj = adjusted.get(model, set()) & tunable
+            untouched = sorted(tunable - adj)
             recently = sorted(adj)
 
             result[model] = {
@@ -951,7 +962,7 @@ class LLMInterface:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=temperature,
-                max_tokens=16000,
+                max_tokens=32768,
             )
 
             choice = response.choices[0]
@@ -1143,6 +1154,179 @@ class LLMInterface:
         )
 
         return "\n\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Experiment Analyzer — multi-round Playground decision-making
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _assess_convergence(conv: Optional[dict]) -> str:
+        """Pre-compute convergence quality so the LLM can't ignore it."""
+        if not conv:
+            return "NO TRAINING DATA — this is the first round, pick a param to try."
+        best_ep = conv.get("best_epoch")
+        actual_ep = conv.get("actual_epochs", 0)
+        early = conv.get("early_stopped", False)
+        if best_ep is not None and actual_ep > 10:
+            if best_ep <= 1 and early:
+                return (
+                    f"⚠️ SEVERE OVERFITTING: best @ epoch {best_ep}/{actual_ep}. "
+                    f"Model memorizes immediately. IC is NOT trustworthy. "
+                    f"MUST try regularization (dropout, batch_size↑) or "
+                    f"capacity reduction (hidden_size↓, num_layers↓). "
+                    f"Do NOT give_up based on IC alone."
+                )
+            if best_ep <= 3:
+                return (
+                    f"MILD OVERFITTING: best @ epoch {best_ep}/{actual_ep}. "
+                    f"Try dropout or reduce n_epochs."
+                )
+        return f"Healthy: best @ epoch {best_ep}, actual {actual_ep}. IC is trustworthy."
+
+    def analyze_experiment_result(
+        self,
+        model_name: str,
+        baseline_ic: float,
+        playground_ic: float,
+        changes_tried: List[dict],
+        convergence: Optional[dict],
+        current_params: dict,
+        available_interventions: dict,
+        hyperparam_bounds: dict,
+        max_rounds_remaining: int,
+        workspace_root: str,
+        is_first_round: bool = False,
+    ) -> Optional[dict]:
+        """
+        Analyze a single round of Playground training and decide next action.
+
+        Returns a dict with decision/next_param/next_from/next_to or None.
+        """
+        ws_config = self._load_workspace_llm_config(workspace_root)
+        llm_model = ws_config.get("critic_model") or self.model or "gpt-4"
+        temperature = ws_config.get("temperature", 0.3)
+        base_url = self.base_url or ws_config.get("base_url")
+        api_key_env = ws_config.get("api_key_env", "OPENAI_API_KEY")
+        api_key = self.api_key or os.environ.get(api_key_env, "")
+
+        if not api_key:
+            return None
+
+        skill_path = os.path.join(
+            workspace_root, "config", "skills", "experiment_analyzer.md",
+        )
+        system_prompt = None
+        if os.path.exists(skill_path):
+            try:
+                with open(skill_path, "r", encoding="utf-8") as f:
+                    system_prompt = f.read().strip()
+            except Exception:
+                pass
+
+        if not system_prompt:
+            print("   ⚠️  experiment_analyzer.md not found — skipping experiment loop")
+            return None
+
+        model_interventions = available_interventions.get(model_name, {})
+        bounds_summary = {
+            k: {"min": v.get("min"), "max": v.get("max"),
+                "max_change_pct": v.get("max_change_pct")}
+            for k, v in hyperparam_bounds.items()
+        }
+
+        user_prompt = "\n".join([
+            f"## Model\n{model_name}",
+        ] + ([
+            f"\n## ⚠️ FIRST ROUND — NO TRAINING HAS BEEN DONE YET",
+            f"The IC values below are placeholders (baseline only). "
+            f"Your job is to suggest the FIRST parameter to try. "
+            f"Pick the most promising untouched parameter and suggest a "
+            f"moderate first-step change. Do NOT give_up — there is no "
+            f"result to evaluate yet.",
+        ] if is_first_round else []) + [
+            f"\n## Baseline IC (production)\n{baseline_ic:.6f}",
+            f"\n## Current Playground IC\n{playground_ic:.6f}",
+            f"\n## IC Change\n{(playground_ic - baseline_ic):+.6f} "
+            f"({'IMPROVED' if playground_ic > baseline_ic else 'DEGRADED'})" + (
+                " (PLACEHOLDER — no training yet)" if is_first_round else ""
+            ),
+            f"\n## Changes Tried So Far\n```json\n{json.dumps(changes_tried, indent=2, ensure_ascii=False)}\n```",
+            f"\n## Convergence Pattern\n```json\n{json.dumps(convergence or {}, indent=2, ensure_ascii=False)}\n```"
+            f"\n## Convergence Assessment (pre-computed — TRUST THIS)"
+            f"\n{self._assess_convergence(convergence)}",
+            f"\n## Current Hyperparameter Values\n```json\n{json.dumps(current_params.get(model_name, {}), indent=2, ensure_ascii=False)}\n```",
+            f"\n## Available Interventions\n"
+            f"recently_adjusted (DO NOT repeat): {model_interventions.get('recently_adjusted', [])}\n"
+            f"untouched (SAFE to try): {model_interventions.get('untouched', [])}\n"
+            f"exhausted: {model_interventions.get('exhausted', False)}",
+            f"\n## Hyperparameter Bounds\n```json\n{json.dumps(bounds_summary, indent=2, ensure_ascii=False)}\n```",
+            f"\n## Constraints\n- Max rounds remaining: {max_rounds_remaining}\n"
+            f"- Check convergence FIRST (see assessment above). "
+            f"Overfitting overrides IC improvement.\n"
+            f"- If convergence is healthy AND IC improved meaningfully → give_up\n"
+            f"- If convergence broken → retry with regularization regardless of IC\n"
+            f"- Do NOT repeat a param already in changes_tried\n"
+            f"- Output ONLY a JSON object: {{\"decision\": \"retry|give_up\", \"reason\": \"...\", "
+            f"\"next_param\": \"...\", \"next_from\": value, \"next_to\": value, \"rationale\": \"...\"}}",
+        ])
+
+        try:
+            import openai
+        except ImportError:
+            return None
+
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+
+        try:
+            client = openai.OpenAI(**kwargs)
+            response = client.chat.completions.create(
+                model=llm_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=32768,
+            )
+
+            choice = response.choices[0]
+            finish = getattr(choice, "finish_reason", "?")
+            content = choice.message.content
+            reasoning = getattr(choice.message, "reasoning_content", None)
+            if not content:
+                print(f"   ⚠️  ExperimentAnalyzer empty: finish={finish} "
+                      f"reasoning_len={len(reasoning) if reasoning else 0}")
+                if reasoning and finish == "length":
+                    json_str = self._extract_json_object(reasoning)
+                    if json_str:
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError:
+                            pass
+                return None
+
+            json_str = self._extract_json_object(content)
+            if json_str is None:
+                print(f"   ⚠️  ExperimentAnalyzer: no JSON found. Raw (200 chars): {content[:200]}")
+                return None
+
+            result = json.loads(json_str)
+            decision = result.get("decision", "give_up")
+            if decision == "retry":
+                print(
+                    f"   🔄 Experiment: retry → {result.get('next_param', '?')} "
+                    f"({result.get('next_from', '?')} → {result.get('next_to', '?')})"
+                )
+            else:
+                print(f"   🛑 Experiment: give_up — {result.get('reason', result.get('rationale', '?'))}")
+            return result
+
+        except Exception as e:
+            logger.warning("ExperimentAnalyzer call failed: %s", e)
+            print(f"   ⚠️  ExperimentAnalyzer failed: {e}")
+            return None
 
     def _call_critic_llm(
         self,
