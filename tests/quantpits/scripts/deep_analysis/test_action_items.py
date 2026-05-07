@@ -203,6 +203,43 @@ class TestActionItemValidator:
         # No active scopes → out_of_scope
         assert result[0].scope_status == "out_of_scope"
 
+    def test_corrupt_scope_file_returns_empty(self, validator_workspace):
+        """Lines 100-102: corrupt feedback_scope.json exception handling."""
+        scope_path = os.path.join(validator_workspace, "config", "feedback_scope.json")
+        with open(scope_path, "w") as f:
+            f.write("not valid json {{{")
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(scope="hyperparams")
+        result = v.validate([item])
+        assert result[0].scope_status == "out_of_scope"
+
+    def test_corrupt_bounds_file_returns_empty(self, validator_workspace):
+        """Lines 114-116: corrupt hyperparam_bounds.json exception handling."""
+        bounds_path = os.path.join(validator_workspace, "config", "hyperparam_bounds.json")
+        with open(bounds_path, "w") as f:
+            f.write("not valid json {{{")
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_hyperparam",
+            scope="hyperparams",
+            params={"n_epochs": {"from": 100, "to": 140}},
+        )
+        result = v.validate([item])
+        # No bounds → unknown param → in_scope
+        assert result[0].scope_status == "in_scope"
+
+    def test_params_change_spec_not_dict(self, validator_workspace):
+        """Line 159: change_spec is not a dict — skipped."""
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_hyperparam",
+            scope="hyperparams",
+            params={"n_epochs": 150},  # Not a dict — should be skipped
+        )
+        result = v.validate([item])
+        # Skipped (not a dict), so no bounds check → in_scope
+        assert result[0].scope_status == "in_scope"
+
     def test_multiple_items_mixed(self, validator_workspace):
         v = self._make_validator(validator_workspace)
         items = [

@@ -389,6 +389,36 @@ class TestComboStale:
         signals = ext.extract([af], {})
         assert not any(s.signal_type == "combo_stale" for s in signals)
 
+    def test_empty_entries_skipped(self):
+        """Line 323: empty entries list for a non-default combo is skipped."""
+        af = _make_findings("Ensemble Evolution", {
+            "oos_trend": {},
+            "model_contributions": {},
+            "combo_trends": {
+                "default": [{"_date": "2026-01-01"}],
+                "empty_combo": [],
+            },
+        })
+        ext = SignalExtractor(reference_date="2026-04-30")
+        signals = ext.extract([af], {})
+        assert not any(s.signal_type == "combo_stale" for s in signals)
+
+    def test_unparseable_date_skipped(self):
+        """Lines 350-351: ValueError when date string can't be parsed."""
+        af = _make_findings("Ensemble Evolution", {
+            "oos_trend": {},
+            "model_contributions": {},
+            "combo_trends": {
+                "combo_C": [
+                    {"_date": "not-a-valid-date", "total_return": 0.1},
+                ],
+            },
+        })
+        ext = SignalExtractor(reference_date="2026-04-30")
+        signals = ext.extract([af], {})
+        # Unparseable date is silently skipped — no combo_stale signal
+        assert not any(s.signal_type == "combo_stale" for s in signals)
+
 
 # ------------------------------------------------------------------
 # Rule 12: cross_agent_convergence

@@ -765,3 +765,454 @@ class TestPretrainDeps:
         loop = FeedbackLoop(str(ws), mode="execute")
         report = loop.run(str(items_path), dry_run=True)
         assert report.mode == "execute"
+
+
+# ------------------------------------------------------------------
+# _detect_overfitting
+# ------------------------------------------------------------------
+
+class TestDetectOverfitting:
+    def test_severe_overfitting(self):
+        """best=3 / actual=30 → 0.10 < 0.15 → overfitting (and actual > 5)."""
+        loop = FeedbackLoop("/tmp", mode="report-only")
+        assert loop._detect_overfitting({"best_epoch": 3, "actual_epochs": 30}) is True
+
+    def test_no_overfitting_best_at_end(self):
+        """best=28 / actual=30 → 0.93 > 0.15 → not overfitting."""
+        loop = FeedbackLoop("/tmp", mode="report-only")
+        assert loop._detect_overfitting({"best_epoch": 28, "actual_epochs": 30}) is False
+
+    def test_short_run_no_judgment(self):
+        """actual_epochs <= 5 → no overfitting judgment (false positive guard)."""
+        loop = FeedbackLoop("/tmp", mode="report-only")
+        assert loop._detect_overfitting({"best_epoch": 1, "actual_epochs": 5}) is False
+
+    def test_empty_convergence(self):
+        loop = FeedbackLoop("/tmp", mode="report-only")
+        assert loop._detect_overfitting({}) is False
+
+    def test_none_convergence(self):
+        loop = FeedbackLoop("/tmp", mode="report-only")
+        assert loop._detect_overfitting(None) is False
+
+    def test_missing_best_epoch(self):
+        loop = FeedbackLoop("/tmp", mode="report-only")
+        assert loop._detect_overfitting({"actual_epochs": 30}) is False
+
+    def test_missing_actual_epochs(self):
+        loop = FeedbackLoop("/tmp", mode="report-only")
+        assert loop._detect_overfitting({"best_epoch": 3}) is False
+
+
+# ------------------------------------------------------------------
+# _load_experiment_history
+# ------------------------------------------------------------------
+
+class TestExperimentHistory:
+    def test_no_file_returns_none(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._load_experiment_history("m1") is None
+
+    def test_in_progress_returned(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "data").mkdir()
+        exp_path = ws / "data" / "experiment_history.jsonl"
+        exp_path.write_text(json.dumps({
+            "experiment_id": "exp_001", "model": "m1",
+            "baseline_ic": 0.02, "rounds": [], "status": "in_progress",
+        }) + "\n")
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        result = loop._load_experiment_history("m1")
+        assert result is not None
+        assert result["experiment_id"] == "exp_001"
+
+    def test_completed_not_returned(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "data").mkdir()
+        exp_path = ws / "data" / "experiment_history.jsonl"
+        exp_path.write_text(json.dumps({
+            "experiment_id": "exp_001", "model": "m1",
+            "baseline_ic": 0.02, "rounds": [], "status": "completed",
+        }) + "\n")
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._load_experiment_history("m1") is None
+
+    def test_corrupt_lines_skipped(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "data").mkdir()
+        exp_path = ws / "data" / "experiment_history.jsonl"
+        exp_path.write_text(
+            "not valid json\n" +
+            json.dumps({"experiment_id": "exp_002", "model": "m1",
+                        "baseline_ic": 0.02, "rounds": [], "status": "in_progress"}) + "\n"
+        )
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        result = loop._load_experiment_history("m1")
+        assert result is not None
+        assert result["experiment_id"] == "exp_002"
+
+
+# ------------------------------------------------------------------
+# _save_experiment_round
+# ------------------------------------------------------------------
+
+class TestSaveExperimentRound:
+    def test_new_experiment(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        loop._save_experiment_round("exp_new", "m1", 0.02,
+                                    {"round": 1, "playground_ic": 0.025}, "in_progress")
+        exp_path = ws / "data" / "experiment_history.jsonl"
+        assert exp_path.exists()
+        with open(exp_path, "r") as f:
+            records = [json.loads(l) for l in f if l.strip()]
+        assert len(records) == 1
+        assert records[0]["experiment_id"] == "exp_new"
+        assert len(records[0]["rounds"]) == 1
+
+    def test_append_round_to_existing(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        loop._save_experiment_round("exp_1", "m1", 0.02,
+                                    {"round": 1, "playground_ic": 0.025}, "in_progress")
+        loop._save_experiment_round("exp_1", "m1", 0.02,
+                                    {"round": 2, "playground_ic": 0.030}, "in_progress")
+        exp_path = ws / "data" / "experiment_history.jsonl"
+        with open(exp_path, "r") as f:
+            records = [json.loads(l) for l in f if l.strip()]
+        assert len(records) == 1
+        assert len(records[0]["rounds"]) == 2
+
+    def test_final_status_update(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        loop._save_experiment_round("exp_1", "m1", 0.02,
+                                    {"round": 1, "playground_ic": 0.025}, "in_progress")
+        loop._save_experiment_round("exp_1", "m1", 0.02, None, "completed")
+        exp_path = ws / "data" / "experiment_history.jsonl"
+        with open(exp_path, "r") as f:
+            records = [json.loads(l) for l in f if l.strip()]
+        assert records[0]["status"] == "completed"
+        assert records[0]["best_ic"] == 0.025
+
+
+# ------------------------------------------------------------------
+# _load_latest_feedback_report
+# ------------------------------------------------------------------
+
+class TestLoadFeedbackReport:
+    def test_no_reports_returns_none(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "output" / "deep_analysis").mkdir(parents=True)
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._load_latest_feedback_report() is None
+
+    def test_corrupt_report_returns_none(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        out = ws / "output" / "deep_analysis"
+        out.mkdir(parents=True)
+        (out / "feedback_report_2026-01-01.json").write_text("not json {{{")
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._load_latest_feedback_report() is None
+
+
+# ------------------------------------------------------------------
+# _run_experiment_loop with mocked LLM
+# ------------------------------------------------------------------
+
+class TestExperimentLoop:
+    def _make_loop_with_workspace(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "data").mkdir()
+        (ws / "output").mkdir()
+
+        import yaml
+        registry = {
+            "models": {
+                "m1": {"algorithm": "gru", "dataset": "Alpha158",
+                       "yaml_file": "config/workflow_config_m1.yaml", "enabled": True},
+            }
+        }
+        with open(ws / "config" / "model_registry.yaml", "w") as f:
+            yaml.dump(registry, f)
+        workflow = {"task": {"model": {"class": "GRU", "kwargs": {"n_epochs": 100, "early_stop": 10}}}}
+        with open(ws / "config" / "workflow_config_m1.yaml", "w") as f:
+            yaml.dump(workflow, f)
+        with open(ws / "config" / "llm_config.json", "w") as f:
+            json.dump({}, f)
+        with open(ws / "config" / "hyperparam_bounds.json", "w") as f:
+            json.dump({"bounds": {"n_epochs": {"min": 10, "max": 500}}}, f)
+        with open(ws / "config" / "feedback_scope.json", "w") as f:
+            json.dump({"active_scopes": ["hyperparams"]}, f)
+
+        return FeedbackLoop(str(ws), mode="execute"), ws
+
+    def test_single_round_experiment_llm_stops(self, tmp_path):
+        """LLM returns no retry on first round — loop returns 1 result."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        mock_vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.025,
+            ic_delta=0.005, ic_improved=True, passed=True,
+            convergence={"best_epoch": 95, "actual_epochs": 100},
+            round_idx=1, params_changed={"n_epochs": {"from": 100, "to": 150}},
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=mock_vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_class:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = True
+            mock_llm.analyze_experiment_result.return_value = {"decision": "stop"}
+            mock_llm._load_current_params.return_value = {}
+            mock_llm._load_recent_action_history.return_value = []
+            mock_llm._compute_available_interventions.return_value = [
+                {"param": "n_epochs", "current": 100, "suggested_min": 50, "suggested_max": 200}
+            ]
+            mock_llm._load_hyperparam_bounds.return_value = {"n_epochs": {"min": 10, "max": 500}}
+            mock_llm_class.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "TestWS_Playground"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        assert len(results) == 1
+        assert results[0].round_idx == 1
+
+    def test_experiment_loop_llm_retry_then_stops(self, tmp_path):
+        """LLM returns retry on first round, then stop on second."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        # IC delta 0.0005 < min_abs 0.002 → not "meaningful" → LLM gets called
+        vr1 = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.0205,
+            ic_delta=0.0005, ic_improved=True, passed=True,
+            convergence={"best_epoch": 20, "actual_epochs": 100},
+            round_idx=1,
+        )
+        vr2 = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.030,
+            ic_delta=0.010, ic_improved=True, passed=True,
+            convergence={"best_epoch": 98, "actual_epochs": 100},
+            round_idx=2,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", side_effect=[vr1, vr2]), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_class:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = True
+            mock_llm.analyze_experiment_result.side_effect = [
+                {"decision": "retry", "next_param": "n_epochs", "next_from": 150,
+                 "next_to": 200, "rationale": "increase more"},
+                {"decision": "stop"},
+            ]
+            mock_llm._load_current_params.return_value = {}
+            mock_llm._load_recent_action_history.return_value = []
+            mock_llm._compute_available_interventions.return_value = [
+                {"param": "n_epochs", "current": 100, "suggested_min": 50, "suggested_max": 500}
+            ]
+            mock_llm._load_hyperparam_bounds.return_value = {"n_epochs": {"min": 10, "max": 500}}
+            mock_llm_class.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "TestWS_Playground"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        assert len(results) == 2
+
+    def test_experiment_loop_max_rounds_exhausted(self, tmp_path):
+        """LLM keeps saying retry until max_rounds exhausted."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        # IC delta 0.0005 < min_abs 0.002 → not meaningful → LLM keeps trying
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.0205,
+            ic_delta=0.0005, ic_improved=True, passed=True,
+            convergence={"best_epoch": 20, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_class:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = True
+            mock_llm.analyze_experiment_result.return_value = {
+                "decision": "retry", "next_param": "n_epochs", "next_from": 150,
+                "next_to": 200, "rationale": "keep trying",
+            }
+            mock_llm._load_current_params.return_value = {}
+            mock_llm._load_recent_action_history.return_value = []
+            mock_llm._compute_available_interventions.return_value = [
+                {"param": "n_epochs", "current": 100, "suggested_min": 50, "suggested_max": 500}
+            ]
+            mock_llm._load_hyperparam_bounds.return_value = {"n_epochs": {"min": 10, "max": 500}}
+            mock_llm_class.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "TestWS_Playground"),
+                training_history={}, adapter=MagicMock(), max_rounds=2,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        assert len(results) == 2
+
+    def test_experiment_loop_no_llm_available(self, tmp_path):
+        """No API key → loop exits without calling analyzer."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.025,
+            ic_delta=0.005, ic_improved=True, passed=True,
+            convergence={"best_epoch": 95, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_class:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = False  # No API key
+            mock_llm_class.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "TestWS_Playground"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        # Should return the one training round result, then break
+        assert len(results) == 1
+
+
+# ------------------------------------------------------------------
+# _run_execute: unsupported action_type path
+# ------------------------------------------------------------------
+
+class TestRunExecuteEdgeCases:
+    def test_unsupported_action_type_skipped(self, tmp_path):
+        """Lines 358-362: unsupported action_type logs warning and continues."""
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "data").mkdir()
+        (ws / "output" / "deep_analysis").mkdir(parents=True)
+
+        import yaml
+        with open(ws / "config" / "model_registry.yaml", "w") as f:
+            yaml.dump({"models": {"m1": {"algorithm": "gru", "dataset": "Alpha158",
+                        "yaml_file": "config/workflow_config_m1.yaml", "enabled": True}}}, f)
+        with open(ws / "config" / "workflow_config_m1.yaml", "w") as f:
+            yaml.dump({"task": {"model": {"class": "GRU", "kwargs": {"n_epochs": 100}}}}, f)
+        with open(ws / "config" / "hyperparam_bounds.json", "w") as f:
+            json.dump({"bounds": {}}, f)
+        with open(ws / "config" / "feedback_scope.json", "w") as f:
+            json.dump({"active_scopes": ["hyperparams"]}, f)
+
+        items_path = ws / "output" / "deep_analysis" / "items.json"
+        with open(items_path, "w") as f:
+            json.dump([{
+                "action_id": "act-001", "action_type": "disable_model",
+                "scope": "hyperparams", "target": "m1",
+                "params": {}, "reason": "test", "source_signals": [],
+                "confidence": 0.5, "risk_level": "low", "scope_status": "in_scope",
+            }], f)
+
+        loop = FeedbackLoop(str(ws), mode="execute")
+        report = loop.run(str(items_path), dry_run=True)
+        assert report.mode == "execute"
+        assert len(report.adapter_results) == 0  # Skipped
+
+
+# ------------------------------------------------------------------
+# _get_model_ic fallback paths
+# ------------------------------------------------------------------
+
+class TestGetModelICFallbacks:
+    def test_direct_ic_field(self, tmp_path):
+        """Line 1009-1011: direct IC field in performance file."""
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "output").mkdir()
+        perf_path = ws / "output" / "model_performance_2026-01-01.json"
+        perf_path.write_text(json.dumps({"ic": 0.035}))
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._get_model_ic(str(ws), "m1") == 0.035
+
+    def test_all_structure_fallback(self, tmp_path):
+        """Lines 1013-1016: nested 'all' structure fallback."""
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "output").mkdir()
+        perf_path = ws / "output" / "model_performance_2026-01-01.json"
+        perf_path.write_text(json.dumps({"all": {"IC_Mean": 0.028}}))
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._get_model_ic(str(ws), "m1") == 0.028
+
+
+# ------------------------------------------------------------------
+# _run_playground_only edge cases
+# ------------------------------------------------------------------
+

@@ -286,3 +286,247 @@ def test_create_or_sync_idempotent(production_workspace):
     # Second call should not crash and should return the same path
     assert pg_root_1 == pg_root_2
     mgr.clean()
+
+
+# ── sync_single_config (lines 118-155) ──────────────────────────
+
+def test_sync_single_config_exact_match(production_workspace):
+    """Line 124-129: sync_single_config finds workflow YAML by exact name."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    result = mgr.sync_single_config("gru_Alpha158")
+    assert result is True
+
+    mgr.clean()
+
+
+def test_sync_single_config_via_registry(production_workspace):
+    """Lines 131-150: sync_single_config falls back to model_registry lookup."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+    import yaml
+
+    # Remove the exact-match file from production so it falls through
+    exact_path = production_workspace / "config" / "workflow_config_gru_Alpha158.yaml"
+    exact_path.unlink()
+
+    # Create a YAML file referenced by registry
+    nested_yaml = production_workspace / "config" / "nested" / "workflow_config_gru_Alpha158.yaml"
+    nested_yaml.parent.mkdir(exist_ok=True)
+    nested_yaml.write_text("model: {}")
+
+    registry_path = production_workspace / "config" / "model_registry.yaml"
+    with open(registry_path, "w") as f:
+        yaml.dump({"models": {
+            "gru_Alpha158": {"yaml_file": "config/nested/workflow_config_gru_Alpha158.yaml"}
+        }}, f)
+
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    result = mgr.sync_single_config("gru_Alpha158")
+    assert result is True
+
+    mgr.clean()
+
+
+def test_sync_single_config_not_found(production_workspace):
+    """Lines 154-155: sync_single_config returns False when no file found."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+
+    # Remove the exact-match file
+    exact_path = production_workspace / "config" / "workflow_config_gru_Alpha158.yaml"
+    exact_path.unlink()
+    # And don't have a registry entry for it
+    registry_path = production_workspace / "config" / "model_registry.yaml"
+    if registry_path.exists():
+        registry_path.unlink()
+
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    result = mgr.sync_single_config("nonexistent_model")
+    assert result is False
+
+    mgr.clean()
+
+
+def test_sync_single_config_registry_error(production_workspace):
+    """Lines 151-152: exception during registry lookup."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+
+    # Remove exact match file
+    exact_path = production_workspace / "config" / "workflow_config_gru_Alpha158.yaml"
+    exact_path.unlink()
+
+    # Corrupt registry
+    registry_path = production_workspace / "config" / "model_registry.yaml"
+    registry_path.write_text(":: not valid yaml :::")
+
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    result = mgr.sync_single_config("gru_Alpha158")
+    assert result is False
+
+    mgr.clean()
+
+
+# ── get_meta edge case (line 163) ────────────────────────────────
+
+def test_get_meta_file_missing(production_workspace):
+    """Line 163: get_meta returns {} when meta file doesn't exist."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+    mgr = PlaygroundManager(str(production_workspace))
+    # Don't create playground — meta file won't exist
+    meta = mgr.get_meta()
+    assert meta == {}
+
+
+def test_sync_data_no_source_data_dir(production_workspace):
+    """Line 186: _sync_data returns early when source data/ doesn't exist."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+    import shutil
+
+    # Remove the data/ directory entirely
+    shutil.rmtree(str(production_workspace / "data"))
+
+    mgr = PlaygroundManager(str(production_workspace))
+    pg_root = mgr.create_or_sync()
+
+    # Should still succeed — data/ dir is created empty in playground
+    assert os.path.isdir(pg_root)
+    assert os.path.isdir(os.path.join(pg_root, "data"))
+
+    mgr.clean()
+
+
+# ── _sync_data edge cases ─────────────────────────────────────────
+
+def test_sync_data_symlink_dir_is_real_dir(production_workspace):
+    """Line 198: existing symlink dir is a real directory, uses rmtree."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    # Turn order_history from symlink into real dir
+    oh_path = os.path.join(mgr.playground_root, "data", "order_history")
+    os.unlink(oh_path)
+    os.makedirs(oh_path)
+    with open(os.path.join(oh_path, "stale.txt"), "w") as f:
+        f.write("old")
+
+    # Resync — should rmtree the real dir and replace with symlink
+    mgr.create_or_sync()
+    assert os.path.islink(oh_path)
+
+    mgr.clean()
+
+
+def test_sync_data_skip_entity_copied_files(production_workspace, monkeypatch):
+    """Line 217: skip symlink-by-extension for files already entity-copied."""
+    from quantpits.scripts.deep_analysis import playground_manager as pm
+
+    # Temporarily add a .csv file to the entity-copy list
+    original = list(pm._DATA_ENTITY_COPY_FILES)
+    monkeypatch.setattr(pm, "_DATA_ENTITY_COPY_FILES", original + ["test_skip.csv"])
+
+    mgr = pm.PlaygroundManager(str(production_workspace))
+    # Create a CSV in production that's also in entity-copy list
+    csv_path = production_workspace / "data" / "test_skip.csv"
+    csv_path.write_text("a,b\n1,2\n")
+
+    pg_root = mgr.create_or_sync()
+    # Should be entity-copied (real file), not symlinked
+    pg_csv = os.path.join(pg_root, "data", "test_skip.csv")
+    assert os.path.isfile(pg_csv)
+    assert not os.path.islink(pg_csv)
+
+    mgr.clean()
+
+
+def test_sync_data_remove_real_file_for_symlink(production_workspace):
+    """Line 223: existing file is real file (not symlink), uses os.remove."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    # Replace symlinked CSV with a real file
+    csv_path = os.path.join(mgr.playground_root, "data", "trade_log_full.csv")
+    os.unlink(csv_path)
+    with open(csv_path, "w") as f:
+        f.write("col1,col2\n3,4\n")
+
+    assert not os.path.islink(csv_path)
+
+    # Resync — should remove real file and create symlink
+    mgr.create_or_sync()
+    assert os.path.islink(csv_path)
+
+    mgr.clean()
+
+
+def test_sync_data_pretrained_exists_in_playground(production_workspace):
+    """Line 232: pretrained dir already exists in playground, rmtree first."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+
+    # Create pretrained in production
+    pretrained_dir = production_workspace / "data" / "pretrained"
+    pretrained_dir.mkdir(exist_ok=True)
+    (pretrained_dir / "model.pkl").write_text("weights")
+
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    # Now add a stale file to playground's pretrained
+    pg_pretrained = os.path.join(mgr.playground_root, "data", "pretrained")
+    with open(os.path.join(pg_pretrained, "stale_file.txt"), "w") as f:
+        f.write("should be removed")
+
+    # Resync — stale file should be gone
+    mgr.create_or_sync()
+    assert not os.path.exists(os.path.join(pg_pretrained, "stale_file.txt"))
+    assert os.path.exists(os.path.join(pg_pretrained, "model.pkl"))
+
+    mgr.clean()
+
+
+# ── _capture_baseline_snapshot error paths (lines 294-295, 306-307)
+
+def test_capture_baseline_corrupt_training_history(production_workspace):
+    """Lines 294-295: exception when parsing training_history.jsonl."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+
+    # Corrupt the training_history.jsonl
+    (production_workspace / "data" / "training_history.jsonl").write_text(
+        "not valid json\n"
+    )
+
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    meta = mgr.get_meta()
+    assert meta["baseline_snapshot"]["training_history_latest_date"] is None
+
+    mgr.clean()
+
+
+def test_capture_baseline_corrupt_fusion_ledger(production_workspace):
+    """Lines 306-307: exception when parsing fusion_run_ledger.jsonl."""
+    from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+
+    # Corrupt the fusion_run_ledger.jsonl
+    (production_workspace / "data" / "fusion_run_ledger.jsonl").write_text(
+        "not valid json\n"
+    )
+
+    mgr = PlaygroundManager(str(production_workspace))
+    mgr.create_or_sync()
+
+    meta = mgr.get_meta()
+    assert meta["baseline_snapshot"]["fusion_ledger_latest_date"] is None
+
+    mgr.clean()
