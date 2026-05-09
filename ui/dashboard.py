@@ -15,7 +15,7 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from quantpits.scripts import env
+from quantpits.utils import env
 from quantpits.utils.constants import TRADING_DAYS_PER_YEAR, RISK_FREE_RATE_ANNUAL
 os.chdir(env.ROOT_DIR)
 

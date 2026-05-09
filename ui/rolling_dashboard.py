@@ -15,7 +15,7 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from quantpits.scripts import env
+from quantpits.utils import env
 
 def get_available_windows():
     out_dir = os.path.join(env.ROOT_DIR, "output")
