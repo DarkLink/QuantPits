@@ -890,6 +890,8 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
             elif score_handler.epoch_early_stopped:
                 early_stopped = True
 
+            score_type = model_kwargs.get('metric') if model_kwargs.get('metric') not in (None, '', 'loss') else 'loss'
+
             convergence_log = {
                 "experiment_name": experiment_name,
                 "record_id": R.get_recorder().info['id'],
@@ -902,8 +904,20 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
                 "best_epoch": best_epoch,
                 "best_score": best_score,
                 "converged": (actual_epochs == configured_epochs) if (actual_epochs is not None and configured_epochs is not None) else None,
-                "final_train_loss": final_train_loss,
+                "final_val_score": final_train_loss,
+                "score_type": score_type,
             }
+
+            # Per-epoch arrays (only when available — _lh wrapper provides train_loss/valid_loss)
+            for _src_key, _dst_key in [
+                ("train_loss", "epoch_train_loss"),
+                ("valid_loss", "epoch_valid_loss"),
+                ("train", "epoch_train_score"),
+                ("valid", "epoch_valid_score"),
+            ]:
+                _arr = evals_result.get(_src_key)
+                if isinstance(_arr, list) and _arr and not isinstance(_arr[0], dict):
+                    convergence_log[_dst_key] = [float(v) if v is not None else None for v in _arr]
             
             # 预测
             print(f"[{model_name}] Predicting...")

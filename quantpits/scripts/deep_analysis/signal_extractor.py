@@ -7,6 +7,8 @@ exposure to voluminous raw data.
 """
 
 import logging
+import json
+import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -39,16 +41,21 @@ class SignalExtractor:
     is responsible for interpreting signals and producing ActionItems.
     """
 
-    def __init__(self, reference_date: Optional[str] = None):
+    def __init__(self, reference_date: Optional[str] = None,
+                 workspace_root: Optional[str] = None):
         """
         Args:
             reference_date: YYYY-MM-DD string used for staleness checks.
                             Defaults to today.
+            workspace_root: Path to workspace root dir.  If provided, the
+                            extractor can read training_history.jsonl for
+                            per-epoch loss analysis (optimizer thrashing).
         """
         self._ref_date = (
             datetime.strptime(reference_date, "%Y-%m-%d")
             if reference_date else datetime.now()
         )
+        self._workspace_root = workspace_root
 
     # ------------------------------------------------------------------
     # Public API
@@ -90,6 +97,10 @@ class SignalExtractor:
 
         # --- Cross-agent convergence ---
         signals.extend(self._extract_cross_agent_convergence(signals))
+
+        # --- Training history based (optimizer thrashing, etc.) ---
+        if self._workspace_root:
+            signals.extend(self._extract_optimizer_thrashing())
 
         return signals
 
@@ -424,6 +435,95 @@ class SignalExtractor:
                         f"(Spearman IC: {ic_val})"
                     ),
                 ))
+
+        return signals
+
+    # ------------------------------------------------------------------
+    # Training history based signals
+    # ------------------------------------------------------------------
+
+    def _extract_optimizer_thrashing(self) -> List[Signal]:
+        """Detect optimizer thrashing from per-epoch train loss in
+        training_history.jsonl.
+
+        Requires ``epoch_train_loss`` in training records, which is only
+        present when models were trained with a ``_lh`` (LossHistory) wrapper.
+
+        Thresholds from llm_agent_tuning_guide.md §2 策略D:
+        - Adjacent-epoch relative change > 5% counts as one thrash event.
+        - > 30% of epochs affected → critical; > 15% → warning.
+        """
+        history_path = os.path.join(
+            self._workspace_root, "data", "training_history.jsonl")
+        if not os.path.exists(history_path):
+            return []
+
+        # Only inspect the latest record per model
+        latest: Dict[str, dict] = {}
+        try:
+            with open(history_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    model = rec.get("model_name", "")
+                    losses = rec.get("epoch_train_loss")
+                    if not losses or len(losses) < 3:
+                        continue
+                    ts = rec.get("trained_at", "")
+                    if model not in latest or ts > latest[model].get("trained_at", ""):
+                        latest[model] = rec
+        except Exception:
+            logger.warning("Failed to read training_history for thrashing detection",
+                           exc_info=True)
+            return []
+
+        signals: List[Signal] = []
+        for model, rec in latest.items():
+            losses = rec["epoch_train_loss"]
+
+            # Relative change between consecutive epochs
+            rel_changes = []
+            for i in range(1, len(losses)):
+                prev, cur = losses[i - 1], losses[i]
+                if prev and cur and abs(prev) > 1e-8:
+                    rel_changes.append(abs(cur - prev) / abs(prev))
+
+            if not rel_changes:
+                continue
+
+            thrash_count = sum(1 for c in rel_changes if c > 0.05)
+            thrash_ratio = thrash_count / len(rel_changes)
+
+            if thrash_ratio > 0.3:
+                severity = "critical"
+            elif thrash_ratio > 0.15:
+                severity = "warning"
+            else:
+                continue
+
+            signals.append(Signal(
+                signal_type="optimizer_thrashing",
+                severity=severity,
+                scope="hyperparams",
+                source_agent="Model Health",
+                target=model,
+                metrics={
+                    "thrash_ratio": round(thrash_ratio, 3),
+                    "thrash_count": thrash_count,
+                    "total_epochs": len(rel_changes),
+                    "threshold": 0.05,
+                },
+                context=(
+                    f"{model} train loss oscillates across epochs "
+                    f"({thrash_count}/{len(rel_changes)} epochs, "
+                    f"ratio {thrash_ratio:.0%})"
+                ),
+            ))
 
         return signals
 

@@ -343,4 +343,5 @@ def test_convergence_log_add_model_capture(mock_env_constants, mock_qlib, mock_p
         assert conv['converged'] is False
         assert conv['best_score'] == 0.063768
         assert conv['best_epoch'] == 7
-        assert conv['final_train_loss'] == -0.970555
+        assert conv['final_val_score'] == -0.970555
+        assert conv['score_type'] == 'loss'  # metric not set in test YAML, defaults to loss

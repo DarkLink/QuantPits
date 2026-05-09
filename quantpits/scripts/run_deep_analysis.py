@@ -193,7 +193,7 @@ def main():
     print("\n📡 Extracting structured signals...")
     from quantpits.scripts.deep_analysis.signal_extractor import SignalExtractor
 
-    signal_extractor = SignalExtractor()
+    signal_extractor = SignalExtractor(workspace_root=workspace_root)
     signals = signal_extractor.extract(all_findings, synthesis_result)
     print(f"   → {len(signals)} signals extracted")
 
