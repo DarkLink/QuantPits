@@ -104,6 +104,238 @@ class SignalExtractor:
 
         return signals
 
+    def extract_triage_input(
+        self,
+        all_findings: List[AgentFindings],
+        synthesis_result: dict,
+        signals: List[Signal],
+    ) -> dict:
+        """
+        Build a structured input payload for the Triage LLM.
+
+        Returns a dict with: market_context, model_ranking, family_stats,
+        combo_summary, signal_distribution.  Designed to give the Triage
+        LLM a compact but complete picture of the current state.
+        """
+        by_agent: Dict[str, List[AgentFindings]] = {}
+        for af in all_findings:
+            by_agent.setdefault(af.agent_name, []).append(af)
+
+        # --- 1. Market context ---
+        market_context = self._build_market_context(by_agent, synthesis_result)
+
+        # --- 2. Model ranking table ---
+        combo_membership = self._load_combo_membership()
+        model_ranking = self._build_model_ranking(by_agent, combo_membership)
+
+        # --- 3. Architecture family statistics ---
+        family_stats = self._build_family_stats(model_ranking)
+
+        # --- 4. Combo performance summary ---
+        combo_summary = self._build_combo_summary(by_agent)
+
+        # --- 5. Signal distribution ---
+        signal_dist = self._build_signal_distribution(signals)
+
+        return {
+            "market_context": market_context,
+            "model_ranking": model_ranking,
+            "family_stats": family_stats,
+            "combo_summary": combo_summary,
+            "signal_distribution": signal_dist,
+        }
+
+    # ------------------------------------------------------------------
+    # Triage input builders
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _classify_architecture(model_name: str) -> str:
+        """Classify a model into its architecture family from its name."""
+        name_lower = model_name.lower()
+        # Alpha360 families
+        if any(a in name_lower for a in ['gru', 'lstm', 'rnn']) and '360' in name_lower:
+            return 'Alpha360_RNN'
+        if any(a in name_lower for a in ['alstm', 'igmtf', 'attention']) and '360' in name_lower:
+            return 'Alpha360_Attention'
+        if any(a in name_lower for a in ['transformer', 'localformer']) and '360' in name_lower:
+            return 'Alpha360_Transformer'
+        if 'sfm' in name_lower and '360' in name_lower:
+            return 'Alpha360_SFM'
+        if 'adarnn' in name_lower and '360' in name_lower:
+            return 'Alpha360_ADARNN'
+        if 'tra' in name_lower and '360' in name_lower:
+            return 'Alpha360_TRA'
+        if any(a in name_lower for a in ['tcn', 'sandwich', 'krnn']) and '360' in name_lower:
+            return 'Alpha360_Structural'
+        if 'tabnet' in name_lower and '360' in name_lower:
+            return 'Alpha360_TabNet'
+        if 'add' in name_lower and '360' in name_lower:
+            return 'Alpha360_ADD'
+        # Alpha158 families
+        if any(a in name_lower for a in ['gru', 'lstm', 'gats']) and '158' in name_lower:
+            return 'Alpha158_RNN'
+        if any(a in name_lower for a in ['transformer', 'localformer', 'tft']) and '158' in name_lower:
+            return 'Alpha158_Transformer'
+        if any(a in name_lower for a in ['tabnet', 'catboost', 'lightgbm', 'mlp']) and '158' in name_lower:
+            return 'Alpha158_Tabular'
+        if 'tra' in name_lower and '158' in name_lower:
+            return 'Alpha158_TRA'
+        if 'tcts' in name_lower and '360' in name_lower:
+            return 'Alpha360_TCTS'
+        # Catch-all
+        if '360' in name_lower:
+            return 'Alpha360_Other'
+        if '158' in name_lower:
+            return 'Alpha158_Other'
+        return 'Unknown'
+
+    def _load_combo_membership(self) -> Dict[str, List[str]]:
+        """Load ensemble_config.json and return {model_name: [combo_names]}."""
+        if not self._workspace_root:
+            return {}
+        path = os.path.join(self._workspace_root, 'config', 'ensemble_config.json')
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, 'r') as f:
+                config = json.load(f)
+        except Exception:
+            return {}
+        membership: Dict[str, List[str]] = {}
+        combos = config.get('combos', {})
+        for combo_name, combo_info in combos.items():
+            if not isinstance(combo_info, dict):
+                continue
+            for m in combo_info.get('models', []):
+                if isinstance(m, str):
+                    membership.setdefault(m, []).append(combo_name)
+        return membership
+
+    def _build_market_context(self, by_agent, synthesis_result) -> dict:
+        """Extract market regime and recent portfolio performance."""
+        ctx = {}
+        for af in by_agent.get('Market Regime', []):
+            rm = af.raw_metrics
+            switches = rm.get('regime_switches', {})
+            ctx['current_regime'] = switches.get('current_regime', 'unknown')
+            ctx['regime_switch_count'] = switches.get('switch_count', 0)
+        exec_data = synthesis_result.get('executive_summary_data', {})
+        ctx['market_regime_label'] = exec_data.get('market_regime', 'unknown')
+        ctx['cagr_1y'] = exec_data.get('cagr_1y')
+        ctx['sharpe_1y'] = exec_data.get('sharpe_1y')
+        return ctx
+
+    def _build_model_ranking(
+        self, by_agent, combo_membership: Dict[str, List[str]]
+    ) -> list:
+        """Build a ranked list of models with key metrics (deduplicated across windows)."""
+        # Collect entries across all windows, keep the one with most snapshots
+        best_per_model: Dict[str, dict] = {}
+        for af in by_agent.get('Model Health', []):
+            scorecard = af.raw_metrics.get('scorecard', {})
+            conv = af.raw_metrics.get('convergence_summary', {})
+            details = conv.get('model_details', {})
+            for model_name, sc in scorecard.items():
+                ic_mean = sc.get('ic_mean')
+                if ic_mean is None:
+                    continue
+                n_snap = sc.get('n_snapshots', 0)
+                if model_name in best_per_model and best_per_model[model_name]['n_snapshots'] >= n_snap:
+                    continue
+                entry = {
+                    'model': model_name,
+                    'ic_mean': round(ic_mean, 4),
+                    'icir_mean': round(sc.get('icir_mean'), 4) if sc.get('icir_mean') is not None else None,
+                    'ic_trend': sc.get('ic_trend', '?'),
+                    'n_snapshots': n_snap,
+                    'family': self._classify_architecture(model_name),
+                    'in_combos': combo_membership.get(model_name, []),
+                }
+                d = details.get(model_name, {})
+                if d:
+                    entry['best_epoch'] = d.get('best_epoch')
+                    entry['actual_epochs'] = d.get('actual_epochs')
+                    entry['early_stopped'] = d.get('early_stopped')
+                best_per_model[model_name] = entry
+
+        ranking = list(best_per_model.values())
+        ranking.sort(
+            key=lambda x: x.get('icir_mean') or x.get('ic_mean') or 0,
+            reverse=True,
+        )
+        return ranking
+
+    def _build_family_stats(self, model_ranking: list) -> dict:
+        """Compute per-family aggregate statistics."""
+        families: Dict[str, list] = {}
+        for m in model_ranking:
+            families.setdefault(m['family'], []).append(m)
+
+        stats = {}
+        for family, models in families.items():
+            ic_values = [m['ic_mean'] for m in models if m['ic_mean'] is not None]
+            icir_values = [m['icir_mean'] for m in models if m['icir_mean'] is not None]
+            if not ic_values:
+                continue
+            stats[family] = {
+                'count': len(models),
+                'avg_ic': round(sum(ic_values) / len(ic_values), 4),
+                'best_ic': round(max(ic_values), 4),
+                'worst_ic': round(min(ic_values), 4),
+                'avg_icir': round(sum(icir_values) / len(icir_values), 4) if icir_values else None,
+                'models': [m['model'] for m in models],
+            }
+        return stats
+
+    def _build_combo_summary(self, by_agent) -> dict:
+        """Extract combo performance summary from Ensemble Evolution."""
+        summary = {}
+        for af in by_agent.get('Ensemble Evolution', []):
+            rm = af.raw_metrics
+            combo_trends = rm.get('combo_trends', {})
+            for combo_name, entries in combo_trends.items():
+                if not entries:
+                    continue
+                latest = max(entries, key=lambda e: e.get('_date', ''))
+                summary[combo_name] = {
+                    'latest_excess': latest.get('excess_return'),
+                    'latest_calmar': latest.get('calmar'),
+                    'latest_sharpe': latest.get('sharpe'),
+                    'n_entries': len(entries),
+                }
+            # Add OOS trend
+            oos = rm.get('oos_trend', {})
+            if oos:
+                summary['_oos_trend'] = {
+                    'calmar_slope': oos.get('oos_calmar_slope'),
+                    'runs': oos.get('oos_runs'),
+                    'latest_calmar': oos.get('latest_oos_calmar'),
+                }
+        return summary
+
+    def _build_signal_distribution(self, signals: List[Signal]) -> dict:
+        """Build summary statistics of extracted signals."""
+        by_type: Dict[str, dict] = {}
+        by_severity: Dict[str, int] = {}
+        for s in signals:
+            by_severity[s.severity] = by_severity.get(s.severity, 0) + 1
+            if s.signal_type not in by_type:
+                by_type[s.signal_type] = {'count': 0, 'severity': s.severity, 'targets': []}
+            by_type[s.signal_type]['count'] += 1
+            if s.target not in by_type[s.signal_type]['targets']:
+                by_type[s.signal_type]['targets'].append(s.target)
+
+        return {
+            'total_signals': len(signals),
+            'by_severity': by_severity,
+            'by_type': {
+                st: {'count': info['count'], 'sample_targets': info['targets'][:5]}
+                for st, info in sorted(by_type.items(), key=lambda x: -x[1]['count'])
+            },
+            'unique_targets': len(set(s.target for s in signals)),
+        }
+
     # ------------------------------------------------------------------
     # Model Health extraction
     # ------------------------------------------------------------------
@@ -140,16 +372,23 @@ class SignalExtractor:
                     ),
                 ))
 
-            # Rule 2: severe_underfitting — actual < configured * 0.15
-            # Using 0.15 instead of 0.25 to reduce false positives from
-            # models that share the same global early_stop default.
-            # At n_epochs=200, 0.15 threshold means epoch < 30 triggers
-            # severe (vs epoch < 50 with 0.25).
+            # Rule 2: severe_underfitting — only when best_epoch is extremely
+            # early AND the model stopped before using a meaningful fraction of
+            # configured epochs.  NN healthy early-stop (epoch 20-50 for
+            # n_epochs=200) is normal and should NOT trigger this signal.
+            # Thresholds are aligned with ModelHealthAgent._analyze_convergence.
             for model, detail in model_details.items():
                 actual = detail.get("actual_epochs")
                 configured = detail.get("configured_epochs")
                 if actual is not None and configured is not None and configured > 0:
-                    if actual < configured * 0.15:
+                    best_ep = detail.get("best_epoch")
+                    is_severe = False
+                    if best_ep is not None and best_ep <= 1 and actual < configured * 0.3:
+                        is_severe = True
+                    elif best_ep is None and actual < configured * 0.15:
+                        is_severe = True
+
+                    if is_severe:
                         # Avoid duplicate if already flagged as underfitting
                         if not any(
                             s.signal_type == "underfitting" and s.target == model
@@ -164,12 +403,14 @@ class SignalExtractor:
                                 metrics={
                                     "actual_epochs": actual,
                                     "configured_epochs": configured,
+                                    "best_epoch": best_ep,
                                     "ratio": round(actual / configured, 3),
                                 },
                                 context=(
                                     f"{model} severe underfitting: only "
                                     f"{actual}/{configured} epochs "
-                                    f"({actual/configured*100:.0f}%)"
+                                    f"(best_epoch={best_ep}, "
+                                    f"{actual/configured*100:.0f}%)"
                                 ),
                             ))
                         else:
@@ -178,10 +419,12 @@ class SignalExtractor:
                                 if s.signal_type == "underfitting" and s.target == model:
                                     s.signal_type = "severe_underfitting"
                                     s.metrics["ratio"] = round(actual / configured, 3)
+                                    s.metrics["best_epoch"] = best_ep
                                     s.context = (
                                         f"{model} severe underfitting: only "
                                         f"{actual}/{configured} epochs "
-                                        f"({actual/configured*100:.0f}%)"
+                                        f"(best_epoch={best_ep}, "
+                                        f"{actual/configured*100:.0f}%)"
                                     )
                                     break
 

@@ -35,8 +35,7 @@ def test_analyze_hit_rate_thresholds(agent, mock_analysis_context):
         
         findings = agent.analyze(mock_analysis_context)
         titles = [f.title for f in findings.findings]
-        assert 'Low buy suggestion hit rate' in titles
-        assert any("Buy suggestion hit rate is below 40%" in r for r in findings.recommendations)
+        assert 'Low buy suggestion hit rate (low sample)' in titles
 
     # 2. High buy hit rate (> 60%)
     with patch.object(agent, '_analyze_suggestion_hits') as mock_hits, \

@@ -123,8 +123,8 @@ def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_sn
     mock_snap_configs.assert_called_once()
     mock_save_snap.assert_called_once()
     
-    # Check if report was written
-    mock_open_file.assert_any_call('/tmp/root/output/report.md', 'w', encoding='utf-8')
+    # Check if report was written (date auto-injected into filename)
+    mock_open_file.assert_any_call('/tmp/root/output/report_2026-05-10.md', 'w', encoding='utf-8')
 
 @patch('quantpits.scripts.run_deep_analysis.parse_args')
 @patch('quantpits.scripts.run_deep_analysis.load_deep_analysis_config')

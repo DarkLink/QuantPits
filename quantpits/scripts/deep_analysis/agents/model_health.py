@@ -332,7 +332,18 @@ class ModelHealthAgent(BaseAgent):
             
             details[model_name] = conv
             
-            if es and epochs_done and configured and epochs_done < configured * 0.5:
+            # Only flag as underfitting if best_epoch is extremely early AND
+            # model stopped before using a meaningful fraction of configured epochs.
+            # NN healthy early-stop (epoch 5-50 for n_epochs=200) is normal.
+            is_underfitting = False
+            if es and epochs_done is not None and configured is not None:
+                best_ep = conv.get("best_epoch")
+                if best_ep is not None and best_ep <= 1 and epochs_done < configured * 0.3:
+                    is_underfitting = True
+                elif best_ep is None and epochs_done < configured * 0.15:
+                    is_underfitting = True
+
+            if is_underfitting:
                 underfitting.append(model_name)
             elif es == False and epochs_done is not None and configured is not None:
                 full_epoch.append(model_name)

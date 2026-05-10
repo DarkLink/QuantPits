@@ -42,7 +42,7 @@ class PredictionAuditAgent(BaseAgent):
                 overall
             ))
 
-            if hit_rate < 0.4 and n_suggestions >= 5:
+            if hit_rate < 0.4 and n_suggestions >= 50:
                 findings.append(self._make_finding(
                     'warning', 'Low buy suggestion hit rate',
                     f'Only {hit_rate*100:.1f}% of buy suggestions had positive T+5 returns.',
@@ -52,6 +52,13 @@ class PredictionAuditAgent(BaseAgent):
                     "Buy suggestion hit rate is below 40%. Review model selection criteria "
                     "and ensemble composition."
                 )
+            elif hit_rate < 0.4 and n_suggestions >= 5:
+                findings.append(self._make_finding(
+                    'info', 'Low buy suggestion hit rate (low sample)',
+                    f'{hit_rate*100:.1f}% hit rate but only {n_suggestions} suggestions '
+                    f'(< 50 minimum for reliable signal).',
+                    overall
+                ))
             elif hit_rate > 0.6 and n_suggestions >= 5:
                 findings.append(self._make_finding(
                     'positive', 'Strong buy suggestion accuracy',
@@ -408,6 +415,30 @@ class PredictionAuditAgent(BaseAgent):
                 return float(m.group(1))
         return None
 
+    def _get_active_combo_models(self, ctx: AnalysisContext) -> set:
+        """Load ensemble_config.json and return the set of models in active combos."""
+        ws_root = getattr(ctx, 'workspace_root', None)
+        if not ws_root:
+            return set()
+        config_path = os.path.join(ws_root, 'config', 'ensemble_config.json')
+        if not os.path.exists(config_path):
+            return set()
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except Exception:
+            return set()
+
+        active_models = set()
+        combos = config.get('combos', {})
+        for combo_name, combo_info in combos.items():
+            if not isinstance(combo_info, dict):
+                continue
+            for m in combo_info.get('models', []):
+                if isinstance(m, str):
+                    active_models.add(m)
+        return active_models
+
     def _analyze_per_model_hit_rate(self, ctx: AnalysisContext) -> dict:
         """
         Analyze per-model prediction quality via rank correlation with ensemble.
@@ -419,6 +450,8 @@ class PredictionAuditAgent(BaseAgent):
         """
         if not ctx.model_opinions_files:
             return {}
+
+        active_combo_models = self._get_active_combo_models(ctx)
 
         per_model_stats = {}
         all_models = set()
@@ -471,13 +504,23 @@ class PredictionAuditAgent(BaseAgent):
         avg_ic = {m: np.mean(v) for m, v in per_model_stats.items()}
         overall_avg = np.mean(list(avg_ic.values()))
 
-        underperformers = [m for m, ic in avg_ic.items()
-                          if ic < overall_avg * 0.5 and ic < overall_avg - 0.05]
+        # Underperformers: models with significantly low per-model IC proxy.
+        # Skip models that are members of active combos — low individual IC does
+        # not imply low combo value (diversification benefit).
+        underperformers = []
+        combo_protected = []
+        for m, ic in avg_ic.items():
+            if ic < overall_avg * 0.5 and ic < overall_avg - 0.05:
+                if m in active_combo_models:
+                    combo_protected.append(m)
+                else:
+                    underperformers.append(m)
 
         return {
             "ensemble_overall_proxy_ic": float(overall_avg),
             "per_model_ic": {m: round(v, 4) for m, v in avg_ic.items()},
             "underperformers": underperformers,
+            "combo_protected": combo_protected,
             "snapshots_analyzed": len(per_model_stats.get(list(per_model_stats.keys())[0], [])) if per_model_stats else 0,
         }
 

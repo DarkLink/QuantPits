@@ -103,9 +103,21 @@ class LLMInterface:
         self.base_url = base_url
         self._client = None
 
-    def is_available(self) -> bool:
+    def _resolve_effective_api_key(self, workspace_root: Optional[str] = None) -> Optional[str]:
+        """Resolve API key: explicit arg > workspace config env var > OPENAI_API_KEY."""
+        if self.api_key:
+            return self.api_key
+        if workspace_root:
+            ws_config = self._load_workspace_llm_config(workspace_root)
+            api_key_env = ws_config.get("api_key_env", "OPENAI_API_KEY")
+            key = os.environ.get(api_key_env)
+            if key:
+                return key
+        return os.environ.get("OPENAI_API_KEY")
+
+    def is_available(self, workspace_root: Optional[str] = None) -> bool:
         """Check if LLM backend is available."""
-        return bool(self.api_key)
+        return bool(self._resolve_effective_api_key(workspace_root))
 
     def _get_client(self):
         """Lazy-initialize OpenAI client."""
@@ -136,7 +148,7 @@ class LLMInterface:
         Returns:
             Formatted executive summary string
         """
-        if not self.is_available():
+        if not self.is_available(workspace_root):
             return self._template_summary(synthesis_result)
 
         try:
@@ -148,36 +160,33 @@ class LLMInterface:
     def _llm_summary(self, synthesis_result: dict,
                      workspace_root: Optional[str] = None) -> str:
         """Generate summary using OpenAI API, reading workspace config when available."""
-        # Load system prompt from workspace skill file (fallback to default)
         system_prompt = self._load_summary_prompt(workspace_root)
-
-        # Build user prompt from structured data
         user_prompt = self._build_prompt(synthesis_result)
 
-        # Resolve model/endpoint: CLI args > workspace config > built-in defaults
-        model = self.model or "gpt-4"
-        client = self._get_client()
+        # Resolve effective model/endpoint/api_key
+        ws_config = self._load_workspace_llm_config(workspace_root) if workspace_root else {}
+        model = self.model or ws_config.get("summary_model") or "gpt-4"
+        base_url = self.base_url or ws_config.get("base_url")
+        api_key = self._resolve_effective_api_key(workspace_root)
 
-        if workspace_root:
-            ws_config = self._load_workspace_llm_config(workspace_root)
-            if ws_config:
-                model = self.model or ws_config.get("summary_model") or "gpt-4"
-                base_url = self.base_url or ws_config.get("base_url")
-                api_key_env = ws_config.get("api_key_env", "OPENAI_API_KEY")
-                api_key = self.api_key or os.environ.get(api_key_env, "")
+        if not api_key:
+            raise RuntimeError("No API key available")
 
-                print(f"   Summary model: {model}")
-                print(f"   Endpoint: {base_url or '(OpenAI default)'}")
+        print(f"   Summary model: {model}")
+        print(f"   Endpoint: {base_url or '(OpenAI default)'}")
 
-                # Create a dedicated client when config overrides are active
-                try:
-                    import openai as _openai
-                except ImportError:
-                    raise RuntimeError("openai package not installed. Run: pip install openai")
-                _kwargs = {"api_key": api_key}
-                if base_url:
-                    _kwargs["base_url"] = base_url
-                client = _openai.OpenAI(**_kwargs)
+        # Only create a dedicated client when endpoint/key differs from defaults
+        if base_url or api_key != self.api_key:
+            try:
+                import openai as _openai
+            except ImportError:
+                raise RuntimeError("openai package not installed. Run: pip install openai")
+            _kwargs = {"api_key": api_key}
+            if base_url:
+                _kwargs["base_url"] = base_url
+            client = _openai.OpenAI(**_kwargs)
+        else:
+            client = self._get_client()
 
         response = client.chat.completions.create(
             model=model,
@@ -342,9 +351,7 @@ class LLMInterface:
         max_tokens = ws_config.get("max_tokens", 32768)
         base_url = self.base_url or ws_config.get("base_url")
         api_key_env = ws_config.get("api_key_env", "OPENAI_API_KEY")
-
-        # Resolve API key: CLI arg > env var named by config
-        api_key = self.api_key or os.environ.get(api_key_env, "")
+        api_key = self._resolve_effective_api_key(workspace_root)
 
         # Diagnostics to stdout so the user can verify config loading
         print(f"   Critic model: {critic_model}")
@@ -1156,6 +1163,413 @@ class LLMInterface:
         return "\n\n".join(parts)
 
     # ------------------------------------------------------------------
+    # Layered Pipeline — triage → per-model → per-combo → synthesizer
+    # ------------------------------------------------------------------
+
+    def _call_llm_json_object(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 32768,
+        label: str = "LLM",
+    ) -> Optional[dict]:
+        """Generic LLM call returning a parsed JSON object (not array)."""
+        try:
+            import openai
+        except ImportError:
+            raise RuntimeError("openai package not installed. Run: pip install openai")
+
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+
+        client = openai.OpenAI(**kwargs)
+
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+            choice = response.choices[0]
+            finish = getattr(choice, "finish_reason", "?")
+            content = choice.message.content
+            reasoning = getattr(choice.message, "reasoning_content", None)
+
+            if not content:
+                diag = (
+                    f"   ⚠️  {label} returned empty content. "
+                    f"finish_reason={finish}, "
+                    f"has_reasoning={bool(reasoning)}, "
+                    f"reasoning_len={len(reasoning) if reasoning else 0}"
+                )
+                print(diag)
+                if reasoning and finish == "length":
+                    print(f"   🔄 {label}: using reasoning_content as fallback")
+                    json_str = self._extract_json_object(reasoning)
+                    if json_str:
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError:
+                            pass
+                return None
+
+            json_str = self._extract_json_object(content)
+            if json_str is None:
+                logger.warning(
+                    "%s response contained no JSON object. finish_reason=%s, raw (300 chars): %s",
+                    label, finish, content[:300],
+                )
+                return None
+
+            return json.loads(json_str)
+
+        except json.JSONDecodeError as e:
+            logger.warning("%s JSON parse failed: %s", label, e)
+            return None
+        except Exception as e:
+            logger.warning("%s call failed: %s", label, e)
+            return None
+
+    def _resolve_llm_config(self, workspace_root: str) -> dict:
+        """Resolve effective LLM config: CLI args > workspace config > defaults."""
+        ws_config = self._load_workspace_llm_config(workspace_root)
+        return {
+            "model": self.model or ws_config.get("critic_model") or "gpt-4",
+            "temperature": ws_config.get("temperature", 0.3),
+            "base_url": self.base_url or ws_config.get("base_url"),
+            "api_key_env": ws_config.get("api_key_env", "OPENAI_API_KEY"),
+        }
+
+    def _resolve_api_key(self, cfg: dict) -> Optional[str]:
+        """Resolve API key: explicit arg > env var from config > default env."""
+        return self.api_key or os.environ.get(cfg.get("api_key_env", "OPENAI_API_KEY"), "")
+
+    def _load_skill(self, workspace_root: str, filename: str) -> Optional[str]:
+        """Load a single skill file. Returns None if not found."""
+        path = os.path.join(workspace_root, "config", "skills", filename)
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if content:
+                    return content
+            except Exception as e:
+                logger.warning("Failed to load skill %s: %s", filename, e)
+        return None
+
+    def generate_triage(
+        self,
+        triage_input: dict,
+        signals: List[Signal],
+        workspace_root: str,
+    ) -> Optional[dict]:
+        """
+        Layered Triage — route models/combos/execution to appropriate downstream LLMs.
+
+        Returns a dict with keys: prioritized_models, healthy_models, prioritized_combos,
+        needs_execution_risk, systemic_observations.
+        """
+        cfg = self._resolve_llm_config(workspace_root)
+        api_key = self._resolve_api_key(cfg)
+        if not api_key:
+            print("   ⚠️  No API key available for Triage.")
+            return None
+
+        system_prompt = self._load_skill(workspace_root, "triage_system.md")
+        if not system_prompt:
+            print("   ⚠️  triage_system.md not found — cannot run Triage.")
+            return None
+
+        # Build compact signal summary
+        signal_summary = self._aggregate_signals_for_triage(signals)
+
+        # Build model summary table from triage_input
+        model_table = []
+        for m in triage_input.get("model_ranking", []):
+            model_table.append({
+                "model": m["model"],
+                "ic_mean": m.get("ic_mean"),
+                "icir_mean": m.get("icir_mean"),
+                "ic_trend": m.get("ic_trend"),
+                "family": m.get("family"),
+                "in_combos": m.get("in_combos", []),
+                "best_epoch": m.get("best_epoch"),
+                "actual_epochs": m.get("actual_epochs"),
+                "early_stopped": m.get("early_stopped"),
+            })
+
+        family_stats = triage_input.get("family_stats", {})
+        combo_summary = triage_input.get("combo_summary", {})
+        market_ctx = triage_input.get("market_context", {})
+
+        # Load history for dedup
+        recent_history = self._load_recent_action_history(workspace_root, limit=20)
+        history_summary = []
+        for entry in recent_history[:15]:
+            history_summary.append({
+                "date": entry.get("_run_date", entry.get("run_date", entry.get("timestamp", ""))),
+                "target": entry.get("target", ""),
+                "action_type": entry.get("action_type", ""),
+                "params": entry.get("params", {}),
+            })
+
+        user_prompt = json.dumps({
+            "market_context": market_ctx,
+            "model_ranking_table": model_table,
+            "family_statistics": family_stats,
+            "combo_summary": combo_summary,
+            "signal_summary": signal_summary,
+            "recent_action_history": history_summary,
+            "instructions": (
+                "Based on the above data, decide: "
+                "1) Which models need Per-Model LLM deep analysis (prioritized_models, max 8)? "
+                "2) Which models are healthy and can be skipped (healthy_models)? "
+                "3) Which combos need Per-Combo LLM analysis (prioritized_combos, max 3)? "
+                "4) Is Execution/Risk LLM needed (needs_execution_risk, boolean)? "
+                "5) What systemic patterns do you observe (systemic_observations)? "
+                "Output a JSON object with keys: systemic_observations, prioritized_models, "
+                "healthy_models, prioritized_combos, needs_execution_risk."
+            ),
+        }, indent=2, ensure_ascii=False)
+
+        print(f"   Triage: analyzing {len(model_table)} models, {len(signals)} signals")
+        result = self._call_llm_json_object(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=cfg["model"],
+            api_key=api_key,
+            base_url=cfg["base_url"],
+            temperature=cfg["temperature"],
+            label="Triage",
+        )
+
+        if result:
+            n_models = len(result.get("prioritized_models", []))
+            n_combos = len(result.get("prioritized_combos", []))
+            n_healthy = len(result.get("healthy_models", []))
+            print(f"   Triage: {n_models} models → Per-Model, "
+                  f"{n_combos} combos → Per-Combo, "
+                  f"{n_healthy} healthy, "
+                  f"exec_risk={result.get('needs_execution_risk', False)}")
+        return result
+
+    def generate_model_critique(
+        self,
+        model_name: str,
+        model_profile: dict,
+        workspace_root: str,
+    ) -> Optional[dict]:
+        """
+        Layered Per-Model Critic — deep single-model diagnosis.
+
+        Args:
+            model_name: The model being analyzed.
+            model_profile: Dict with keys: training_history, ranking_table, family_stats,
+                correlation_excerpt, combo_role, signals, current_params, hyperparam_bounds.
+            workspace_root: Workspace path for skill loading.
+
+        Returns a dict with keys: diagnosis, diagnosis_detail, action_items, cross_references.
+        """
+        cfg = self._resolve_llm_config(workspace_root)
+        api_key = self._resolve_api_key(cfg)
+        if not api_key:
+            return None
+
+        # Load skills: model_critic_system.md (primary) + scope skills
+        critic_skill = self._load_skill(workspace_root, "model_critic_system.md")
+        if not critic_skill:
+            print(f"   ⚠️  model_critic_system.md not found — cannot run Per-Model Critic.")
+            return None
+
+        hyperparam_skill = self._load_skill(workspace_root, "hyperparam_tuning.md") or ""
+        model_sel_skill = self._load_skill(workspace_root, "model_selection.md") or ""
+
+        system_prompt = "\n\n---\n\n".join(
+            p for p in [critic_skill, hyperparam_skill, model_sel_skill] if p
+        )
+
+        # Load active scopes
+        active_scopes = self._load_active_scopes(workspace_root)
+
+        user_prompt = json.dumps({
+            "model_name": model_name,
+            "active_scopes": active_scopes,
+            "training_history": model_profile.get("training_history", []),
+            "ranking_context": {
+                "full_table": model_profile.get("ranking_table", []),
+                "family_stats": model_profile.get("family_stats", {}),
+            },
+            "correlation_excerpt": model_profile.get("correlation_excerpt", {}),
+            "combo_role": model_profile.get("combo_role", {}),
+            "signals": [s.to_dict() for s in model_profile.get("signals", [])],
+            "current_params": model_profile.get("current_params", {}),
+            "hyperparam_bounds": model_profile.get("hyperparam_bounds", {}),
+            "instructions": (
+                f"Diagnose {model_name} based on the complete profile above. "
+                "Consider: training history, relative ranking in family, "
+                "correlation structure, combo role, and all signals. "
+                "Output a JSON object with: diagnosis, diagnosis_detail, action_items, "
+                "cross_references."
+            ),
+        }, indent=2, ensure_ascii=False, default=str)
+
+        return self._call_llm_json_object(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=cfg["model"],
+            api_key=api_key,
+            base_url=cfg["base_url"],
+            temperature=cfg["temperature"],
+            label=f"Per-Model({model_name})",
+        )
+
+    def generate_combo_critique(
+        self,
+        combo_name: str,
+        combo_profile: dict,
+        workspace_root: str,
+    ) -> Optional[dict]:
+        """
+        Layered Per-Combo Critic — deep combo analysis.
+
+        Args:
+            combo_name: The combo being analyzed.
+            combo_profile: Dict with keys: member_diagnoses, combo_history, loo_analysis,
+                pairwise_correlation, oos_trend, market_context.
+            workspace_root: Workspace path for skill loading.
+
+        Returns a dict with keys: diagnosis, diagnosis_detail, member_assessments, action_items.
+        """
+        cfg = self._resolve_llm_config(workspace_root)
+        api_key = self._resolve_api_key(cfg)
+        if not api_key:
+            return None
+
+        system_prompt = self._load_skill(workspace_root, "combo_critic_system.md")
+        if not system_prompt:
+            print(f"   ⚠️  combo_critic_system.md not found — cannot run Per-Combo Critic.")
+            return None
+
+        active_scopes = self._load_active_scopes(workspace_root)
+
+        user_prompt = json.dumps({
+            "combo_name": combo_name,
+            "active_scopes": active_scopes,
+            "member_diagnoses": combo_profile.get("member_diagnoses", {}),
+            "combo_history": combo_profile.get("combo_history", []),
+            "loo_analysis": combo_profile.get("loo_analysis", {}),
+            "pairwise_correlation": combo_profile.get("pairwise_correlation", {}),
+            "oos_trend": combo_profile.get("oos_trend", {}),
+            "market_context": combo_profile.get("market_context", {}),
+            "instructions": (
+                f"Analyze combo '{combo_name}' based on the profile above. "
+                "Consider: member health (from Per-Model diagnoses), LOO deltas, "
+                "pairwise correlations, OOS trend, and market context. "
+                "Output a JSON object with: diagnosis, diagnosis_detail, "
+                "member_assessments, action_items."
+            ),
+        }, indent=2, ensure_ascii=False, default=str)
+
+        return self._call_llm_json_object(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=cfg["model"],
+            api_key=api_key,
+            base_url=cfg["base_url"],
+            temperature=cfg["temperature"],
+            label=f"Per-Combo({combo_name})",
+        )
+
+    def generate_synthesizer_output(
+        self,
+        model_diagnoses: Dict[str, dict],
+        combo_diagnoses: Dict[str, dict],
+        execution_risk_output: Optional[dict],
+        rule_aggregator_result: dict,
+        feedback_eval: Optional[dict],
+        triage_result: dict,
+        workspace_root: str,
+    ) -> Optional[dict]:
+        """
+        Layered Synthesizer — final arbitration and ActionItem generation.
+
+        Args:
+            model_diagnoses: {model_name: diagnosis_dict} from all Per-Model calls.
+            combo_diagnoses: {combo_name: diagnosis_dict} from all Per-Combo calls.
+            execution_risk_output: Output from Execution/Risk LLM (or None).
+            rule_aggregator_result: Pre-processed dedup + scope filter + conflict list.
+            feedback_eval: Feedback Evaluator output with self_corrections rules.
+            triage_result: Original Triage output for context.
+            workspace_root: Workspace path for skill loading.
+
+        Returns a dict with: global_diagnosis, conflict_resolutions, action_items,
+        cross_validation_notes, scope_recommendations.
+        """
+        cfg = self._resolve_llm_config(workspace_root)
+        api_key = self._resolve_api_key(cfg)
+        if not api_key:
+            return None
+
+        system_prompt = self._load_skill(workspace_root, "synthesizer_system.md")
+        if not system_prompt:
+            print("   ⚠️  synthesizer_system.md not found — cannot run Synthesizer.")
+            return None
+
+        active_scopes = self._load_active_scopes(workspace_root)
+
+        # Load history for dedup
+        recent_history = self._load_recent_action_history(workspace_root, limit=30)
+
+        user_prompt = json.dumps({
+            "active_scopes": active_scopes,
+            "model_diagnoses": model_diagnoses,
+            "combo_diagnoses": combo_diagnoses,
+            "execution_risk_output": execution_risk_output,
+            "rule_aggregator": rule_aggregator_result,
+            "feedback_loop": feedback_eval,
+            "triage_summary": {
+                "systemic_observations": triage_result.get("systemic_observations", []),
+                "healthy_models": triage_result.get("healthy_models", []),
+            },
+            "recent_action_history": [
+                {
+                    "date": e.get("_run_date", e.get("run_date", "")),
+                    "target": e.get("target", ""),
+                    "action_type": e.get("action_type", ""),
+                    "params": e.get("params", {}),
+                }
+                for e in recent_history[:20]
+            ],
+            "instructions": (
+                "You are the final arbiter. Review all upstream outputs, resolve conflicts, "
+                "apply self_corrections from the feedback loop, and produce the final "
+                "ranked ActionItem list. Output a JSON object with: global_diagnosis, "
+                "conflict_resolutions, action_items, cross_validation_notes, "
+                "scope_recommendations."
+            ),
+        }, indent=2, ensure_ascii=False, default=str)
+
+        return self._call_llm_json_object(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=cfg["model"],
+            api_key=api_key,
+            base_url=cfg["base_url"],
+            temperature=cfg["temperature"],
+            label="Synthesizer",
+        )
+
+    # ------------------------------------------------------------------
     # Experiment Analyzer — multi-round Playground decision-making
     # ------------------------------------------------------------------
 
@@ -1206,8 +1620,7 @@ class LLMInterface:
         llm_model = ws_config.get("critic_model") or self.model or "gpt-4"
         temperature = ws_config.get("temperature", 0.3)
         base_url = self.base_url or ws_config.get("base_url")
-        api_key_env = ws_config.get("api_key_env", "OPENAI_API_KEY")
-        api_key = self.api_key or os.environ.get(api_key_env, "")
+        api_key = self._resolve_effective_api_key(workspace_root)
 
         if not api_key:
             return None

@@ -1,4 +1,12 @@
-# Critic Agent 系统指令
+# Critic Agent 系统指令 (DEPRECATED — 已迁移至分层架构)
+
+> **注意**: 此文件已被分层架构拆分。逻辑已迁移到以下四个文件：
+> - `triage_system.md` — 分流判断
+> - `model_critic_system.md` — 单模型深度诊断
+> - `combo_critic_system.md` — 组合分析
+> - `synthesizer_system.md` — 冲突仲裁 + 全局排序
+>
+> 此文件保留作为单阶段 critic 的向后兼容回退（当 workspace 缺少上述分层 skill 文件时使用）。
 
 你是一个量化策略优化专家，基于 MAS 分析系统的结构化信号做出调参决策。
 
