@@ -41,7 +41,7 @@ import warnings
 from datetime import datetime
 from collections import Counter
 from itertools import chain
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
@@ -69,6 +69,7 @@ from quantpits.utils.search_utils import (
     _signal_handler, _install_signal_handlers, _restore_signal_handlers,
     run_single_backtest, _append_results_to_csv,
     split_is_oos_by_args, load_combo_groups, generate_grouped_combinations,
+    worker_init, run_backtest_in_worker,
 )
 import quantpits.utils.search_utils as _su
 
@@ -204,16 +205,13 @@ def brute_force_backtest(
     """
     _su._shutdown = False
 
-    from qlib.backtest.exchange import Exchange
-
     print(f"\n{'='*60}")
-    print("Stage 3: 暴力穷举回测 (Batched Threading + Checkpoint)")
+    print("Stage 3: 暴力穷举回测 (Batched ProcessPool + Checkpoint)")
     print(f"{'='*60}")
 
     model_candidates = list(norm_df.columns)
 
-    # 准备共享的 Exchange 对象
-    print("Initializing Shared Exchange...")
+    # 准备 Exchange 构造参数（不在主进程构造 Exchange，由 worker 各自创建）
     bt_start = str(norm_df.index.get_level_values(0).min().date())
     bt_end = str(norm_df.index.get_level_values(0).max().date())
     all_codes = sorted(norm_df.index.get_level_values(1).unique().tolist())
@@ -221,18 +219,11 @@ def brute_force_backtest(
     from quantpits.utils import strategy
     st_config = strategy.load_strategy_config()
     bt_config = strategy.get_backtest_config(st_config)
-    
+
     exchange_kwargs = bt_config["exchange_kwargs"].copy()
     exchange_freq = exchange_kwargs.pop("freq", "day")
 
-    trade_exchange = Exchange(
-        freq=exchange_freq,
-        start_time=bt_start,
-        end_time=bt_end,
-        codes=all_codes,
-        **exchange_kwargs
-    )
-    print(f"Shared Exchange Initialized. Period: {bt_start} ~ {bt_end}, Instruments: {len(all_codes)}")
+    print(f"Exchange params prepared. Period: {bt_start} ~ {bt_end}, Instruments: {len(all_codes)}")
 
     # ── 生成组合 ──
     if use_groups and group_config:
@@ -260,7 +251,7 @@ def brute_force_backtest(
 
     print(f"总组合数: {len(all_combinations)}")
     print(f"回测频率: {freq}, TopK={top_k}, DropN={drop_n}")
-    print(f"并发线程数: {n_jobs}, 批次大小: {batch_size}")
+    print(f"并发进程数: {n_jobs}, 批次大小: {batch_size}")
 
     # ── Resume: 加载已有结果 ──
     csv_path = os.path.join(output_dir, results_filename)
@@ -306,46 +297,57 @@ def brute_force_backtest(
         total_count = len(all_combinations)
         failed_count = 0
 
-        # ── 分批处理 ──
+        # ── 分批处理 (单一进程池，spawn 避免 fork 锁继承) ──
         pbar = tqdm(
             total=len(pending),
-            desc=f"Brute Force (Threads={n_jobs})",
+            desc=f"Brute Force (Workers={n_jobs})",
             unit="combo",
         )
 
+        # spawn: 每个 worker 是全新 Python 进程，不继承主进程的 Qlib 锁状态
+        # 同时限制 BLAS 线程数，避免 8 worker × 32 OpenBLAS threads 撑爆 pthread_create
+        import multiprocessing as mp
+        _mp_ctx = mp.get_context("spawn")
+
+        _saved_env = {}
+        for _key in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+            _saved_env[_key] = os.environ.get(_key)
+            os.environ[_key] = "1"
+
         try:
-            for batch_start in range(0, len(pending), batch_size):
-                if _su._shutdown:
-                    break
+            with ProcessPoolExecutor(
+                max_workers=n_jobs,
+                mp_context=_mp_ctx,
+                initializer=worker_init,
+                initargs=(
+                    norm_df, exchange_kwargs, all_codes,
+                    bt_start, bt_end, exchange_freq,
+                    st_config, bt_config,
+                ),
+            ) as executor:
+                for batch_start in range(0, len(pending), batch_size):
+                    if _su._shutdown:
+                        break
 
-                batch = pending[batch_start : batch_start + batch_size]
-                batch_results = []
+                    batch = pending[batch_start : batch_start + batch_size]
+                    batch_results = []
 
-                # 使用 ThreadPoolExecutor 处理当前批次
-                with ThreadPoolExecutor(max_workers=n_jobs) as executor:
                     future_to_combo = {
                         executor.submit(
-                            run_single_backtest,
+                            run_backtest_in_worker,
                             combo,
-                            norm_df,
                             top_k,
                             drop_n,
                             benchmark,
                             freq,
-                            trade_exchange,
-                            bt_start,
-                            bt_end,
-                            st_config,
-                            bt_config
                         ): combo
                         for combo in batch
                     }
 
                     for future in as_completed(future_to_combo):
                         if _su._shutdown:
-                            # 收到中断，不再等待其他 future
-                            # 但已提交的会继续完成 (ThreadPoolExecutor 的行为)
-                            pass
+                            for f in future_to_combo:
+                                f.cancel()
                         try:
                             res = future.result()
                             if res:
@@ -357,21 +359,24 @@ def brute_force_backtest(
                             failed_count += 1
                         pbar.update(1)
 
-                # 批次完成 → 增量写入 CSV
-                if batch_results:
-                    _append_results_to_csv(csv_path, batch_results, write_header=False)
+                    # 批次完成 → 增量写入 CSV
+                    if batch_results:
+                        _append_results_to_csv(csv_path, batch_results, write_header=False)
 
-                # 释放内存
-                del batch_results
-                gc.collect()
-
-                if _su._shutdown:
-                    break
+                    # 释放内存
+                    del batch_results
+                    gc.collect()
 
         finally:
             pbar.close()
             _restore_signal_handlers()
             qlib_log.setLevel(original_level)
+            # 恢复 BLAS 线程设置
+            for _key, _val in _saved_env.items():
+                if _val is not None:
+                    os.environ[_key] = _val
+                else:
+                    os.environ.pop(_key, None)
 
         # 打印完成/中断状态
         if _su._shutdown:
@@ -466,7 +471,7 @@ def main():
     )
     parser.add_argument(
         "--n-jobs", type=int, default=4,
-        help="并发回测线程数 (默认: 4)",
+        help="并发回测进程数 (默认: 4)",
     )
     parser.add_argument(
         "--batch-size", type=int, default=50,
@@ -491,7 +496,7 @@ def main():
         print("=" * 60)
 
         init_qlib()
-        
+
         train_records, model_config = load_config(args.record_file)
         
         # 确定频率

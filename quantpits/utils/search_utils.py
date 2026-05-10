@@ -80,16 +80,24 @@ def run_single_backtest(
 
     strategy_inst = strategy.create_backtest_strategy(combo_score, st_config)
 
-    # 2. 回测
+    # 2. 回测 (重定向 stderr 以屏蔽 qlib backtest loop 内部的 tqdm 进度条)
     try:
-        report, _ = run_backtest_with_strategy(
-            strategy_inst=strategy_inst,
-            trade_exchange=trade_exchange,
-            freq=freq,
-            account_cash=bt_config["account"],
-            bt_start=bt_start,
-            bt_end=bt_end
-        )
+        _stderr_fd = os.open(os.devnull, os.O_WRONLY)
+        _old_stderr = os.dup(2)
+        os.dup2(_stderr_fd, 2)
+        os.close(_stderr_fd)
+        try:
+            report, _ = run_backtest_with_strategy(
+                strategy_inst=strategy_inst,
+                trade_exchange=trade_exchange,
+                freq=freq,
+                account_cash=bt_config["account"],
+                bt_start=bt_start,
+                bt_end=bt_end
+            )
+        finally:
+            os.dup2(_old_stderr, 2)
+            os.close(_old_stderr)
 
         # 3. 标准化计算结果
         st_config_inner = strategy.load_strategy_config()
@@ -255,7 +263,71 @@ def generate_grouped_combinations(groups, min_combo_size=1, max_combo_size=0):
 
 
 # ============================================================================
-# Metadata & Config 
+# Process pool worker globals & helpers
+# ============================================================================
+_worker_norm_df = None
+_worker_trade_exchange = None
+_worker_bt_start = None
+_worker_bt_end = None
+_worker_st_config = None
+_worker_bt_config = None
+
+
+def worker_init(norm_df, exchange_kwargs, all_codes, bt_start, bt_end,
+                exchange_freq, st_config, bt_config):
+    """Initialize a ProcessPoolExecutor worker: fresh Qlib init + pre-create Exchange.
+
+    Called once per worker process.  Because the pool uses ``spawn`` (not
+    ``fork``), the worker is a brand-new Python interpreter — no inherited
+    Qlib state, no inherited locks.  ``init_qlib()`` here is a genuine
+    first-time init.
+
+    The ``Exchange`` is created once per worker and reused for all subsequent
+    backtests, avoiding the ~2s construction overhead per combo.
+    """
+    import quantpits.utils.env as _env
+    import os as _os
+    for _key in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        _os.environ[_key] = "1"
+    _env.init_qlib()
+
+    from qlib.backtest.exchange import Exchange
+
+    _exch_kwargs = dict(exchange_kwargs)
+    trade_exchange = Exchange(
+        freq=exchange_freq,
+        start_time=bt_start,
+        end_time=bt_end,
+        codes=all_codes,
+        **_exch_kwargs,
+    )
+
+    global _worker_norm_df, _worker_trade_exchange
+    global _worker_bt_start, _worker_bt_end
+    global _worker_st_config, _worker_bt_config
+    _worker_norm_df = norm_df
+    _worker_trade_exchange = trade_exchange
+    _worker_bt_start = bt_start
+    _worker_bt_end = bt_end
+    _worker_st_config = st_config
+    _worker_bt_config = bt_config
+
+
+def run_backtest_in_worker(combo_models, top_k, drop_n, benchmark, freq):
+    """Run a single backtest inside a ProcessPoolExecutor worker.
+
+    Uses the pre-created ``Exchange`` (stored by :func:`worker_init`) and
+    delegates to :func:`run_single_backtest`.
+    """
+    return run_single_backtest(
+        combo_models, _worker_norm_df, top_k, drop_n, benchmark, freq,
+        _worker_trade_exchange, _worker_bt_start, _worker_bt_end,
+        _worker_st_config, _worker_bt_config,
+    )
+
+
+# ============================================================================
+# Metadata & Config
 # ============================================================================
 
 def load_oos_config(workspace_root=None):
