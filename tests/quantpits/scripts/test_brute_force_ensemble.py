@@ -10,6 +10,27 @@ import signal
 from unittest.mock import MagicMock, patch, mock_open
 from io import StringIO
 from datetime import datetime
+from concurrent.futures import Future
+
+# Sync mock for ProcessPoolExecutor — runs tasks in-process so as_completed works
+class _SyncProcessPool:
+    def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=None):
+        if initializer:
+            initializer(*(initargs or ()))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def submit(self, fn, *args, **kwargs):
+        f = Future()
+        try:
+            f.set_result(fn(*args, **kwargs))
+        except Exception as e:
+            f.set_exception(e)
+        return f
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch, tmp_path):
@@ -435,40 +456,47 @@ def test_run_single_backtest_exception(mock_create_strat, mock_executor, mock_ac
     
     assert res is None
 
-@patch('qlib.backtest.exchange.Exchange', create=True)
-@patch('quantpits.scripts.brute_force_ensemble.run_single_backtest')
-def test_brute_force_backtest_basic(mock_run_bt, mock_exchange, mock_env, tmp_path):
+@patch('quantpits.scripts.brute_force_ensemble.ProcessPoolExecutor')
+@patch('quantpits.scripts.brute_force_ensemble.run_backtest_in_worker')
+def test_brute_force_backtest_basic(mock_run_worker, mock_pool_executor, mock_env, tmp_path):
     bfe, _ = mock_env
-    
+
+    mock_pool_executor.return_value = _SyncProcessPool()
+
     # Mock norm_df
     idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A", "B"]], names=["datetime", "instrument"])
     norm_df = pd.DataFrame({"m1": [0.5, 0.6], "m2": [0.4, 0.7]}, index=idx)
-    
-    # Mock run_single_backtest to return valid metrics
-    mock_run_bt.side_effect = lambda combo, *args, **kwargs: {
-        "models": ",".join(combo), "n_models": len(combo), "Ann_Ret": 0.1, "Max_DD": -0.05,
-        "Excess_Ret": 0.05, "Ann_Excess": 0.05, "Total_Ret": 0.1, "Final_NAV": 110000, "Calmar": 2.0
-    }
-    
+
+    # Mock run_backtest_in_worker to return valid metrics
+    def _worker_side_effect(combo, *args, **kwargs):
+        return {
+            "models": ",".join(combo), "n_models": len(combo), "Ann_Ret": 0.1, "Max_DD": -0.05,
+            "Excess_Ret": 0.05, "Ann_Excess": 0.05, "Total_Ret": 0.1, "Final_NAV": 110000, "Calmar": 2.0
+        }
+    mock_run_worker.side_effect = _worker_side_effect
+
     out_dir = str(tmp_path / "output")
     os.makedirs(out_dir, exist_ok=True)
-    
+
     results = bfe.brute_force_backtest(
         norm_df=norm_df, top_k=1, drop_n=0, benchmark="SH000300", freq="day",
         min_combo_size=1, max_combo_size=1, output_dir=out_dir, anchor_date="2020-01-01",
         n_jobs=1
     )
-    
+
     assert len(results) == 2 # m1 and m2
     assert os.path.exists(os.path.join(out_dir, "results.csv"))
 
-@patch('qlib.backtest.exchange.Exchange', create=True)
-@patch('quantpits.scripts.brute_force_ensemble.run_single_backtest')
-def test_brute_force_backtest_resume(mock_run_bt, mock_exchange, mock_env, tmp_path):
+@patch('quantpits.scripts.brute_force_ensemble.ProcessPoolExecutor')
+@patch('quantpits.scripts.brute_force_ensemble.run_backtest_in_worker')
+def test_brute_force_backtest_resume(mock_run_worker, mock_pool_executor, mock_env, tmp_path):
     bfe, _ = mock_env
+
+    mock_pool_executor.return_value = _SyncProcessPool()
+
     out_dir = str(tmp_path / "output")
     os.makedirs(out_dir, exist_ok=True)
-    
+
     # Create an existing result CSV
     csv_path = os.path.join(out_dir, "results.csv")
     existing_df = pd.DataFrame({
@@ -476,53 +504,56 @@ def test_brute_force_backtest_resume(mock_run_bt, mock_exchange, mock_env, tmp_p
         "Excess_Ret": [0.05], "Ann_Excess": [0.05], "Total_Ret": [0.1], "Final_NAV": [110000], "Calmar": [2.0]
     })
     existing_df.to_csv(csv_path, index=False)
-    
+
     idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A"]], names=["datetime", "instrument"])
     norm_df = pd.DataFrame({"m1": [0.5], "m2": [0.4]}, index=idx)
-    
-    mock_run_bt.return_value = {
+
+    mock_run_worker.return_value = {
         "models": "m2", "n_models": 1, "Ann_Ret": 0.2, "Max_DD": -0.05,
         "Excess_Ret": 0.1, "Ann_Excess": 0.1, "Total_Ret": 0.2, "Final_NAV": 120000, "Calmar": 4.0
     }
-    
+
     results = bfe.brute_force_backtest(
         norm_df=norm_df, top_k=1, drop_n=0, benchmark="SH000300", freq="day",
         min_combo_size=1, max_combo_size=1, output_dir=out_dir, anchor_date="2020-01-01",
         resume=True, n_jobs=1
     )
-    
+
     assert len(results) == 2
     assert set(results["models"]) == {"m1", "m2"}
-    mock_run_bt.assert_called_once() # Only called for m2
+    mock_run_worker.assert_called_once() # Only called for m2
 
-@patch('qlib.backtest.exchange.Exchange', create=True)
-@patch('quantpits.scripts.brute_force_ensemble.run_single_backtest')
-def test_brute_force_backtest_shutdown_signal(mock_run_bt, mock_exchange, mock_env, tmp_path):
+@patch('quantpits.scripts.brute_force_ensemble.ProcessPoolExecutor')
+@patch('quantpits.scripts.brute_force_ensemble.run_backtest_in_worker')
+def test_brute_force_backtest_shutdown_signal(mock_run_worker, mock_pool_executor, mock_env, tmp_path):
     bfe, _ = mock_env
     import quantpits.utils.search_utils as _su
+
+    mock_pool_executor.return_value = _SyncProcessPool()
+
     out_dir = str(tmp_path / "output")
     os.makedirs(out_dir, exist_ok=True)
-    
+
     idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A"]], names=["datetime", "instrument"])
     # 3 models to trigger multiple batches if batch_size=1
     norm_df = pd.DataFrame({"m1": [0.5], "m2": [0.4], "m3": [0.6]}, index=idx)
-    
-    def side_effect_run_bt(combo, *args, **kwargs):
+
+    def side_effect_run_worker(combo, *args, **kwargs):
         # Trigger shutdown during the first model evaluation
         _su._shutdown = True
         return {
             "models": ",".join(combo), "n_models": len(combo), "Ann_Ret": 0.1, "Max_DD": -0.05,
             "Excess_Ret": 0.05, "Ann_Excess": 0.05, "Total_Ret": 0.1, "Final_NAV": 110000, "Calmar": 2.0
         }
-    
-    mock_run_bt.side_effect = side_effect_run_bt
-    
+
+    mock_run_worker.side_effect = side_effect_run_worker
+
     results = bfe.brute_force_backtest(
         norm_df=norm_df, top_k=1, drop_n=0, benchmark="SH000300", freq="day",
         min_combo_size=1, max_combo_size=1, output_dir=out_dir, anchor_date="2020-01-01",
         n_jobs=1, batch_size=1
     )
-    
+
     # Due to shutdown, only 1 result should be captured and loop should break early
     assert len(results) == 1
     assert _su._shutdown is True
@@ -606,15 +637,17 @@ def test_brute_force_backtest_grouped_and_no_pending(mock_exch, mock_env, tmp_pa
         assert len(res) == 2
         assert any("所有组合已完成！" in str(call) for call in mock_print.call_args_list)
 
-@patch('quantpits.scripts.brute_force_ensemble.run_single_backtest', return_value=None)
-@patch('qlib.backtest.exchange.Exchange')
-def test_brute_force_backtest_no_results(mock_exch, mock_run, mock_env, tmp_path):
+@patch('quantpits.scripts.brute_force_ensemble.ProcessPoolExecutor')
+@patch('quantpits.scripts.brute_force_ensemble.run_backtest_in_worker', return_value=None)
+def test_brute_force_backtest_no_results(mock_run_worker, mock_pool_executor, mock_env, tmp_path):
     bfe, _ = mock_env
+    mock_pool_executor.return_value = _SyncProcessPool()
+
     out_dir = tmp_path / "no_res"
     out_dir.mkdir()
     idx = pd.MultiIndex.from_product([pd.to_datetime(["2020-01-01"]), ["A"]], names=["datetime", "instrument"])
     norm_df = pd.DataFrame({"m1": [0.5]}, index=idx)
-    
+
     with patch('builtins.print') as mock_print:
         bfe.brute_force_backtest(norm_df, 1, 0, "BENCH", "day", 1, 1, str(out_dir), "no_res")
         assert any("警告: 无有效回测结果" in str(call) for call in mock_print.call_args_list)
