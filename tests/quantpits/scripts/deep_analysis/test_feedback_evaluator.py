@@ -591,3 +591,162 @@ class TestFeedbackEvaluatorEdgeCases:
         action2 = [{"date": "2026-05-03", "script": "static_train",
                      "args": ["--models", "model_b"], "log_id": "x", "duration_s": 100}]
         assert FE._was_executed(item, FeedbackSnapshot(operator_actions=action2)) is False
+
+
+# ------------------------------------------------------------------
+# _check_data_advanced fallback + _latest_anchor
+# ------------------------------------------------------------------
+
+class TestCheckDataAdvanced:
+    """Cover the fallback path of _check_data_advanced (without latest_data_date)."""
+
+    def test_fallback_no_perf_files(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced("2026-05-01", "2026-05-10")
+        assert result is False
+
+    def test_fallback_same_file_returns_false(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output").mkdir(parents=True)
+        perf = {"model_a": {"convergence": {"anchor_date": "2026-05-05"}}}
+        with open(ws / "output" / "model_performance_2026-05-10.json", "w") as f:
+            json.dump(perf, f)
+
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced("2026-05-01", "2026-05-10")
+        # Both snapshots resolve to the same file → same file → False
+        assert result is False
+
+    def test_fallback_prev_anchor_newer_than_curr(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output").mkdir(parents=True)
+        with open(ws / "output" / "model_performance_2026-05-01.json", "w") as f:
+            json.dump({"model_a": {"convergence": {"anchor_date": "2026-05-10"}}}, f)
+        with open(ws / "output" / "model_performance_2026-05-10.json", "w") as f:
+            json.dump({"model_a": {"convergence": {"anchor_date": "2026-05-05"}}}, f)
+
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced("2026-05-01", "2026-05-10")
+        assert result is False
+
+    def test_fallback_curr_anchor_newer_returns_true(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output").mkdir(parents=True)
+        with open(ws / "output" / "model_performance_2026-05-01.json", "w") as f:
+            json.dump({"model_a": {"convergence": {"anchor_date": "2026-05-01"}}}, f)
+        with open(ws / "output" / "model_performance_2026-05-10.json", "w") as f:
+            json.dump({"model_a": {"convergence": {"anchor_date": "2026-05-10"}}}, f)
+
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced("2026-05-01", "2026-05-10")
+        assert result is True
+
+    def test_fallback_corrupted_json_returns_false(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output").mkdir(parents=True)
+        with open(ws / "output" / "model_performance_2026-05-01.json", "w") as f:
+            json.dump({"model_a": {"convergence": {"anchor_date": "2026-05-01"}}}, f)
+        with open(ws / "output" / "model_performance_2026-05-10.json", "w") as f:
+            f.write("not json")
+
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced("2026-05-01", "2026-05-10")
+        assert result is False
+
+    def test_fallback_missing_anchor_returns_false(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output").mkdir(parents=True)
+        with open(ws / "output" / "model_performance_2026-05-01.json", "w") as f:
+            json.dump({"model_a": {"no_convergence": {}}}, f)
+        with open(ws / "output" / "model_performance_2026-05-10.json", "w") as f:
+            json.dump({"model_a": {"convergence": {}}}, f)
+
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced("2026-05-01", "2026-05-10")
+        assert result is False
+
+    def test_primary_path_with_latest_data_date_newer(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output").mkdir(parents=True)
+        with open(ws / "output" / "model_performance_2026-05-01.json", "w") as f:
+            json.dump({"model_a": {"convergence": {"anchor_date": "2026-05-01"}}}, f)
+
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced(
+            "2026-05-01", "2026-05-10", latest_data_date="2026-05-15",
+        )
+        assert result is True
+
+    def test_primary_path_with_latest_data_date_not_newer(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output").mkdir(parents=True)
+        with open(ws / "output" / "model_performance_2026-05-01.json", "w") as f:
+            json.dump({"model_a": {"convergence": {"anchor_date": "2026-05-20"}}}, f)
+
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced(
+            "2026-05-01", "2026-05-10", latest_data_date="2026-05-15",
+        )
+        assert result is False
+
+    def test_primary_path_no_perf_file(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced(
+            "2026-05-01", "2026-05-10", latest_data_date="2026-05-15",
+        )
+        assert result is False
+
+    def test_primary_path_corrupted_perf_file(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output").mkdir(parents=True)
+        with open(ws / "output" / "model_performance_2026-05-01.json", "w") as f:
+            f.write("garbage")
+
+        reader = HistoryReader(workspace_root=str(ws))
+        result = reader._check_data_advanced(
+            "2026-05-01", "2026-05-10", latest_data_date="2026-05-15",
+        )
+        assert result is False
+
+
+class TestLatestAnchor:
+    def test_empty_dict(self):
+        assert HistoryReader._latest_anchor({}) is None
+
+    def test_no_convergence(self):
+        data = {"model_a": {"ic": 0.05}}
+        assert HistoryReader._latest_anchor(data) is None
+
+    def test_empty_anchor_in_convergence(self):
+        data = {"model_a": {"convergence": {"anchor_date": ""}}}
+        assert HistoryReader._latest_anchor(data) is None
+
+    def test_single_model(self):
+        data = {"model_a": {"convergence": {"anchor_date": "2026-05-10"}}}
+        assert HistoryReader._latest_anchor(data) == "2026-05-10"
+
+    def test_multiple_models_returns_latest(self):
+        data = {
+            "model_a": {"convergence": {"anchor_date": "2026-05-01"}},
+            "model_b": {"convergence": {"anchor_date": "2026-05-10"}},
+            "model_c": {"convergence": {"anchor_date": "2026-05-05"}},
+        }
+        assert HistoryReader._latest_anchor(data) == "2026-05-10"
+
+    def test_skips_non_dict_values(self):
+        data = {
+            "model_a": "not a dict",
+            "model_b": {"convergence": {"anchor_date": "2026-05-10"}},
+        }
+        assert HistoryReader._latest_anchor(data) == "2026-05-10"
+
+    def test_model_without_convergence_skipped(self):
+        data = {
+            "model_a": {"no_convergence": {}},
+            "model_b": {"convergence": {"anchor_date": "2026-05-10"}},
+        }
+        assert HistoryReader._latest_anchor(data) == "2026-05-10"

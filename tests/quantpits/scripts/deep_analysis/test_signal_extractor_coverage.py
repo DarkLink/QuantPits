@@ -678,3 +678,211 @@ class TestExtractOptimizerThrashing:
         ext = SignalExtractor(workspace_root=str(ws))
         result = ext._extract_optimizer_thrashing()
         assert len(result) == 1  # only the valid line counted
+
+
+# ------------------------------------------------------------------
+# _load_historical_flags
+# ------------------------------------------------------------------
+
+class TestLoadHistoricalFlags:
+    def test_no_workspace_root_returns_empty(self):
+        ext = SignalExtractor()  # no workspace_root
+        result = ext._load_historical_flags()
+        assert result == {}
+
+    def test_no_action_items_files_returns_empty(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        assert result == {}
+
+    def test_empty_deep_analysis_dir_returns_empty(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "output" / "deep_analysis").mkdir(parents=True)
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        assert result == {}
+
+    def test_single_file_basic_flags(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        action_items = [
+            {"target": "model_a", "action_type": "adjust_hyperparam",
+             "reason": "IC decay detected, early_stop too aggressive"},
+            {"target": "model_b", "action_type": "adjust_hyperparam",
+             "reason": "underfitting due to low n_epochs"},
+        ]
+        with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+            json.dump(action_items, f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+
+        assert "model_a" in result
+        assert result["model_a"]["run_count"] == 1
+        assert "ic_decay" in result["model_a"]["historical_signal_types"]
+        assert "adjust_hyperparam" in result["model_a"]["last_action_types"]
+
+        assert "model_b" in result
+        assert result["model_b"]["run_count"] == 1
+        assert "underfitting" in result["model_b"]["historical_signal_types"]
+
+    def test_run_count_increments_per_file_not_per_item(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        # Two action items for same model in one file → run_count should be 1
+        action_items = [
+            {"target": "m1", "action_type": "adjust_hyperparam",
+             "reason": "ic_decay detected"},
+            {"target": "m1", "action_type": "adjust_hyperparam",
+             "reason": "early_stop issue"},
+        ]
+        with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+            json.dump(action_items, f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        assert result["m1"]["run_count"] == 1
+
+    def test_multiple_files_tracks_run_count(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        for date in ["2026-05-01", "2026-05-05", "2026-05-10"]:
+            with open(da_dir / f"action_items_{date}.json", "w") as f:
+                json.dump([{"target": "m1", "action_type": "adjust_hyperparam",
+                            "reason": "ic decay"}], f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        # m1 appears in all 3 files
+        assert result["m1"]["run_count"] == 3
+
+    def test_looks_at_last_3_files_only(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        # Create 5 files — only last 3 should count
+        for date in ["2026-04-01", "2026-04-15", "2026-05-01", "2026-05-05", "2026-05-10"]:
+            target = "old_model" if date.startswith("2026-04") else "new_model"
+            with open(da_dir / f"action_items_{date}.json", "w") as f:
+                json.dump([{"target": target, "action_type": "adjust_hyperparam",
+                            "reason": "ic decay"}], f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        # old_model (in first 2 files) should not appear; new_model (in last 3) should
+        assert "old_model" not in result
+        assert "new_model" in result
+        assert result["new_model"]["run_count"] == 3
+
+    def test_corrupted_json_file_skipped(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+            f.write("not valid json")
+        with open(da_dir / "action_items_2026-05-05.json", "w") as f:
+            json.dump([{"target": "m1", "action_type": "adjust_hyperparam",
+                        "reason": "ic_decay"}], f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        assert "m1" in result
+
+    def test_non_list_items_skipped(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+            json.dump({"not": "a list"}, f)
+        with open(da_dir / "action_items_2026-05-05.json", "w") as f:
+            json.dump([{"target": "m1", "action_type": "adjust_hyperparam",
+                        "reason": "ic decay"}], f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        assert "m1" in result
+
+    def test_items_without_target_skipped(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+            json.dump([{"action_type": "adjust_hyperparam", "reason": "ic decay"}], f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        assert result == {}
+
+    def test_negative_ic_keyword_detection(self, tmp_path):
+        # Test each keyword individually in isolated workspace dirs
+        cases = [
+            ("IC≈0 for this model", "negative_ic"),
+            ("negative_ic across recent windows", "negative_ic"),
+            ("IC 极低, needs attention", "negative_ic"),
+            ("IC 贫弱, poor performance", "negative_ic"),
+        ]
+        for i, (reason, expected_signal) in enumerate(cases):
+            ws = tmp_path / f"ws_{i}"
+            da_dir = ws / "output" / "deep_analysis"
+            da_dir.mkdir(parents=True)
+            with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+                json.dump([{"target": "m1", "action_type": "adjust_hyperparam",
+                            "reason": reason}], f)
+            ext = SignalExtractor(workspace_root=str(ws))
+            result = ext._load_historical_flags()
+            assert expected_signal in result.get("m1", {}).get("historical_signal_types", []), \
+                f"Reason '{reason}' should trigger '{expected_signal}'"
+
+    def test_deduplicates_signal_types_and_action_types(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        # Same signals and action types across multiple items should be deduplicated
+        action_items = [
+            {"target": "m1", "action_type": "adjust_hyperparam",
+             "reason": "ic_decay and underfitting both present"},
+            {"target": "m1", "action_type": "adjust_hyperparam",
+             "reason": "ic_decay again, also ic 接近零"},
+        ]
+        with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+            json.dump(action_items, f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        # ic_decay should appear only once
+        assert result["m1"]["historical_signal_types"].count("ic_decay") == 1
+        assert result["m1"]["historical_signal_types"].count("underfitting") == 1
+        assert result["m1"]["historical_signal_types"].count("negative_ic") == 1
+        # action_type should appear only once
+        assert result["m1"]["last_action_types"].count("adjust_hyperparam") == 1
+
+    def test_ic_decay_chinese_keywords(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        for reason in ["ic 衰减 detected", "IC 持续下降", "degrading ic trend"]:
+            (da_dir / f"action_items_{reason[:5]}.json").unlink(missing_ok=True)
+        with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+            json.dump([{"target": "m1", "action_type": "adjust_hyperparam",
+                        "reason": "ic 衰减 detected"}], f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        assert "ic_decay" in result.get("m1", {}).get("historical_signal_types", [])
+
+    def test_empty_reason_handled(self, tmp_path):
+        ws = tmp_path / "ws"
+        da_dir = ws / "output" / "deep_analysis"
+        da_dir.mkdir(parents=True)
+        with open(da_dir / "action_items_2026-05-01.json", "w") as f:
+            json.dump([{"target": "m1", "action_type": "adjust_hyperparam"}], f)
+
+        ext = SignalExtractor(workspace_root=str(ws))
+        result = ext._load_historical_flags()
+        assert "m1" in result
+        assert result["m1"]["historical_signal_types"] == []

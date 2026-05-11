@@ -391,3 +391,137 @@ def test_analyze_per_model_hit_rate_finding(mock_analysis_context):
 
         assert any("Individual models underperforming ensemble" in t for t in titles)
         assert "per_model_hit_rate" in findings.raw_metrics
+
+
+# ------------------------------------------------------------------
+# _parse_opinion_rank
+# ------------------------------------------------------------------
+
+class TestParseOpinionRank:
+    def test_float_input(self):
+        assert PredictionAuditAgent._parse_opinion_rank(3.0) == 3.0
+        assert PredictionAuditAgent._parse_opinion_rank(0) == 0.0
+
+    def test_int_input(self):
+        assert PredictionAuditAgent._parse_opinion_rank(7) == 7.0
+
+    def test_string_with_parentheses(self):
+        assert PredictionAuditAgent._parse_opinion_rank("BUY (3)") == 3.0
+        assert PredictionAuditAgent._parse_opinion_rank("HOLD (7)") == 7.0
+        assert PredictionAuditAgent._parse_opinion_rank("SELL (15)") == 15.0
+
+    def test_string_without_parentheses(self):
+        assert PredictionAuditAgent._parse_opinion_rank("BUY") is None
+        assert PredictionAuditAgent._parse_opinion_rank("no number here") is None
+
+    def test_nan_input(self):
+        assert PredictionAuditAgent._parse_opinion_rank(float('nan')) is None
+
+    def test_none_input(self):
+        assert PredictionAuditAgent._parse_opinion_rank(None) is None
+
+    def test_pandas_null(self):
+        assert PredictionAuditAgent._parse_opinion_rank(pd.NA) is None
+
+
+# ------------------------------------------------------------------
+# _get_active_combo_models
+# ------------------------------------------------------------------
+
+class TestGetActiveComboModels:
+    def test_no_workspace_root(self, agent):
+        ctx = AnalysisContext(
+            start_date="2026-01-01", end_date="2026-03-31",
+            window_label="test", workspace_root="",
+        )
+        result = agent._get_active_combo_models(ctx)
+        assert result == set()
+
+    def test_no_ensemble_config_file(self, agent, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        ctx = AnalysisContext(
+            start_date="2026-01-01", end_date="2026-03-31",
+            window_label="test", workspace_root=str(ws),
+        )
+        result = agent._get_active_combo_models(ctx)
+        assert result == set()
+
+    def test_valid_config_returns_models(self, agent, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        with open(ws / "config" / "ensemble_config.json", "w") as f:
+            json.dump({
+                "combos": {
+                    "combo1": {"models": ["model_a", "model_b"]},
+                    "combo2": {"models": ["model_c"]},
+                }
+            }, f)
+
+        ctx = AnalysisContext(
+            start_date="2026-01-01", end_date="2026-03-31",
+            window_label="test", workspace_root=str(ws),
+        )
+        result = agent._get_active_combo_models(ctx)
+        assert result == {"model_a", "model_b", "model_c"}
+
+    def test_corrupted_config_returns_empty(self, agent, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        with open(ws / "config" / "ensemble_config.json", "w") as f:
+            f.write("garbage")
+
+        ctx = AnalysisContext(
+            start_date="2026-01-01", end_date="2026-03-31",
+            window_label="test", workspace_root=str(ws),
+        )
+        result = agent._get_active_combo_models(ctx)
+        assert result == set()
+
+    def test_skips_non_dict_combo_entries(self, agent, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        with open(ws / "config" / "ensemble_config.json", "w") as f:
+            json.dump({
+                "combos": {
+                    "combo1": "not a dict",
+                    "combo2": {"models": ["model_a", "model_b"]},
+                }
+            }, f)
+
+        ctx = AnalysisContext(
+            start_date="2026-01-01", end_date="2026-03-31",
+            window_label="test", workspace_root=str(ws),
+        )
+        result = agent._get_active_combo_models(ctx)
+        assert result == {"model_a", "model_b"}
+
+    def test_skips_non_string_model_names(self, agent, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        with open(ws / "config" / "ensemble_config.json", "w") as f:
+            json.dump({
+                "combos": {
+                    "combo1": {"models": ["model_a", 123, None, "model_b"]},
+                }
+            }, f)
+
+        ctx = AnalysisContext(
+            start_date="2026-01-01", end_date="2026-03-31",
+            window_label="test", workspace_root=str(ws),
+        )
+        result = agent._get_active_combo_models(ctx)
+        assert result == {"model_a", "model_b"}
+
+    def test_empty_combos_returns_empty(self, agent, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        with open(ws / "config" / "ensemble_config.json", "w") as f:
+            json.dump({"combos": {}}, f)
+
+        ctx = AnalysisContext(
+            start_date="2026-01-01", end_date="2026-03-31",
+            window_label="test", workspace_root=str(ws),
+        )
+        result = agent._get_active_combo_models(ctx)
+        assert result == set()

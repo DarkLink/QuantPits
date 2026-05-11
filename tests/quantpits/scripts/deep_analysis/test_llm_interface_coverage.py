@@ -1451,6 +1451,195 @@ class TestCallLlmJsonObject:
         assert result is None
 
 
+# ------------------------------------------------------------------
+# _call_triage_llm — reasoning_content fallback
+# ------------------------------------------------------------------
+
+class TestCallTriageLLMReasoningFallback:
+    def test_reasoning_content_fallback_returns_parsed_json(self):
+        """When content is empty and finish_reason='length', use reasoning_content."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "length"
+        # Reasoning content has the JSON that got cut off
+        mock_response.choices[0].message.reasoning_content = (
+            '```json\n{"systemic_observations": ["pattern"], '
+            '"prioritized_targets": [{"target": "m1", "priority_score": 7}], '
+            '"excluded_targets": []}\n```'
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="fake")
+        result = interface._call_triage_llm(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", temperature=0.3,
+            api_key="fake", base_url=None,
+        )
+        assert result is not None
+        assert result["systemic_observations"] == ["pattern"]
+
+    def test_reasoning_fallback_without_code_fence(self):
+        """Reasoning content has bare JSON, no markdown fence."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "length"
+        mock_response.choices[0].message.reasoning_content = (
+            '{"systemic_observations": ["bare"], '
+            '"prioritized_targets": [], "excluded_targets": []}'
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="fake")
+        result = interface._call_triage_llm(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", temperature=0.3,
+            api_key="fake", base_url=None,
+        )
+        assert result is not None
+        assert result["systemic_observations"] == ["bare"]
+
+    def test_reasoning_fallback_invalid_json_returns_none(self):
+        """Reasoning content is not valid JSON either → None."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "length"
+        mock_response.choices[0].message.reasoning_content = "not json at all"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="fake")
+        result = interface._call_triage_llm(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", temperature=0.3,
+            api_key="fake", base_url=None,
+        )
+        assert result is None
+
+    def test_reasoning_fallback_no_reasoning_when_stop(self):
+        """When finish_reason='stop', reasoning content is not used even if present."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "stop"
+        mock_response.choices[0].message.reasoning_content = '{"key": "val"}'
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="fake")
+        result = interface._call_triage_llm(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", temperature=0.3,
+            api_key="fake", base_url=None,
+        )
+        assert result is None  # stop reason → no fallback
+
+    def test_empty_content_no_reasoning_still_none(self):
+        """Empty content with finish_reason='length' but no reasoning → None."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "length"
+        type(mock_response.choices[0].message).reasoning_content = None
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="fake")
+        result = interface._call_triage_llm(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", temperature=0.3,
+            api_key="fake", base_url=None,
+        )
+        assert result is None
+
+
+# ------------------------------------------------------------------
+# _call_llm_json_object — reasoning_content fallback
+# ------------------------------------------------------------------
+
+class TestCallLLMJsonObjectReasoningFallback:
+    def test_reasoning_content_fallback(self):
+        """When content is empty and finish_reason='length', use reasoning_content."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "length"
+        mock_response.choices[0].message.reasoning_content = '{"result": "from_reasoning"}'
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        result = interface._call_llm_json_object(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", api_key="test_key", label="Test",
+        )
+        assert result == {"result": "from_reasoning"}
+
+    def test_reasoning_fallback_invalid_json(self):
+        """Reasoning content has non-JSON → None."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "length"
+        mock_response.choices[0].message.reasoning_content = "garbage"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        result = interface._call_llm_json_object(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", api_key="test_key", label="Test",
+        )
+        assert result is None
+
+    def test_reasoning_fallback_stop_finish_ignored(self):
+        """finish_reason='stop' → reasoning not used even if present."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "stop"
+        mock_response.choices[0].message.reasoning_content = '{"result": "ignored"}'
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        result = interface._call_llm_json_object(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", api_key="test_key", label="Test",
+        )
+        assert result is None
+
+    def test_empty_reasoning_length_still_none(self):
+        """Empty content, finish='length', but no reasoning_content → None."""
+        mock_client = MagicMock()
+        sys.modules["openai"].OpenAI.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "length"
+        type(mock_response.choices[0].message).reasoning_content = None
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        result = interface._call_llm_json_object(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", api_key="test_key", label="Test",
+        )
+        assert result is None
+
+
 class TestGenerateTriage:
     def test_no_api_key(self, tmp_path):
         ws = tmp_path / "ws"
@@ -1780,3 +1969,128 @@ class TestLayeredMethodsWithMockedLlm:
         assert result is not None
         assert result["global_diagnosis"]["health_status"] == "warning"
         assert len(result["action_items"]) == 1
+
+
+# ------------------------------------------------------------------
+# _build_prompt — Critic Pipeline output section
+# ------------------------------------------------------------------
+
+class TestBuildPromptCriticPipeline:
+    """Cover the _critic_pipeline_output path in _build_prompt (lines 274-300)."""
+
+    def test_critic_pipeline_action_items_in_prompt(self):
+        synthesis_result = {
+            "health_status": "warning",
+            "executive_summary_data": {
+                "windows_analyzed": ["full"],
+                "agents_run": ["Model Health"],
+                "critical_count": 2,
+                "warning_count": 1,
+                "positive_count": 0,
+            },
+            "_critic_pipeline_output": {
+                "action_items": [
+                    {"action_type": "adjust_hyperparam", "target": "m1",
+                     "reason": "Underfitting detected"},
+                    {"action_type": "adjust_hyperparam", "target": "m2",
+                     "reason": "IC decay in recent window"},
+                ],
+                "conflict_resolutions": [],
+                "scope_recommendations": [],
+            },
+        }
+        interface = LLMInterface()
+        prompt = interface._build_prompt(synthesis_result)
+        assert "Critic Pipeline" in prompt
+        assert "Final ActionItems" in prompt
+        assert "adjust_hyperparam" in prompt
+        assert "m1" in prompt
+        assert "m2" in prompt
+        assert "Underfitting detected" in prompt
+
+    def test_critic_pipeline_conflict_resolutions_in_prompt(self):
+        synthesis_result = {
+            "health_status": "warning",
+            "executive_summary_data": {
+                "windows_analyzed": ["full"],
+                "agents_run": ["Model Health"],
+                "critical_count": 1,
+                "warning_count": 0,
+                "positive_count": 0,
+            },
+            "_critic_pipeline_output": {
+                "action_items": [],
+                "conflict_resolutions": [
+                    {"conflict": "Per-Model wants lr=0.01 but Per-Combo wants lr=0.001",
+                     "resolution": "Use lr=0.005 as compromise"},
+                ],
+                "scope_recommendations": [],
+            },
+        }
+        interface = LLMInterface()
+        prompt = interface._build_prompt(synthesis_result)
+        assert "Conflict Resolutions" in prompt
+        assert "lr=0.01" in prompt
+        assert "lr=0.005" in prompt
+
+    def test_critic_pipeline_scope_recommendations_in_prompt(self):
+        synthesis_result = {
+            "health_status": "warning",
+            "executive_summary_data": {
+                "windows_analyzed": ["full"],
+                "agents_run": ["Model Health"],
+                "critical_count": 1,
+                "warning_count": 0,
+                "positive_count": 0,
+            },
+            "_critic_pipeline_output": {
+                "action_items": [],
+                "conflict_resolutions": [],
+                "scope_recommendations": [
+                    {"scope": "strategy_params", "reason": "TopK should be reduced"},
+                ],
+            },
+        }
+        interface = LLMInterface()
+        prompt = interface._build_prompt(synthesis_result)
+        assert "Scope Recommendations" in prompt
+        assert "strategy_params" in prompt
+
+    def test_critic_pipeline_empty_action_items(self):
+        synthesis_result = {
+            "health_status": "healthy",
+            "executive_summary_data": {
+                "windows_analyzed": ["full"],
+                "agents_run": ["Model Health"],
+                "critical_count": 0,
+                "warning_count": 0,
+                "positive_count": 0,
+            },
+            "_critic_pipeline_output": {
+                "action_items": [],
+                "conflict_resolutions": [],
+                "scope_recommendations": [],
+            },
+        }
+        interface = LLMInterface()
+        prompt = interface._build_prompt(synthesis_result)
+        # Should not crash, should not include ActionItems section header
+        # (empty action_items list skips the block per lines 275-276)
+        assert "Final ActionItems" not in prompt
+
+    def test_critic_pipeline_missing_key(self):
+        synthesis_result = {
+            "health_status": "healthy",
+            "executive_summary_data": {
+                "windows_analyzed": ["full"],
+                "agents_run": ["Model Health"],
+                "critical_count": 0,
+                "warning_count": 0,
+                "positive_count": 0,
+            },
+            "_critic_pipeline_output": {},
+        }
+        interface = LLMInterface()
+        prompt = interface._build_prompt(synthesis_result)
+        # Should not include critic pipeline section
+        assert "Critic Pipeline" not in prompt

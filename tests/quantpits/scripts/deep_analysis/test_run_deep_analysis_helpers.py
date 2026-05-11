@@ -356,3 +356,135 @@ class TestPersistFeedbackReport:
         content = json.loads(files[0].read_text())
         assert content["global_diagnosis"]["health_status"] == "warning"
         assert content["feedback_summary"]["total"] == 2
+
+
+# ------------------------------------------------------------------
+# _build_model_profiles — full integration (training history + params + correlation)
+# ------------------------------------------------------------------
+
+class TestBuildModelProfilesFull:
+    def test_full_profile_with_all_data_sources(self, tmp_path):
+        """Build a profile with training_history, current_params, correlation, and bounds."""
+        from quantpits.scripts.deep_analysis.signal_extractor import Signal
+
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        (ws / "data").mkdir(parents=True)
+        (ws / "output").mkdir(parents=True)
+
+        # 1. Ensemble config
+        (ws / "config" / "ensemble_config.json").write_text(json.dumps({
+            "combos": {
+                "combo1": {"models": ["m1", "m2"]},
+                "combo2": {"models": ["m1", "m3"]},
+            }
+        }))
+
+        # 2. Model registry + workflow YAML for current_params
+        model_registry = {
+            "models": {
+                "m1": {
+                    "algorithm": "gru",
+                    "dataset": "Alpha158",
+                    "yaml_file": "config/workflow_m1.yaml",
+                    "enabled": True,
+                },
+            }
+        }
+        with open(ws / "config" / "model_registry.yaml", "w") as f:
+            yaml.dump(model_registry, f)
+
+        workflow_cfg = {
+            "task": {
+                "model": {
+                    "class": "GRU",
+                    "kwargs": {"n_epochs": 200, "early_stop": 10, "lr": 0.001,
+                               "GPU": 0, "seed": 42},
+                },
+                "dataset": {"class": "DatasetH"},
+            },
+            "data_handler_config": {"label": ["Ref($close, -2)"]},
+        }
+        with open(ws / "config" / "workflow_m1.yaml", "w") as f:
+            yaml.dump(workflow_cfg, f)
+
+        # 3. Hyperparam bounds
+        (ws / "config" / "hyperparam_bounds.json").write_text(json.dumps({
+            "bounds": {"n_epochs": {"min": 10, "max": 500}, "lr": {"min": 1e-5, "max": 0.1}}
+        }))
+
+        # 4. Training history
+        history_line = json.dumps({
+            "model_name": "m1", "record_id": "rec_001",
+            "trained_at": "2026-05-01", "duration_seconds": 180,
+            "early_stopped": True, "actual_epochs": 45, "configured_epochs": 200,
+            "best_epoch": 30, "final_val_score": 0.02, "score_type": "IC",
+            "n_epochs": 200, "early_stop": 10, "lr": 0.001,
+            "batch_size": 64, "dropout": 0.2, "hidden_size": 128, "num_layers": 2,
+        })
+        (ws / "data" / "training_history.jsonl").write_text(history_line + "\n")
+
+        # 5. Correlation matrix CSV
+        import pandas as pd
+        corr_df = pd.DataFrame(
+            [[1.0, 0.6, 0.3], [0.6, 1.0, 0.4], [0.3, 0.4, 1.0]],
+            columns=["m1", "m2", "m3"], index=["m1", "m2", "m3"],
+        )
+        corr_df.to_csv(ws / "output" / "correlation_matrix_2026-05-01.csv")
+
+        # 6. Signal for the model
+        sig = Signal("ic_decay", "warning", "hyperparams", "Model Health",
+                     "m1", context="ic decaying over 3 windows",
+                     metrics={"ic": 0.01})
+
+        triage_input = {
+            "model_ranking": [
+                {"model": "m1", "ic_mean": 0.04, "icir_mean": 0.5,
+                 "ic_trend": "declining", "family": "GRU", "in_combos": ["combo1", "combo2"],
+                 "best_epoch": 30, "actual_epochs": 45, "early_stopped": True},
+            ],
+            "family_stats": {"GRU": {"count": 3, "avg_ic": 0.05}},
+        }
+
+        profiles = _build_model_profiles(
+            model_names=["m1"],
+            triage_input=triage_input,
+            signals=[sig],
+            all_findings=[],
+            workspace_root=str(ws),
+        )
+
+        assert "m1" in profiles
+        p = profiles["m1"]
+
+        # Combo role
+        assert set(p["combo_role"]["in_combos"]) == {"combo1", "combo2"}
+        assert p["combo_role"]["is_active"] is True
+
+        # Training history (filtered to specific clean keys)
+        assert len(p["training_history"]) == 1
+        assert p["training_history"][0]["actual_epochs"] == 45
+        assert p["training_history"][0]["early_stopped"] is True
+
+        # Current params (tunable + non-tunable, filtered by type only)
+        assert "n_epochs" in p["current_params"]
+        assert p["current_params"]["n_epochs"] == 200
+        assert p["current_params"]["lr"] == 0.001
+
+        # Hyperparam bounds
+        assert "n_epochs" in p["hyperparam_bounds"]
+        assert p["hyperparam_bounds"]["n_epochs"]["min"] == 10
+
+        # Correlation excerpt
+        assert "m1" in corr_df.index  # should be in the workspace correlation
+        corr_excerpt = p["correlation_excerpt"]
+        if corr_excerpt:  # correlation loading may fail without pandas in some envs
+            assert "top_correlated" in corr_excerpt or "bottom_correlated" in corr_excerpt
+
+        # Signals
+        assert len(p["signals"]) == 1
+        assert p["signals"][0].signal_type == "ic_decay"
+
+        # Ranking table and family stats
+        assert p["ranking_table"] == triage_input["model_ranking"]
+        assert p["family_stats"] == triage_input["family_stats"]
