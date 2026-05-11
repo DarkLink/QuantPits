@@ -340,6 +340,20 @@ def _run_critic_layered(
         synthesis_result["health_status"] = llm_health
         synthesis_result["_llm_diagnosis"] = gd
 
+        # Inject layered Critic Pipeline output so the Executive Summary
+        # LLM can see and respect the Synthesizer's conclusions.
+        synthesis_result["_critic_pipeline_output"] = {
+            "action_items": [
+                {"target": ai.get("target", ""),
+                 "action_type": ai.get("action_type", ""),
+                 "reason": (ai.get("reason", "") or "")[:200]}
+                for ai in synthesizer_output.get("action_items", [])
+            ],
+            "conflict_resolutions": synthesizer_output.get("conflict_resolutions", []),
+            "scope_recommendations": synthesizer_output.get("scope_recommendations", []),
+            "cross_validation_notes": synthesizer_output.get("cross_validation_notes", []),
+        }
+
         action_items = [
             ActionItem.from_dict(item)
             for item in synthesizer_output.get("action_items", [])

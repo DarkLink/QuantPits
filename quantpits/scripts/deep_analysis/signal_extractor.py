@@ -126,7 +126,8 @@ class SignalExtractor:
 
         # --- 2. Model ranking table ---
         combo_membership = self._load_combo_membership()
-        model_ranking = self._build_model_ranking(by_agent, combo_membership)
+        historical_flags = self._load_historical_flags()
+        model_ranking = self._build_model_ranking(by_agent, combo_membership, historical_flags)
 
         # --- 3. Architecture family statistics ---
         family_stats = self._build_family_stats(model_ranking)
@@ -216,6 +217,79 @@ class SignalExtractor:
                     membership.setdefault(m, []).append(combo_name)
         return membership
 
+    def _load_historical_flags(self) -> Dict[str, dict]:
+        """Scan last 3 action_item snapshots and flag historically problematic models.
+
+        Returns {model_name: {historical_signal_types, run_count, last_action_types}}.
+        This is a deterministic rule layer — the Triage LLM uses these flags to
+        ensure historically troubled models are routed even when they lack new data.
+        """
+        if not self._workspace_root:
+            return {}
+        import glob as _glob
+        pattern = os.path.join(
+            self._workspace_root, 'output', 'deep_analysis', 'action_items_*.json',
+        )
+        files = sorted(_glob.glob(pattern))
+        if not files:
+            return {}
+
+        # Look at last 3 runs, tracking per-file presence
+        recent_files = files[-3:]
+        flags: Dict[str, dict] = {}
+
+        for fpath in recent_files:
+            try:
+                with open(fpath, 'r') as f:
+                    items = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(items, list):
+                continue
+
+            seen_in_this_file: set = set()
+            for item in items:
+                target = item.get('target', '')
+                if not target:
+                    continue
+                if target not in flags:
+                    flags[target] = {
+                        'historical_signal_types': [],
+                        'run_count': 0,
+                        'last_action_types': [],
+                    }
+                entry = flags[target]
+                if target not in seen_in_this_file:
+                    seen_in_this_file.add(target)
+                    entry['run_count'] += 1
+
+                action_type = item.get('action_type', '')
+                if action_type and action_type not in entry['last_action_types']:
+                    entry['last_action_types'].append(action_type)
+
+                reason = (item.get('reason', '') or '').lower()
+                sigs = entry['historical_signal_types']
+                if any(kw in reason for kw in [
+                    'underfitting', 'underfit', 'early_stop',
+                    'best_epoch', '欠拟合', 'early_stopped too',
+                ]):
+                    if 'underfitting' not in sigs:
+                        sigs.append('underfitting')
+                if any(kw in reason for kw in [
+                    'ic_decay', 'ic decay', 'ic 衰减', 'ic attenuat',
+                    'degrading ic', 'ic trend', 'ic 持续',
+                ]):
+                    if 'ic_decay' not in sigs:
+                        sigs.append('ic_decay')
+                if any(kw in reason for kw in [
+                    'ic≈0', 'ic ≈ 0', 'ic ~= 0', 'ic 接近零',
+                    'ic 极低', 'ic 贫弱', 'negative_ic', 'negative ic',
+                ]):
+                    if 'negative_ic' not in sigs:
+                        sigs.append('negative_ic')
+
+        return flags
+
     def _build_market_context(self, by_agent, synthesis_result) -> dict:
         """Extract market regime and recent portfolio performance."""
         ctx = {}
@@ -231,9 +305,12 @@ class SignalExtractor:
         return ctx
 
     def _build_model_ranking(
-        self, by_agent, combo_membership: Dict[str, List[str]]
+        self, by_agent, combo_membership: Dict[str, List[str]],
+        historical_flags: Optional[Dict[str, dict]] = None,
     ) -> list:
         """Build a ranked list of models with key metrics (deduplicated across windows)."""
+        if historical_flags is None:
+            historical_flags = {}
         # Collect entries across all windows, keep the one with most snapshots
         best_per_model: Dict[str, dict] = {}
         for af in by_agent.get('Model Health', []):
@@ -261,6 +338,10 @@ class SignalExtractor:
                     entry['best_epoch'] = d.get('best_epoch')
                     entry['actual_epochs'] = d.get('actual_epochs')
                     entry['early_stopped'] = d.get('early_stopped')
+                # Merge historical tracking flags from past ActionItem runs
+                hf = historical_flags.get(model_name)
+                if hf:
+                    entry['historical_flags'] = hf
                 best_per_model[model_name] = entry
 
         ranking = list(best_per_model.values())

@@ -11,3 +11,11 @@ Your task is to write a concise, insightful executive summary that:
 
 Write in English. Be direct and data-driven. Avoid generic advice.
 Keep the summary under 500 words.
+
+## Critical Constraints
+
+1. **Do NOT suggest model removal based on single-model IC alone**. Some IC≈0 models provide critical diversification value in the ensemble (verified: gats_Alpha158_plus had IC≈0 but LOO delta +0.047 in OOS_Defensive, making it the top contributor). Evaluate model value holistically — LOO delta and combo role matter more than standalone IC.
+
+2. **Critic Pipeline takes precedence**. If the upstream Critic Pipeline has produced ActionItems and a global diagnosis (see the "Critic Pipeline" section in the prompt), those conclusions are authoritative. Do NOT repeat or contradict them. If the Critic has classified a model as `keep_as_diversifier`, do NOT recommend removing it in the Executive Summary.
+
+3. **Architecture awareness**: Alpha158 RNN models (GRU/LSTM/GATs) with IC≈0 reflect a known architecture-dataset incompatibility, not training failure. Alpha360 RNN requires extreme deceleration; Attention-family needs moderate regularization. Do not misdiagnose architecture differences as hyperparameter problems.

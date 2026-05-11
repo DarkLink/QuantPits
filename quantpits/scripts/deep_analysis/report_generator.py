@@ -473,6 +473,18 @@ class ReportGenerator:
 
         lines = ["## 9. Prioritized Recommendations"]
 
+        # When the layered Critic Pipeline has run, its output in the Executive
+        # Summary takes precedence over these auto-generated rule-based suggestions.
+        if self.synthesis.get('_critic_pipeline_output'):
+            lines.append(
+                "\n> **Note**: These are auto-generated rule-based suggestions. "
+                "The Executive Summary above reflects the more nuanced layered "
+                "Critic Pipeline analysis (Triage → Per-Model → Synthesizer) "
+                "and is the authoritative diagnosis. Rule-based suggestions may "
+                "lack context about architectural constraints, LOO delta diversifier "
+                "value, and cross-model interactions.\n"
+            )
+
         for priority in ['P0', 'P1', 'P2']:
             group = [r for r in recs if r['priority'] == priority]
             if group:

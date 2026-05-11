@@ -269,6 +269,36 @@ class LLMInterface:
         if notes:
             parts.append(f"\n## Operator Notes\n{notes}")
 
+        # Layered Critic Pipeline output (when available)
+        critic_out = synthesis_result.get('_critic_pipeline_output')
+        if critic_out:
+            ai_list = critic_out.get('action_items', [])
+            if ai_list:
+                parts.append("\n## Critic Pipeline — Final ActionItems")
+                parts.append(
+                    "These ActionItems reflect the layered Triage → Per-Model → "
+                    "Synthesizer pipeline. They are the authoritative diagnosis; "
+                    "do NOT contradict them in the summary."
+                )
+                for ai in ai_list:
+                    parts.append(
+                        f"- [{ai.get('action_type', '?')}] {ai.get('target', '?')}: "
+                        f"{ai.get('reason', '')}"
+                    )
+            conflicts = critic_out.get('conflict_resolutions', [])
+            if conflicts:
+                parts.append("\n## Critic Pipeline — Conflict Resolutions")
+                for c in conflicts:
+                    parts.append(
+                        f"- {c.get('conflict', '')[:150]}\n"
+                        f"  Resolution: {c.get('resolution', '')[:150]}"
+                    )
+            scopes = critic_out.get('scope_recommendations', [])
+            if scopes:
+                parts.append("\n## Critic Pipeline — Scope Recommendations")
+                for s in scopes:
+                    parts.append(f"- Open scope '{s.get('scope', '?')}': {s.get('reason', '')[:150]}")
+
         parts.append("\n---\nPlease write a concise executive summary of the above findings.")
 
         return "\n".join(parts)
@@ -1291,7 +1321,7 @@ class LLMInterface:
         # Build model summary table from triage_input
         model_table = []
         for m in triage_input.get("model_ranking", []):
-            model_table.append({
+            entry = {
                 "model": m["model"],
                 "ic_mean": m.get("ic_mean"),
                 "icir_mean": m.get("icir_mean"),
@@ -1301,7 +1331,16 @@ class LLMInterface:
                 "best_epoch": m.get("best_epoch"),
                 "actual_epochs": m.get("actual_epochs"),
                 "early_stopped": m.get("early_stopped"),
-            })
+            }
+            hf = m.get("historical_flags")
+            if hf:
+                entry["historical_flags"] = hf
+            model_table.append(entry)
+
+        n_flagged = sum(1 for e in model_table if "historical_flags" in e)
+        if n_flagged:
+            flagged_names = [e["model"] for e in model_table if "historical_flags" in e]
+            print(f"   Triage: {n_flagged} models with historical flags: {', '.join(flagged_names[:8])}")
 
         family_stats = triage_input.get("family_stats", {})
         combo_summary = triage_input.get("combo_summary", {})
@@ -1332,7 +1371,12 @@ class LLMInterface:
                 "3) Which combos need Per-Combo LLM analysis (prioritized_combos, max 3)? "
                 "4) Is Execution/Risk LLM needed (needs_execution_risk, boolean)? "
                 "5) What systemic patterns do you observe (systemic_observations)? "
-                "Output a JSON object with keys: systemic_observations, prioritized_models, "
+                "\n\nCRITICAL RULE — Historical Tracking: "
+                "Any model with a historical_flags field MUST be routed to Per-Model, "
+                "even if it has no new training data or current signals. "
+                "Set tracking_mode: true for such models. "
+                "No new data does NOT equal healthy — historical problems need follow-up. "
+                "\n\nOutput a JSON object with keys: systemic_observations, prioritized_models, "
                 "healthy_models, prioritized_combos, needs_execution_risk."
             ),
         }, indent=2, ensure_ascii=False)
@@ -1344,11 +1388,49 @@ class LLMInterface:
             model=cfg["model"],
             api_key=api_key,
             base_url=cfg["base_url"],
-            temperature=cfg["temperature"],
+            temperature=max(0.1, cfg["temperature"] * 0.3),
             label="Triage",
         )
 
         if result:
+            # --- Deterministic override: force historically flagged models in ---
+            # LLMs can ignore CRITICAL RULE instructions, so we enforce this
+            # outside the LLM call.
+            flagged_models = {e["model"] for e in model_table if "historical_flags" in e}
+            if flagged_models:
+                existing = set()
+                for item in result.get("prioritized_models", []):
+                    name = item.get("target", item.get("model", ""))
+                    if name:
+                        existing.add(name)
+                for item in result.get("healthy_models", []):
+                    name = item if isinstance(item, str) else item.get("model", item.get("target", ""))
+                    if name:
+                        existing.add(name)
+
+                missing = flagged_models - existing
+                if missing:
+                    prioritized = result.setdefault("prioritized_models", [])
+                    for name in sorted(missing):
+                        hf = next(
+                            (e["historical_flags"] for e in model_table
+                             if e.get("model") == name), {}
+                        )
+                        prioritized.append({
+                            "target": name,
+                            "priority_score": 7,
+                            "primary_signal": "historical_tracking",
+                            "tracking_mode": True,
+                            "investigation_direction": (
+                                f"History shows {hf.get('historical_signal_types', [])} "
+                                f"in {hf.get('run_count', 0)} of last 3 runs"
+                            ),
+                            "rationale": "Deterministic override: historically flagged, "
+                                         "must be re-evaluated.",
+                        })
+                    print(f"   Triage: +{len(missing)} historical override models "
+                          f"({', '.join(sorted(missing))})")
+
             n_models = len(result.get("prioritized_models", []))
             n_combos = len(result.get("prioritized_combos", []))
             n_healthy = len(result.get("healthy_models", []))

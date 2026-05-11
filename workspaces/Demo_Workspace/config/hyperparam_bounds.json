@@ -12,6 +12,7 @@
         "iterations": {"min": 100, "max": 10000, "max_change_pct": 50},
         "depth": {"min": 2, "max": 16, "max_change_pct": 100},
         "l2_leaf_reg": {"min": 0.0, "max": 100.0, "max_change_pct": null},
-        "num_leaves": {"min": 8, "max": 256, "max_change_pct": 100}
+        "num_leaves": {"min": 8, "max": 256, "max_change_pct": 100},
+        "weight_decay": {"min": 0.0, "max": 0.01, "max_change_pct": null}
     }
 }

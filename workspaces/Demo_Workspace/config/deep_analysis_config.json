@@ -1,0 +1,4 @@
+{
+    "freq_change_date": null,
+    "_note": "freq_change_date: date when trading frequency changed. Set to your workspace's change date. Can be overridden with --freq-change-date CLI flag. Read by run_deep_analysis.py."
+}
