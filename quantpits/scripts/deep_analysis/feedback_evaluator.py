@@ -30,6 +30,7 @@ class FeedbackSnapshot:
     """What happened between the last analysis and now."""
     period_start: str = ""   # YYYY-MM-DD of previous analysis
     period_end: str = ""     # YYYY-MM-DD of current analysis
+    has_meaningful_change: bool = False  # True if underlying data actually changed
     operator_actions: List[dict] = field(default_factory=list)
     model_list_changes: dict = field(default_factory=dict)   # added, removed, enabled, disabled
     hyperparam_changes: List[dict] = field(default_factory=list)
@@ -58,12 +59,19 @@ class HistoryReader:
         self,
         current_date: str,
         previous_date: Optional[str] = None,
+        latest_data_date: Optional[str] = None,
     ) -> FeedbackSnapshot:
         """
         Build a FeedbackSnapshot covering the period from previous_date to current_date.
 
-        If previous_date is None, auto-discovers the most recent analysis date
-        before current_date.
+        ``latest_data_date`` is the latest trading day available in Qlib (e.g.
+        from ``D.calendar()[-1]``).  When provided, it is the canonical clock
+        for determining whether market data has advanced.  When None, falls
+        back to the latest ``anchor_date`` in model_performance snapshots.
+
+        ``has_meaningful_change`` is True only when the data clock actually
+        advanced.  Two runs against the same Qlib data produce False so the
+        FeedbackEvaluator can label items as ``same_data_rerun``.
         """
         if previous_date is None:
             previous_date = self._find_last_analysis_date(current_date)
@@ -82,7 +90,68 @@ class HistoryReader:
         snapshot.performance_deltas = self._compute_performance_deltas(previous_date, current_date)
         snapshot.combo_changes = self._detect_combo_changes(previous_date, current_date)
 
+        snapshot.has_meaningful_change = self._check_data_advanced(
+            previous_date, current_date, latest_data_date,
+        )
+
         return snapshot
+
+    def _check_data_advanced(
+        self, prev_date: str, curr_date: str,
+        latest_data_date: Optional[str] = None,
+    ) -> bool:
+        """Return True when market data advanced between the two dates.
+
+        Primary clock: ``latest_data_date`` (Qlib calendar).  If the calendar
+        date at the previous analysis matches the current one, no new data
+        arrived — regardless of what files changed.
+
+        Fallback: compare ``anchor_date`` in model_performance snapshots.
+        """
+        # Primary: Qlib calendar passed by caller — the authoritative clock.
+        if latest_data_date:
+            prev_perf = self._find_closest_snapshot(prev_date, "output/model_performance_*.json")
+            if prev_perf:
+                try:
+                    with open(prev_perf) as f:
+                        prev_data = json.load(f)
+                    prev_anchor = self._latest_anchor(prev_data)
+                    if prev_anchor and prev_anchor < latest_data_date:
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        # Fallback: compare anchor_date between the two snapshots.
+        prev_perf = self._find_closest_snapshot(prev_date, "output/model_performance_*.json")
+        curr_perf = self._find_closest_snapshot(curr_date, "output/model_performance_*.json")
+        if not prev_perf or not curr_perf or prev_perf == curr_perf:
+            return False
+
+        try:
+            with open(prev_perf) as f:
+                prev_data = json.load(f)
+            with open(curr_perf) as f:
+                curr_data = json.load(f)
+        except Exception:
+            return False
+
+        prev_anchor = self._latest_anchor(prev_data)
+        curr_anchor = self._latest_anchor(curr_data)
+        return bool(prev_anchor and curr_anchor and curr_anchor > prev_anchor)
+
+    @staticmethod
+    def _latest_anchor(perf_data: dict) -> Optional[str]:
+        """Extract the latest anchor_date from model_performance data."""
+        latest = ""
+        for model_metrics in perf_data.values():
+            if not isinstance(model_metrics, dict):
+                continue
+            conv = model_metrics.get("convergence", {})
+            anchor = conv.get("anchor_date", "")
+            if anchor and anchor > latest:
+                latest = anchor
+        return latest or None
 
     # ------------------------------------------------------------------
     # Discovery
@@ -391,6 +460,7 @@ class FeedbackEvaluator:
         if not snapshot.period_start or snapshot.period_start == "unknown":
             return {
                 "evaluated": False,
+                "data_changed": False,
                 "reason": "No previous analysis found — first run or missing history.",
                 "per_item_evaluations": [],
                 "quality_summary": {},
@@ -422,6 +492,7 @@ class FeedbackEvaluator:
 
         return {
             "evaluated": True,
+            "data_changed": snapshot.has_meaningful_change,
             "period_start": snapshot.period_start,
             "period_end": snapshot.period_end,
             "per_item_evaluations": evaluations,
@@ -482,6 +553,12 @@ class FeedbackEvaluator:
             ev["quality"] = self._classify_enable(executed, target, snapshot)
         else:
             ev["quality"] = "pending_verification"
+
+        # 5. When data hasn't advanced, "not executed" doesn't mean the user
+        #    ignored advice — there was simply no time/opportunity to act.
+        #    Re-label to avoid misleading quality stats.
+        if ev["quality"] == "correct_ignored" and not snapshot.has_meaningful_change:
+            ev["quality"] = "same_data_rerun"
 
         return ev
 
@@ -578,17 +655,23 @@ class FeedbackEvaluator:
             q = ev.get("quality", "pending_verification")
             counts[q] = counts.get(q, 0) + 1
 
+        # same_data_rerun items are excluded from accuracy — they represent
+        # repeated runs against identical data, not real user decisions.
+        evaluable = total - counts.get("same_data_rerun", 0)
+
         return {
             "total": total,
+            "evaluable": evaluable,
+            "same_data_rerun": counts.get("same_data_rerun", 0),
             "correct_effective": counts.get("correct_effective", 0),
             "correct_ignored": counts.get("correct_ignored", 0),
             "incorrect": counts.get("incorrect", 0),
             "pending_verification": counts.get("pending_verification", 0),
             "accuracy": (
                 (counts.get("correct_effective", 0) + counts.get("correct_ignored", 0))
-                / total
-                if total > 0
-                else 0
+                / evaluable
+                if evaluable > 0
+                else None
             ),
         }
 
@@ -693,9 +776,16 @@ class FeedbackEvaluator:
 def run_feedback_loop(
     workspace_root: str,
     current_date: Optional[str] = None,
+    latest_data_date: Optional[str] = None,
 ) -> dict:
     """
     Run the full feedback loop: HistoryReader → FeedbackEvaluator.
+
+    Args:
+        workspace_root: Path to workspace root.
+        current_date: Today (defaults to now).
+        latest_data_date: Latest Qlib trading day from D.calendar()[-1].
+            The authoritative clock for data-freshness detection.
 
     Returns the FeedbackEval dict ready for Synthesizer injection.
     """
@@ -703,7 +793,7 @@ def run_feedback_loop(
         current_date = datetime.now().strftime("%Y-%m-%d")
 
     reader = HistoryReader(workspace_root)
-    snapshot = reader.read(current_date)
+    snapshot = reader.read(current_date, latest_data_date=latest_data_date)
 
     evaluator = FeedbackEvaluator(workspace_root)
     return evaluator.evaluate(snapshot, current_date)

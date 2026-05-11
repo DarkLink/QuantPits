@@ -1291,3 +1291,492 @@ class TestGenerateActionItemsTwoStage:
             items = interface.generate_action_items(signals, str(ws))
             assert len(items) == 1
             assert items[0].target == "m0"
+
+
+# ------------------------------------------------------------------
+# V2 layered pipeline methods
+# ------------------------------------------------------------------
+
+class TestResolveEffectiveApiKey:
+    def test_explicit_key_wins(self):
+        interface = LLMInterface(api_key="explicit_key")
+        key = interface._resolve_effective_api_key()
+        assert key == "explicit_key"
+
+    def test_workspace_config_env_var(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "config" / "llm_config.json").write_text(json.dumps({
+            "api_key_env": "CUSTOM_KEY"
+        }))
+
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {"CUSTOM_KEY": "secret123"}, clear=True):
+            key = interface._resolve_effective_api_key(str(ws))
+            assert key == "secret123"
+
+    def test_falls_back_to_openai_key(self):
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "openai_secret"}, clear=True):
+            key = interface._resolve_effective_api_key()
+            assert key == "openai_secret"
+
+    def test_all_missing_returns_none(self):
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {}, clear=True):
+            key = interface._resolve_effective_api_key()
+            assert key is None
+
+    def test_is_available_with_workspace(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "config" / "llm_config.json").write_text(json.dumps({
+            "api_key_env": "CUSTOM_KEY"
+        }))
+
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {"CUSTOM_KEY": "secret"}, clear=True):
+            assert interface.is_available(str(ws)) is True
+
+    def test_is_available_without_key(self):
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {}, clear=True):
+            assert interface.is_available() is False
+
+
+class TestResolveLlmConfig:
+    def test_returns_defaults(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(model="gpt-4")
+        cfg = interface._resolve_llm_config(str(ws))
+        assert cfg["model"] == "gpt-4"
+        assert cfg["temperature"] == 0.3
+
+    def test_returns_workspace_config(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "config" / "llm_config.json").write_text(json.dumps({
+            "critic_model": "claude-sonnet",
+            "temperature": 0.1,
+            "base_url": "https://custom.api",
+            "api_key_env": "MY_KEY",
+        }))
+        interface = LLMInterface(model=None)
+        cfg = interface._resolve_llm_config(str(ws))
+        assert cfg["model"] == "claude-sonnet"
+        assert cfg["temperature"] == 0.1
+        assert cfg["base_url"] == "https://custom.api"
+
+
+class TestLoadSkill:
+    def test_loads_existing_skill(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config" / "skills").mkdir(parents=True)
+        (ws / "config" / "skills" / "test_skill.md").write_text("Skill content")
+
+        interface = LLMInterface()
+        content = interface._load_skill(str(ws), "test_skill.md")
+        assert content == "Skill content"
+
+    def test_returns_none_for_missing(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface()
+        assert interface._load_skill(str(ws), "nonexistent.md") is None
+
+
+class TestCallLlmJsonObject:
+    def test_parses_json_object(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        mock_openai = sys.modules["openai"]
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"result": "ok"}'
+        mock_response.choices[0].finish_reason = "stop"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        result = interface._call_llm_json_object(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", api_key="test_key", label="Test",
+        )
+        assert result == {"result": "ok"}
+
+    def test_empty_content_returns_none(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        mock_openai = sys.modules["openai"]
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].finish_reason = "stop"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        result = interface._call_llm_json_object(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", api_key="test_key", label="Test",
+        )
+        assert result is None
+
+    def test_no_json_in_response(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        mock_openai = sys.modules["openai"]
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Just some text, no JSON here"
+        mock_response.choices[0].finish_reason = "stop"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        result = interface._call_llm_json_object(
+            system_prompt="test", user_prompt="test",
+            model="gpt-4", api_key="test_key", label="Test",
+        )
+        assert result is None
+
+
+class TestGenerateTriage:
+    def test_no_api_key(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {}, clear=True):
+            result = interface.generate_triage(
+                triage_input={"model_ranking": [], "family_stats": {},
+                              "combo_summary": {}, "market_context": {}},
+                signals=[],
+                workspace_root=str(ws),
+            )
+            assert result is None
+
+    def test_no_triage_skill(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(api_key="fake_key")
+        result = interface.generate_triage(
+            triage_input={"model_ranking": [], "family_stats": {},
+                          "combo_summary": {}, "market_context": {}},
+            signals=[],
+            workspace_root=str(ws),
+        )
+        assert result is None  # no triage_system.md
+
+
+class TestGenerateModelCritique:
+    def test_no_api_key(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {}, clear=True):
+            result = interface.generate_model_critique(
+                model_name="test_model",
+                model_profile={"training_history": [], "ranking_table": [],
+                               "family_stats": {}, "correlation_excerpt": {},
+                               "combo_role": {}, "signals": [],
+                               "current_params": {}, "hyperparam_bounds": {}},
+                workspace_root=str(ws),
+            )
+            assert result is None
+
+    def test_no_skill_file(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(api_key="fake_key")
+        result = interface.generate_model_critique(
+            model_name="test_model",
+            model_profile={"training_history": [], "ranking_table": [],
+                           "family_stats": {}, "correlation_excerpt": {},
+                           "combo_role": {}, "signals": [],
+                           "current_params": {}, "hyperparam_bounds": {}},
+            workspace_root=str(ws),
+        )
+        assert result is None  # no model_critic_system.md
+
+
+class TestGenerateComboCritique:
+    def test_no_api_key(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {}, clear=True):
+            result = interface.generate_combo_critique(
+                combo_name="test_combo",
+                combo_profile={"member_diagnoses": {}, "combo_history": [],
+                               "loo_analysis": {}, "pairwise_correlation": {},
+                               "oos_trend": {}, "market_context": {}},
+                workspace_root=str(ws),
+            )
+            assert result is None
+
+    def test_no_skill_file(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(api_key="fake_key")
+        result = interface.generate_combo_critique(
+            combo_name="test_combo",
+            combo_profile={"member_diagnoses": {}, "combo_history": [],
+                           "loo_analysis": {}, "pairwise_correlation": {},
+                           "oos_trend": {}, "market_context": {}},
+            workspace_root=str(ws),
+        )
+        assert result is None
+
+
+class TestGenerateSynthesizerOutput:
+    def test_no_api_key(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {}, clear=True):
+            result = interface.generate_synthesizer_output(
+                model_diagnoses={}, combo_diagnoses={},
+                execution_risk_output=None,
+                rule_aggregator_result={"deduped_items": [], "conflicts": []},
+                feedback_eval={"evaluated": False},
+                triage_result={"prioritized_models": [], "prioritized_combos": [],
+                               "healthy_models": [], "systemic_observations": []},
+                workspace_root=str(ws),
+            )
+            assert result is None
+
+    def test_no_skill_file(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        interface = LLMInterface(api_key="fake_key")
+        result = interface.generate_synthesizer_output(
+            model_diagnoses={}, combo_diagnoses={},
+            execution_risk_output=None,
+            rule_aggregator_result={"deduped_items": [], "conflicts": []},
+            feedback_eval={"evaluated": False},
+            triage_result={"prioritized_models": [], "prioritized_combos": [],
+                           "healthy_models": [], "systemic_observations": []},
+            workspace_root=str(ws),
+        )
+        assert result is None
+
+
+class TestLlmSummaryWithResolvedKey:
+    def test_uses_resolved_key_from_config(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config" / "skills").mkdir(parents=True)
+        (ws / "config" / "llm_config.json").write_text(json.dumps({
+            "api_key_env": "DEEPSEEK_KEY",
+            "summary_model": "deepseek-v4",
+            "base_url": "https://api.deepseek.com",
+        }))
+
+        mock_openai = sys.modules["openai"]
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "DeepSeek summary"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key=None)
+        with patch.dict("os.environ", {"DEEPSEEK_KEY": "sk-deepseek"}, clear=True):
+            summary = interface.generate_executive_summary(
+                {"health_status": "Healthy", "executive_summary_data": {
+                    "windows_analyzed": [], "agents_run": [],
+                    "critical_count": 0, "warning_count": 0, "positive_count": 0,
+                }},
+                workspace_root=str(ws),
+            )
+            assert "DeepSeek summary" in summary
+
+
+# ------------------------------------------------------------------
+# Layered methods with mocked LLM responses
+# ------------------------------------------------------------------
+
+class TestLayeredMethodsWithMockedLlm:
+    """Test the full call path of layered methods with mocked OpenAI client."""
+
+    def _setup_skills(self, ws):
+        (ws / "config" / "skills").mkdir(parents=True)
+        (ws / "config" / "llm_config.json").write_text(json.dumps({
+            "critic_model": "test-model",
+            "temperature": 0.1,
+        }))
+        (ws / "config" / "skills" / "triage_system.md").write_text("Triage prompt")
+        (ws / "config" / "skills" / "model_critic_system.md").write_text("Model critic prompt")
+        (ws / "config" / "skills" / "hyperparam_tuning.md").write_text("Hyperparam tuning")
+        (ws / "config" / "skills" / "model_selection.md").write_text("Model selection")
+        (ws / "config" / "skills" / "combo_critic_system.md").write_text("Combo critic prompt")
+        (ws / "config" / "skills" / "synthesizer_system.md").write_text("Synthesizer prompt")
+        (ws / "config" / "feedback_scope.json").write_text(json.dumps({
+            "active_scopes": ["hyperparams", "model_selection"]
+        }))
+
+    def test_generate_triage_with_mock(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        self._setup_skills(ws)
+
+        mock_openai = sys.modules["openai"]
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "prioritized_models": [{"target": "m1", "priority_score": 9}],
+            "healthy_models": ["m2", "m3"],
+            "prioritized_combos": [{"combo": "c1"}],
+            "needs_execution_risk": False,
+            "systemic_observations": ["systemic note"],
+        })
+        mock_response.choices[0].finish_reason = "stop"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        triage_input = {
+            "model_ranking": [{"model": "m1", "ic_mean": 0.04, "icir_mean": 0.3,
+                               "ic_trend": "stable", "family": "Test", "in_combos": [],
+                               "best_epoch": 5, "actual_epochs": 40, "early_stopped": True}],
+            "family_stats": {"Test": {"count": 1, "avg_ic": 0.04}},
+            "combo_summary": {"c1": {"latest_excess": 0.02}},
+            "market_context": {"current_regime": "Bullish"},
+        }
+        signals = []
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test_key"}, clear=True):
+            result = interface.generate_triage(triage_input, signals, str(ws))
+
+        assert result is not None
+        assert result["prioritized_models"] == [{"target": "m1", "priority_score": 9}]
+        assert result["healthy_models"] == ["m2", "m3"]
+
+    def test_generate_model_critique_with_mock(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        self._setup_skills(ws)
+
+        mock_openai = sys.modules["openai"]
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "diagnosis": "needs_tuning",
+            "diagnosis_detail": "Model needs tuning because...",
+            "action_items": [{"action_type": "adjust_hyperparam", "scope": "hyperparams",
+                              "target": "m1", "params": {"lr": {"from": 0.001, "to": 0.0005}},
+                              "confidence": 0.7}],
+            "cross_references": {"similar_models_in_family": [], "correlated_models": [],
+                                 "notes": ""},
+        })
+        mock_response.choices[0].finish_reason = "stop"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test_key"}, clear=True):
+            result = interface.generate_model_critique(
+                model_name="m1",
+                model_profile={
+                    "training_history": [], "ranking_table": [], "family_stats": {},
+                    "correlation_excerpt": {}, "combo_role": {"in_combos": []},
+                    "signals": [], "current_params": {}, "hyperparam_bounds": {},
+                },
+                workspace_root=str(ws),
+            )
+
+        assert result is not None
+        assert result["diagnosis"] == "needs_tuning"
+        assert len(result["action_items"]) == 1
+
+    def test_generate_combo_critique_with_mock(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        self._setup_skills(ws)
+
+        mock_openai = sys.modules["openai"]
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "diagnosis": "degrading",
+            "diagnosis_detail": "Combo is degrading...",
+            "member_assessments": {},
+            "action_items": [],
+        })
+        mock_response.choices[0].finish_reason = "stop"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test_key"}, clear=True):
+            result = interface.generate_combo_critique(
+                combo_name="c1",
+                combo_profile={
+                    "member_diagnoses": {}, "combo_history": [],
+                    "loo_analysis": {}, "pairwise_correlation": {},
+                    "oos_trend": {}, "market_context": {},
+                },
+                workspace_root=str(ws),
+            )
+
+        assert result is not None
+        assert result["diagnosis"] == "degrading"
+
+    def test_generate_synthesizer_output_with_mock(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        self._setup_skills(ws)
+
+        mock_openai = sys.modules["openai"]
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "global_diagnosis": {"health_status": "warning", "market_vs_model": "model",
+                                 "trend": "degrading", "systemic_risks": [],
+                                 "self_correction_applied": "none"},
+            "conflict_resolutions": [],
+            "action_items": [{"action_type": "adjust_hyperparam", "scope": "hyperparams",
+                              "target": "m1", "params": {}, "reason": "x",
+                              "confidence": 0.8, "risk_level": "low", "priority": "P2",
+                              "executable": True}],
+            "cross_validation_notes": [],
+            "scope_recommendations": [],
+        })
+        mock_response.choices[0].finish_reason = "stop"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        interface = LLMInterface(api_key="test_key")
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test_key"}, clear=True):
+            result = interface.generate_synthesizer_output(
+                model_diagnoses={"m1": {"diagnosis": "needs_tuning"}},
+                combo_diagnoses={},
+                execution_risk_output=None,
+                rule_aggregator_result={"deduped_items": [], "conflicts": []},
+                feedback_eval={"evaluated": False},
+                triage_result={"prioritized_models": [], "prioritized_combos": [],
+                               "healthy_models": [], "systemic_observations": []},
+                workspace_root=str(ws),
+            )
+
+        assert result is not None
+        assert result["global_diagnosis"]["health_status"] == "warning"
+        assert len(result["action_items"]) == 1

@@ -1247,12 +1247,7 @@ class LLMInterface:
             "model": self.model or ws_config.get("critic_model") or "gpt-4",
             "temperature": ws_config.get("temperature", 0.3),
             "base_url": self.base_url or ws_config.get("base_url"),
-            "api_key_env": ws_config.get("api_key_env", "OPENAI_API_KEY"),
         }
-
-    def _resolve_api_key(self, cfg: dict) -> Optional[str]:
-        """Resolve API key: explicit arg > env var from config > default env."""
-        return self.api_key or os.environ.get(cfg.get("api_key_env", "OPENAI_API_KEY"), "")
 
     def _load_skill(self, workspace_root: str, filename: str) -> Optional[str]:
         """Load a single skill file. Returns None if not found."""
@@ -1280,7 +1275,7 @@ class LLMInterface:
         needs_execution_risk, systemic_observations.
         """
         cfg = self._resolve_llm_config(workspace_root)
-        api_key = self._resolve_api_key(cfg)
+        api_key = self._resolve_effective_api_key(workspace_root)
         if not api_key:
             print("   ⚠️  No API key available for Triage.")
             return None
@@ -1381,7 +1376,7 @@ class LLMInterface:
         Returns a dict with keys: diagnosis, diagnosis_detail, action_items, cross_references.
         """
         cfg = self._resolve_llm_config(workspace_root)
-        api_key = self._resolve_api_key(cfg)
+        api_key = self._resolve_effective_api_key(workspace_root)
         if not api_key:
             return None
 
@@ -1451,7 +1446,7 @@ class LLMInterface:
         Returns a dict with keys: diagnosis, diagnosis_detail, member_assessments, action_items.
         """
         cfg = self._resolve_llm_config(workspace_root)
-        api_key = self._resolve_api_key(cfg)
+        api_key = self._resolve_effective_api_key(workspace_root)
         if not api_key:
             return None
 
@@ -1516,7 +1511,7 @@ class LLMInterface:
         cross_validation_notes, scope_recommendations.
         """
         cfg = self._resolve_llm_config(workspace_root)
-        api_key = self._resolve_api_key(cfg)
+        api_key = self._resolve_effective_api_key(workspace_root)
         if not api_key:
             return None
 

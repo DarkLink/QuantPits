@@ -112,6 +112,7 @@ def _run_critic_single_stage(
     critic_llm,
     signals: list,
     workspace_root: str,
+    data_date: str = "",
     dry_run: bool = False,
 ) -> list:
     """Run the original single-stage Critic flow."""
@@ -137,7 +138,7 @@ def _run_critic_single_stage(
 
     if not dry_run:
         print("\n💾 Persisting action items...")
-        snap_path = persist_action_items(action_items, workspace_root)
+        snap_path = persist_action_items(action_items, workspace_root, run_date=data_date)
         print(f"   → Saved to {snap_path}")
     else:
         print("\n🏜️  Dry-run mode — action items not persisted.")
@@ -159,6 +160,7 @@ def _run_critic_layered(
     synthesis_result: dict,
     signal_extractor,
     workspace_root: str,
+    data_date: str = "",
     dry_run: bool = False,
 ) -> list:
     """
@@ -288,7 +290,9 @@ def _run_critic_layered(
 
     # --- Step 4: Feedback Loop ---
     print("\n📋 Step 4/6: Feedback Evaluator...")
-    feedback_eval = run_feedback_loop(workspace_root)
+    feedback_eval = run_feedback_loop(
+        workspace_root, current_date=data_date, latest_data_date=data_date,
+    )
     if feedback_eval.get("evaluated"):
         qs = feedback_eval.get("quality_summary", {})
         print(f"   → {qs.get('total', 0)} previous items evaluated, "
@@ -357,12 +361,11 @@ def _run_critic_layered(
     # --- Persist ---
     if not dry_run:
         print("\n💾 Persisting action items...")
-        snap_path = persist_action_items(action_items, workspace_root)
+        snap_path = persist_action_items(action_items, workspace_root, run_date=data_date)
         print(f"   → Saved to {snap_path}")
 
-        # Also persist synthesizer output as feedback_report
         if synthesizer_output:
-            _persist_feedback_report(synthesizer_output, feedback_eval, workspace_root)
+            _persist_feedback_report(synthesizer_output, feedback_eval, workspace_root, data_date)
     else:
         print("\n🏜️  Dry-run mode — action items not persisted.")
         for ai in action_items:
@@ -636,10 +639,10 @@ def _persist_feedback_report(
     synthesizer_output: dict,
     feedback_eval: dict,
     workspace_root: str,
+    data_date: str = "",
 ) -> None:
     """Persist synthesizer output as feedback_report_{date}.json."""
-    from datetime import datetime as _dt
-    date_str = _dt.now().strftime("%Y-%m-%d")
+    date_str = data_date or datetime.now().strftime("%Y-%m-%d")
     output_dir = os.path.join(workspace_root, 'output', 'deep_analysis')
     os.makedirs(output_dir, exist_ok=True)
 
@@ -658,13 +661,32 @@ def _persist_feedback_report(
     print(f"   → Feedback report saved to {path}")
 
 
+def _resolve_data_date() -> str:
+    """Query Qlib for the latest trading day — the canonical data clock.
+
+    Falls back to today if Qlib is unavailable.
+    """
+    try:
+        from quantpits.scripts.analysis.utils import init_qlib
+        from qlib.data import D
+        init_qlib()
+        cal = D.calendar()
+        if len(cal) > 0:
+            return cal[-1].strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def main():
     args = parse_args()
     workspace_root = env.ROOT_DIR
+    data_date = _resolve_data_date()
 
     print("=" * 60)
     print("  🤖 MAS Deep Analysis System")
     print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Data date: {data_date}")
     print(f"  Workspace: {workspace_root}")
     print("=" * 60)
 
@@ -747,7 +769,7 @@ def main():
     print("\n📡 Extracting structured signals...")
     from quantpits.scripts.deep_analysis.signal_extractor import SignalExtractor
 
-    signal_extractor = SignalExtractor(workspace_root=workspace_root)
+    signal_extractor = SignalExtractor(reference_date=data_date, workspace_root=workspace_root)
     signals = signal_extractor.extract(all_findings, synthesis_result)
     print(f"   → {len(signals)} signals extracted")
 
@@ -777,6 +799,7 @@ def main():
                 synthesis_result=synthesis_result,
                 signal_extractor=signal_extractor,
                 workspace_root=workspace_root,
+                data_date=data_date,
                 dry_run=args.critic_dry_run,
             )
         else:
@@ -786,6 +809,7 @@ def main():
                 critic_llm=critic_llm,
                 signals=signals,
                 workspace_root=workspace_root,
+                data_date=data_date,
                 dry_run=args.critic_dry_run,
             )
 
@@ -814,9 +838,8 @@ def main():
     # Write output — inject date into filename if not already present
     output_path = os.path.join(workspace_root, args.output)
     _base, _ext = os.path.splitext(output_path)
-    _today = datetime.now().strftime("%Y-%m-%d")
-    if _today not in _base:
-        output_path = f"{_base}_{_today}{_ext}"
+    if data_date not in _base:
+        output_path = f"{_base}_{data_date}{_ext}"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(report_md)

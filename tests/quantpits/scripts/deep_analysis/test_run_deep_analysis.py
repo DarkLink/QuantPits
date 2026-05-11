@@ -59,6 +59,7 @@ def test_load_deep_analysis_config(tmp_path):
     assert run_deep_analysis.load_deep_analysis_config(str(workspace)) == {}
 
 @patch('quantpits.scripts.run_deep_analysis.parse_args')
+@patch('quantpits.scripts.run_deep_analysis._resolve_data_date', return_value='2026-05-08')
 @patch('quantpits.scripts.run_deep_analysis.load_deep_analysis_config')
 @patch('quantpits.scripts.deep_analysis.coordinator.Coordinator')
 @patch('quantpits.scripts.deep_analysis.synthesizer.Synthesizer')
@@ -70,9 +71,9 @@ def test_load_deep_analysis_config(tmp_path):
 @patch('builtins.open', new_callable=mock_open)
 @patch('os.path.exists')
 @patch('quantpits.utils.env.ROOT_DIR', '/tmp/root')
-def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_snap, mock_snap_configs, 
-                        mock_report_gen, mock_llm, mock_synth, mock_coord, 
-                        mock_load_config, mock_parse_args):
+def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_snap, mock_snap_configs,
+                        mock_report_gen, mock_llm, mock_synth, mock_coord,
+                        mock_load_config, mock_data_date, mock_parse_args):
     
     # Setup mocks
     args = MagicMock()
@@ -123,8 +124,8 @@ def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_sn
     mock_snap_configs.assert_called_once()
     mock_save_snap.assert_called_once()
     
-    # Check if report was written (date auto-injected into filename)
-    mock_open_file.assert_any_call('/tmp/root/output/report_2026-05-10.md', 'w', encoding='utf-8')
+    # Check if report was written (data date injected into filename)
+    mock_open_file.assert_any_call('/tmp/root/output/report_2026-05-08.md', 'w', encoding='utf-8')
 
 @patch('quantpits.scripts.run_deep_analysis.parse_args')
 @patch('quantpits.scripts.run_deep_analysis.load_deep_analysis_config')

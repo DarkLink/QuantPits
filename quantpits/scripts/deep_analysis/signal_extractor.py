@@ -153,25 +153,29 @@ class SignalExtractor:
     def _classify_architecture(model_name: str) -> str:
         """Classify a model into its architecture family from its name."""
         name_lower = model_name.lower()
-        # Alpha360 families
-        if any(a in name_lower for a in ['gru', 'lstm', 'rnn']) and '360' in name_lower:
-            return 'Alpha360_RNN'
-        if any(a in name_lower for a in ['alstm', 'igmtf', 'attention']) and '360' in name_lower:
-            return 'Alpha360_Attention'
-        if any(a in name_lower for a in ['transformer', 'localformer']) and '360' in name_lower:
-            return 'Alpha360_Transformer'
+        # Alpha360 families — check more specific patterns first
         if 'sfm' in name_lower and '360' in name_lower:
             return 'Alpha360_SFM'
         if 'adarnn' in name_lower and '360' in name_lower:
             return 'Alpha360_ADARNN'
-        if 'tra' in name_lower and '360' in name_lower:
+        if 'tcts' in name_lower and '360' in name_lower:
+            return 'Alpha360_TCTS'
+        if 'tra_' in name_lower and '360' in name_lower and 'transformer' not in name_lower:
             return 'Alpha360_TRA'
-        if any(a in name_lower for a in ['tcn', 'sandwich', 'krnn']) and '360' in name_lower:
-            return 'Alpha360_Structural'
+        if 'alstm' in name_lower and '360' in name_lower:
+            return 'Alpha360_Attention'
+        if 'igmtf' in name_lower and '360' in name_lower:
+            return 'Alpha360_Attention'
         if 'tabnet' in name_lower and '360' in name_lower:
             return 'Alpha360_TabNet'
         if 'add' in name_lower and '360' in name_lower:
             return 'Alpha360_ADD'
+        if any(a in name_lower for a in ['transformer', 'localformer']) and '360' in name_lower:
+            return 'Alpha360_Transformer'
+        if any(a in name_lower for a in ['tcn', 'sandwich', 'krnn']) and '360' in name_lower:
+            return 'Alpha360_Structural'
+        if any(a in name_lower for a in ['gru', 'lstm', 'rnn']) and '360' in name_lower:
+            return 'Alpha360_RNN'
         # Alpha158 families
         if any(a in name_lower for a in ['gru', 'lstm', 'gats']) and '158' in name_lower:
             return 'Alpha158_RNN'
@@ -179,7 +183,7 @@ class SignalExtractor:
             return 'Alpha158_Transformer'
         if any(a in name_lower for a in ['tabnet', 'catboost', 'lightgbm', 'mlp']) and '158' in name_lower:
             return 'Alpha158_Tabular'
-        if 'tra' in name_lower and '158' in name_lower:
+        if 'tra_' in name_lower and '158' in name_lower and 'transformer' not in name_lower:
             return 'Alpha158_TRA'
         if 'tcts' in name_lower and '360' in name_lower:
             return 'Alpha360_TCTS'
