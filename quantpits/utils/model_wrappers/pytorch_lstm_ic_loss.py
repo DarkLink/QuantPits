@@ -205,7 +205,9 @@ class LSTMICModel(Model):
         ic = grouper.apply(lambda x: x["pred"].corr(x["label"], method="pearson"))
         return rank_ic.mean(), ic.mean()
 
-    def fit(self, dataset, evals_result=dict(), save_path=None, reweighter=None):
+    def fit(self, dataset, evals_result=None, save_path=None, reweighter=None):
+        if evals_result is None:
+            evals_result = {}
         dl_train = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
         dl_valid = dataset.prepare("valid", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
         

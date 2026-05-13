@@ -359,6 +359,11 @@ class FeedbackLoop:
                     "Skipping unsupported action_type '%s' for item %s",
                     item.action_type, item.action_id,
                 )
+                print(
+                    f"   ⏭️  Skipping '{item.action_type}' for {item.target} "
+                    f"(conf={item.confidence}) — only 'adjust_hyperparam' is "
+                    f"auto-executable. Manual action may be needed."
+                )
                 continue
 
             missing = adapter.check_pretrain_deps(item)

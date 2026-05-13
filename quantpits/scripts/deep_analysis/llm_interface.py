@@ -13,7 +13,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 
 from .action_items import ActionItem
 from .signal_extractor import Signal
@@ -102,6 +102,35 @@ class LLMInterface:
         self.model = model
         self.base_url = base_url
         self._client = None
+        self._client_cache: Dict[tuple, Any] = {}  # (api_key, base_url) → client
+    # Default timeout for all LLM calls (seconds).
+    # 120s is generous for reasoning models which can take 30-60s.
+    _DEFAULT_TIMEOUT = 120.0
+
+    def _get_or_create_client(self, api_key: str, base_url: Optional[str] = None):
+        """Return a cached OpenAI client for the given (api_key, base_url) pair.
+
+        Thread-safe: concurrent reads of the same key return the same client;
+        concurrent first-writes may create a duplicate, but that is harmless.
+        """
+        try:
+            import openai
+            import httpx
+        except ImportError:
+            raise RuntimeError("openai package not installed. Run: pip install openai")
+
+        cache_key = (api_key, base_url or "")
+        client = self._client_cache.get(cache_key)
+        if client is None:
+            kwargs = {"api_key": api_key}
+            if base_url:
+                kwargs["base_url"] = base_url
+            kwargs["timeout"] = httpx.Timeout(
+                self._DEFAULT_TIMEOUT, connect=10.0,
+            )
+            client = openai.OpenAI(**kwargs)
+            self._client_cache[cache_key] = client
+        return client
 
     def _resolve_effective_api_key(self, workspace_root: Optional[str] = None) -> Optional[str]:
         """Resolve API key: explicit arg > workspace config env var > OPENAI_API_KEY."""
@@ -424,6 +453,7 @@ class LLMInterface:
                 temperature=temperature,
                 api_key=api_key,
                 base_url=base_url,
+                workspace_root=workspace_root,
             )
             if prioritized_signals is None:
                 # Triage failed — fall back to all signals with history context
@@ -638,28 +668,57 @@ class LLMInterface:
             for signal_type, items in by_type.items()
         }
 
-    # Params that are NOT tunable hyperparameters — structural/config choices
-    _NON_TUNABLE_PARAMS = {
+    # Fallback set of non-tunable params — used only when hyperparam_bounds.json
+    # is unavailable.  When bounds are loaded, tunable params are inferred as
+    # the intersection of a model's current params with bounds.keys(), which is
+    # always up-to-date.
+    _FALLBACK_NON_TUNABLE = {
         "metric", "loss", "loss_type", "optimizer", "GPU", "device",
         "seed", "rnn_type", "d_feat", "class", "module_path", "estimator",
         "n_jobs", "kernel_type", "num_class",
     }
+
+    @staticmethod
+    def _load_tunable_param_names(workspace_root: Optional[str]) -> Optional[set]:
+        """Load the set of tunable param names from hyperparam_bounds.json.
+
+        Returns None if the file doesn't exist or can't be parsed, signalling
+        the caller to fall back to _FALLBACK_NON_TUNABLE.
+        """
+        if not workspace_root:
+            return None
+        path = os.path.join(workspace_root, "config", "hyperparam_bounds.json")
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            bounds = data.get("bounds", {})
+            if bounds:
+                return set(bounds.keys())
+        except Exception:
+            pass
+        return None
 
     def _compute_available_interventions(
         self,
         in_scope_signals: List[Signal],
         recent_history: List[dict],
         current_params: dict,
+        workspace_root: Optional[str] = None,
     ) -> Dict[str, dict]:
         """For each model with in-scope signals, compute which params have been
         recently adjusted vs which are still untouched — purely rule-based.
 
-        Non-tunable params (metric, optimizer, GPU, seed, etc.) are excluded
-        from both untouched and exhausted calculations.
+        Tunable params are determined from hyperparam_bounds.json when available;
+        otherwise falls back to excluding _FALLBACK_NON_TUNABLE.
 
         Returns {model_name: {recently_adjusted: [...], untouched: [...], exhausted: bool}}
         Exhausted means every TUNABLE param was already adjusted within 30 days.
         """
+        # Determine which params are tunable
+        bounds_params = self._load_tunable_param_names(workspace_root)
+
         cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         adjusted: Dict[str, set] = {}
         for entry in recent_history:
@@ -681,8 +740,13 @@ class LLMInterface:
                 continue
             seen.add(model)
 
-            # Only consider tunable params
-            tunable = set(current_params.get(model, {}).keys()) - self._NON_TUNABLE_PARAMS
+            model_params = set(current_params.get(model, {}).keys())
+            if bounds_params is not None:
+                # Tunable = params that exist in both the model's config AND bounds
+                tunable = model_params & bounds_params
+            else:
+                # Fallback: tunable = model params minus known non-tunable
+                tunable = model_params - self._FALLBACK_NON_TUNABLE
             adj = adjusted.get(model, set()) & tunable
             untouched = sorted(tunable - adj)
             recently = sorted(adj)
@@ -707,6 +771,7 @@ class LLMInterface:
         temperature: float,
         api_key: str,
         base_url: Optional[str],
+        workspace_root: Optional[str] = None,
     ) -> Optional[List[Signal]]:
         """Run Stage 1 triage. Returns filtered signals or None on failure.
 
@@ -730,6 +795,7 @@ class LLMInterface:
         # Rule-based: compute which params are still available per model
         interventions = self._compute_available_interventions(
             in_scope, recent_history, current_params,
+            workspace_root=workspace_root,
         )
 
         # Build history summary for the prompt
@@ -980,16 +1046,7 @@ class LLMInterface:
         base_url: Optional[str],
     ) -> Optional[dict]:
         """Call the LLM for triage and return parsed JSON dict."""
-        try:
-            import openai
-        except ImportError:
-            raise RuntimeError("openai package not installed. Run: pip install openai")
-
-        kwargs = {"api_key": api_key}
-        if base_url:
-            kwargs["base_url"] = base_url
-
-        client = openai.OpenAI(**kwargs)
+        client = self._get_or_create_client(api_key, base_url)
 
         try:
             response = client.chat.completions.create(
@@ -1208,16 +1265,7 @@ class LLMInterface:
         label: str = "LLM",
     ) -> Optional[dict]:
         """Generic LLM call returning a parsed JSON object (not array)."""
-        try:
-            import openai
-        except ImportError:
-            raise RuntimeError("openai package not installed. Run: pip install openai")
-
-        kwargs = {"api_key": api_key}
-        if base_url:
-            kwargs["base_url"] = base_url
-
-        client = openai.OpenAI(**kwargs)
+        client = self._get_or_create_client(api_key, base_url)
 
         try:
             response = client.chat.completions.create(
@@ -1276,6 +1324,10 @@ class LLMInterface:
         return {
             "model": self.model or ws_config.get("critic_model") or "gpt-4",
             "temperature": ws_config.get("temperature", 0.3),
+            "triage_temperature": ws_config.get(
+                "triage_temperature",
+                max(0.1, ws_config.get("temperature", 0.3) * 0.3)
+            ),
             "base_url": self.base_url or ws_config.get("base_url"),
         }
 
@@ -1388,7 +1440,7 @@ class LLMInterface:
             model=cfg["model"],
             api_key=api_key,
             base_url=cfg["base_url"],
-            temperature=max(0.1, cfg["temperature"] * 0.3),
+            temperature=cfg["triage_temperature"],
             label="Triage",
         )
 
@@ -1761,16 +1813,11 @@ class LLMInterface:
         ])
 
         try:
-            import openai
-        except ImportError:
+            client = self._get_or_create_client(api_key, base_url)
+        except RuntimeError:
             return None
 
-        kwargs = {"api_key": api_key}
-        if base_url:
-            kwargs["base_url"] = base_url
-
         try:
-            client = openai.OpenAI(**kwargs)
             response = client.chat.completions.create(
                 model=llm_model,
                 messages=[
@@ -1829,16 +1876,7 @@ class LLMInterface:
         base_url: Optional[str],
     ) -> List[ActionItem]:
         """Call the LLM API and parse the response into ActionItems."""
-        try:
-            import openai
-        except ImportError:
-            raise RuntimeError("openai package not installed. Run: pip install openai")
-
-        kwargs = {"api_key": api_key}
-        if base_url:
-            kwargs["base_url"] = base_url
-
-        client = openai.OpenAI(**kwargs)
+        client = self._get_or_create_client(api_key, base_url)
 
         max_retries = 2
         last_error = None

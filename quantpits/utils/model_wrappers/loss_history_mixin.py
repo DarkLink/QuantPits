@@ -26,7 +26,9 @@ class LossHistoryMixin:
         evals_result["valid_loss"] = [epoch_0, epoch_1, ...]
     """
 
-    def fit(self, dataset, evals_result=dict(), save_path=None):
+    def fit(self, dataset, evals_result=None, save_path=None):
+        if evals_result is None:
+            evals_result = {}
         # Side channels — the wrapped test_epoch writes here
         self._lh_train_loss = []
         self._lh_valid_loss = []

@@ -142,48 +142,18 @@ def correlation_analysis(norm_df, output_dir, anchor_date=None):
     return corr_matrix
 
 
-def split_is_oos_by_args(norm_df, args):
-    """根据参数将 norm_df 划分为 IS (In-Sample) 和 OOS (Out-of-Sample)，委托给 search_utils"""
-    from quantpits.utils.search_utils import split_is_oos_by_args as _split
-    return _split(norm_df, args)
-
 
 # ============================================================================
 # Stage 2.5: 模型分组 & 组合生成
 # ============================================================================
-
-def load_combo_groups(group_config_path, available_models):
-    """加载分组配置，委托给 search_utils"""
-    from quantpits.utils.search_utils import load_combo_groups as _load
-    return _load(group_config_path, available_models)
-
-
-def generate_grouped_combinations(groups, min_combo_size=1, max_combo_size=0):
-    """基于分组生成组合，委托给 search_utils"""
-    from quantpits.utils.search_utils import generate_grouped_combinations as _gen
-    return _gen(groups, min_combo_size, max_combo_size)
+# split_is_oos_by_args, load_combo_groups, generate_grouped_combinations,
+# run_single_backtest, _append_results_to_csv are imported from search_utils
+# at the top of this file.
 
 
 # ============================================================================
 # Stage 3: 暴力穷举回测
 # ============================================================================
-
-def run_single_backtest(
-    combo_models, norm_df, top_k, drop_n, benchmark, freq,
-    trade_exchange, bt_start, bt_end, st_config=None, bt_config=None
-):
-    """对指定的模型组合进行回测，委托给 search_utils"""
-    from quantpits.utils.search_utils import run_single_backtest as _run
-    return _run(
-        combo_models, norm_df, top_k, drop_n, benchmark, freq,
-        trade_exchange, bt_start, bt_end, st_config, bt_config
-    )
-
-
-def _append_results_to_csv(csv_path, results, write_header=False):
-    """将一批结果追加写入 CSV 文件，委托给 search_utils"""
-    from quantpits.utils.search_utils import _append_results_to_csv as _append
-    _append(csv_path, results, write_header)
 
 
 def brute_force_backtest(

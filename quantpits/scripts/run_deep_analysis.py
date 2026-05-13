@@ -246,6 +246,7 @@ def _run_critic_layered(
         for combo_name in combo_names:
             combo_profile = _build_combo_profile(
                 combo_name, model_diagnoses, triage_input, all_findings,
+                workspace_root=workspace_root,
             )
             combo_futures[
                 executor.submit(
@@ -359,6 +360,26 @@ def _run_critic_layered(
             for item in synthesizer_output.get("action_items", [])
         ]
 
+        # Filter out synthetic targets leaked from internal pipeline stages
+        # (e.g. "_execution_risk" — not a real model)
+        synthetic = [ai for ai in action_items if ai.target.startswith("_")]
+        if synthetic:
+            print(f"   ⚠️  Filtered {len(synthetic)} synthetic target(s): "
+                  f"{[ai.target for ai in synthetic]}")
+            action_items = [ai for ai in action_items if not ai.target.startswith("_")]
+
+        # Backfill source_signals from the structured Signal list when the
+        # Synthesizer LLM didn't populate them (common).  This restores the
+        # traceability link between ActionItems and upstream diagnostic Signals.
+        signals_by_target: dict = {}
+        for sig in signals:
+            signals_by_target.setdefault(sig.target, []).append(sig.signal_type)
+        for ai in action_items:
+            if not ai.source_signals and ai.target in signals_by_target:
+                ai.source_signals = list(dict.fromkeys(
+                    signals_by_target[ai.target]
+                ))  # deduplicated, order-preserving
+
     # --- Validate ---
     print("\n🔍 Validating action items...")
     validator = ActionItemValidator(
@@ -457,15 +478,25 @@ def _build_combo_profile(
     model_diagnoses: dict,
     triage_input: dict,
     all_findings: list,
+    workspace_root: str = "",
 ) -> dict:
     """Build a per-combo profile with member diagnoses and history."""
     combo_summary = triage_input.get("combo_summary", {})
     combo_info = combo_summary.get(combo_name, {})
 
-    # Gather member diagnoses for models in this combo
+    # Build {combo → [models]} reverse index to filter diagnoses
+    combo_members: set = set()
+    if workspace_root:
+        membership = _load_combo_membership(workspace_root)
+        for model, combos in membership.items():
+            if combo_name in combos:
+                combo_members.add(model)
+
+    # Gather member diagnoses — only for models that belong to this combo
     member_diagnoses = {}
     for diag_name, diag in model_diagnoses.items():
-        # Simple heuristic: if the diagnosis is relevant to this combo
+        if combo_members and diag_name not in combo_members:
+            continue
         member_diagnoses[diag_name] = {
             "diagnosis": diag.get("diagnosis", "?"),
             "detail": diag.get("diagnosis_detail", "")[:300],
