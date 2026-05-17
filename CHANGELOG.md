@@ -7,17 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2-alpha] - 2026-05-17
+
+This release stabilizes the OOM-RL Phase 4 pipeline following first-production validation, hardens the layered LLM analysis system, and closes a set of critical/high-priority bugs identified during the code review. It also ships a confirmed-working closed-loop feedback cycle.
+
+14 commits, ~150 lines changed across source since v0.4.1-alpha.
+
+### Fixed
+
+#### OOM-RL Phase 4 — Critical & High Priority
+- **Mutable default argument `evals_result=dict()`** in `LossHistoryMixin` and three PyTorch model wrappers (`pytorch_gats_plus`, `pytorch_lstm_ic_loss`, `pytorch_lstm_rank`): the shared dict caused training-loss telemetry to bleed across consecutive ensemble-member fits within a single session.
+- **Synthetic target leakage**: `_execution_risk` and other internal pipeline stage names were appearing as real `ActionItem` targets in production JSON. Filtered on `target.startswith("_")` with a console warning.
+- **OpenAI client proliferation**: `LLMInterface` was constructing a fresh `openai.OpenAI()` client on every API call (4 sites), creating unnecessary TLS handshakes. Replaced with a `_get_or_create_client()` pool keyed by `(api_key, base_url)`.
+- **Silent unsupported action_type skips**: `FeedbackLoop._run_execute` was discarding `adjust_weights` and `trigger_search` items with only a `logger.warning`. Added `print()` output so operators can see high-confidence manual actions that require intervention.
+
+#### TRA Model
+- **`_writer` attribute loss after pickle roundtrip**: TRA model crashed on predict-only reload because `_writer` was not restored after deserialization. Restored the attribute to prevent `AttributeError` in production inference cycles.
+
 ### Added
-- fix(tra): restore `_writer` attr after pickle roundtrip for predict-only mode
-- fix(oom-rl): stabilize Phase 4 pipeline and resolve telemetry leaks
-- test(deep-analysis): add unit tests for signal flags, feedback eval, LLM fallbacks, and profile builders
-- feat(deep-analysis): connect Critic Pipeline to Executive Summary, add deterministic historical tracking
-- fix(deep-analysis): use Qlib data date as canonical clock, ground feedback in data change
-- feat(deep-analysis): layered LLM pipeline with closed-loop feedback
-- perf(ensemble): replace ThreadPoolExecutor with spawn-based ProcessPoolExecutor
-- feat(model-wrappers): migrate IC models from qlib, add per-epoch loss capture and optimizer thrashing detection
-- feat(feedback): ExperimentAnalyzer, playground-only mode, and convergence-aware experiment loop
-- feat(deep-analysis): two-stage LLM Critic with triage, history awareness, and signal dedup
+
+#### Layered LLM Pipeline Enhancements
+- **Connection-level timeout**: All OpenAI clients now use `httpx.Timeout(120.0, connect=10.0)` to prevent the pipeline from stalling indefinitely on unresponsive API endpoints.
+- **Combo profile member filtering**: `_build_combo_profile` now loads ensemble membership from `ensemble_config.json` and injects only the diagnoses for models that actually belong to each combo, significantly reducing irrelevant context sent to the LLM.
+- **`source_signals` auto-backfill**: When the Synthesizer LLM omits `source_signals` (common), the pipeline now backfills them from the structured Signal list matched by target name, restoring the traceability link for `FeedbackEvaluator`.
+- **Configurable triage temperature**: LLM triage temperature is now read from `llm_config.json` as `triage_temperature` (default: `cfg["temperature"] * 0.3`), eliminating the hardcoded magic multiplier.
+- **Bounds-aware tunable parameter inference**: `_NON_TUNABLE_PARAMS` hardcoded set replaced with `_load_tunable_param_names()` that derives the tunable set from `hyperparam_bounds.json`. Falls back to the static list when the file is absent.
+
+### Changed
+- **`brute_force_ensemble.py`**: Removed 5 redundant thin-wrapper functions (`split_is_oos_by_args`, `load_combo_groups`, `generate_grouped_combinations`, `run_single_backtest`, `_append_results_to_csv`) that shadowed the direct `search_utils` imports at the top of the file.
 
 ## [0.4.1-alpha] - 2026-05-05
 
