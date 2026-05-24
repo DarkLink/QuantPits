@@ -876,7 +876,7 @@ def main():
     # Strip leading "Executive Summary" title markers from LLM output to
     # avoid double headers — ReportGenerator already emits the section title.
     def _dedup_executive_summary_title(text: str) -> str:
-        if not text:
+        if not text or not isinstance(text, str):
             return text
         lines = text.split("\n")
         import re
