@@ -659,6 +659,14 @@ class FeedbackEvaluator:
         # repeated runs against identical data, not real user decisions.
         evaluable = total - counts.get("same_data_rerun", 0)
 
+        # accuracy_decided excludes pending_verification items — it only
+        # counts items where a real quality judgment could be made.
+        decided = (
+            counts.get("correct_effective", 0)
+            + counts.get("correct_ignored", 0)
+            + counts.get("incorrect", 0)
+        )
+
         return {
             "total": total,
             "evaluable": evaluable,
@@ -671,6 +679,12 @@ class FeedbackEvaluator:
                 (counts.get("correct_effective", 0) + counts.get("correct_ignored", 0))
                 / evaluable
                 if evaluable > 0
+                else None
+            ),
+            "accuracy_decided": (
+                (counts.get("correct_effective", 0) + counts.get("correct_ignored", 0))
+                / decided
+                if decided > 0
                 else None
             ),
         }

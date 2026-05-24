@@ -121,7 +121,8 @@ class ActionAggregator:
         for item in items:
             target = item.get("target", "")
             action_type = item.get("action_type", "")
-            param_keys = tuple(sorted(item.get("params", {}).keys()))
+            params = item.get("params") or {}
+            param_keys = tuple(sorted(params.keys()))
             key = f"{target}|{action_type}|{param_keys}"
             groups.setdefault(key, []).append(item)
 
@@ -178,7 +179,7 @@ class ActionAggregator:
         param_suggestions: Dict[str, Dict[str, list]] = {}
         for item in deduped_items:
             target = item.get("target", "")
-            for param, values in item.get("params", {}).items():
+            for param, values in (item.get("params") or {}).items():
                 if isinstance(values, dict) and "to" in values:
                     key = f"{target}|{param}"
                     param_suggestions.setdefault(key, {}).setdefault(

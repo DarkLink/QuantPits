@@ -873,6 +873,25 @@ def main():
 
     executive_summary = llm.generate_executive_summary(synthesis_result, workspace_root)
 
+    # Strip leading "Executive Summary" title markers from LLM output to
+    # avoid double headers — ReportGenerator already emits the section title.
+    def _dedup_executive_summary_title(text: str) -> str:
+        if not text:
+            return text
+        lines = text.split("\n")
+        import re
+        while lines:
+            stripped = lines[0].strip()
+            if (stripped.lower() in ("**executive summary**", "executive summary")
+                    or re.match(r'^#{1,3}\s+executive\s+summary', stripped, re.I)):
+                lines.pop(0)
+                if lines and not lines[0].strip():
+                    lines.pop(0)
+            else:
+                break
+        return "\n".join(lines)
+    executive_summary = _dedup_executive_summary_title(executive_summary)
+
     # --- 7. Generate Report ---
     print("\n📊 Generating report...")
     from quantpits.scripts.deep_analysis.report_generator import ReportGenerator

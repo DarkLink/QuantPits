@@ -24,11 +24,15 @@ class ReportGenerator:
         for af in all_findings:
             self._by_agent.setdefault(af.agent_name, []).append(af)
 
+        critic_output = self.synthesis.get("_critic_pipeline_output", {})
+        self.scope_recommendations = critic_output.get("scope_recommendations", [])
+
     def generate(self) -> str:
         """Generate the full Markdown report."""
         sections = [
             self._header(),
             self._executive_summary(),
+            self._section_blocked_actions(),
             self._section_market(),
             self._section_model_health(),
             self._section_ensemble(),
@@ -62,6 +66,25 @@ class ReportGenerator:
 
     def _executive_summary(self) -> str:
         return f"## Executive Summary\n\n{self.executive_summary}"
+
+    def _section_blocked_actions(self) -> str:
+        """Render blocked ActionItems from scope_recommendations."""
+        if not self.scope_recommendations:
+            return ""
+        lines = [
+            "## Blocked Actions (Scope Restrictions)", "",
+            "The following recommendations were generated but cannot be "
+            "auto-executed due to scope restrictions. Consider enabling "
+            "the relevant scope:", "",
+            "| Scope | Blocked Items | Reason |",
+            "|-------|--------------|--------|",
+        ]
+        for rec in self.scope_recommendations:
+            scope = rec.get("scope", "?")
+            count = rec.get("blocked_action_items_count", "?")
+            reason = rec.get("reason", "")[:120]
+            lines.append(f"| {scope} | {count} | {reason} |")
+        return "\n".join(lines)
 
     def _section_market(self) -> str:
         findings = self._by_agent.get('Market Regime', [])
