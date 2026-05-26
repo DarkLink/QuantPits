@@ -293,7 +293,136 @@ def test_classify_trades_unbalanced(tmp_path):
         with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
             with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(out_dir)):
                 with patch('quantpits.scripts.analysis.trade_classifier.ROOT_DIR', str(tmp_path)):
-                    # Should cover 'continue' when sells are empty (Line 337)
+                    # Should cover 'continue' when sells are empty
                     result = tc.classify_trades(verbose=True)
                     assert not result.empty
                     assert "SELL" not in result["trade_type"].values
+
+
+# ===================================================================
+# Coverage gap tests — default branches and edge cases
+# ===================================================================
+
+def test_scan_suggestion_dates_output_dir_malformed(tmp_path):
+    """Line 60-61: malformed filename in OUTPUT_DIR — except: pass."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "buy_suggestion_badname.csv").write_text("dummy")
+
+    with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(tmp_path)):
+        with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(out_dir)):
+            dates = tc._scan_suggestion_dates("buy_suggestion")
+            assert dates == []  # malformed date filtered out
+
+
+def test_load_suggestion_no_instrument_column(tmp_path):
+    """Line 115: CSV without 'instrument' column returns empty DataFrame."""
+    order_dir = tmp_path / "orders"
+    order_dir.mkdir()
+    (order_dir / "buy_suggestion_2026-01-01.csv").write_text("col1,col2\n1,2\n")
+
+    with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
+        with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(tmp_path)):
+            df = tc._load_suggestion("buy_suggestion", "2026-01-01")
+            assert df.empty
+
+
+def test_add_prefix_nan():
+    """Line 122: NaN input returned as-is."""
+    import numpy as np
+    result = tc._normalize_instrument(np.nan)
+    assert pd.isna(result)
+
+
+def test_add_prefix_unrecognized():
+    """Line 128: unrecognized code prefix returned as-is (not 0/3/6)."""
+    result = tc._normalize_instrument("999001")
+    assert result == "999001"
+
+
+def test_classify_trades_config_without_factor(tmp_path):
+    """Line 189: config exists but without buy_suggestion_factor key."""
+    data_dir = tmp_path / "data"
+    order_dir = data_dir / "order_history"
+    out_dir = tmp_path / "output"
+    order_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    (order_dir / "buy_suggestion_2026-01-10.csv").write_text(
+        "instrument,score\nSZ000001,0.9\n"
+    )
+    log_path = tmp_path / "data" / "trade_log.csv"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "成交日期,证券代码,交易类别,成交数量\n2026-01-10,SZ000001,深圳A股普通股票竞价买入,100\n"
+    )
+
+    cfg_file = tmp_path / "config" / "prod_config.json"
+    cfg_file.parent.mkdir(exist_ok=True)
+    import json
+    cfg_file.write_text(json.dumps({"some_other_key": 1}))  # No buy_suggestion_factor
+
+    with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', str(log_path)):
+        with patch('quantpits.scripts.analysis.trade_classifier.ROOT_DIR', str(tmp_path)):
+            with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
+                with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(out_dir)):
+                    result = tc.classify_trades()
+                    assert not result.empty
+
+
+def test_classify_trades_sell_not_in_rank(tmp_path):
+    """Lines 255-256: sell instrument not in rank list → cls='M'."""
+    data_dir = tmp_path / "data"
+    order_dir = data_dir / "order_history"
+    out_dir = tmp_path / "output"
+    order_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    (order_dir / "sell_suggestion_2026-01-10.csv").write_text(
+        "instrument,score\nSZ000001,0.5\n"  # Only SZ000001 in suggestion
+    )
+    log_path = tmp_path / "data" / "trade_log.csv"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "成交日期,证券代码,交易类别,成交数量\n"
+        "2026-01-10,SZ000001,深圳A股普通股票竞价卖出,100\n"
+        "2026-01-10,SZ000099,深圳A股普通股票竞价卖出,200\n"  # Not in suggestion → M
+    )
+
+    with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', str(log_path)):
+        with patch('quantpits.scripts.analysis.trade_classifier.ROOT_DIR', str(tmp_path)):
+            with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
+                with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(out_dir)):
+                    result = tc.classify_trades()
+                    # SZ000099 should be classified as 'M'
+                    m_row = result[result["instrument"] == "SZ000099"].iloc[0]
+                    assert m_row["trade_class"] == "M"
+                    assert m_row["trade_type"] == "SELL"
+
+
+def test_classify_trades_empty_result(tmp_path):
+    """Line 269-270: empty classification result prints and returns."""
+    log_path = tmp_path / "empty_log.csv"
+    log_path.write_text("成交日期,证券代码,交易类别,成交数量\n")
+
+    with patch('quantpits.scripts.analysis.trade_classifier.TRADE_LOG_FILE', str(log_path)):
+        with patch('quantpits.scripts.analysis.trade_classifier.ROOT_DIR', str(tmp_path)):
+            with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(tmp_path)):
+                with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(tmp_path)):
+                    result = tc.classify_trades(trade_dates=["2026-01-10"])
+                    assert result.empty
+
+
+def test_load_classification_default_path_missing(tmp_path):
+    """Line 317-319: load_classification with default path that doesn't exist."""
+    nonexistent = str(tmp_path / "nonexistent.csv")
+    with patch('quantpits.scripts.analysis.trade_classifier.CLASSIFICATION_FILE', nonexistent):
+        df = tc.load_classification()
+        assert df.empty
+
+
+def test_print_summary_empty():
+    """Lines 327-328: _print_summary with empty DataFrame."""
+    import quantpits.scripts.analysis.trade_classifier as tc_module
+    df = pd.DataFrame()
+    tc_module._print_summary(df)  # Should print "No trades classified." and return

@@ -85,3 +85,58 @@ def test_snapshot_configs(mock_workspace):
     assert snapshot['snapshot_date'] == "2026-04-20"
     assert 'alstm_Alpha158' in snapshot['hyperparams']
     assert snapshot['hyperparams']['alstm_Alpha158']['model_class'] == 'ALSTMModel'
+
+
+# -------------------------------------------------------------------
+# Coverage gap tests
+# -------------------------------------------------------------------
+
+def test_snapshot_configs_invalid_json_ensemble(tmp_path):
+    """Lines 102-103: invalid ensemble_config.json → except: pass (no crash)."""
+    from quantpits.scripts.deep_analysis.config_ledger import snapshot_configs
+    ws = tmp_path / "ws"
+    (ws / "config").mkdir(parents=True)
+    (ws / "config" / "model_registry.yaml").write_text("models: {}\n")
+    (ws / "config" / "ensemble_config.json").write_text("NOT JSON {{{")
+    snapshot = snapshot_configs(str(ws))
+    assert snapshot['snapshot_date'] is not None
+
+def test_snapshot_configs_invalid_yaml_strategy(tmp_path):
+    """Lines 108-112: invalid strategy_config.yaml → except: pass (no crash)."""
+    from quantpits.scripts.deep_analysis.config_ledger import snapshot_configs
+    ws = tmp_path / "ws"
+    (ws / "config").mkdir(parents=True)
+    (ws / "config" / "model_registry.yaml").write_text("models: {}\n")
+    (ws / "config" / "strategy_config.yaml").write_text(": bad yaml: :")
+    snapshot = snapshot_configs(str(ws))
+    assert snapshot['snapshot_date'] is not None
+
+def test_load_previous_snapshot_no_dir(tmp_path):
+    """Line 135: no config_history dir → None."""
+    from quantpits.scripts.deep_analysis.config_ledger import load_previous_snapshot
+    result = load_previous_snapshot(str(tmp_path))
+    assert result is None
+
+def test_load_previous_snapshot_no_files(tmp_path):
+    """Line 139: empty history dir → None."""
+    from quantpits.scripts.deep_analysis.config_ledger import load_previous_snapshot
+    (tmp_path / "data" / "config_history").mkdir(parents=True)
+    result = load_previous_snapshot(str(tmp_path))
+    assert result is None
+
+def test_load_previous_snapshot_invalid_json(tmp_path):
+    """Lines 150-151: invalid snapshot JSON → except: pass → None."""
+    from quantpits.scripts.deep_analysis.config_ledger import load_previous_snapshot
+    hist_dir = tmp_path / "data" / "config_history"
+    hist_dir.mkdir(parents=True)
+    (hist_dir / "config_snapshot_2026-01-01.json").write_text("BAD JSON {{{")
+    result = load_previous_snapshot(str(tmp_path))
+    assert result is None
+
+def test_diff_snapshots_semantic_label(tmp_path):
+    """Lines 204-206: d_feat/label_formula → FeatureExpansion/FeatureSelection."""
+    from quantpits.scripts.deep_analysis.config_ledger import diff_snapshots
+    prev = {'hyperparams': {'m1': {'lr': 0.01, 'd_feat': 10}}}
+    curr = {'hyperparams': {'m1': {'lr': 0.01, 'd_feat': 20}}}
+    result = diff_snapshots(prev, curr)
+    assert len(result) >= 1

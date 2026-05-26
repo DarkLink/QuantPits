@@ -616,3 +616,216 @@ def test_main_verbose_dry_run(mock_D, mock_price, mock_pred, mock_configs, mock_
         # This might fail if load_predictions isn't patched correctly for combo
         # But we previously patched it. Wait, mock_pred is patched here.
         order_gen.main()
+
+
+# ===================================================================
+# Coverage gap tests
+# ===================================================================
+
+def test_init_qlib_delegation(mock_env):
+    """Line 61: init_qlib() delegates to env.init_qlib."""
+    order_gen, _, _ = mock_env
+    with patch('quantpits.utils.env.init_qlib') as mock_init:
+        order_gen.init_qlib()
+        mock_init.assert_called_once()
+
+
+class TestSeriesToDataFrame:
+    """Lines 124, 150: Series to DataFrame conversion."""
+
+    @patch('qlib.workflow.R', create=True)
+    def test_single_model_pred_series(self, mock_R, mock_env):
+        order_gen, _, workspace = mock_env
+        train_file = workspace / "latest_train_records.json"
+        with open(train_file, "w") as f:
+            json.dump({"models": {"gru": "rec_123"}, "experiment_name": "test"}, f)
+
+        mock_rec = MagicMock()
+        mock_rec.load_object.return_value = pd.Series([1.0, 2.0], name="score")
+        mock_R.get_recorder.return_value = mock_rec
+
+        df, desc = order_gen.load_predictions(model_name="gru")
+        assert isinstance(df, pd.DataFrame)
+        assert "score" in df.columns
+
+    @patch('qlib.workflow.R', create=True)
+    def test_ensemble_pred_series(self, mock_R, mock_env):
+        """Line 150: ensemble prediction is a Series → converted to DataFrame."""
+        order_gen, _, workspace = mock_env
+        ensemble_file = workspace / "config" / "ensemble_records.json"
+        os.makedirs(os.path.dirname(ensemble_file), exist_ok=True)
+        with open(ensemble_file, "w") as f:
+            json.dump({"combos": {"c1": "rec_e1"}}, f)
+
+        mock_rec = MagicMock()
+        mock_rec.load_object.return_value = pd.Series([1.0, 2.0], name="score")
+        mock_R.get_recorder.return_value = mock_rec
+
+        df, desc = order_gen.load_predictions()
+        assert isinstance(df, pd.DataFrame)
+        assert "score" in df.columns
+
+
+class TestModelOpinionsGaps:
+    """Lines 322-323, 350-351: exception swallowing; lines 420, 426-427: buy classification."""
+
+    @patch('qlib.workflow.R', create=True)
+    def test_buy_classification_logic(self, mock_R, mock_env, tmp_path):
+        """Lines 420, 426-427: BUY/BUY*/-- classification in generate_model_opinions."""
+        order_gen, _, workspace = mock_env
+        output_dir = str(tmp_path)
+        config_dir = workspace / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(order_gen.ENSEMBLE_CONFIG_FILE, "w") as f:
+            json.dump({"combos": {"c1": {"models": ["m1"]}}}, f)
+        with open(config_dir / "ensemble_records.json", "w") as f:
+            json.dump({"combos": {"c1": {"record_id": "rec1", "models": ["m1"]}}, "default_combo": "c1"}, f)
+        with open(workspace / "latest_train_records.json", "w") as f:
+            json.dump({"models": {"m1": "rec_m1"}}, f)
+
+        mock_df = pd.DataFrame({"score": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4]},
+                               index=pd.Index(["S1", "S2", "S3", "S4", "S5", "S6"], name="instrument"))
+        mock_rec = MagicMock()
+        mock_rec.load_object.return_value = mock_df
+        mock_rec.list_metrics.return_value = {}
+        mock_rec.info = {"experiment_name": "ex", "id": "rec_id"}
+        mock_R.get_recorder.return_value = mock_rec
+
+        focus = ["S1", "S2", "S3", "S4", "S5", "S6"]
+        sorted_df = pd.DataFrame({"score": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4]},
+                                 index=pd.Index(focus, name="instrument"))
+
+        result_df, combo_info = order_gen.generate_model_opinions(
+            focus_instruments=focus,
+            current_holding_instruments=set(),
+            sorted_df=sorted_df,
+            top_k=3, drop_n=1, buy_suggestion_factor=2,
+            output_dir=output_dir,
+            next_trade_date_string="2020-01-01",
+        )
+        assert result_df is not None
+        # Check that BUY/BUY*/-- classification exists
+        assert "order_basis" in result_df.columns
+
+    @patch('qlib.workflow.R', create=True)
+    def test_exception_swallowed_during_load(self, mock_R, mock_env, tmp_path):
+        """Lines 322-323, 350-351: exception during prediction loading is silenced."""
+        order_gen, _, workspace = mock_env
+        config_dir = workspace / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(order_gen.ENSEMBLE_CONFIG_FILE, "w") as f:
+            json.dump({"combos": {"c1": {"models": ["m1"]}}}, f)
+        with open(config_dir / "ensemble_records.json", "w") as f:
+            json.dump({"combos": {"c1": "rec1"}, "default_combo": "c1"}, f)
+        # Provide train records so single model loading is attempted
+        with open(workspace / "latest_train_records.json", "w") as f:
+            json.dump({"models": {"m1": "rec_m1"}}, f)
+
+        # Combo load succeeds, but recorder for single model raises → line 350-351
+        call_count = [0]
+        def side_effect(*args, **kwargs):
+            call_count[0] += 1
+            mock_rec = MagicMock()
+            if call_count[0] == 2:  # Second call (single model) raises
+                mock_rec.load_object.side_effect = Exception("Boom")
+            else:
+                mock_df = pd.DataFrame({"score": [0.9, 0.8]},
+                                       index=pd.Index(["S1", "S2"], name="instrument"))
+                mock_rec.load_object.return_value = mock_df
+            mock_rec.list_metrics.return_value = {}
+            mock_rec.info = {"experiment_name": "ex", "id": "rec_id"}
+            return mock_rec
+        mock_R.get_recorder.side_effect = side_effect
+
+        focus = ["S1", "S2"]
+        sorted_df = pd.DataFrame({"score": [0.9, 0.8]}, index=pd.Index(focus, name="instrument"))
+
+        result_df, combo_info = order_gen.generate_model_opinions(
+            focus_instruments=focus,
+            current_holding_instruments=set(),
+            sorted_df=sorted_df,
+            top_k=2, drop_n=1, buy_suggestion_factor=1,
+            output_dir=str(tmp_path),
+            next_trade_date_string="2020-01-01",
+        )
+        # Combo source succeeded, so we get results (single model exception is swallowed)
+        assert result_df is not None
+
+
+@patch('quantpits.scripts.order_gen.init_qlib')
+@patch('quantpits.scripts.order_gen.get_anchor_date')
+@patch('quantpits.scripts.order_gen.load_configs')
+@patch('quantpits.scripts.order_gen.load_predictions')
+@patch('quantpits.scripts.order_gen.get_price_data')
+@patch('qlib.data.D', create=True)
+def test_main_with_model_flag(mock_D, mock_price, mock_pred, mock_configs, mock_anchor, mock_init, mock_env):
+    """Line 775: --model flag sets source_label to model name."""
+    order_gen, _, workspace = mock_env
+    mock_anchor.return_value = "2020-01-01"
+    # Current holding has a sell candidate
+    mock_configs.return_value = (
+        {"market": "csi300", "current_cash": 1000000,
+         "current_holding": [{"instrument": "H1", "volume": 100, "available_volume": 100, "value": 2000}]},
+        {"cash_flow_today": 50000}
+    )
+    idx = pd.MultiIndex.from_tuples([
+        ("H1", pd.to_datetime("2020-01-01")),
+        ("B1", pd.to_datetime("2020-01-01"))
+    ], names=["instrument", "datetime"])
+    mock_pred.return_value = (pd.DataFrame({"score": [0.1, 0.9]}, index=idx), "source")
+    idx_p = pd.Index(["H1", "B1"], name="instrument")
+    mock_price.return_value = pd.DataFrame({
+        "current_close": [20.0, 10.0], "possible_max": [22.0, 11.0], "possible_min": [18.0, 9.0]
+    }, index=idx_p)
+    mock_D.calendar.return_value = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+
+    ensemble_cfg = workspace / "config" / "ensemble_config.json"
+    os.makedirs(os.path.dirname(ensemble_cfg), exist_ok=True)
+    with open(ensemble_cfg, "w") as f:
+        json.dump({"combos": {"c1": {"models": ["m1"]}}}, f)
+
+    import sys
+    with patch.object(sys, 'argv', ['script.py', '--model', 'my_model', '--dry-run']):
+        order_gen.main()
+
+
+@patch('quantpits.scripts.order_gen.init_qlib')
+@patch('quantpits.scripts.order_gen.get_anchor_date')
+@patch('quantpits.scripts.order_gen.load_configs')
+@patch('quantpits.scripts.order_gen.load_predictions')
+@patch('quantpits.scripts.order_gen.get_price_data')
+@patch('qlib.data.D', create=True)
+def test_main_with_sells_and_cashflow(mock_D, mock_price, mock_pred, mock_configs, mock_anchor, mock_init, mock_env):
+    """Lines 726-728, 740, 742, 802: sell order display and cash flow display."""
+    order_gen, _, workspace = mock_env
+    mock_anchor.return_value = "2020-01-01"
+    # Holding that will be sold (low score)
+    mock_configs.return_value = (
+        {"market": "csi300", "current_cash": 500000,
+         "current_holding": [{"instrument": "H1", "volume": 100, "available_volume": 100, "value": 2500},
+                             {"instrument": "H2", "volume": 50, "available_volume": 50, "value": 750}]},
+        {"cash_flow_today": -10000}  # negative cash flow triggers line 742
+    )
+    # H1 has low score → sell candidate, H2 stays, B1 is buy candidate
+    idx = pd.MultiIndex.from_tuples([
+        ("H1", pd.to_datetime("2020-01-01")),
+        ("H2", pd.to_datetime("2020-01-01")),
+        ("B1", pd.to_datetime("2020-01-01"))
+    ], names=["instrument", "datetime"])
+    mock_pred.return_value = (pd.DataFrame({"score": [0.05, 0.8, 0.9]}, index=idx), "source")
+    idx_p = pd.Index(["H1", "H2", "B1"], name="instrument")
+    mock_price.return_value = pd.DataFrame({
+        "current_close": [25.0, 15.0, 10.0], "possible_max": [26.0, 16.0, 11.0], "possible_min": [24.0, 14.0, 9.0]
+    }, index=idx_p)
+    mock_D.calendar.return_value = [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]
+
+    ensemble_cfg = workspace / "config" / "ensemble_config.json"
+    os.makedirs(os.path.dirname(ensemble_cfg), exist_ok=True)
+    with open(ensemble_cfg, "w") as f:
+        json.dump({"combos": {"c1": {"models": ["m1"]}}}, f)
+
+    import sys
+    with patch.object(sys, 'argv', ['script.py', '--dry-run']):
+        order_gen.main()

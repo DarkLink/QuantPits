@@ -41,3 +41,84 @@ def test_synthesizer_recommendations():
     result = synth.synthesize()
     
     assert any(r['text'] == 'R1' for r in result['recommendations'])
+
+
+# ===================================================================
+# Coverage gap tests
+# ===================================================================
+
+def test_health_status_alert():
+    """Line 334: exactly 1 critical → ALERT status (not CRITICAL)."""
+    f1 = Finding(severity='critical', category='Test', title='T1', detail='D1')
+    af = AgentFindings(agent_name='A1', window_label='1m', findings=[f1])
+    synth = Synthesizer([af])
+    status = synth.synthesize()['health_status']
+    assert "ALERT" in status
+
+
+def test_change_impact_with_ensemble_events(tmp_path):
+    """Lines 233-266: change_events from Ensemble Evolution → impact assessment."""
+    af_ensemble = AgentFindings(
+        agent_name='Ensemble Evolution', window_label='1m',
+        raw_metrics={'change_events': [
+            {'type': 'member_replaced', 'combo': 'c1', 'date': '2026-05-01',
+             'old_model': 'm1', 'new_model': 'm2'},
+        ]},
+    )
+    af_port = AgentFindings(
+        agent_name='Portfolio Risk', window_label='1m',
+        raw_metrics={'traditional': {'Sharpe': 2.0, 'CAGR_252': 0.15, 'Max_Drawdown': 0.1}},
+    )
+    synth = Synthesizer([af_ensemble, af_port])
+    # _assess_change_impact is called during synthesize
+    result = synth.synthesize()
+    # Should not crash and should produce recommendations
+    assert 'health_status' in result
+
+
+def test_change_impact_with_retrain_events(tmp_path):
+    """Lines 236-241: retrain_events from Model Health → change_events entries."""
+    af_model = AgentFindings(
+        agent_name='Model Health', window_label='1m',
+        raw_metrics={'retrain_events': [
+            {'model': 'm1', 'date': '2026-05-01'},
+        ]},
+    )
+    af_port = AgentFindings(
+        agent_name='Portfolio Risk', window_label='1m',
+        raw_metrics={'traditional': {'Sharpe': 1.8, 'CAGR_252': 0.12, 'Max_Drawdown': 0.15}},
+    )
+    synth = Synthesizer([af_model, af_port])
+    result = synth.synthesize()
+    assert 'health_status' in result
+
+    # The retrain event should create a change event
+    impact = synth._assess_change_impact()
+    assert len(impact) >= 1
+    assert any(e['event']['type'] == 'retrain' for e in impact)
+
+
+def test_change_impact_no_events(tmp_path):
+    """Line 243-244: no change_events → returns empty impact."""
+    af = AgentFindings(agent_name='Ensemble Evolution', window_label='1m',
+                       raw_metrics={})
+    synth = Synthesizer([af])
+    impact = synth._assess_change_impact()
+    assert impact == []
+
+
+def test_alpha_significance_all_insignificant(tmp_path):
+    """Lines 200-201: all Portfolio Risk windows have p>0.1 → cross-finding."""
+    af1 = AgentFindings(
+        agent_name='Portfolio Risk', window_label='1m',
+        raw_metrics={'factor_exposure': {'Annualized_Alpha_p': 0.5}},
+    )
+    af2 = AgentFindings(
+        agent_name='Portfolio Risk', window_label='3m',
+        raw_metrics={'factor_exposure': {'Annualized_Alpha_p': 0.3}},
+    )
+    synth = Synthesizer([af1, af2])
+    cross = synth._check_alpha_significance()
+    # Both windows have p > 0.1 → all_insignificant → finding generated
+    assert len(cross) == 1
+    assert 'statistically significant' in cross[0].title.lower()

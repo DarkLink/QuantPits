@@ -348,6 +348,203 @@ class TestEdgeCases:
         result = evaluator.evaluate(snapshot, current_date="2026-05-10")
         assert result["per_item_evaluations"][0]["quality"] == "correct_ignored"
 
+
+# ===================================================================
+# Coverage gap tests
+# ===================================================================
+
+class TestHistoryReaderGaps:
+    def test_operator_log_empty_lines_and_missing_timestamp(self, tmp_path):
+        """Lines 217, 225: empty lines and missing timestamps skipped."""
+        ws = tmp_path / "ws"
+        op_log = ws / "data" / "operator_log.jsonl"
+        op_log.parent.mkdir(parents=True)
+        op_log.write_text('\n'.join([
+            json.dumps({"timestamp_start": "2026-05-15T10:00:00", "source": "human",
+                        "script": "static_train", "args": ["--models", "m1"]}),
+            '',
+            'invalid json {{',
+            json.dumps({"source": "human",
+                        "script": "ensemble_fusion", "args": []}),
+        ]))
+
+        reader = HistoryReader(workspace_root=str(ws))
+        actions = reader._read_operator_actions("2026-05-01", "2026-05-20")
+        assert len(actions) == 1
+        assert actions[0]["script"] == "static_train"
+
+    def test_operator_log_read_exception(self, tmp_path):
+        """Lines 237-238: exception during operator log read → logged, returns []."""
+        ws = tmp_path / "ws"
+        op_log = ws / "data" / "operator_log.jsonl"
+        op_log.parent.mkdir(parents=True)
+        op_log.write_bytes(b'\x80\x81\x82')  # undecodable garbage
+
+        reader = HistoryReader(workspace_root=str(ws))
+        actions = reader._read_operator_actions("2026-05-01", "2026-05-20")
+        assert actions == []
+
+    def test_training_history_empty_lines(self, tmp_path):
+        """Line 302: empty lines in training history skipped."""
+        ws = tmp_path / "ws"
+        perf_dir = ws / "output"
+        perf_dir.mkdir(parents=True)
+        (perf_dir / "model_performance_dummy.json").write_text("{}")
+        hist = ws / "data" / "training_history.jsonl"
+        hist.parent.mkdir(parents=True)
+        hist.write_text('\n'.join([
+            json.dumps({"model_name": "m1", "trained_at": "2026-05-15T10:00:00",
+                        "n_epochs": 200}),
+            '',
+            json.dumps({"model_name": "m1", "trained_at": "2026-05-08T10:00:00",
+                        "n_epochs": 100}),
+        ]))
+
+        reader = HistoryReader(workspace_root=str(ws))
+        changes = reader._detect_hyperparam_changes("2026-05-01", "2026-05-20")
+        assert isinstance(changes, list)
+
+    def test_training_history_read_exception(self, tmp_path):
+        """Lines 309-311: exception during history read → returns []."""
+        ws = tmp_path / "ws"
+        perf_dir = ws / "output"
+        perf_dir.mkdir(parents=True)
+        (perf_dir / "model_performance_dummy.json").write_text("{}")
+        hist = ws / "data" / "training_history.jsonl"
+        hist.parent.mkdir(parents=True)
+        hist.write_bytes(b'\x80\x81\x82')
+
+        reader = HistoryReader(workspace_root=str(ws))
+        changes = reader._detect_hyperparam_changes("2026-05-01", "2026-05-20")
+        assert changes == []
+
+    def test_training_history_missing_trained_at(self, tmp_path):
+        """Line 331: entry with no trained_at skipped."""
+        ws = tmp_path / "ws"
+        perf_dir = ws / "output"
+        perf_dir.mkdir(parents=True)
+        (perf_dir / "model_performance_dummy.json").write_text("{}")
+        hist = ws / "data" / "training_history.jsonl"
+        hist.parent.mkdir(parents=True)
+        hist.write_text(json.dumps({"model_name": "m1", "n_epochs": 200}) + '\n' +
+                        json.dumps({"model_name": "m1", "trained_at": "2026-05-15T10:00:00",
+                                    "n_epochs": 300}) + '\n')
+
+        reader = HistoryReader(workspace_root=str(ws))
+        changes = reader._detect_hyperparam_changes("2026-05-01", "2026-05-20")
+        assert isinstance(changes, list)
+
+    def test_performance_deltas_read_exception(self, tmp_path):
+        """Lines 377-378: exception reading perf files → returns {}."""
+        ws = tmp_path / "ws"
+        out = ws / "output"
+        out.mkdir(parents=True)
+        (out / "model_performance_2026-05-01.json").write_text("not valid json {{{")
+
+        reader = HistoryReader(workspace_root=str(ws))
+        deltas = reader._compute_performance_deltas("2026-05-01", "2026-05-15")
+        assert deltas == {}
+
+
+class TestFeedbackEvaluatorGaps:
+    def test_evaluate_unknown_action_type(self, tmp_path):
+        """Line 555: unknown action_type → pending_verification in _evaluate_item."""
+        ws = tmp_path / "ws"
+        evaluator = FeedbackEvaluator(workspace_root=str(ws))
+        item = {"action_type": "unknown_type", "target": "m1",
+                "action_id": "id1", "params": {}, "reason": "test"}
+        result = evaluator._evaluate_item(item, FeedbackSnapshot())
+        assert result["quality"] == "pending_verification"
+
+    def test_was_executed_trigger_search(self, tmp_path):
+        """Lines 583-586: trigger_search matches ensemble/search scripts."""
+        snapshot = FeedbackSnapshot()
+        snapshot.operator_actions = [
+            {"script": "brute_force_ensemble", "args": ["--combo", "c1"]},
+        ]
+        result = FeedbackEvaluator._was_executed(
+            {"target": "c1", "action_type": "trigger_search"}, snapshot,
+        )
+        assert result is True
+
+    def test_was_executed_trigger_search_no_match(self, tmp_path):
+        """trigger_search with non-matching script."""
+        snapshot = FeedbackSnapshot()
+        snapshot.operator_actions = [
+            {"script": "static_train", "args": ["--models", "m1"]},
+        ]
+        result = FeedbackEvaluator._was_executed(
+            {"target": "c1", "action_type": "trigger_search"}, snapshot,
+        )
+        assert result is False
+
+    def test_were_params_changed_model_mismatch(self, tmp_path):
+        """Line 597: model doesn't match → continue (returns False)."""
+        snapshot = FeedbackSnapshot()
+        snapshot.hyperparam_changes = [
+            {"model": "m2", "param": "lr", "old": 0.001, "new": 0.0005},
+        ]
+        result = FeedbackEvaluator._were_params_changed(
+            "m1", {"lr": {"from": 0.001, "to": 0.0005}}, snapshot,
+        )
+        assert result is False
+
+    def test_classify_param_adjustment_not_executed(self, tmp_path):
+        """Line 615: not executed → correct_ignored."""
+        result = FeedbackEvaluator._classify_param_adjustment(
+            executed=False, params_changed=False, ic_delta=None,
+        )
+        assert result == "correct_ignored"
+
+    def test_classify_param_adjustment_pending_fallback(self, tmp_path):
+        """Line 616: executed with ic_delta=0 → no condition matches → pending."""
+        result = FeedbackEvaluator._classify_param_adjustment(
+            executed=True, params_changed=False, ic_delta=0.0,
+        )
+        assert result == "pending_verification"
+
+    def test_classify_disable_not_executed(self, tmp_path):
+        """Line 624: disable not executed → correct_ignored."""
+        ws = tmp_path / "ws"
+        result = FeedbackEvaluator(
+            workspace_root=str(ws),
+        )._classify_disable(False, None, "m1", FeedbackSnapshot())
+        assert result == "correct_ignored"
+
+    def test_classify_disable_pending(self, tmp_path):
+        """Line 629: disable executed, ic_delta not very negative → pending_verification."""
+        ws = tmp_path / "ws"
+        result = FeedbackEvaluator(
+            workspace_root=str(ws),
+        )._classify_disable(True, 0.0, "m1", FeedbackSnapshot())
+        assert result == "pending_verification"
+
+    def test_classify_enable_pending(self, tmp_path):
+        """Line 641: enable executed but model not in added list → pending."""
+        result = FeedbackEvaluator._classify_enable(
+            True, "m1", FeedbackSnapshot(),
+        )
+        assert result == "pending_verification"
+
+    def test_self_corrections_disable_pattern(self, tmp_path):
+        """Line 728: disable suggestion with incorrect quality generates rule."""
+        evaluations = [
+            {"quality": "incorrect", "action_type": "disable_model", "target": "m1"},
+        ]
+        corrections = FeedbackEvaluator._generate_self_corrections(evaluations, {})
+        assert any(r["pattern"] == "Disable suggestion for model with combo value"
+                   for r in corrections)
+
+    def test_run_feedback_loop_default_date(self, tmp_path):
+        """Line 807: current_date defaults to today."""
+        ws = tmp_path / "ws"
+        out_dir = ws / "output" / "deep_analysis"
+        out_dir.mkdir(parents=True)
+        (out_dir / "action_items_2026-05-01.json").write_text("[]")
+
+        result = run_feedback_loop(str(ws), current_date=None)
+        assert "per_item_evaluations" in result
+
     def test_params_changed_detection(self, tmp_path):
         ws = tmp_path / "ws"
         out_dir = ws / "output" / "deep_analysis"

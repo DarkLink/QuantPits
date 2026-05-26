@@ -4,6 +4,7 @@ import json
 import os
 import pytest
 import yaml
+from unittest.mock import patch
 
 from quantpits.scripts.deep_analysis.promote_config import (
     ConfigPromoter,
@@ -335,3 +336,127 @@ def test_promote_result_dataclass():
         promote_record={"promote_id": "test"},
     )
     assert result.success
+
+
+# -------------------------------------------------------------------
+# Coverage gap tests
+# -------------------------------------------------------------------
+
+class TestPromoteGaps:
+    def test_no_files_to_copy(self, promote_workspaces):
+        """Line 99: no changed files → success with note."""
+        prod, pg = promote_workspaces
+        promoter = ConfigPromoter(production_root=str(prod), playground_root=str(pg))
+        import shutil
+        for f in (pg / "config").iterdir():
+            shutil.copy2(f, prod / "config" / f.name)
+        result = promoter.promote(action_item_ids=[])
+        assert result.success
+        assert "No config changes" in result.promote_record.get("note", "")
+
+    def test_promote_exception_handling(self, tmp_path):
+        """Lines 188-190: exception → PromoteResult with error."""
+        prod = tmp_path / "prod"
+        prod.mkdir()
+        pg = tmp_path / "pg"
+        promoter = ConfigPromoter(production_root=str(prod), playground_root=str(pg))
+        # preview() will fail because no _playground_meta.json → exception
+        with patch.object(promoter, 'preview', side_effect=Exception("Boom")):
+            result = promoter.promote(action_item_ids=[])
+        assert not result.success
+        assert "Boom" in result.error
+
+    def test_find_changed_no_pg_config_dir(self, tmp_path):
+        """Line 207: pg_config dir doesn't exist → returns []."""
+        prod = tmp_path / "prod"
+        prod.mkdir()
+        (prod / "config").mkdir()
+        pg = tmp_path / "pg"
+        pg.mkdir()
+        promoter = ConfigPromoter(production_root=str(prod), playground_root=str(pg))
+        changed = promoter._find_changed_config_files()
+        assert changed == []
+
+    def test_find_changed_prod_file_missing(self, tmp_path):
+        """Lines 218-219: prod file doesn't exist → changed.append."""
+        prod = tmp_path / "prod"
+        prod.mkdir()
+        (prod / "config").mkdir()
+        pg = tmp_path / "pg"
+        pg.mkdir()
+        (pg / "config").mkdir()
+        (pg / "config" / "new_config.yaml").write_text("new: true")
+        promoter = ConfigPromoter(production_root=str(prod), playground_root=str(pg))
+        changed = promoter._find_changed_config_files()
+        assert "config/new_config.yaml" in changed
+
+    def test_find_changed_file_read_error(self, tmp_path):
+        """Lines 226-227: exception reading file → changed.append."""
+        prod = tmp_path / "prod"
+        prod.mkdir()
+        (prod / "config").mkdir()
+        (prod / "config" / "test.yaml").write_text("prod content")
+        pg = tmp_path / "pg"
+        pg.mkdir()
+        (pg / "config").mkdir()
+        (pg / "config" / "test.yaml").write_text("pg content")
+        os.chmod(prod / "config" / "test.yaml", 0o000)
+        try:
+            promoter = ConfigPromoter(production_root=str(prod), playground_root=str(pg))
+            changed = promoter._find_changed_config_files()
+            assert "config/test.yaml" in changed
+        finally:
+            os.chmod(prod / "config" / "test.yaml", 0o644)
+
+    def test_update_changelog_existing_file(self, tmp_path):
+        """Lines 340-341: read existing changelog file."""
+        prod = tmp_path / "prod"
+        (prod / "config").mkdir(parents=True)
+        (prod / "data").mkdir(parents=True)
+        pg = tmp_path / "pg"
+        (pg / "config").mkdir(parents=True)
+        changelog_path = prod / "data" / "CHANGELOG.md"
+        changelog_path.write_text("# 配置变更历史\n\n## Previous Entry\n\nOld change.\n")
+        promoter = ConfigPromoter(production_root=str(prod), playground_root=str(pg))
+        promoter._update_changelog(
+            record={"promote_id": "test", "action_item_ids": ["a1"], "status": "active"},
+            changes=[{"model": "m1", "param": "lr", "old": 0.01, "new": 0.02}],
+            date_str="2026-05-26",
+        )
+        content = changelog_path.read_text()
+        assert "2026-05-26" in content
+        assert "Previous Entry" in content
+
+    def test_update_changelog_new_file(self, tmp_path):
+        """Line 348: no title_end → just append."""
+        prod = tmp_path / "prod"
+        (prod / "config").mkdir(parents=True)
+        (prod / "data").mkdir(parents=True)
+        pg = tmp_path / "pg"
+        (pg / "config").mkdir(parents=True)
+        promoter = ConfigPromoter(production_root=str(prod), playground_root=str(pg))
+        promoter._update_changelog(
+            record={"promote_id": "test", "action_item_ids": ["a1"], "status": "active"},
+            changes=[{"model": "m1", "param": "lr", "old": 0.01, "new": 0.02}],
+            date_str="2026-05-26",
+        )
+        content = (prod / "data" / "CHANGELOG.md").read_text()
+        assert "2026-05-26" in content
+
+    def test_update_promote_status_empty_lines(self, tmp_path):
+        """Line 394: empty lines in promote history skipped."""
+        from quantpits.scripts.deep_analysis.promote_config import update_promote_status
+        ws = tmp_path / "ws"
+        (ws / "data").mkdir(parents=True)
+        history_path = ws / "data" / "promote_history.jsonl"
+        history_path.write_text('\n'.join([
+            json.dumps({"status": "promoted_pending_retrain", "promote_id": "p1"}),
+            '',
+            json.dumps({"status": "promoted_pending_retrain", "promote_id": "p2"}),
+        ]))
+        update_promote_status(ws)
+        with open(history_path, "r") as f:
+            for line in f:
+                if line.strip():
+                    rec = json.loads(line)
+                    assert rec["status"] == "active"

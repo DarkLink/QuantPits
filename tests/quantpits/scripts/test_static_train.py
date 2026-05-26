@@ -591,3 +591,134 @@ class TestShowState:
         }
         with patch('quantpits.utils.train_utils.load_run_state', return_value=state):
             st.show_state()  # Should not raise
+
+
+# ===================================================================
+# Coverage gap tests — error paths and edge cases
+# ===================================================================
+
+class TestFullTrainNoEnabledModels:
+    """Line 150-151: no enabled models in registry."""
+    @patch('quantpits.utils.env.init_qlib')
+    @patch('quantpits.utils.train_utils.calculate_dates')
+    def test_no_enabled_models(self, mock_dates, mock_init, mock_env, tmp_path):
+        st, workspace = mock_env
+        # Overwrite registry with no enabled models
+        import yaml
+        (workspace / "config" / "model_registry.yaml").write_text(yaml.dump({
+            "models": {
+                "m1": {"algorithm": "gru", "enabled": False, "yaml_file": "g.yaml"},
+                "m2": {"algorithm": "mlp", "enabled": False, "yaml_file": "m.yaml"},
+            }
+        }))
+        mock_dates.return_value = {"freq": "week", "anchor_date": "2026-01-01"}
+
+        args = MagicMock()
+        args.dry_run = False
+        args.experiment_name = None
+        args.no_pretrain = False
+
+        st.run_full_train(args)  # Should print warning and return early
+
+
+class TestIncrementalResumeAllDone:
+    """Line 244-245: resume mode with all targets completed."""
+    @patch('quantpits.utils.train_utils.load_run_state')
+    @patch('quantpits.utils.train_utils.print_model_table')
+    def test_resume_all_done(self, mock_table, mock_load, mock_env):
+        st, _ = mock_env
+        mock_load.return_value = {"completed": ["m1", "m2"]}
+
+        args = MagicMock()
+        args.resume = True
+        args.dry_run = True
+
+        targets = {"m1": {}, "m2": {}}
+        st.run_incremental_train(args, targets)  # Should print all done and return
+
+    @patch('quantpits.utils.train_utils.load_run_state')
+    @patch('quantpits.utils.train_utils.print_model_table')
+    def test_resume_no_previous_state(self, mock_table, mock_load, mock_env):
+        """Line 249: no previous run state found."""
+        st, _ = mock_env
+        mock_load.return_value = None
+
+        args = MagicMock()
+        args.resume = True
+        args.dry_run = True
+
+        targets = {"m1": {}, "m2": {}}
+        st.run_incremental_train(args, targets)  # Should print info and continue
+
+
+class TestPredictOnlyNoAvailable:
+    """Line 408-409: predict-only with no models in source records."""
+    @patch('quantpits.utils.train_utils.print_model_table')
+    def test_no_available_models(self, mock_table, mock_env, tmp_path):
+        st, _ = mock_env
+        source_file = tmp_path / "records.json"
+        with open(source_file, 'w') as f:
+            json.dump({"models": {"other_model": "rid1"}, "experiment_name": "train"}, f)
+
+        args = MagicMock()
+        args.dry_run = False
+        args.source_records = str(source_file)
+        args.experiment_name = None
+        args.no_pretrain = False
+
+        targets = {"m1": {"yaml_file": "gru.yaml"}}
+        st.run_predict_only(args, targets)  # m1 not in source → no available
+
+
+class TestPredictOnlyFailedModel:
+    """Line 459-460: recording failed predictions."""
+    @patch('quantpits.utils.train_utils.predict_single_model')
+    @patch('quantpits.utils.env.init_qlib')
+    @patch('quantpits.utils.train_utils.calculate_dates')
+    @patch('quantpits.utils.train_utils.merge_train_records')
+    @patch('quantpits.utils.train_utils.merge_performance_file')
+    @patch('quantpits.utils.train_utils.print_model_table')
+    def test_prediction_failure_recorded(self, mock_table, mock_perf, mock_merge,
+                                         mock_dates, mock_init, mock_predict, mock_env, tmp_path):
+        st, _ = mock_env
+        source_file = tmp_path / "records.json"
+        with open(source_file, 'w') as f:
+            json.dump({"models": {"m1": "rid1"}, "experiment_name": "train"}, f)
+
+        mock_dates.return_value = {"anchor_date": "2026-01-08", "freq": "week"}
+        mock_predict.return_value = {"success": False, "error": "GPU OOM"}
+
+        args = MagicMock()
+        args.dry_run = False
+        args.source_records = str(source_file)
+        args.experiment_name = None
+        args.no_pretrain = False
+
+        targets = {"m1": {"yaml_file": "gru.yaml"}}
+        st.run_predict_only(args, targets)  # Should record failure
+
+
+class TestMainNoMatch:
+    """Line 588-589: no matching models in main()."""
+    def test_main_no_matching_models(self, mock_env):
+        st, _ = mock_env
+        with patch.object(sys, 'argv', ['script.py', '--models', 'nonexistent']):
+            with patch('quantpits.utils.train_utils.resolve_target_models', return_value=None):
+                st.main()  # Should print warning and return
+
+    def test_main_empty_targets(self, mock_env):
+        st, _ = mock_env
+        with patch.object(sys, 'argv', ['script.py', '--models', 'nonexistent']):
+            with patch('quantpits.utils.train_utils.resolve_target_models', return_value={}):
+                st.main()  # Should print warning and return
+
+    @patch('quantpits.scripts.static_train.run_incremental_train')
+    def test_main_promote_status_exception(self, mock_run, mock_env):
+        """Line 601-602: promote status update exception swallowed."""
+        st, _ = mock_env
+        with patch.object(sys, 'argv', ['script.py', '--models', 'm1']):
+            with patch('quantpits.utils.train_utils.resolve_target_models', return_value={"m1": {}}):
+                # update_promote_status is imported locally inside main()
+                with patch('quantpits.scripts.deep_analysis.promote_config.update_promote_status',
+                           side_effect=Exception("disk full")):
+                    st.main()  # Should not raise — exception is swallowed

@@ -867,3 +867,117 @@ def test_main_helper_coverage(mock_port, mock_exec, mock_single, mock_fwd, mock_
     assert "Redacted Range" in content_invalid
 
 
+@patch('quantpits.scripts.run_analysis.init_qlib')
+@patch('quantpits.scripts.run_analysis.load_market_config')
+@patch('quantpits.scripts.run_analysis.load_model_predictions')
+@patch('quantpits.scripts.run_analysis.get_forward_returns')
+@patch('quantpits.scripts.run_analysis.SingleModelAnalyzer')
+@patch('quantpits.scripts.run_analysis.EnsembleAnalyzer')
+@patch('quantpits.scripts.run_analysis.ExecutionAnalyzer')
+@patch('quantpits.scripts.run_analysis.PortfolioAnalyzer')
+def test_main_coverage_formatting_gaps(mock_port, mock_exec, mock_ens, mock_single,
+                                        mock_fwd, mock_load_pred, mock_market, mock_init, mock_env):
+    """Cover formatting branches: CAGR_Calendar, Daily_Profit_Factor, Trade_Profit_Factor,
+    style returns with all 3 factors, alignment_note with sample size mismatch, Multi_Factor_Beta."""
+    ra, workspace = mock_env
+    mock_market.return_value = ("csi300", "SH000300")
+
+    idx = pd.MultiIndex.from_tuples([("A", pd.to_datetime("2020-01-01"))], names=["instrument", "datetime"])
+    mock_df = pd.DataFrame({"score": [0.5]}, index=idx)
+    mock_load_pred.return_value = mock_df
+    mock_fwd.return_value = pd.DataFrame({"score": [0.01]}, index=idx)
+
+    mock_sma = MagicMock()
+    mock_single.return_value = mock_sma
+    mock_sma.calculate_rank_ic.return_value = (pd.Series([0.05]), 0.6, 1.5)
+    mock_sma.calculate_ic_decay.return_value = {"T+1": 0.05}
+    mock_sma.calculate_quantile_spread.return_value = pd.DataFrame({"Spread": [0.001]})
+    mock_sma.calculate_long_only_ic.return_value = (pd.Series([0.06]), 0.06)
+
+    mock_ea = MagicMock()
+    mock_ens.return_value = mock_ea
+    mock_ea.calculate_signal_correlation.return_value = pd.DataFrame([[1.0]], index=["m1"], columns=["m1"])
+    mock_ea.calculate_marginal_contribution.return_value = {
+        "Full_Ensemble_Sharpe": 2.0, "Marginal_Contributions": {"m1": 0.1}
+    }
+    mock_ea.calculate_ensemble_ic_metrics.return_value = {"Rank_IC_Mean": 0.07}
+
+    mock_ex = MagicMock()
+    mock_exec.return_value = mock_ex
+    mock_ex.calculate_slippage_and_delay.return_value = pd.DataFrame({
+        "Delay_Cost": [0.001], "Exec_Slippage": [0.0005], "Total_Friction": [0.0015],
+        "成交金额": [100000], "交易类别": ["买入"]
+    })
+    mock_ex.calculate_path_dependency.return_value = pd.DataFrame({"MFE": [0.01], "MAE": [-0.01], "成交金额": [100000]})
+    mock_ex.analyze_explicit_costs.return_value = {"fee_ratio": 0.0005}
+    mock_ex.analyze_order_discrepancies.return_value = {"total_missed_count": 0}
+    mock_ex.trade_log = pd.DataFrame({"trade_class": ["S"], "成交金额": [100000], "交易类别": ["买入"]})
+
+    mock_pa = MagicMock()
+    mock_port.return_value = mock_pa
+    # Include CAGR_Calendar, Daily_Profit_Factor, Trade_Profit_Factor, Trade_Profit_Factor_MTM
+    mock_pa.calculate_traditional_metrics.return_value = {
+        "CAGR_252": 0.25,
+        "CAGR_Calendar": 0.24,
+        "Benchmark_CAGR_252": 0.1,
+        "Daily_Profit_Factor": 1.5,
+        "Trade_Profit_Factor": 2.3,
+        "Trade_Profit_Factor_MTM": 1.8,
+        "Portfolio_Arithmetic_Annual_Return": 0.27,
+        "Volatility": 0.15,
+        "Turnover_Rate_Annual": 2.5,
+    }
+    # Factor exposure with ALL 3 style factors AND mismatched Aligned_Sample_Size
+    mock_pa.calculate_factor_exposure.return_value = {
+        "Beta_Market": 1.2,
+        "Multi_Factor_Beta": 0.9,
+        "Beta_Market_t": 5.0,
+        "Beta_Market_p": 0.001,
+        "Annualized_Alpha_t": 2.0,
+        "Annualized_Alpha_p": 0.05,
+        "Market_Total_Return_Annualized": 0.12,
+        "Portfolio_Arithmetic_Annual_Return": 0.27,
+        "Aligned_Sample_Size": 200,  # different from single_factor_sample_size
+        BARRA_LIQD_KEY: 0.5,
+        BARRA_MOMT_KEY: -0.2,
+        BARRA_VOLA_KEY: 0.1,
+        "Factor_Annualized": {
+            "liquidity": 0.03,
+            "momentum": 0.10,
+            "volatility": 0.02,
+        },
+        "Multi_Factor_Intercept": 0.08,
+        "Multi_Factor_R_Squared": 0.85,
+    }
+    mock_pa.calculate_style_exposures.return_value = {}
+    mock_pa.calculate_holding_metrics.return_value = {"Avg_Daily_Holdings_Count": 42.4}
+    mock_pa.calculate_classified_returns.return_value = {
+        "class_df": pd.DataFrame(), "manual_buys": pd.DataFrame(), "manual_sells": pd.DataFrame()
+    }
+
+    # Non-shareable mode to exercise detailed formatting branches
+    report_path = str(workspace / "output" / "coverage_gaps.md")
+    with patch.object(sys, 'argv', ['script.py', '--output', 'output/coverage_gaps.md']):
+        ra.main()
+
+    assert os.path.exists(report_path)
+    with open(report_path, "r") as f:
+        content = f.read()
+
+    # CAGR_Calendar appears in report (non-shareable: .2% format)
+    assert "CAGR (Calendar basis)" in content
+    # Daily_Profit_Factor
+    assert "Daily Profit Factor" in content.replace("_", " ")
+    # Trade_Profit_Factor and Trade_Profit_Factor_MTM with notes
+    assert "Trade_Profit_Factor" in content
+    assert "FIFO" in content
+    assert "Trade_Profit_Factor_MTM" in content
+    assert "MTM" in content
+    # Style return calculation executed (all 3 factors present)
+    assert "Style Alpha (Exposure to Risk Factors)" in content
+    # OLS stats in non-shareable format (3 decimal t, 4 decimal p)
+    assert "OLS:" in content
+    # Multi_Factor_Beta in non-shareable format (.4f)
+    assert "Beta Return (Multi-Factor Exposure to Market)" in content
+
+

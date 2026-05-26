@@ -1,5 +1,7 @@
 """Tests for Signal Extractor (Phase 3)."""
 
+import json
+import os
 import pytest
 from quantpits.scripts.deep_analysis.base_agent import AgentFindings
 from quantpits.scripts.deep_analysis.signal_extractor import Signal, SignalExtractor
@@ -510,3 +512,114 @@ class TestEdgeCases:
         d = s.to_dict()
         assert d["signal_type"] == "underfitting"
         assert d["metrics"]["epochs"] == 30
+
+
+# -------------------------------------------------------------------
+# Coverage gap tests
+# -------------------------------------------------------------------
+
+class TestClassifyArchitectureGaps:
+    def test_alpha360_tcts_match(self, tmp_path):
+        """Line 163: name containing tcts and 360 → Alpha360_TCTS."""
+        se = SignalExtractor(workspace_root=str(tmp_path))
+        assert se._classify_architecture("tcts_Alpha360_v1") == "Alpha360_TCTS"
+
+    def test_unknown_architecture(self, tmp_path):
+        """Line 384: unrecognized → 'Unknown'."""
+        se = SignalExtractor(workspace_root=str(tmp_path))
+        assert se._classify_architecture("random_model") == "Unknown"
+
+
+class TestLoadComboMembershipGaps:
+    def test_no_workspace_root(self):
+        """Line 201: no workspace_root → {}."""
+        se = SignalExtractor(workspace_root=None)
+        assert se._load_combo_membership() == {}
+
+    def test_invalid_json_returns_empty(self, tmp_path):
+        """Lines 208-209: invalid JSON → {}."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "config" / "ensemble_config.json").write_text("NOT JSON {{{")
+        se = SignalExtractor(workspace_root=str(ws))
+        assert se._load_combo_membership() == {}
+
+    def test_non_dict_combo_info_skipped(self, tmp_path):
+        """Line 214: non-dict combo_info → continue."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        import json
+        (ws / "config" / "ensemble_config.json").write_text(json.dumps({
+            "combos": {"c1": "not_a_dict", "c2": {"models": ["m1"]}},
+        }))
+        se = SignalExtractor(workspace_root=str(ws))
+        result = se._load_combo_membership()
+        assert "m1" in result
+
+
+class TestBuildModelRankingGaps:
+    def test_ic_mean_none_skipped(self, tmp_path):
+        """Line 323: ic_mean is None → continue."""
+        af = AgentFindings(
+            agent_name='Model Health', window_label='1m',
+            raw_metrics={'scorecard': {'m1': {'ic_mean': None, 'icir_mean': 0.5, 'n_snapshots': 1}}},
+        )
+        se = SignalExtractor(workspace_root=str(tmp_path))
+        ranking = se._build_model_ranking({'Model Health': [af]}, {})
+        assert len(ranking) == 0
+
+    def test_historical_flags_merged(self, tmp_path):
+        """Line 344: historical_flags merged into entry."""
+        af = AgentFindings(
+            agent_name='Model Health', window_label='1m',
+            raw_metrics={'scorecard': {'m1': {'ic_mean': 0.05, 'icir_mean': 0.5, 'n_snapshots': 1}}},
+        )
+        se = SignalExtractor(workspace_root=str(tmp_path))
+        ranking = se._build_model_ranking(
+            {'Model Health': [af]}, {},
+            historical_flags={'m1': {'run_count': 2}},
+        )
+        assert len(ranking) == 1
+        assert ranking[0].get('historical_flags') == {'run_count': 2}
+
+
+class TestSevereUnderfittingGap:
+    def test_best_epoch_le_1_triggers(self, tmp_path):
+        """Line 472: best_ep <= 1 AND actual < configured*0.3 → severe."""
+        af = AgentFindings(
+            agent_name='Model Health', window_label='1m',
+            raw_metrics={
+                'scorecard': {'m1': {'ic_mean': 0.05, 'icir_mean': 0.1, 'ic_trend': 'stable'}},
+                'convergence_summary': {
+                    'underfitting_candidates': ['m1'],
+                    'model_details': {
+                        'm1': {'best_epoch': 1, 'actual_epochs': 20, 'configured_epochs': 200},
+                    },
+                },
+            },
+        )
+        se = SignalExtractor(workspace_root=str(tmp_path))
+        signals = se._extract_model_health({'Model Health': [af]})
+        severe = [s for s in signals if s.signal_type == 'severe_underfitting']
+        assert len(severe) >= 1
+        assert severe[0].target == 'm1'
+
+
+class TestThrashingDetectionGaps:
+    def test_empty_results_no_file(self, tmp_path):
+        """Lines 808-811, 825: no training_history file → returns []."""
+        se = SignalExtractor(workspace_root=str(tmp_path))
+        signals = se._extract_optimizer_thrashing()
+        assert signals == []
+
+    def test_training_history_read_exception(self, tmp_path):
+        """Line 808-811: exception reading training_history → returns []."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "data").mkdir()
+        (ws / "data" / "training_history.jsonl").write_bytes(b'\x80\x81\x82')
+        se = SignalExtractor(workspace_root=str(ws))
+        signals = se._extract_optimizer_thrashing()
+        assert signals == []
