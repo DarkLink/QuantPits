@@ -1407,6 +1407,7 @@ class LLMInterface:
                 "target": entry.get("target", ""),
                 "action_type": entry.get("action_type", ""),
                 "params": entry.get("params", {}),
+                "executed": bool(entry.get("executed", False)),
             })
 
         user_prompt = json.dumps({
@@ -1540,15 +1541,21 @@ class LLMInterface:
             },
             "correlation_excerpt": model_profile.get("correlation_excerpt", {}),
             "combo_role": model_profile.get("combo_role", {}),
+            "diversity_signals": model_profile.get("diversity_signals", {}),
             "signals": [s.to_dict() for s in model_profile.get("signals", [])],
             "current_params": model_profile.get("current_params", {}),
             "hyperparam_bounds": model_profile.get("hyperparam_bounds", {}),
             "instructions": (
-                f"Diagnose {model_name} based on the complete profile above. "
-                "Consider: training history, relative ranking in family, "
-                "correlation structure, combo role, and all signals. "
-                "Output a JSON object with: diagnosis, diagnosis_detail, action_items, "
-                "cross_references."
+                f"Diagnose {model_name} based on the profile above. "
+                "Consider: training history, ranking context, correlation structure, "
+                "combo role, diversity_signals (especially is_diversifier), and all signals. "
+                "IMPORTANT: If diversity_signals.is_diversifier is true, this model's low IC "
+                "may be acceptable — it provides orthogonal diversification. Do NOT recommend "
+                "disabling without clear evidence (e.g. negative LOO delta). "
+                "Output a JSON object with: diagnosis (short label), diagnosis_detail (explanation), "
+                "action_items (recommended actions for THIS model), "
+                "cross_references (other models/combos that would be affected — use combo_role "
+                "and correlation_excerpt to identify them)."
             ),
         }, indent=2, ensure_ascii=False, default=str)
 
@@ -1577,7 +1584,7 @@ class LLMInterface:
                 pairwise_correlation, oos_trend, market_context.
             workspace_root: Workspace path for skill loading.
 
-        Returns a dict with keys: diagnosis, diagnosis_detail, member_assessments, action_items.
+        Returns a dict with keys: diagnosis, diagnosis_detail, member_assessments, action_items, cross_references.
         """
         cfg = self._resolve_llm_config(workspace_root)
         api_key = self._resolve_effective_api_key(workspace_root)
@@ -1604,8 +1611,10 @@ class LLMInterface:
                 f"Analyze combo '{combo_name}' based on the profile above. "
                 "Consider: member health (from Per-Model diagnoses), LOO deltas, "
                 "pairwise correlations, OOS trend, and market context. "
-                "Output a JSON object with: diagnosis, diagnosis_detail, "
-                "member_assessments, action_items."
+                "Output a JSON object with: diagnosis (short label), diagnosis_detail (explanation), "
+                "member_assessments (evaluate each member's role in THIS combo based on "
+                "member_diagnoses and LOO deltas), "
+                "action_items (combo-level: trigger_search, replace_member, adjust_weights)."
             ),
         }, indent=2, ensure_ascii=False, default=str)
 
@@ -1617,6 +1626,64 @@ class LLMInterface:
             base_url=cfg["base_url"],
             temperature=cfg["temperature"],
             label=f"Per-Combo({combo_name})",
+        )
+
+    def generate_execution_risk_critique(
+        self,
+        execution_profile: dict,
+        workspace_root: str,
+    ) -> Optional[dict]:
+        """
+        Dedicated Execution/Risk Critic — uses its own skill file
+        (execution_risk_system.md) instead of reusing the model_critic prompt.
+
+        Args:
+            execution_profile: Dict with keys: execution_issues, trade_pattern_issues,
+                market_context (from agent findings + triage).
+            workspace_root: Workspace path for skill loading.
+
+        Returns a dict with keys: diagnosis, diagnosis_detail, execution_issues,
+        risk_issues, model_linkage, action_items.
+        """
+        cfg = self._resolve_llm_config(workspace_root)
+        api_key = self._resolve_effective_api_key(workspace_root)
+        if not api_key:
+            return None
+
+        system_prompt = self._load_skill(workspace_root, "execution_risk_system.md")
+        if not system_prompt:
+            print("   ⚠️  execution_risk_system.md not found — skipping Execution/Risk Critic.")
+            return None
+
+        active_scopes = self._load_active_scopes(workspace_root)
+
+        # Build focused prompt from agent findings
+        exec_issues = execution_profile.get("execution_issues", [])
+        trade_issues = execution_profile.get("trade_pattern_issues", [])
+        market_ctx = execution_profile.get("_execution_context", {})
+
+        user_prompt = json.dumps({
+            "active_scopes": active_scopes,
+            "execution_issues": exec_issues,
+            "trade_pattern_issues": trade_issues,
+            "market_context": market_ctx,
+            "instructions": (
+                "Analyze execution quality and portfolio risk based on the agent findings above. "
+                "Focus on OPERATIONAL issues (execution, trade patterns, risk exposure) — "
+                "do NOT repeat model-level diagnoses. "
+                "Output a JSON object with: diagnosis, diagnosis_detail, execution_issues, "
+                "risk_issues, model_linkage, action_items."
+            ),
+        }, indent=2, ensure_ascii=False, default=str)
+
+        return self._call_llm_json_object(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=cfg["model"],
+            api_key=api_key,
+            base_url=cfg["base_url"],
+            temperature=cfg["temperature"],
+            label="Execution/Risk",
         )
 
     def generate_synthesizer_output(
@@ -1676,15 +1743,26 @@ class LLMInterface:
                     "target": e.get("target", ""),
                     "action_type": e.get("action_type", ""),
                     "params": e.get("params", {}),
+                    "executed": bool(e.get("executed", False)),
+                    "note": (
+                        "SUGGESTED ONLY — never actually applied via adapter"
+                        if not e.get("executed", False)
+                        else "APPLIED — config was modified and model was retrained"
+                    ),
                 }
                 for e in recent_history[:20]
             ],
             "instructions": (
-                "You are the final arbiter. Review all upstream outputs, resolve conflicts, "
-                "apply self_corrections from the feedback loop, and produce the final "
-                "ranked ActionItem list. Output a JSON object with: global_diagnosis, "
-                "conflict_resolutions, action_items, cross_validation_notes, "
-                "scope_recommendations."
+                "You are the final arbiter. Your PRIMARY job is:\n"
+                "1. Resolve conflicts between upstream outputs (Per-Model vs Per-Combo, etc.)\n"
+                "2. Produce the final ranked ActionItem list (deduplicated, scope-filtered)\n"
+                "3. Apply self_corrections from the feedback loop\n\n"
+                "SECONDARY:\n"
+                "- global_diagnosis: brief assessment (health_status, trend, systemic_risks)\n"
+                "- cross_validation_notes: flag genuine inconsistencies between upstream outputs\n"
+                "- scope_recommendations: suggest enabling scopes if blocked items exist\n\n"
+                "Output a JSON object with: global_diagnosis, conflict_resolutions, "
+                "action_items, cross_validation_notes, scope_recommendations."
             ),
         }, indent=2, ensure_ascii=False, default=str)
 

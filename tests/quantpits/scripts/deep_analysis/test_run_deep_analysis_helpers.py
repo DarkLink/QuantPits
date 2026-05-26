@@ -324,8 +324,8 @@ class TestBuildExecutionProfile:
             all_findings=[],
             triage_input={"market_context": {"current_regime": "Bearish"}},
         )
-        assert profile["training_history"] == []
-        assert profile["signals"] == []
+        assert profile["execution_issues"] == []
+        assert profile["trade_pattern_issues"] == []
         assert profile["_execution_context"] == {"current_regime": "Bearish"}
 
 

@@ -283,7 +283,7 @@ Each promote produces two records:
 `data/CHANGELOG.md` is auto-maintained in reverse chronological order:
 
 ```markdown
-# CSI300_Base Configuration Changelog
+# Demo_Workspace Configuration Changelog
 
 ## 2026-05-05: early_stop tuning — 3 models retrained, all passed
 - **Source**: LLM Critic (ActionItem 55b3a485, ac08cbd1, 6ee7122e)
@@ -304,7 +304,7 @@ Production workspace is a standalone Git repo. Rollback leverages Git:
 cat data/promote_history/promote_2026-05-05.md
 
 # 2. Restore config via Git
-cd /path/to/CSI300_Base
+cd /path/to/Demo_Workspace
 git checkout <pre-promote-commit> -- config/
 
 # 3. Mark as rolled back

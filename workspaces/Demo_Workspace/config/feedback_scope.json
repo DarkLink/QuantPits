@@ -1,7 +1,9 @@
 {
     "_comment": "反馈范围控制 — 控制 LLM Critic 可以干预哪些环节",
     "active_scopes": [
-        "hyperparams"
+        "hyperparams",
+        "model_selection",
+        "combo_search"
     ],
     "available_scopes": {
         "hyperparams": {
@@ -26,9 +28,9 @@
                 "prediction_audit"
             ],
             "adapters": [
-                "training_adapter"
+                "model_selection_adapter"
             ],
-            "enabled": false
+            "enabled": true
         },
         "combo_search": {
             "description": "触发组合搜索和组合成员更新",
@@ -40,7 +42,7 @@
                 "search_adapter",
                 "fusion_adapter"
             ],
-            "enabled": false
+            "enabled": true
         },
         "strategy_params": {
             "description": "TopK/DropN/流动性约束调整",

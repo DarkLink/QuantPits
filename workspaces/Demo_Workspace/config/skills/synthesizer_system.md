@@ -130,6 +130,36 @@
 - disable_model 建议必须附带 LOO delta 证据。若无 LOO delta，confidence 上限 0.5
 - 若禁用模型在活跃 combo 中，必须同时产出 replace_member 建议或说明不需要替换的原因
 
+## disable 决策的附加规则（正交保护）
+
+这些规则高于一般约束，因为正交性盲区是已知的系统性错误模式。
+
+### 正交保护
+
+当模型的 `diversity_signals.is_diversifier` 为 true，或 Per-Model 诊断中标注其属于 **Orthogonal_Wildcards** 组（`avg_corr < 0.15`）时：
+
+- **禁止**仅凭单模型 IC 低就建议 `disable_model`
+- **必须**附带 LOO delta 证据（来自 combo 级别的 LOO 分析），证明该模型在活跃组合中确实有害（LOO delta < 0 且 count ≥ 3）
+- 若 combo_search scope 未开启导致无 LOO delta 数据：应产出 `trigger_search` 获取 LOO delta，而非直接建议 disable
+- 若 LOO delta > 0（模型对组合有正贡献）：即使 IC≈0，也应保留该模型并标记为 "diversifier retained"
+
+### LOO delta 硬约束（重申）
+
+- 有 LOO delta 证据：confidence 上限 = min(source_confidence, 0.9)
+- 无 LOO delta 证据：confidence 上限 = **0.5**（不是 0.9！）
+- **历史违规案例**：曾对某个 avg_corr≈0.04 的 Orthogonal_Wildcards 模型产出 disable (conf=0.9) 且无 LOO delta。该模型单看 IC 极低，但因高度正交，在组合中可能通过分散化提供正向价值。这类误判是本规则要防止的核心问题。
+
+### 建议已执行 vs 仅建议的区分
+
+`recent_action_history` 中的每个条目都包含 `executed` 字段：
+- `executed: true` → 该建议已被 adapter 实际执行（配置已修改 + 已重训）
+- `executed: false` → 该建议仅被 Synthesizer 产出过，但从未被实际执行
+
+**关键规则**：
+- 在 `cross_validation_notes` 中引用 "已调整" 时，**必须确认 `executed: true`**
+- 将 "上次建议过 X" 误认为 "X 已执行" 是幻觉，会导致建议遗漏
+- 若某个调整被多次建议但 `executed` 始终为 false，应在全局诊断中标注 "建议积压"
+
 ## 产出量引导
 
 - 当多个模型存在 signal 时，应产出 **2-5 个** 差异化 ActionItem

@@ -257,14 +257,13 @@ def _run_critic_layered(
                 )
             ] = combo_name
 
-        # Submit execution/risk task
+        # Submit execution/risk task (dedicated skill, parallel with combos)
         exec_future = None
         if triage_result.get("needs_execution_risk", False):
             exec_profile = _build_execution_profile(all_findings, triage_input)
             exec_future = executor.submit(
-                critic_llm.generate_model_critique,  # reuse generic call
-                model_name="_execution_risk",
-                model_profile=exec_profile,
+                critic_llm.generate_execution_risk_critique,
+                execution_profile=exec_profile,
                 workspace_root=workspace_root,
             )
 
@@ -285,7 +284,8 @@ def _run_critic_layered(
         if exec_future:
             try:
                 execution_risk_output = exec_future.result()
-                print(f"   ✅ Execution/Risk: analyzed")
+                if execution_risk_output:
+                    print(f"   ✅ Execution/Risk: analyzed")
             except Exception as e:
                 print(f"   ❌ Execution/Risk: {e}")
 
@@ -451,6 +451,9 @@ def _build_model_profiles(
     # Load correlation matrix excerpt (if available)
     corr_excerpts = _load_correlation_excerpts(workspace_root, model_names)
 
+    # Load diversity signals (orthogonal/diversifier info from combo groups + corr matrix)
+    diversity_signals = _load_diversity_signals(workspace_root, model_names)
+
     for model_name in model_names:
         # Combo role
         combos = combo_membership.get(model_name, [])
@@ -468,6 +471,7 @@ def _build_model_profiles(
             "signals": signals_by_target.get(model_name, []),
             "current_params": current_params.get(model_name, {}),
             "hyperparam_bounds": bounds,
+            "diversity_signals": diversity_signals.get(model_name, {}),
         }
 
     return profiles
@@ -518,18 +522,84 @@ def _build_combo_profile(
 
 
 def _build_execution_profile(all_findings: list, triage_input: dict) -> dict:
-    """Build an execution/risk profile for the Execution/Risk LLM."""
+    """Build an execution/risk profile from agent findings for the dedicated LLM call.
+
+    ``all_findings`` is a list of ``AgentFindings`` dataclass instances (from the
+    Coordinator).  Each has an ``agent_name`` field (e.g. "execution_quality") and
+    a ``findings`` list of ``Finding`` dataclasses (with ``severity``, ``title``,
+    ``detail``).
+    """
+    exec_issues = []
+    trade_issues = []
+
+    for af in all_findings:
+        # AgentFindings is a dataclass — use attribute access
+        agent_name = getattr(af, 'agent_name', '')
+        findings_list = getattr(af, 'findings', [])
+
+        for f in findings_list:
+            # Finding is a dataclass with: severity, category, title, detail, data
+            sev = getattr(f, 'severity', '')
+            title = getattr(f, 'title', '')
+            detail = getattr(f, 'detail', '')
+            entry = {
+                "severity": sev,
+                "title": title[:200] if title else "",
+                "detail": detail[:500] if detail else "",
+            }
+            if 'execution' in agent_name.lower():
+                exec_issues.append(entry)
+            elif 'trade' in agent_name.lower():
+                trade_issues.append(entry)
+
     return {
-        "training_history": [],
-        "ranking_table": [],
-        "family_stats": {},
-        "correlation_excerpt": {},
-        "combo_role": {"in_combos": [], "is_active": False},
-        "signals": [],
-        "current_params": {},
-        "hyperparam_bounds": {},
+        "execution_issues": exec_issues,
+        "trade_pattern_issues": trade_issues,
         "_execution_context": triage_input.get("market_context", {}),
     }
+
+
+def _build_execution_risk_summary(all_findings: list, triage_input: dict) -> dict:
+    """Extract execution/risk highlights from agent findings (no LLM call).
+
+    Aggregates key metrics from execution_quality and trade_pattern agents
+    into a lightweight summary the Synthesizer can reference.
+
+    ``all_findings`` is a list of ``AgentFindings`` dataclass instances.
+    """
+    summary = {
+        "diagnosis": "rule_based",
+        "diagnosis_detail": "",
+        "execution_issues": [],
+        "trade_pattern_issues": [],
+    }
+
+    for af in all_findings:
+        agent_name = getattr(af, 'agent_name', '')
+        findings_list = getattr(af, 'findings', [])
+
+        for f in findings_list:
+            sev = getattr(f, 'severity', '')
+            title = getattr(f, 'title', '')
+            if sev in ('high', 'critical'):
+                issue_text = title[:200] if title else ""
+                if 'execution' in agent_name.lower() and issue_text:
+                    summary["execution_issues"].append(issue_text)
+                elif 'trade' in agent_name.lower() and issue_text:
+                    summary["trade_pattern_issues"].append(issue_text)
+
+    summary["diagnosis_detail"] = (
+        f"Execution issues: {len(summary['execution_issues'])}, "
+        f"Trade pattern issues: {len(summary['trade_pattern_issues'])}"
+    )
+
+    mc = triage_input.get("market_context", {})
+    if mc and isinstance(mc, dict):
+        summary["market_context"] = {
+            "n_regime_changes": mc.get("n_regime_changes", 0),
+        }
+
+    return summary
 
 
 # ------------------------------------------------------------------
@@ -643,20 +713,20 @@ def _load_current_params(workspace_root: str, model_names: list) -> dict:
 
 def _load_correlation_excerpts(workspace_root: str, model_names: list) -> dict:
     """Load top/bottom correlation excerpts for given models."""
-    # Find the latest correlation matrix file
-    import glob as _glob
-    pattern = os.path.join(workspace_root, 'output', '*correlation*.csv')
-    files = sorted(_glob.glob(pattern))
-    if not files:
-        pattern = os.path.join(workspace_root, 'output', '*correlation*.json')
-        files = sorted(_glob.glob(pattern))
+    # Search recursively under output/ for the latest correlation matrix
+    corr_files = []
+    for root, dirs, files in os.walk(os.path.join(workspace_root, 'output')):
+        for fname in files:
+            if 'correlation' in fname.lower() and fname.endswith(('.csv', '.json')):
+                corr_files.append(os.path.join(root, fname))
+    corr_files.sort()
 
-    if not files:
+    if not corr_files:
         return {}
 
     try:
         import pandas as pd
-        df = pd.read_csv(files[-1], index_col=0)
+        df = pd.read_csv(corr_files[-1], index_col=0)
     except Exception:
         return {}
 
@@ -678,6 +748,109 @@ def _load_correlation_excerpts(workspace_root: str, model_names: list) -> dict:
         }
 
     return excerpts
+
+
+def _load_diversity_signals(workspace_root: str, model_names: list) -> dict:
+    """Load orthogonal/diversifier signals from combo_groups YAML and correlation matrix.
+
+    Returns a dict mapping model_name → {avg_corr, group_label, is_diversifier}.
+
+    Sources:
+    - ``combo_groups_27.yaml``: group label per model (with @static suffix stripped).
+    - Correlation CSV: average pairwise correlation across all other models.
+
+    Models with avg_corr < 0.15 are flagged as diversifiers, meaning their
+    standalone IC is a poor signal — they may add value through orthogonality.
+    """
+    import yaml as _yaml
+
+    diversity = {}
+
+    # 1. Load correlation matrix to compute avg_corr per model
+    # Search recursively under output/ for the latest correlation matrix CSV
+    corr_files = []
+    for root, dirs, files in os.walk(os.path.join(workspace_root, 'output')):
+        for fname in files:
+            if 'correlation' in fname.lower() and fname.endswith(('.csv', '.json')):
+                corr_files.append(os.path.join(root, fname))
+    corr_files.sort()
+
+    avg_corrs: dict = {}
+    if corr_files:
+        try:
+            import pandas as pd
+            # Use the file with the most columns (full model set, not combo-specific)
+            best_file = None
+            max_cols = 0
+            for cf in corr_files:
+                try:
+                    with open(cf, 'r') as f:
+                        n = len(f.readline().split(','))
+                    if n > max_cols:
+                        max_cols = n
+                        best_file = cf
+                except Exception:
+                    pass
+            if best_file is None:
+                best_file = corr_files[-1]
+
+            corr_df = pd.read_csv(best_file, index_col=0)
+            # Strip @static suffix from column/index names
+            def _base(name):
+                return str(name).rsplit('@', 1)[0] if '@' in str(name) else str(name)
+
+            corr_df.index = [_base(i) for i in corr_df.index]
+            corr_df.columns = [_base(c) for c in corr_df.columns]
+
+            for model in model_names:
+                if model in corr_df.index:
+                    row = corr_df.loc[model]
+                    # Handle duplicate rows (e.g. @static + @rolling)
+                    if isinstance(row, pd.DataFrame):
+                        row = row.iloc[0]
+                    row = row.drop(model, errors='ignore')
+                    if isinstance(row, pd.Series):
+                        numeric_row = pd.to_numeric(row, errors='coerce').dropna()
+                        if len(numeric_row) > 0:
+                            avg_corrs[model] = float(numeric_row.mean())
+        except Exception:
+            pass
+
+    # 2. Load combo_groups_27.yaml for group labels
+    group_labels: dict = {}
+    groups_path = os.path.join(workspace_root, 'config', 'combo_groups_27.yaml')
+    if os.path.exists(groups_path):
+        try:
+            with open(groups_path, 'r', encoding='utf-8') as f:
+                groups_doc = _yaml.safe_load(f)
+            for group_name, members in (groups_doc.get('groups', {}) or {}).items():
+                for member_entry in members:
+                    if isinstance(member_entry, str):
+                        # Strip @static suffix
+                        member_name = member_entry.rsplit('@', 1)[0] if '@' in member_entry else member_entry
+                        group_labels[member_name] = group_name
+        except Exception:
+            pass
+
+    # 3. Build diversity signals per model
+    for model_name in model_names:
+        avg_corr = avg_corrs.get(model_name, None)
+        group_label = group_labels.get(model_name, None)
+        is_diversifier = (avg_corr is not None and avg_corr < 0.15)
+
+        diversity[model_name] = {
+            "avg_corr": round(avg_corr, 4) if avg_corr is not None else None,
+            "group_label": group_label,
+            "is_diversifier": is_diversifier,
+            "diversifier_note": (
+                "This model has very low average correlation (avg_corr < 0.15) with the model pool. "
+                "Its standalone IC may be low, but it CAN provide orthogonal diversification value "
+                "in ensembles. Do NOT recommend disable_model based solely on low IC — LOO delta "
+                "evidence is REQUIRED to prove this model actually harms the ensemble."
+            ) if is_diversifier else "",
+        }
+
+    return diversity
 
 
 def _persist_feedback_report(

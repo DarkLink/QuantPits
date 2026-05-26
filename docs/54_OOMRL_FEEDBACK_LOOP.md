@@ -268,7 +268,7 @@ promoted_pending_retrain  →  active  →  (可选) rolled_back
 `data/CHANGELOG.md` 自动维护，按时间倒序列出每次变更：
 
 ```markdown
-# CSI300_Base 配置变更历史
+# Demo_Workspace 配置变更历史
 
 ## 2026-05-05: early_stop 调整 — 3 模型重训通过
 - **来源**: LLM Critic (ActionItem 55b3a485, ac08cbd1, 6ee7122e)
@@ -289,7 +289,7 @@ promoted_pending_retrain  →  active  →  (可选) rolled_back
 cat data/promote_history/promote_2026-05-05.md
 
 # 2. 恢复配置（通过 Git）
-cd /path/to/CSI300_Base
+cd /path/to/Demo_Workspace
 git checkout <pre-promote-commit> -- config/
 
 # 3. 标记回退
