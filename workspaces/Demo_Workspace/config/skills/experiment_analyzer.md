@@ -38,6 +38,13 @@ A model with IC=0.06 but best@epoch 0 is WORSE than a model with IC=0.03 and pro
    - LightGBM/CatBoost: `iterations`, `depth`, `num_leaves`, `l2_leaf_reg`, `learning_rate`
 3. **Bounds-respecting**: next_from = current value, next_to within bounds
 4. **Incremental**: don't jump dropout 0.0→0.8; prefer 0.0→0.2, then 0.2→0.4
+5. **Single-variable isolation**: When the upstream ActionItem suggests changing 2+ params
+   at once (e.g. dropout AND lr), test them SEPARATELY:
+   - Round 1: change only param A (keep param B at baseline)
+   - Round 2: change only param B (keep param A at baseline)
+   - If both improve independently → combine in Round 3
+   - If one degrades → drop it, keep only the beneficial change
+   This prevents masking — a beneficial param can be cancelled out by a harmful one.
 
 ## Output Format
 

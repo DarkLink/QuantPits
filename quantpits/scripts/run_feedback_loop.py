@@ -209,7 +209,90 @@ def main():
         pr = report.promote_result
         status = "✅ Success" if pr.get("success") else f"❌ Failed: {pr.get('error', '')}"
         print(f"    Promote:   {status}")
+
+    # ── Semi-automated model_knowledge.yaml update suggestions ──
+    if report.validation_results and mode in ("execute", "playground-only"):
+        _suggest_knowledge_updates(report.validation_results, ROOT_DIR)
+
     print("=" * 60)
+
+
+def _suggest_knowledge_updates(validation_results: list, workspace_root: str):
+    """Generate model_knowledge.yaml update suggestions from experiment results."""
+    import json as _json
+    from datetime import datetime
+
+    suggestions = []
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    for vr in validation_results:
+        model = vr.get("model", "unknown")
+        passed = vr.get("passed", False)
+        params_changed = vr.get("params_applied", {})
+        ic_before = vr.get("ic_before")
+        ic_after = vr.get("ic_after")
+        icir_before = vr.get("icir_before")
+        icir_after = vr.get("icir_after")
+
+        if not params_changed:
+            continue
+
+        for param, change in params_changed.items():
+            from_val = change.get("from", "?") if isinstance(change, dict) else "?"
+            to_val = change.get("to", "?") if isinstance(change, dict) else "?"
+
+            if passed:
+                # Successful — suggest as known_effective_params
+                ic_delta = ""
+                if ic_before and ic_after:
+                    try:
+                        pct = ((float(ic_after) - float(ic_before)) / abs(float(ic_before))) * 100
+                        ic_delta = f", IC {pct:+.0f}%"
+                    except (ValueError, ZeroDivisionError):
+                        pass
+                direction = "increase" if float(to_val) > float(from_val) else "decrease"
+                suggestions.append({
+                    "model": model,
+                    "type": "known_effective_params",
+                    "entry": {
+                        "param": param,
+                        "direction": direction,
+                        "evidence": f"{param} {from_val}→{to_val} 有效 ({today}{ic_delta})",
+                    },
+                })
+            else:
+                # Failed — suggest as known_ineffective_params
+                direction = "increase" if float(to_val) > float(from_val) else "decrease"
+                suggestions.append({
+                    "model": model,
+                    "type": "known_ineffective_params",
+                    "entry": {
+                        "param": param,
+                        "direction": direction,
+                        "evidence": f"{param} {from_val}→{to_val} 无效或有害 ({today})",
+                    },
+                })
+
+    if not suggestions:
+        return
+
+    print("\n" + "─" * 60)
+    print("📝  model_knowledge.yaml 更新建议")
+    print("    以下条目可添加到 config/model_knowledge.yaml:")
+    print("─" * 60)
+
+    knowledge_path = os.path.join(workspace_root, "config", "model_knowledge.yaml")
+
+    for s in suggestions:
+        emoji = "✅" if s["type"] == "known_effective_params" else "❌"
+        entry = s["entry"]
+        print(f"\n  {emoji} {s['model']} → {s['type']}:")
+        print(f"      - param: {entry['param']}")
+        print(f"        direction: {entry['direction']}")
+        print(f"        evidence: \"{entry['evidence']}\"")
+
+    print(f"\n  📄 Target file: {knowledge_path}")
+    print("─" * 60)
 
 
 if __name__ == "__main__":

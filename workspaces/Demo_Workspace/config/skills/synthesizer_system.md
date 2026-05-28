@@ -130,6 +130,16 @@
 - disable_model 建议必须附带 LOO delta 证据。若无 LOO delta，confidence 上限 0.5
 - 若禁用模型在活跃 combo 中，必须同时产出 replace_member 建议或说明不需要替换的原因
 
+## 多参数调整实验策略
+
+当建议**同时调整 2 个以上参数**时（combo 调参），必须附加 `experiment_strategy` 字段：
+
+- `experiment_strategy: "single_variable"` — 建议用户在 Playground 中逐个参数单独实验，
+  以分离各参数的独立效应。combo 调参可能掩盖 "参数 A 有益但参数 B 有害" 的情况。
+- 历史经验：combo 调参可能导致 IC 下降，但通过单变量实验分离后发现其中一个参数是反向的。
+
+如果只调整 1 个参数，无需附加 experiment_strategy。
+
 ## disable 决策的附加规则（正交保护）
 
 这些规则高于一般约束，因为正交性盲区是已知的系统性错误模式。

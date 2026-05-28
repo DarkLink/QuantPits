@@ -27,6 +27,7 @@ import sys
 import json
 import argparse
 from datetime import datetime
+from typing import Optional
 
 # Ensure QuantPits modules are importable
 try:
@@ -454,6 +455,9 @@ def _build_model_profiles(
     # Load diversity signals (orthogonal/diversifier info from combo groups + corr matrix)
     diversity_signals = _load_diversity_signals(workspace_root, model_names)
 
+    # Load per-model tuning knowledge (experiment history + architecture priors)
+    model_knowledge = _load_model_knowledge(workspace_root)
+
     for model_name in model_names:
         # Combo role
         combos = combo_membership.get(model_name, [])
@@ -472,6 +476,7 @@ def _build_model_profiles(
             "current_params": current_params.get(model_name, {}),
             "hyperparam_bounds": bounds,
             "diversity_signals": diversity_signals.get(model_name, {}),
+            "tuning_knowledge": model_knowledge.get(model_name, {}),
         }
 
     return profiles
@@ -606,6 +611,29 @@ def _build_execution_risk_summary(all_findings: list, triage_input: dict) -> dic
 # Helpers: data loaders for layered pipeline
 # ------------------------------------------------------------------
 
+def _load_model_knowledge(workspace_root: str) -> dict:
+    """Load per-model tuning knowledge from config/model_knowledge.yaml.
+
+    Returns a dict mapping model_name → knowledge dict with keys:
+    architecture_family, regularization_direction, tuning_notes,
+    known_effective_params, known_ineffective_params, preferred_param_ranges.
+
+    This knowledge is injected into the Per-Model Critic LLM prompt so it
+    can make architecture-aware and history-informed tuning suggestions.
+    """
+    import yaml as _yaml
+
+    path = os.path.join(workspace_root, 'config', 'model_knowledge.yaml')
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            doc = _yaml.safe_load(f)
+        return doc.get('models', {}) if isinstance(doc, dict) else {}
+    except Exception:
+        return {}
+
+
 def _load_combo_membership(workspace_root: str) -> dict:
     """Load {model_name: [combo_names]} from ensemble_config.json."""
     path = os.path.join(workspace_root, 'config', 'ensemble_config.json')
@@ -711,31 +739,84 @@ def _load_current_params(workspace_root: str, model_names: list) -> dict:
     return current
 
 
-def _load_correlation_excerpts(workspace_root: str, model_names: list) -> dict:
-    """Load top/bottom correlation excerpts for given models."""
-    # Search recursively under output/ for the latest correlation matrix
+def _find_best_correlation_csv(workspace_root: str) -> Optional[str]:
+    """Find the best correlation matrix CSV under output/.
+
+    Strategy: pick the file with the most columns (= most complete model set).
+    On ties, pick the latest by filename sort order (date suffix).
+    Returns None if no file found.
+    """
     corr_files = []
     for root, dirs, files in os.walk(os.path.join(workspace_root, 'output')):
         for fname in files:
             if 'correlation' in fname.lower() and fname.endswith(('.csv', '.json')):
                 corr_files.append(os.path.join(root, fname))
+    if not corr_files:
+        return None
     corr_files.sort()
 
-    if not corr_files:
-        return {}
+    best_file = None
+    max_cols = 0
+    for cf in corr_files:
+        try:
+            with open(cf, 'r') as f:
+                n = len(f.readline().split(','))
+            if n > max_cols or (n == max_cols and (best_file is None or cf > best_file)):
+                max_cols = n
+                best_file = cf
+        except Exception:
+            pass
+    return best_file or (corr_files[-1] if corr_files else None)
 
+
+def _strip_static_suffix(name: str) -> str:
+    """Strip @static / @rolling suffix from model name."""
+    return str(name).rsplit('@', 1)[0] if '@' in str(name) else str(name)
+
+
+def _load_correlation_df(workspace_root: str):
+    """Load and normalize the best correlation matrix as a DataFrame.
+
+    Returns (DataFrame, True) on success, (None, False) on failure.
+    Normalizes index/column names by stripping @static suffixes.
+    """
+    import pandas as pd
+
+    csv_path = _find_best_correlation_csv(workspace_root)
+    if not csv_path:
+        return None, False
     try:
-        import pandas as pd
-        df = pd.read_csv(corr_files[-1], index_col=0)
+        df = pd.read_csv(csv_path, index_col=0)
+        df.index = [_strip_static_suffix(i) for i in df.index]
+        df.columns = [_strip_static_suffix(c) for c in df.columns]
+        return df, True
     except Exception:
+        return None, False
+
+
+def _load_correlation_excerpts(workspace_root: str, model_names: list) -> dict:
+    """Load top/bottom correlation excerpts for given models."""
+    import pandas as pd
+
+    corr_df, ok = _load_correlation_df(workspace_root)
+    if not ok or corr_df is None:
         return {}
 
     excerpts = {}
     for model in model_names:
-        if model not in df.index:
+        if model not in corr_df.index:
             continue
-        row = df.loc[model].drop(model, errors='ignore')
-        sorted_corr = row.sort_values(ascending=False)
+        row = corr_df.loc[model]
+        # Handle duplicate rows (e.g. @static + @rolling after suffix strip)
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        row = row.drop(model, errors='ignore')
+        if not isinstance(row, pd.Series) or row.empty:
+            continue
+        numeric_row = pd.to_numeric(row, errors='coerce').dropna()
+        if numeric_row.empty:
+            continue
+        sorted_corr = numeric_row.sort_values(ascending=False)
         excerpts[model] = {
             "top_correlated": [
                 {"model": m, "correlation": round(float(v), 3)}
@@ -763,45 +844,15 @@ def _load_diversity_signals(workspace_root: str, model_names: list) -> dict:
     standalone IC is a poor signal — they may add value through orthogonality.
     """
     import yaml as _yaml
+    import pandas as pd
 
     diversity = {}
 
     # 1. Load correlation matrix to compute avg_corr per model
-    # Search recursively under output/ for the latest correlation matrix CSV
-    corr_files = []
-    for root, dirs, files in os.walk(os.path.join(workspace_root, 'output')):
-        for fname in files:
-            if 'correlation' in fname.lower() and fname.endswith(('.csv', '.json')):
-                corr_files.append(os.path.join(root, fname))
-    corr_files.sort()
-
     avg_corrs: dict = {}
-    if corr_files:
+    corr_df, ok = _load_correlation_df(workspace_root)
+    if ok and corr_df is not None:
         try:
-            import pandas as pd
-            # Use the file with the most columns (full model set, not combo-specific)
-            best_file = None
-            max_cols = 0
-            for cf in corr_files:
-                try:
-                    with open(cf, 'r') as f:
-                        n = len(f.readline().split(','))
-                    if n > max_cols:
-                        max_cols = n
-                        best_file = cf
-                except Exception:
-                    pass
-            if best_file is None:
-                best_file = corr_files[-1]
-
-            corr_df = pd.read_csv(best_file, index_col=0)
-            # Strip @static suffix from column/index names
-            def _base(name):
-                return str(name).rsplit('@', 1)[0] if '@' in str(name) else str(name)
-
-            corr_df.index = [_base(i) for i in corr_df.index]
-            corr_df.columns = [_base(c) for c in corr_df.columns]
-
             for model in model_names:
                 if model in corr_df.index:
                     row = corr_df.loc[model]

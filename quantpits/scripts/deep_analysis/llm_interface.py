@@ -1531,6 +1531,9 @@ class LLMInterface:
         # Load active scopes
         active_scopes = self._load_active_scopes(workspace_root)
 
+        # Inject tuning_knowledge only if non-empty (avoid prompt bloat)
+        tuning_knowledge = model_profile.get("tuning_knowledge", {})
+
         user_prompt = json.dumps({
             "model_name": model_name,
             "active_scopes": active_scopes,
@@ -1542,6 +1545,7 @@ class LLMInterface:
             "correlation_excerpt": model_profile.get("correlation_excerpt", {}),
             "combo_role": model_profile.get("combo_role", {}),
             "diversity_signals": model_profile.get("diversity_signals", {}),
+            "tuning_knowledge": tuning_knowledge if tuning_knowledge else None,
             "signals": [s.to_dict() for s in model_profile.get("signals", [])],
             "current_params": model_profile.get("current_params", {}),
             "hyperparam_bounds": model_profile.get("hyperparam_bounds", {}),
@@ -1552,7 +1556,16 @@ class LLMInterface:
                 "IMPORTANT: If diversity_signals.is_diversifier is true, this model's low IC "
                 "may be acceptable — it provides orthogonal diversification. Do NOT recommend "
                 "disabling without clear evidence (e.g. negative LOO delta). "
-                "Output a JSON object with: diagnosis (short label), diagnosis_detail (explanation), "
+                + (
+                    "TUNING KNOWLEDGE: This model has accumulated experiment knowledge in "
+                    "tuning_knowledge. You MUST respect: "
+                    "(1) known_ineffective_params — do NOT suggest changes in those directions, "
+                    "(2) known_effective_params — prefer those directions, "
+                    "(3) preferred_param_ranges — keep suggestions within those ranges, "
+                    "(4) regularization_direction — follow its guidance (aggressive/cautious/neutral). "
+                    if tuning_knowledge else ""
+                )
+                + "Output a JSON object with: diagnosis (short label), diagnosis_detail (explanation), "
                 "action_items (recommended actions for THIS model), "
                 "cross_references (other models/combos that would be affected — use combo_role "
                 "and correlation_excerpt to identify them)."
