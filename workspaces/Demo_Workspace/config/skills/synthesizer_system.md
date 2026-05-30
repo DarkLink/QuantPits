@@ -91,7 +91,8 @@
       "confidence": 0.0到1.0,
       "risk_level": "low | medium | high",
       "priority": "P0 | P1 | P2 | P3",
-      "executable": true/false
+      "executable": true/false,
+      "experiment_strategy": "single_variable | null （当 params 包含 2+ 个参数时必填 single_variable）"
     }
   ],
   "cross_validation_notes": [

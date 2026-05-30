@@ -1484,6 +1484,31 @@ class LLMInterface:
                     print(f"   Triage: +{len(missing)} historical override models "
                           f"({', '.join(sorted(missing))})")
 
+            # --- Deterministic override: force combos with OOS degradation ---
+            if not result.get("prioritized_combos"):
+                oos_trend = combo_summary.get("_oos_trend", {})
+                calmar_slope = oos_trend.get("calmar_slope")
+                if calmar_slope is not None and calmar_slope < -0.3:
+                    # OOS is degrading but LLM didn't route any combos — inject them
+                    forced_combos = []
+                    for combo_name, info in combo_summary.items():
+                        if combo_name.startswith("_"):
+                            continue  # skip meta keys
+                        forced_combos.append({
+                            "combo": combo_name,
+                            "priority_score": 8,
+                            "primary_signal": "oos_degradation",
+                            "rationale": (
+                                f"Deterministic override: OOS Calmar slope "
+                                f"{calmar_slope:.3f}, combo '{combo_name}' "
+                                f"needs Per-Combo diagnosis."
+                            ),
+                        })
+                    if forced_combos:
+                        result["prioritized_combos"] = forced_combos[:3]
+                        print(f"   Triage: +{len(forced_combos[:3])} combo override "
+                              f"(OOS slope={calmar_slope:.3f})")
+
             n_models = len(result.get("prioritized_models", []))
             n_combos = len(result.get("prioritized_combos", []))
             n_healthy = len(result.get("healthy_models", []))
