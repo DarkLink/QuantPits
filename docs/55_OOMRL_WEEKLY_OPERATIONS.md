@@ -9,28 +9,33 @@
 ```
 周六/周日（数据就绪后）
 
+  ── 阻塞订单的（必须本周完成） ──
   1. 导入新数据                    qlib data update
          │
   2. 导入交易结算 + 跑 Post Trade   prod_post_trade.py
          │
   3. 跑 Deep Analysis              run_deep_analysis --critic
          │
-  4. 评估 Action Items             阅读报告，判断哪些值得执行
+  4. 评估 Action Items             只选高置信度、单参数或已验证方向的
          │
-  5. Playground 验证               手动改 config + static_train
-         │                          或 run_feedback_loop --execute
+  5. Playground 单变量验证          逐个参数分离实验，不要 combo 调参
          │
-  6. Promote 成功调整               promote_config.py 或手动改 production config
+  6. Promote 成功调整 → 重训        static_train.py --models <promoted> 然后 --predict-only --all-enabled
          │
-  7. 训练/预测                     static_train.py
+  7. 融合 + 订单生成               ensemble_fusion.py → order_gen.py
+
+  ── 不阻塞订单的（可以后续做） ──
+  8. 组合搜索                      brute_force_ensemble.py --use-groups
          │
-  8. 融合 + 订单生成               ensemble_fusion.py → order_gen.py
+  9. 评估候选 → 更新 combo 配置     ensemble_config.json
 ```
 
 **核心原则**：
+- **先修模型，再搜组合** — 组合搜索依赖模型预测质量，模型没修好之前搜出来的 combo 不可靠
 - **所有调整先在 Playground 验证，验证通过才 promote 到 production**
 - **不要跳过步骤 5 直接在 production 改配置**
 - **deep_analysis 需要在 post_trade 之后跑**（需要最新的 cash/holdings）
+- **组合搜索不阻塞本周订单** — 搜索是优化项，本周订单用现有 combo 配置 + 新预测即可
 
 ---
 
@@ -111,46 +116,87 @@ cat config/model_knowledge.yaml | grep -A20 "<model_name>"
 
 **历史教训**：krnn_Alpha360 的 dropout↑ + lr↓ combo 建议导致 IC 下降。单变量实验发现 dropout↑ 是反向的，仅 lr↓ 就 +10%。如果直接执行 combo 建议，会浪费一次训练资源且得出错误结论。
 
-```bash
-# 方式 A：手动验证（推荐，更可控）
+#### 5a. 同步 Playground
 
-# 5a. 同步 Playground
+```bash
 python -c "
 from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
 pm = PlaygroundManager('<project_root>/workspaces/Demo_Workspace')
 pm.create_or_sync()
 "
-
-# 5b. 在 Playground 中修改对应模型的 workflow_config YAML
-# 手动编辑 config/workflow_config_{model}.yaml
-
-# 5c. 在 Playground 中重训
-python -m quantpits.scripts.static_train \
-    --workspace workspaces/Demo_Workspace_Playground \
-    --models <model_name>
-
-# 5d. 对比 IC/ICIR
-# 训练输出中会显示 IC/ICIR，与 action_item 中的 expected_outcome 对比
 ```
 
+#### 5b. 实验循环（核心）
+
+每个模型独立走这个循环。每次只改一个参数。
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  1. 记录基线 IC（从 production training_history 查）      │
+│         │                                                │
+│  2. 修改 Playground config（只改 1 个参数）               │
+│         │                                                │
+│  3. static_train --workspace Playground --models <m>      │
+│         │                                                │
+│  4. 对比 Playground IC vs 基线 IC                         │
+│         │                                                │
+│  5. 判断：                                               │
+│     ├─ IC 改善 ≥5% 或 best_epoch 改善 → ✅ 通过，continue │
+│     ├─ IC 下降 >5% 或 overfitting 加重 → 🔄 重试         │
+│     └─ IC 基本持平 → 🟡 看收敛质量（best_epoch 改善？）    │
+│         │                                                │
+│  6. 🔄 重试时：                                          │
+│     a) 记录失败：追加到 model_knowledge.yaml              │
+│     b) 重置 config：pg_mgr.sync_single_config(<model>)   │
+│     c) 选择不同参数或不同方向                              │
+│     d) 回到步骤 2                                         │
+│         │                                                │
+│  7. 重试 1-2 次仍不改善 → ❌ give_up                      │
+│     记录到 model_knowledge.yaml 的 known_ineffective_params│
+└─────────────────────────────────────────────────────────┘
+```
+
+**重置 config 到 production 基线**（重试前必做）：
 ```bash
-# 方式 B：通过 feedback loop 自动执行（需要 adapter 支持）
+python -c "
+from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
+pg_mgr = PlaygroundManager('<project_root>/workspaces/Demo_Workspace')
+pg_mgr.sync_single_config('<model_name>')  # 从 production 拉回干净 config
+"
+```
+
+**记录失败实验到 model_knowledge.yaml**（无论通过还是失败都要记）：
+```yaml
+# 通过 → 追加到 known_effective_params
+known_effective_params:
+  - param: dropout
+    direction: increase
+    evidence: "0.2→0.4: IC +5%, best_epoch 0→24 (2026-05-30)"
+
+# 失败 → 追加到 known_ineffective_params  
+known_ineffective_params:
+  - param: num_leaves
+    direction: decrease
+    evidence: "210→128: IC -9%, 容量过低 (2026-05-30)"
+```
+
+**调用 ExperimentAnalyzer 获取下个参数建议**（可选，适合不知道试什么的场景）：
+```bash
+# 方式 B：通过 feedback loop 的 --execute --max-experiment-rounds 3
+# 自动走完整循环（reset → retrain → analyze → suggest next）
 python -m quantpits.scripts.run_feedback_loop \
     --action-items workspaces/Demo_Workspace/output/deep_analysis/action_items_{date}.json \
     --execute \
-    --models <model1>,<model2> \
-    --max-experiment-rounds 1
-
-# 预览模式（--report-only），先看看会改什么
-python -m quantpits.scripts.run_feedback_loop \
-    --action-items workspaces/Demo_Workspace/output/deep_analysis/action_items_{date}.json \
-    --report-only
+    --models <model> \
+    --max-experiment-rounds 3
 ```
 
-**验证标准**：
-- IC 改善 ≥ 5% 或 ICIR 改善 → 通过
-- IC 基本持平但 best_epoch 改善（不再 epoch 0）→ 部分通过（架构性修复）
-- IC 下降 → 不通过，回滚
+#### 5c. 验证标准
+
+- IC 改善 ≥ 5% 或 ICIR 改善 → ✅ 通过
+- IC 持平但 best_epoch 改善（如 0→7）→ ✅ 架构性修复，通过
+- IC 下降 >5% 且收敛正常 → ❌ 不通过，重试
+- 重试 1-2 次仍不改善 → ❌ give_up，记录到 model_knowledge.yaml
 
 ### 步骤 6：Promote 成功的调整
 
@@ -175,26 +221,59 @@ python -m quantpits.scripts.promote_config \
 ### 步骤 7：训练/预测
 
 ```bash
-# 对 promote 过的模型做全量训练，其余 --predict-only
+# 7a. 对 promote 过的模型做全量训练（超参变了，必须 full train）
 python -m quantpits.scripts.static_train \
     --workspace workspaces/Demo_Workspace \
     --models <promoted_model1>,<promoted_model2>
 
-# 其余模型仅预测
+# 7b. 其余模型仅预测（超参未变，用最新数据更新预测即可）
 python -m quantpits.scripts.static_train \
     --workspace workspaces/Demo_Workspace \
     --predict-only --all-enabled
 ```
 
+**顺序不能反** — 7a 先跑（更新 latest_train_records.json），7b 后跑。
+
 ### 步骤 8：融合 + 订单生成
 
 ```bash
-# 融合模型预测为组合信号
+# 融合模型预测为组合信号（用现有的 ensemble_config.json combo 配置）
 python -m quantpits.scripts.ensemble_fusion
 
 # 生成买卖订单
 python -m quantpits.scripts.order_gen
 ```
+
+---
+
+### 步骤 9：组合搜索（不阻塞订单，可后续做）
+
+> [!NOTE]
+> 组合搜索是优化项，不是每周必做。它依赖模型预测质量——**先修模型再搜组合**。搜索产生的候选 combo 需要人工评估后才更新到 `ensemble_config.json`，不影响本周已生成的订单。
+
+```bash
+# 分组穷举搜索（推荐）
+python -m quantpits.scripts.brute_force_ensemble \
+    --use-groups \
+    --group-config config/combo_groups_27.yaml \
+    --max-combo-size 4
+
+# 如果中断了可以续跑
+python -m quantpits.scripts.brute_force_ensemble \
+    --use-groups \
+    --group-config config/combo_groups_27.yaml \
+    --max-combo-size 4 \
+    --resume
+
+# 最小熵方法（备选）
+python -m quantpits.scripts.minentropy_ensemble
+```
+
+**搜索后**：
+1. 查看 `output/ensemble_runs/brute_force_*/oos/analysis/top_combos.csv`
+2. 对比候选 combo 与现有 combo 的 OOS Calmar/Sharpe/Excess
+3. 如果候选明显更好 → 更新 `ensemble_config.json`，下轮 `ensemble_fusion` 生效
+4. 如果差不多 → 保留现有配置，等更多数据
 
 ---
 
@@ -295,19 +374,26 @@ python -m quantpits.scripts.run_deep_analysis --critic
 # 4. 查看 action items
 cat workspaces/Demo_Workspace/output/deep_analysis/action_items_$(date +%Y-%m-%d).json | python -m json.tool | less
 
-# 5. Playground 验证（根据 action items 选择模型）
+# 5. Playground 验证（单变量优先！）
 python -c "from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager; PlaygroundManager('<project_root>/workspaces/Demo_Workspace').create_or_sync()"
-# ...手动改 Playground config...
+# ...手动改 Playground config（每次只改一个参数）...
 python -m quantpits.scripts.static_train --workspace workspaces/Demo_Workspace_Playground --models <model>
 
 # 6. Promote（确认 IC 改善后）
 # ...手动 cp config 到 production...
 
-# 7-8. 生产流程
+# 7. 训练 + 预测（先 full train，后 predict-only）
 python -m quantpits.scripts.static_train --models <promoted_models>
 python -m quantpits.scripts.static_train --predict-only --all-enabled
+
+# 8. 融合 + 订单
 python -m quantpits.scripts.ensemble_fusion
 python -m quantpits.scripts.order_gen
+
+# 9. 组合搜索（可后续做，不阻塞订单）
+python -m quantpits.scripts.brute_force_ensemble \
+    --use-groups --group-config config/combo_groups_27.yaml \
+    --max-combo-size 4
 ```
 
 ---

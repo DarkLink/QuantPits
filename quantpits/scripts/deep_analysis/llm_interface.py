@@ -2045,6 +2045,150 @@ class LLMInterface:
         print(f"   ❌ Critic failed after {max_retries} attempts: {last_error}")
         return []
 
+    # ------------------------------------------------------------------
+    # Standalone experiment advisor — callable without feedback_loop
+    # ------------------------------------------------------------------
+
+    def suggest_next_experiment(
+        self,
+        model_name: str,
+        playground_ic: float,
+        baseline_ic: float,
+        param_tried: str,
+        from_val,
+        to_val,
+        workspace_root: str,
+        rounds_remaining: int = 2,
+    ) -> Optional[dict]:
+        """Standalone wrapper around ``analyze_experiment_result``.
+
+        Use this when a manual Playground experiment doesn't go as expected
+        and you want the LLM to suggest the next parameter to try — without
+        going through the full feedback_loop orchestration.
+
+        Args:
+            model_name: e.g. "lightgbm_Alpha158"
+            playground_ic: IC from the just-completed Playground training
+            baseline_ic: Production IC (from training_history.jsonl)
+            param_tried: The parameter name that was just tried
+            from_val: Original value
+            to_val: New value that was tried
+            workspace_root: Path to the production workspace (for skill loading)
+            rounds_remaining: How many more experiment rounds are available
+
+        Returns:
+            LLM response dict with decision/next_param/next_from/next_to/rationale,
+            or None if LLM is unavailable.
+        """
+        # Load convergence data from Playground training history
+        pg_root = workspace_root.rstrip("/") + "_Playground"
+        convergence = {}
+        history_path = os.path.join(pg_root, "data", "training_history.jsonl")
+        if os.path.exists(history_path):
+            try:
+                with open(history_path, "r") as f:
+                    for line in f:
+                        entry = json.loads(line.strip())
+                        if entry.get("model_name") == model_name:
+                            convergence = {
+                                "best_epoch": entry.get("best_epoch"),
+                                "actual_epochs": entry.get("actual_epochs"),
+                                "configured_epochs": entry.get("configured_epochs"),
+                                "early_stopped": entry.get("early_stopped"),
+                                "final_val_score": entry.get("final_val_score"),
+                            }
+            except Exception:
+                pass
+
+        changes_tried = [{
+            "param": param_tried,
+            "from": from_val,
+            "to": to_val,
+            "ic_result": playground_ic,
+        }]
+
+        from quantpits.scripts.deep_analysis.signal_extractor import Signal
+
+        fake_signal = Signal(
+            signal_type="ic_decay", severity="warning",
+            scope="hyperparams", source_agent="Manual",
+            target=model_name, context="manual experiment",
+        )
+
+        current_params = self._load_current_params(workspace_root, [fake_signal])
+        hyperparam_bounds = self._load_hyperparam_bounds(workspace_root)
+        recent_history = self._load_recent_action_history(workspace_root, limit=20)
+
+        interventions = self._compute_available_interventions(
+            [fake_signal], recent_history, current_params,
+        )
+
+        result = self.analyze_experiment_result(
+            model_name=model_name,
+            baseline_ic=baseline_ic,
+            playground_ic=playground_ic,
+            changes_tried=changes_tried,
+            convergence=convergence if convergence else None,
+            current_params=current_params,
+            available_interventions=interventions,
+            hyperparam_bounds=hyperparam_bounds,
+            max_rounds_remaining=rounds_remaining,
+            workspace_root=workspace_root,
+        )
+
+        # Persist experiment record to playground
+        self._log_experiment(
+            pg_root=pg_root,
+            model_name=model_name,
+            baseline_ic=baseline_ic,
+            playground_ic=playground_ic,
+            param_tried=param_tried,
+            from_val=from_val,
+            to_val=to_val,
+            convergence=convergence,
+            llm_suggestion=result,
+        )
+
+        return result
+
+    @staticmethod
+    def _log_experiment(
+        pg_root: str,
+        model_name: str,
+        baseline_ic: float,
+        playground_ic: float,
+        param_tried: str,
+        from_val,
+        to_val,
+        convergence: dict,
+        llm_suggestion: Optional[dict],
+    ):
+        """Append one experiment round to the playground experiment log."""
+        log_path = os.path.join(pg_root, "data", "experiment_history.jsonl")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+        record = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "model": model_name,
+            "param": param_tried,
+            "from": from_val,
+            "to": to_val,
+            "baseline_ic": baseline_ic,
+            "playground_ic": playground_ic,
+            "ic_delta": round(playground_ic - baseline_ic, 6),
+            "convergence": convergence or {},
+            "llm_decision": llm_suggestion.get("decision") if llm_suggestion else None,
+            "llm_next_param": llm_suggestion.get("next_param") if llm_suggestion else None,
+            "llm_rationale": (llm_suggestion.get("rationale", "")[:200]) if llm_suggestion else "",
+        }
+
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # ------------------------------------------------------------------
+    # Static helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _parse_action_items(content: str) -> List[ActionItem]:
         """
