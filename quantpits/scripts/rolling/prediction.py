@@ -1,0 +1,251 @@
+"""
+Rolling 预测拼接与保存模块
+
+负责将各 window 的 pred.pkl 拼接成完整时间序列，
+以及使用最新模型对当前数据进行预测。
+"""
+
+import pandas as pd
+from datetime import datetime
+
+
+def _filter_pred_to_test_segment(pred, window):
+    """将 pred 过滤到 window 的 test 段日期范围 [test_start, test_end]"""
+    dates = pred.index.get_level_values('datetime')
+    mask = (dates >= pd.Timestamp(window['test_start'])) & \
+           (dates <= pd.Timestamp(window['test_end']))
+    return pred[mask]
+
+
+def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
+                                    combined_exp_name, anchor_date,
+                                    windows, extra_preds=None):
+    """
+    将各 window 的 pred.pkl 拼接成完整时间序列。
+
+    对每个模型：
+    1. 从各 window recorder 加载 pred.pkl
+    2. 截取仅 test 段的预测（避免训练集内预测泄漏到下游回测）
+    3. pd.concat (日期不重叠)
+    4. 保存到 Rolling_Combined 实验的新 recorder
+
+    Args:
+        state: RollingState
+        model_names: 要拼接的模型名列表（可为单个模型的列表）
+        rolling_exp_name: per-window 实验名
+        combined_exp_name: 拼接后实验名
+        anchor_date: 锚点日期
+        windows: list of dict, 完整的 rolling windows 列表（用于 test 段截取）
+        extra_preds: dict {model_name: DataFrame}, 额外的 predict-only 预测
+
+    Returns:
+        dict: {model_name: combined_record_id}
+    """
+    from qlib.workflow import R
+
+    print(f"\n{'='*60}")
+    print("📦 拼接 Rolling 预测 (仅 test 段)")
+    print(f"{'='*60}")
+
+    # 构建 window_idx -> window 的快速查找表
+    window_map = {w['window_idx']: w for w in windows}
+
+    combined_records = {}
+
+    for model_name in model_names:
+        completions = state.get_completed_record_ids(model_name)
+        if not completions:
+            print(f"  [{model_name}] 无已完成的 window, 跳过")
+            continue
+
+        print(f"\n  [{model_name}] 拼接 {len(completions)} 个 windows...")
+
+        all_preds = []
+        for comp in completions:
+            widx = comp['window_idx']
+            try:
+                rec = R.get_recorder(
+                    recorder_id=comp['record_id'],
+                    experiment_name=rolling_exp_name
+                )
+                pred = rec.load_object("pred.pkl")
+                # 统一为单列 score DataFrame，避免下游 columns 不匹配
+                if isinstance(pred, pd.DataFrame) and 'score' in pred.columns:
+                    pred = pred[['score']]
+                elif isinstance(pred, pd.Series):
+                    pred = pred.to_frame('score')
+
+                # 截取 test 段：仅保留 [test_start, test_end] 范围内的预测
+                w = window_map.get(widx)
+                if w:
+                    pred = _filter_pred_to_test_segment(pred, w)
+
+                all_preds.append(pred)
+                dates = pred.index.get_level_values('datetime')
+                print(f"    Window {widx}: "
+                      f"{dates.min().date()} ~ {dates.max().date()}, "
+                      f"{len(pred)} rows")
+            except Exception as e:
+                print(f"    Window {widx}: FAILED - {e}")
+
+        if extra_preds and model_name in extra_preds:
+            extra_df = extra_preds[model_name]
+            if extra_df is not None and not extra_df.empty:
+                # 统一为单列 score DataFrame
+                if isinstance(extra_df, pd.Series):
+                    extra_df = extra_df.to_frame('score')
+                elif isinstance(extra_df, pd.DataFrame) and 'score' in extra_df.columns:
+                    extra_df = extra_df[['score']]
+                elif isinstance(extra_df, pd.DataFrame):
+                    extra_df.columns = ['score']
+
+                # extra_preds 来自 predict_with_latest_model，也需要截取 test 段
+                # 使用最新已完成 window 的 test 范围
+                if completions:
+                    last_widx = completions[-1]['window_idx']
+                    last_w = window_map.get(last_widx)
+                    if last_w:
+                        extra_df = _filter_pred_to_test_segment(extra_df, last_w)
+
+                all_preds.append(extra_df)
+                dts = extra_df.index.get_level_values('datetime')
+                print(f"    Extra Pred_Only: {dts.min().date()} ~ {dts.max().date()}, {len(extra_df)} rows")
+
+        if not all_preds:
+            print(f"  [{model_name}] 无有效预测数据")
+            continue
+
+        # 拼接
+        combined_pred = pd.concat(all_preds)
+        # 去重：重叠区域保留最新 (extra_preds / 后续 window) 的预测
+        combined_pred = combined_pred[~combined_pred.index.duplicated(keep='last')]
+        combined_pred = combined_pred.sort_index()
+
+        dates = combined_pred.index.get_level_values('datetime')
+        print(f"  [{model_name}] 拼接结果: "
+              f"{dates.min().date()} ~ {dates.max().date()}, "
+              f"{len(combined_pred)} rows")
+
+        # 保存到 Combined 实验
+        with R.start(experiment_name=combined_exp_name):
+            R.set_tags(
+                model=model_name,
+                mode='rolling_combined',
+                anchor_date=anchor_date,
+                n_windows=len(completions),
+            )
+            R.save_objects(**{"pred.pkl": combined_pred})
+            combined_rid = R.get_recorder().id
+
+        combined_records[model_name] = combined_rid
+
+        print(f"  [{model_name}] Combined Recorder: {combined_rid}")
+
+    return combined_records
+
+
+def save_rolling_records(combined_records, combined_exp_name, anchor_date):
+    """
+    保存 rolling 训练记录到统一的 latest_train_records.json
+
+    使用 model@rolling key 格式写入统一记录文件，通过 merge 方式保留其他模式的记录。
+    """
+    from quantpits.utils.train_utils import (
+        make_model_key, merge_train_records, RECORD_OUTPUT_FILE,
+    )
+
+    # 将 rolling 模型的 key 转为 model@rolling 格式
+    rolling_models = {}
+    for name, rid in combined_records.items():
+        rolling_key = make_model_key(name, 'rolling')
+        rolling_models[rolling_key] = rid
+
+    records = {
+        "experiment_name": combined_exp_name,
+        "rolling_experiment_name": combined_exp_name,
+        "anchor_date": anchor_date,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "models": rolling_models,
+    }
+
+    merge_train_records(records)
+
+    print(f"\n📋 Rolling 记录已合并到统一文件: {RECORD_OUTPUT_FILE}")
+    print(f"   模型数: {len(rolling_models)}")
+    for key, rid in rolling_models.items():
+        print(f"   {key}: {rid}")
+
+
+def predict_with_latest_model(model_name, model_info, state,
+                              rolling_exp_name, params_base, anchor_date, windows):
+    """
+    使用最近一个 window 训练的模型对最新数据预测。
+
+    用于日常模式中距离上次 rolling 未超过 step 的情况。
+    """
+    from quantpits.utils.train_utils import inject_config
+    from qlib.utils import init_instance_by_config
+    from qlib.workflow import R
+
+    completions = state.get_completed_record_ids(model_name)
+    if not completions:
+        print(f"  [{model_name}] 无历史 rolling 模型，需要先 --cold-start")
+        return None
+
+    # 取最新 window 的模型
+    latest = completions[-1]
+    widx = latest['window_idx']
+    print(f"  [{model_name}] 加载 Window {widx} 模型进行预测...")
+
+    window = next((w for w in windows if w['window_idx'] == widx), None)
+    if not window:
+        print(f"  [{model_name}] 无法找到对应的 window 数据划分: {widx}")
+        return None
+
+    try:
+        rec = R.get_recorder(
+            recorder_id=latest['record_id'],
+            experiment_name=rolling_exp_name
+        )
+        model = rec.load_object("model.pkl")
+
+        # 构建最新数据的 dataset
+        yaml_file = model_info['yaml_file']
+        params = dict(params_base)
+        params['anchor_date'] = anchor_date
+
+        # 补齐基于该 window 的日期范围，以满足 inject_config 检查。
+        # 注意：windows 是用当前 anchor_date 动态重新生成的，所以最后一个
+        # window 的 test_end 会自动延伸到 min(test_end_full, anchor_date)，
+        # 确保 dataset 能覆盖到最新数据。
+        params['start_time'] = window['train_start']
+        params['end_time'] = window['test_end']
+        params['fit_start_time'] = window['train_start']
+        params['fit_end_time'] = window['train_end']
+        params['valid_start_time'] = window['valid_start']
+        params['valid_end_time'] = window['valid_end']
+        params['test_start_time'] = window['test_start']
+        params['test_end_time'] = window['test_end']
+
+        task_config = inject_config(yaml_file, params, model_name=model_name)
+
+        dataset_cfg = task_config['task']['dataset']
+        dataset = init_instance_by_config(dataset_cfg)
+
+        pred = model.predict(dataset=dataset)
+
+        # 统一为单列 score DataFrame，与训练时 SigAnaRecord 保存格式对齐
+        if isinstance(pred, pd.Series):
+            pred = pred.to_frame('score')
+        elif isinstance(pred, pd.DataFrame) and 'score' not in pred.columns:
+            pred.columns = ['score']
+
+        print(f"  [{model_name}] 预测完成: Recorder={latest['record_id']}")
+
+        return pred
+
+    except Exception as e:
+        print(f"  [{model_name}] 预测失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None

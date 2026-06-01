@@ -37,11 +37,7 @@ Rolling Training Script (滚动训练)
 
 import os
 import sys
-import json
 import argparse
-import pandas as pd
-from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
 
 from quantpits.utils import env
 from quantpits.utils.constants import MONTHS_PER_YEAR
@@ -51,593 +47,23 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
 sys.path.append(SCRIPT_DIR)
 
-
-# ================= 日期工具 =================
-def parse_step_to_relativedelta(step_str):
-    """将 '3M' / '1Y' 等解析为 relativedelta"""
-    step_str = step_str.strip().upper()
-    if step_str.endswith('M'):
-        return relativedelta(months=int(step_str[:-1]))
-    elif step_str.endswith('Y'):
-        return relativedelta(years=int(step_str[:-1]))
-    else:
-        raise ValueError(f"Invalid step format: '{step_str}'. Use e.g. 3M or 1Y")
-
-
-def generate_rolling_windows(rolling_start, train_years, valid_years,
-                             test_step, anchor_date):
-    """
-    生成所有 rolling windows 的日期范围。
-
-    Window n:
-      Train: [T + n*Z,       T + X + n*Z − 1d]
-      Valid: [T + X + n*Z,   T + X + Y + n*Z − 1d]
-      Test:  [T + X + Y + n*Z, T + X + Y + (n+1)*Z − 1d]
-
-    最后一个 window 的 test_end = anchor_date（不足完整 Z 也做）。
-
-    Args:
-        rolling_start: str, "2020-01-01"
-        train_years: int, X
-        valid_years: int, Y
-        test_step: str, Z ("3M", "6M", "1Y")
-        anchor_date: str, 最新日期
-
-    Returns:
-        list of dict: [{
-            'window_idx': int,
-            'train_start': str, 'train_end': str,
-            'valid_start': str, 'valid_end': str,
-            'test_start': str,  'test_end': str,
-        }]
-    """
-    T = datetime.strptime(rolling_start, "%Y-%m-%d")
-    X = relativedelta(years=train_years)
-    Y = relativedelta(years=valid_years)
-    Z = parse_step_to_relativedelta(test_step)
-    anchor = datetime.strptime(anchor_date, "%Y-%m-%d")
-
-    # Convert Z to total months for easy multiplication
-    z_months = (Z.years or 0) * MONTHS_PER_YEAR + (Z.months or 0)
-
-    windows = []
-    n = 0
-
-    while True:
-        nZ = relativedelta(months=n * z_months)
-        n1Z = relativedelta(months=(n + 1) * z_months)
-
-        train_start = T + nZ
-        train_end = T + X + nZ - timedelta(days=1)
-        valid_start = T + X + nZ
-        valid_end = T + X + Y + nZ - timedelta(days=1)
-        test_start = T + X + Y + nZ
-        test_end_full = T + X + Y + n1Z - timedelta(days=1)
-
-        # 若 test_start 已超过 anchor_date，停止
-        if test_start > anchor:
-            break
-
-        # 最后一个 window: test_end = min(test_end_full, anchor_date)
-        test_end = min(test_end_full, anchor)
-
-        windows.append({
-            'window_idx': n,
-            'train_start': train_start.strftime("%Y-%m-%d"),
-            'train_end': train_end.strftime("%Y-%m-%d"),
-            'valid_start': valid_start.strftime("%Y-%m-%d"),
-            'valid_end': valid_end.strftime("%Y-%m-%d"),
-            'test_start': test_start.strftime("%Y-%m-%d"),
-            'test_end': test_end.strftime("%Y-%m-%d"),
-        })
-
-        # 若已到 anchor，不再继续
-        if test_end >= anchor:
-            break
-
-        n += 1
-
-    return windows
-
-
-# ================= 状态管理 =================
-class RollingState:
-    """Rolling 训练状态管理，支持断点恢复"""
-
-    def __init__(self, state_file=None):
-        from quantpits.utils.train_utils import ROLLING_STATE_FILE
-        self.state_file = state_file or ROLLING_STATE_FILE
-        self._state = self._load()
-
-    def _load(self):
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        return json.loads(content)
-            except (json.JSONDecodeError, IOError):
-                pass
-        return self._empty()
-
-    def _empty(self):
-        return {
-            'started_at': None,
-            'rolling_config': {},
-            'anchor_date': None,
-            'completed_windows': {},  # {window_idx_str: {model_name: record_id}}
-            'current_window_idx': None,
-            'current_model': None,
-            'total_windows': 0,
-        }
-
-    def save(self):
-        os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-        with open(self.state_file, 'w') as f:
-            json.dump(self._state, f, indent=4)
-
-    def init_run(self, rolling_config, anchor_date, total_windows):
-        self._state = self._empty()
-        self._state['started_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._state['rolling_config'] = rolling_config
-        self._state['anchor_date'] = anchor_date
-        self._state['total_windows'] = total_windows
-        self.save()
-
-    def is_window_model_done(self, window_idx, model_name):
-        key = str(window_idx)
-        return key in self._state['completed_windows'] and \
-               model_name in self._state['completed_windows'][key]
-
-    def mark_window_model_done(self, window_idx, model_name, record_id):
-        key = str(window_idx)
-        if key not in self._state['completed_windows']:
-            self._state['completed_windows'][key] = {}
-        self._state['completed_windows'][key][model_name] = record_id
-        self._state['current_window_idx'] = window_idx
-        self._state['current_model'] = model_name
-        self.save()
-
-    def get_completed_record_ids(self, model_name):
-        """获取某模型在所有已完成 windows 的 record_ids (按 window_idx 排序)"""
-        result = []
-        for key in sorted(self._state['completed_windows'].keys(), key=int):
-            models = self._state['completed_windows'][key]
-            if model_name in models:
-                result.append({
-                    'window_idx': int(key),
-                    'record_id': models[model_name],
-                })
-        return result
-
-    def get_all_completed_windows(self):
-        return self._state['completed_windows']
-
-    @property
-    def anchor_date(self):
-        return self._state.get('anchor_date')
-
-    def get_last_completed_window_idx(self):
-        """获取最后一个已完成的 window index"""
-        completed = self._state.get('completed_windows', {})
-        if not completed:
-            return None
-        return max(int(k) for k in completed.keys())
-
-    def remove_window(self, window_idx):
-        """删除指定 window 的所有训练记录（供 --retrain-last 使用）"""
-        key = str(window_idx)
-        if key in self._state['completed_windows']:
-            del self._state['completed_windows'][key]
-            self.save()
-            return True
-        return False
-
-    def clear(self):
-        if os.path.exists(self.state_file):
-            from quantpits.utils.train_utils import backup_file_with_date
-            backup_file_with_date(self.state_file, prefix="rolling_state")
-            os.remove(self.state_file)
-            print("🗑️  Rolling 状态已清除")
-
-    def show(self):
-        if not self._state.get('started_at'):
-            print("ℹ️  没有找到 Rolling 运行状态")
-            return
-
-        s = self._state
-        print("\n📋 Rolling 运行状态:")
-        print(f"  开始时间: {s.get('started_at', 'N/A')}")
-        print(f"  锚点日期: {s.get('anchor_date', 'N/A')}")
-        print(f"  总 Windows: {s.get('total_windows', 0)}")
-
-        completed = s.get('completed_windows', {})
-        n_completed_windows = len(completed)
-        total_models = sum(len(m) for m in completed.values())
-        print(f"  已完成 Windows: {n_completed_windows}")
-        print(f"  已完成 模型×Window: {total_models}")
-
-        if completed:
-            for widx in sorted(completed.keys(), key=int):
-                models = completed[widx]
-                print(f"    Window {widx}: {list(models.keys())}")
-
-        cw = s.get('current_window_idx')
-        cm = s.get('current_model')
-        if cw is not None:
-            print(f"  最后完成: Window {cw}, 模型 {cm}")
-
-
-# ================= 训练单 Window =================
-def train_window_model(model_name, yaml_file, window, params_base,
-                       experiment_name, no_pretrain=False):
-    """
-    训练单个模型在一个 rolling window 上
-
-    Args:
-        model_name: 模型名称
-        yaml_file: YAML 配置路径
-        window: 日期 dict (train_start, train_end, valid_start, valid_end, test_start, test_end)
-        params_base: 基础参数 (market, benchmark 等，来自 workspace config)
-        experiment_name: MLflow experiment name
-        no_pretrain: 是否跳过预训练
-
-    Returns:
-        dict: {success, record_id, performance, error}
-    """
-    from quantpits.utils.train_utils import inject_config
-    from qlib.utils import init_instance_by_config
-    from qlib.workflow import R
-
-    result = {
-        'success': False,
-        'record_id': None,
-        'performance': None,
-        'error': None,
-    }
-
-    if not os.path.exists(yaml_file):
-        result['error'] = f"YAML 不存在: {yaml_file}"
-        return result
-
-    # 构建带 rolling window 日期的 params
-    params = dict(params_base)
-    params['start_time'] = window['train_start']
-    params['end_time'] = window['test_end']
-    params['fit_start_time'] = window['train_start']
-    params['fit_end_time'] = window['train_end']
-    params['valid_start_time'] = window['valid_start']
-    params['valid_end_time'] = window['valid_end']
-    params['test_start_time'] = window['test_start']
-    params['test_end_time'] = window['test_end']
-
-    widx = window['window_idx']
-
-    print(f"\n>>> Rolling Train: {model_name} | Window {widx}")
-    print(f"    Train: [{window['train_start']}, {window['train_end']}]")
-    print(f"    Valid: [{window['valid_start']}, {window['valid_end']}]")
-    print(f"    Test:  [{window['test_start']}, {window['test_end']}]")
-    print(f"    YAML:  {yaml_file}")
-
-    task_config = inject_config(yaml_file, params, model_name=model_name,
-                                no_pretrain=no_pretrain)
-
-    try:
-        with R.start(experiment_name=experiment_name):
-            R.set_tags(
-                model=model_name,
-                window_idx=widx,
-                mode='rolling_train',
-                train_start=window['train_start'],
-                train_end=window['train_end'],
-                test_start=window['test_start'],
-                test_end=window['test_end'],
-            )
-            R.log_params(**{k: str(v) for k, v in params.items()})
-
-            # 训练
-            model_cfg = task_config['task']['model']
-            model = init_instance_by_config(model_cfg)
-            dataset_cfg = task_config['task']['dataset']
-            dataset = init_instance_by_config(dataset_cfg)
-
-            print(f"[{model_name}|W{widx}] Training...")
-            model.fit(dataset=dataset)
-
-            # 预测
-            print(f"[{model_name}|W{widx}] Predicting...")
-            pred = model.predict(dataset=dataset)
-
-            # 保存模型
-            recorder = R.get_recorder()
-            recorder.save_objects(**{"model.pkl": model})
-
-
-
-            # Signal Record
-            record_cfgs = task_config['task'].get('record', [])
-            for r_cfg in record_cfgs:
-                if r_cfg['kwargs'].get('model') == '<MODEL>':
-                    r_cfg['kwargs']['model'] = model
-                if r_cfg['kwargs'].get('dataset') == '<DATASET>':
-                    r_cfg['kwargs']['dataset'] = dataset
-                r_obj = init_instance_by_config(r_cfg, recorder=recorder)
-                r_obj.generate()
-
-            # IC metrics
-            performance = {}
-            try:
-                ic_series = recorder.load_object("sig_analysis/ic.pkl")
-                ic_mean = ic_series.mean()
-                ic_std = ic_series.std()
-                ic_ir = ic_mean / ic_std if ic_std != 0 else None
-                performance = {
-                    "IC_Mean": float(ic_mean) if ic_mean else None,
-                    "ICIR": float(ic_ir) if ic_ir else None,
-                    "record_id": recorder.info['id'],
-                }
-            except Exception as e:
-                print(f"[{model_name}|W{widx}] IC metrics unavailable: {e}")
-                performance = {"record_id": recorder.info['id']}
-
-            rid = recorder.info['id']
-            print(f"[{model_name}|W{widx}] Done! Recorder: {rid}")
-
-            result['success'] = True
-            result['record_id'] = rid
-            result['performance'] = performance
-
-    except Exception as e:
-        result['error'] = str(e)
-        print(f"!!! Error in rolling train {model_name} W{widx}: {e}")
-        import traceback
-        traceback.print_exc()
-
-    return result
-
-
-# ================= 预测拼接 =================
-def _filter_pred_to_test_segment(pred, window):
-    """将 pred 过滤到 window 的 test 段日期范围 [test_start, test_end]"""
-    dates = pred.index.get_level_values('datetime')
-    mask = (dates >= pd.Timestamp(window['test_start'])) & \
-           (dates <= pd.Timestamp(window['test_end']))
-    return pred[mask]
-
-
-def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
-                                    combined_exp_name, anchor_date,
-                                    windows, extra_preds=None):
-    """
-    将各 window 的 pred.pkl 拼接成完整时间序列。
-
-    对每个模型：
-    1. 从各 window recorder 加载 pred.pkl
-    2. 截取仅 test 段的预测（避免训练集内预测泄漏到下游回测）
-    3. pd.concat (日期不重叠)
-    4. 保存到 Rolling_Combined 实验的新 recorder
-
-    Args:
-        state: RollingState
-        model_names: 要拼接的模型名列表
-        rolling_exp_name: per-window 实验名
-        combined_exp_name: 拼接后实验名
-        anchor_date: 锚点日期
-        windows: list of dict, 完整的 rolling windows 列表（用于 test 段截取）
-        extra_preds: dict {model_name: DataFrame}, 额外的 predict-only 预测
-
-    Returns:
-        dict: {model_name: combined_record_id}
-    """
-    from qlib.workflow import R
-
-    print(f"\n{'='*60}")
-    print("📦 拼接 Rolling 预测 (仅 test 段)")
-    print(f"{'='*60}")
-
-    # 构建 window_idx -> window 的快速查找表
-    window_map = {w['window_idx']: w for w in windows}
-
-    combined_records = {}
-
-    for model_name in model_names:
-        completions = state.get_completed_record_ids(model_name)
-        if not completions:
-            print(f"  [{model_name}] 无已完成的 window, 跳过")
-            continue
-
-        print(f"\n  [{model_name}] 拼接 {len(completions)} 个 windows...")
-
-        all_preds = []
-        for comp in completions:
-            widx = comp['window_idx']
-            try:
-                rec = R.get_recorder(
-                    recorder_id=comp['record_id'],
-                    experiment_name=rolling_exp_name
-                )
-                pred = rec.load_object("pred.pkl")
-                # 统一为单列 score DataFrame，避免下游 columns 不匹配
-                if isinstance(pred, pd.DataFrame) and 'score' in pred.columns:
-                    pred = pred[['score']]
-                elif isinstance(pred, pd.Series):
-                    pred = pred.to_frame('score')
-
-                # 截取 test 段：仅保留 [test_start, test_end] 范围内的预测
-                w = window_map.get(widx)
-                if w:
-                    pred = _filter_pred_to_test_segment(pred, w)
-
-                all_preds.append(pred)
-                dates = pred.index.get_level_values('datetime')
-                print(f"    Window {widx}: "
-                      f"{dates.min().date()} ~ {dates.max().date()}, "
-                      f"{len(pred)} rows")
-            except Exception as e:
-                print(f"    Window {widx}: FAILED - {e}")
-
-        if extra_preds and model_name in extra_preds:
-            extra_df = extra_preds[model_name]
-            if extra_df is not None and not extra_df.empty:
-                # 统一为单列 score DataFrame
-                if isinstance(extra_df, pd.Series):
-                    extra_df = extra_df.to_frame('score')
-                elif isinstance(extra_df, pd.DataFrame) and 'score' in extra_df.columns:
-                    extra_df = extra_df[['score']]
-                elif isinstance(extra_df, pd.DataFrame):
-                    extra_df.columns = ['score']
-
-                # extra_preds 来自 predict_with_latest_model，也需要截取 test 段
-                # 使用最新已完成 window 的 test 范围
-                if completions:
-                    last_widx = completions[-1]['window_idx']
-                    last_w = window_map.get(last_widx)
-                    if last_w:
-                        extra_df = _filter_pred_to_test_segment(extra_df, last_w)
-
-                all_preds.append(extra_df)
-                dts = extra_df.index.get_level_values('datetime')
-                print(f"    Extra Pred_Only: {dts.min().date()} ~ {dts.max().date()}, {len(extra_df)} rows")
-
-        if not all_preds:
-            print(f"  [{model_name}] 无有效预测数据")
-            continue
-
-        # 拼接
-        combined_pred = pd.concat(all_preds)
-        # 去重：重叠区域保留最新 (extra_preds / 后续 window) 的预测
-        combined_pred = combined_pred[~combined_pred.index.duplicated(keep='last')]
-        combined_pred = combined_pred.sort_index()
-
-        dates = combined_pred.index.get_level_values('datetime')
-        print(f"  [{model_name}] 拼接结果: "
-              f"{dates.min().date()} ~ {dates.max().date()}, "
-              f"{len(combined_pred)} rows")
-
-        # 保存到 Combined 实验
-        with R.start(experiment_name=combined_exp_name):
-            R.set_tags(
-                model=model_name,
-                mode='rolling_combined',
-                anchor_date=anchor_date,
-                n_windows=len(completions),
-            )
-            R.save_objects(**{"pred.pkl": combined_pred})
-            combined_rid = R.get_recorder().id
-
-        combined_records[model_name] = combined_rid
-
-        print(f"  [{model_name}] Combined Recorder: {combined_rid}")
-
-    return combined_records
-
-
-def save_rolling_records(combined_records, combined_exp_name, anchor_date):
-    """
-    保存 rolling 训练记录到统一的 latest_train_records.json
-
-    使用 model@rolling key 格式写入统一记录文件，通过 merge 方式保留其他模式的记录。
-    """
-    from quantpits.utils.train_utils import (
-        make_model_key, merge_train_records, RECORD_OUTPUT_FILE,
-    )
-
-    # 将 rolling 模型的 key 转为 model@rolling 格式
-    rolling_models = {}
-    for name, rid in combined_records.items():
-        rolling_key = make_model_key(name, 'rolling')
-        rolling_models[rolling_key] = rid
-
-    records = {
-        "experiment_name": combined_exp_name,
-        "rolling_experiment_name": combined_exp_name,
-        "anchor_date": anchor_date,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "models": rolling_models,
-    }
-
-    merge_train_records(records)
-
-    print(f"\n📋 Rolling 记录已合并到统一文件: {RECORD_OUTPUT_FILE}")
-    print(f"   模型数: {len(rolling_models)}")
-    for key, rid in rolling_models.items():
-        print(f"   {key}: {rid}")
-
-
-# ================= 日常预测 =================
-def predict_with_latest_model(model_name, model_info, state,
-                              rolling_exp_name, params_base, anchor_date, windows):
-    """
-    使用最近一个 window 训练的模型对最新数据预测。
-
-    用于日常模式中距离上次 rolling 未超过 step 的情况。
-    """
-    from quantpits.utils.train_utils import inject_config
-    from qlib.utils import init_instance_by_config
-    from qlib.workflow import R
-
-    completions = state.get_completed_record_ids(model_name)
-    if not completions:
-        print(f"  [{model_name}] 无历史 rolling 模型，需要先 --cold-start")
-        return None
-
-    # 取最新 window 的模型
-    latest = completions[-1]
-    widx = latest['window_idx']
-    print(f"  [{model_name}] 加载 Window {widx} 模型进行预测...")
-
-    window = next((w for w in windows if w['window_idx'] == widx), None)
-    if not window:
-        print(f"  [{model_name}] 无法找到对应的 window 数据划分: {widx}")
-        return None
-
-    try:
-        rec = R.get_recorder(
-            recorder_id=latest['record_id'],
-            experiment_name=rolling_exp_name
-        )
-        model = rec.load_object("model.pkl")
-
-        # 构建最新数据的 dataset
-        yaml_file = model_info['yaml_file']
-        params = dict(params_base)
-        params['anchor_date'] = anchor_date
-
-        # 补齐基于该 window 的日期范围，以满足 inject_config 检查。
-        # 注意：windows 是用当前 anchor_date 动态重新生成的，所以最后一个
-        # window 的 test_end 会自动延伸到 min(test_end_full, anchor_date)，
-        # 确保 dataset 能覆盖到最新数据。
-        params['start_time'] = window['train_start']
-        params['end_time'] = window['test_end']
-        params['fit_start_time'] = window['train_start']
-        params['fit_end_time'] = window['train_end']
-        params['valid_start_time'] = window['valid_start']
-        params['valid_end_time'] = window['valid_end']
-        params['test_start_time'] = window['test_start']
-        params['test_end_time'] = window['test_end']
-
-        task_config = inject_config(yaml_file, params, model_name=model_name)
-
-        dataset_cfg = task_config['task']['dataset']
-        dataset = init_instance_by_config(dataset_cfg)
-
-        pred = model.predict(dataset=dataset)
-
-        # 统一为单列 score DataFrame，与训练时 SigAnaRecord 保存格式对齐
-        if isinstance(pred, pd.Series):
-            pred = pred.to_frame('score')
-        elif isinstance(pred, pd.DataFrame) and 'score' not in pred.columns:
-            pred.columns = ['score']
-
-        print(f"  [{model_name}] 预测完成: Recorder={latest['record_id']}")
-
-        return pred
-
-    except Exception as e:
-        print(f"  [{model_name}] 预测失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+# Sub-modules
+from quantpits.scripts.rolling.windows import generate_rolling_windows
+from quantpits.scripts.rolling.state import RollingState
+from quantpits.scripts.rolling.training import run_model_windows
+from quantpits.scripts.rolling.prediction import (
+    concatenate_rolling_predictions,
+    save_rolling_records,
+    predict_with_latest_model,
+)
+from quantpits.scripts.rolling.backtest import (
+    run_combined_backtest,
+    run_backtest_only,
+)
+from quantpits.scripts.rolling.memory import (
+    deep_cleanup_after_model,
+    log_memory,
+)
 
 
 # ================= CLI =================
@@ -731,13 +157,20 @@ def get_base_params():
 
 # ================= 主流程 =================
 def run_cold_start(args, targets, rolling_cfg):
-    """冷启动：所有 windows 训练 + 拼接"""
+    """
+    冷启动：Model-First 循环 + 子进程隔离。
+
+    外循环遍历模型，内循环遍历 windows，每个 task 在独立子进程中执行。
+    每个模型完成后立即拼接预测并深度清理内存。
+    """
     from quantpits.utils.train_utils import print_model_table
+    from qlib.config import C
 
     env.init_qlib()
     params_base = get_base_params()
     anchor_date = params_base['anchor_date']
     freq = params_base['freq'].upper()
+    qlib_config = C  # 捕获当前 qlib 配置，传给子进程
 
     # 生成 windows
     windows = generate_rolling_windows(
@@ -784,57 +217,65 @@ def run_cold_start(args, targets, rolling_cfg):
     rolling_exp_name = f"Rolling_Windows_{freq}"
     combined_exp_name = f"Rolling_Combined_{freq}"
 
-    # 训练每个 window × 每个 model
-    total_tasks = len(windows) * len(targets)
-    done_count = 0
+    # ===== Model-First 循环 =====
+    combined_records = {}
+    total_trained = 0
 
-    for window in windows:
-        widx = window['window_idx']
-        for model_name, model_info in targets.items():
-            done_count += 1
-            tag = f"[{done_count}/{total_tasks}]"
+    for model_name, model_info in targets.items():
+        # 训练该模型的所有 windows (子进程隔离)
+        n_trained = run_model_windows(
+            model_name=model_name,
+            model_info=model_info,
+            windows=windows,
+            state=state,
+            params_base=params_base,
+            experiment_name=rolling_exp_name,
+            qlib_config=qlib_config,
+            no_pretrain=args.no_pretrain,
+            dry_run=args.dry_run,
+        )
+        total_trained += n_trained
 
-            if state.is_window_model_done(widx, model_name):
-                print(f"\n{tag} ⏩ {model_name} W{widx} 已完成，跳过")
-                continue
+        # 该模型所有 windows 完成后，立即拼接
+        model_combined = concatenate_rolling_predictions(
+            state=state,
+            model_names=[model_name],
+            rolling_exp_name=rolling_exp_name,
+            combined_exp_name=combined_exp_name,
+            anchor_date=anchor_date,
+            windows=windows,
+        )
+        combined_records.update(model_combined)
 
-            print(f"\n{'─'*60}")
-            print(f"  {tag} {model_name} | Window {widx}")
-            print(f"{'─'*60}")
+        # 深度清理: qlib MemCache + GPU + GC
+        deep_cleanup_after_model(model_name)
 
-            result = train_window_model(
-                model_name=model_name,
-                yaml_file=model_info['yaml_file'],
-                window=window,
-                params_base=params_base,
-                experiment_name=rolling_exp_name,
-                no_pretrain=args.no_pretrain,
-            )
-
-            if result['success']:
-                state.mark_window_model_done(widx, model_name, result['record_id'])
-            else:
-                print(f"❌ {model_name} W{widx} 训练失败: {result.get('error', 'Unknown')}")
-
-    # 拼接预测
+    # Merge 模式: 需要拼接之前已训练但不在本次 targets 中的模型
     if args.merge:
         completed = state.get_all_completed_windows()
-        all_models = set(targets.keys())
+        extra_models = set()
         for win, models in completed.items():
-            all_models.update(models.keys())
-        model_names = list(all_models)
-    else:
-        model_names = list(targets.keys())
+            extra_models.update(models.keys())
+        extra_models -= set(targets.keys())
+        if extra_models:
+            extra_combined = concatenate_rolling_predictions(
+                state=state,
+                model_names=list(extra_models),
+                rolling_exp_name=rolling_exp_name,
+                combined_exp_name=combined_exp_name,
+                anchor_date=anchor_date,
+                windows=windows,
+            )
+            combined_records.update(extra_combined)
 
-    combined_records = concatenate_rolling_predictions(
-        state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
-        windows=windows,
-    )
-
+    # 保存记录
     if combined_records:
         save_rolling_records(combined_records, combined_exp_name, anchor_date)
         if args.backtest:
-            run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
+            run_combined_backtest(
+                list(combined_records.keys()), combined_records,
+                combined_exp_name, params_base
+            )
 
     # 完成
     print(f"\n{'='*60}")
@@ -842,6 +283,7 @@ def run_cold_start(args, targets, rolling_cfg):
     print(f"{'='*60}")
     print(f"  Windows: {len(windows)}")
     print(f"  Models: {len(targets)}")
+    print(f"  Trained: {total_trained} tasks")
     print(f"  Combined records: {len(combined_records)}")
     print(f"\n  💡 后续步骤:")
     print(f"     穷举: python quantpits/scripts/brute_force_fast.py "
@@ -852,11 +294,17 @@ def run_cold_start(args, targets, rolling_cfg):
 
 
 def run_daily(args, targets, rolling_cfg):
-    """日常模式：检测是否需要新 window 训练"""
+    """
+    日常模式：检测是否需要新 window 训练。
+    同样使用 Model-First + 子进程隔离。
+    """
+    from qlib.config import C
+
     env.init_qlib()
     params_base = get_base_params()
     anchor_date = params_base['anchor_date']
     freq = params_base['freq'].upper()
+    qlib_config = C
 
     state = RollingState()
 
@@ -890,37 +338,40 @@ def run_daily(args, targets, rolling_cfg):
             print("🔍 Dry-run 模式：以上为需训练的新 windows")
             return
 
-        # 训练新 windows
-        for window in new_windows:
-            widx = window['window_idx']
-            for model_name, model_info in targets.items():
-                if state.is_window_model_done(widx, model_name):
-                    continue
+        # Model-First: 训练新 windows
+        combined_records = {}
+        for model_name, model_info in targets.items():
+            n_trained = run_model_windows(
+                model_name=model_name,
+                model_info=model_info,
+                windows=new_windows,
+                state=state,
+                params_base=params_base,
+                experiment_name=rolling_exp_name,
+                qlib_config=qlib_config,
+                no_pretrain=args.no_pretrain,
+            )
 
-                result = train_window_model(
-                    model_name=model_name,
-                    yaml_file=model_info['yaml_file'],
-                    window=window,
-                    params_base=params_base,
-                    experiment_name=rolling_exp_name,
-                    no_pretrain=args.no_pretrain,
-                )
+            # 拼接该模型（包含所有已完成的 windows，不仅仅是新的）
+            model_combined = concatenate_rolling_predictions(
+                state=state,
+                model_names=[model_name],
+                rolling_exp_name=rolling_exp_name,
+                combined_exp_name=combined_exp_name,
+                anchor_date=anchor_date,
+                windows=windows,
+            )
+            combined_records.update(model_combined)
 
-                if result['success']:
-                    state.mark_window_model_done(widx, model_name, result['record_id'])
-                else:
-                    print(f"❌ {model_name} W{widx} 失败: {result.get('error')}")
+            deep_cleanup_after_model(model_name)
 
-        # 重新拼接（含新训练的 window）
-        model_names = list(targets.keys())
-        combined_records = concatenate_rolling_predictions(
-            state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
-            windows=windows,
-        )
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name, anchor_date)
             if args.backtest:
-                run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
+                run_combined_backtest(
+                    list(combined_records.keys()), combined_records,
+                    combined_exp_name, params_base
+                )
 
         print(f"\n✅ Rolling 滚动更新完成 (新训练 {len(new_windows)} 个 windows)")
 
@@ -947,216 +398,6 @@ def run_daily(args, targets, rolling_cfg):
                 save_rolling_records(combined_records, combined_exp_name, anchor_date)
                 if args.backtest:
                     run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
-
-
-def run_combined_backtest(model_names, combined_records, combined_exp_name, params_base):
-    """
-    对合并后的预测执行回测，并将回测结果的 port_analysis 等指标保存追加回相应的记录。
-    """
-    from qlib.workflow import R
-    from qlib.backtest import backtest
-    from qlib.backtest.executor import SimulatorExecutor
-    from quantpits.utils import strategy
-    import numpy as np
-    import warnings
-    
-    print(f"\n{'='*60}")
-    print("📈 运行 Rolling 合并预测的回测")
-    print(f"{'='*60}")
-    
-    st_config = strategy.load_strategy_config()
-    bt_config = strategy.get_backtest_config(st_config)
-    
-    for model_name in model_names:
-        if model_name not in combined_records:
-            continue
-            
-        record_id = combined_records[model_name]
-        print(f"\n  [{model_name}] 提取合并预测以进行回测 (Record: {record_id})...")
-        
-        try:
-            rec = R.get_recorder(recorder_id=record_id, experiment_name=combined_exp_name)
-            pred = rec.load_object("pred.pkl")
-            
-            if pred is None or pred.empty:
-                print(f"  [{model_name}] 预测为空，跳过回测。")
-                continue
-                
-            bt_start = str(pred.index.get_level_values(0).min().date())
-            bt_end = str(pred.index.get_level_values(0).max().date())
-            
-            print(f"  [{model_name}] Backtest Range: {bt_start} ~ {bt_end}")
-            
-            # Create Strategy
-            strategy_inst = strategy.create_backtest_strategy(pred, st_config)
-            
-            # Create Executor
-            executor_obj = SimulatorExecutor(
-                time_per_step=params_base['freq'],
-                generate_portfolio_metrics=True,
-                verbose=False
-            )
-            
-            print(f"  [{model_name}] 执行回测...")
-            with np.errstate(divide='ignore', invalid='ignore'), warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
-                raw_portfolio_metrics, raw_indicators = backtest(
-                    executor=executor_obj,
-                    strategy=strategy_inst,
-                    start_time=bt_start,
-                    end_time=bt_end,
-                    account=bt_config['account'],
-                    benchmark=params_base['benchmark'],
-                    exchange_kwargs=bt_config['exchange_kwargs']
-                )
-            
-            # Use PortfolioAnalyzer to get traditional metrics
-            from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
-            import pandas as pd
-            from qlib.data import D
-            
-            def extract_report_df(metrics):
-                if isinstance(metrics, dict):
-                    val = list(metrics.values())[0]
-                    return val[0] if isinstance(val, tuple) else val
-                elif isinstance(metrics, tuple):
-                    first = metrics[0]
-                    if isinstance(first, pd.DataFrame):
-                        return first
-                    elif isinstance(first, tuple) and len(first) >= 1:
-                        return first[0]
-                    return metrics
-                return metrics
-                
-            report_df = extract_report_df(raw_portfolio_metrics)
-            if report_df is None or report_df.empty:
-                 print(f"  [{model_name}] 提取回测结果失败。")
-                 continue
-                 
-            # Format report DataFrame
-            da_df = pd.DataFrame(index=report_df.index)
-            da_df['收盘价值'] = report_df['account']
-            da_df[params_base['benchmark']] = (1 + report_df['bench']).cumprod()
-            if not isinstance(da_df.index, pd.DatetimeIndex):
-                da_df.index = pd.to_datetime(da_df.index)
-            
-            bt_start_dt = da_df.index.min()
-            bt_end_dt = da_df.index.max()
-            daily_dates = D.calendar(start_time=bt_start_dt, end_time=bt_end_dt, freq='day')
-            da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
-            da_df = da_df.reset_index().rename(columns={'index': '成交日期', 'datetime': '成交日期'})
-            
-            pa = PortfolioAnalyzer(
-                daily_amount_df=da_df, 
-                trade_log_df=pd.DataFrame(), 
-                holding_log_df=pd.DataFrame(),
-                benchmark_col=params_base['benchmark'], 
-                freq=params_base['freq']
-            )
-            metrics = pa.calculate_traditional_metrics()
-            
-            ann_ret = metrics.get('CAGR', 0)
-            max_dd = metrics.get('Max_Drawdown', 0)
-            excess = metrics.get('Excess_Return_CAGR', 0)
-            ir = metrics.get('Information_Ratio', 0)
-            calmar = metrics.get('Calmar', 0)
-            
-            print(f"  [{model_name}] 回测完成! Ann_Ret: {ann_ret:.2%}, Excess: {excess:.2%}, Max_DD: {max_dd:.2%}, IR: {ir:.3f}")
-            
-            # Save objects back to the same recorder
-            # By calling methods directly on the existing `rec` object
-            try:
-                rec.log_metrics(
-                    Ann_Ret=ann_ret,
-                    Max_DD=max_dd,
-                    Excess_Return=excess,
-                    Information_Ratio=ir,
-                    Calmar=calmar
-                )
-                
-                # 严格按照 Qlib PortAnaRecord 的保存格式，把报告分离并保存到 portfolio_analysis 子目录下
-                port_ana_objs = {}
-                if isinstance(raw_portfolio_metrics, dict):
-                    for freq_key, metrics_tuple in raw_portfolio_metrics.items():
-                        if isinstance(metrics_tuple, tuple) and len(metrics_tuple) >= 2:
-                            port_ana_objs[f"report_normal_{freq_key}.pkl"] = metrics_tuple[0]
-                            port_ana_objs[f"positions_normal_{freq_key}.pkl"] = metrics_tuple[1]
-                        elif isinstance(metrics_tuple, tuple) and len(metrics_tuple) == 1:
-                            port_ana_objs[f"report_normal_{freq_key}.pkl"] = metrics_tuple[0]
-
-                if port_ana_objs:
-                    rec.save_objects(artifact_path="portfolio_analysis", **port_ana_objs)
-                
-                # 指标分析保存到 sig_analysis 子目录（依照 SigAnaRecord）或者根目录
-                rec.save_objects(artifact_path="sig_analysis", **{
-                    f"indicator_analysis_{params_base['freq']}.pkl": raw_indicators
-                })
-            except Exception as log_e:
-                print(f"  [{model_name}] MLflow 记录失败，可能已存在同名 metric: {log_e}")
-                
-        except Exception as e:
-            print(f"  [{model_name}] 回测过程失败: {e}")
-            import traceback
-            traceback.print_exc()
-
-
-def run_backtest_only(args, targets):
-    """仅回测模式：读取统一训练记录中的 rolling 模型并运行回测"""
-    import os, json
-    from quantpits.utils.train_utils import (
-        RECORD_OUTPUT_FILE, filter_models_by_mode, parse_model_key,
-    )
-    env.init_qlib()
-    params_base = get_base_params()
-
-    if os.path.exists(RECORD_OUTPUT_FILE):
-        with open(RECORD_OUTPUT_FILE, 'r') as f:
-            records = json.load(f)
-    else:
-        records = None
-
-    if not records or "models" not in records:
-        print("❌ 找不到有效的 latest_train_records.json 或内容为空。")
-        return
-
-    # 从统一文件中过滤出 rolling 模式的模型
-    rolling_models = filter_models_by_mode(records.get('models', {}), 'rolling')
-    if not rolling_models:
-        print("❌ 统一训练记录中没有 @rolling 模式的模型记录。")
-        return
-
-    # 构建一个 rolling-only 的 records dict 供下游使用
-    records = dict(records)  # shallow copy
-    records['models'] = rolling_models
-
-    combined_exp_name = records.get("experiment_name")
-    # 优先使用 rolling_experiment_name（迁移后可能存在）
-    if records.get('rolling_experiment_name'):
-        combined_exp_name = records['rolling_experiment_name']
-    if not combined_exp_name:
-        freq = params_base['freq'].upper()
-        combined_exp_name = f"Rolling_Combined_{freq}"
-        
-    combined_records = records["models"]
-    # rolling_models 的 key 是 model@rolling 格式，targets 是裸名
-    # 构建 base_name -> full_key 的映射
-    base_to_key = {}
-    for key in combined_records:
-        base_name, _ = parse_model_key(key)
-        base_to_key[base_name] = key
-
-    model_names = []
-    for m in targets.keys():
-        if m in combined_records:
-            model_names.append(m)
-        elif m in base_to_key:
-            model_names.append(base_to_key[m])
-            
-    if not model_names:
-        print("❌ 选定的模型中没有找到历史滚动预测记录。")
-        return
-        
-    run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
 
 
 def run_predict_only(args, targets, rolling_cfg):
@@ -1278,7 +519,9 @@ def main():
     with OperatorLog("rolling_train", args=sys.argv[1:]) as oplog:
         # 选择运行模式
         if args.backtest_only:
-            run_backtest_only(args, targets)
+            env.init_qlib()
+            params_base = get_base_params()
+            run_backtest_only(args, targets, params_base)
         elif args.predict_only:
             run_predict_only(args, targets, rolling_cfg)
         elif args.cold_start or args.resume or args.merge:
