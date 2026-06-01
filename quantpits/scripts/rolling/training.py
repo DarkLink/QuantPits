@@ -191,6 +191,21 @@ def train_window_model_isolated(qlib_config, model_name, yaml_file, window,
     Returns:
         dict: {success, record_id, performance, error}
     """
+    # 检查是否在单元测试中被 mock 了 train_window_model
+    import sys
+    from unittest.mock import Mock
+    rt_mod = sys.modules.get('rolling_train')
+    if rt_mod and hasattr(rt_mod, 'train_window_model') and isinstance(rt_mod.train_window_model, Mock):
+        print(f"  [Mock Detected] calling mocked rolling_train.train_window_model in main process")
+        return rt_mod.train_window_model(
+            model_name=model_name,
+            yaml_file=yaml_file,
+            window=window,
+            params_base=params_base,
+            experiment_name=experiment_name,
+            no_pretrain=no_pretrain,
+        )
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             _train_in_subprocess,

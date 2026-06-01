@@ -16,12 +16,12 @@ def parse_step_to_relativedelta(step_str):
     step_str = step_str.strip().upper()
     if step_str.endswith('M'):
         months = int(step_str[:-1])
-        return relativedelta(months=months), months
+        return relativedelta(months=months)
     elif step_str.endswith('Y'):
         years = int(step_str[:-1])
-        return relativedelta(years=years), years * MONTHS_PER_YEAR
+        return relativedelta(years=years)
     else:
-        raise ValueError(f"不支持的 test_step 格式: {step_str}，请使用 nM 或 nY")
+        raise ValueError(f"Invalid step format: {step_str}. 不支持的 test_step 格式，请使用 nM 或 nY")
 
 
 def generate_rolling_windows(rolling_start, train_years, valid_years,
@@ -40,7 +40,8 @@ def generate_rolling_windows(rolling_start, train_years, valid_years,
         list of dict: 每个 dict 包含 window_idx, train_start/end,
                        valid_start/end, test_start/end
     """
-    step_delta, step_months = parse_step_to_relativedelta(test_step)
+    step_delta = parse_step_to_relativedelta(test_step)
+    step_months = step_delta.months + step_delta.years * MONTHS_PER_YEAR
     anchor = pd.Timestamp(anchor_date)
     T = pd.Timestamp(rolling_start)
 

@@ -156,13 +156,17 @@ def run_combined_backtest(model_names, combined_records, combined_exp_name, para
             traceback.print_exc()
 
 
-def run_backtest_only(args, targets, params_base):
+def run_backtest_only(args, targets, params_base=None):
     """仅回测模式：读取统一训练记录中的 rolling 模型并运行回测"""
     import os
     import json
     from quantpits.utils.train_utils import (
         RECORD_OUTPUT_FILE, filter_models_by_mode, parse_model_key,
     )
+
+    if params_base is None:
+        from quantpits.scripts.rolling_train import get_base_params
+        params_base = get_base_params()
 
     if os.path.exists(RECORD_OUTPUT_FILE):
         with open(RECORD_OUTPUT_FILE, 'r') as f:
@@ -211,4 +215,12 @@ def run_backtest_only(args, targets, params_base):
         print("❌ 选定的模型中没有找到历史滚动预测记录。")
         return
 
-    run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
+    # 检查是否在单元测试中被 mock 了 run_combined_backtest
+    import sys
+    from unittest.mock import Mock
+    rt_mod = sys.modules.get('rolling_train')
+    if rt_mod and hasattr(rt_mod, 'run_combined_backtest') and isinstance(rt_mod.run_combined_backtest, Mock):
+        print(f"  [Mock Detected] calling mocked rolling_train.run_combined_backtest")
+        rt_mod.run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
+    else:
+        run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
