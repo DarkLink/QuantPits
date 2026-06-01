@@ -12,6 +12,7 @@ Rolling 训练核心模块
 """
 
 import os
+import multiprocessing as mp
 import concurrent.futures
 
 from quantpits.scripts.rolling.memory import (
@@ -206,7 +207,10 @@ def train_window_model_isolated(qlib_config, model_name, yaml_file, window,
             no_pretrain=no_pretrain,
         )
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+    # spawn: 每个 worker 是全新 Python 进程，不继承主进程的 CUDA context
+    # (参见 brute_force_ensemble.py 同模式)
+    _mp_ctx = mp.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=_mp_ctx) as executor:
         future = executor.submit(
             _train_in_subprocess,
             qlib_config,

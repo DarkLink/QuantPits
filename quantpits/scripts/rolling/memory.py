@@ -27,21 +27,16 @@ def cleanup_after_window(model_name, widx):
     """
     Level 1: 每个 window×model 训练后的轻量清理。
 
-    清理 PyTorch GPU 缓存并执行一轮 GC。
-    此时 model/dataset/pred 应该已经被 del。
+    NOTE: 不触发 torch.cuda.* — 子进程已退出，OS 已回收其 GPU 内存。
+    在父进程中调用 torch.cuda.is_available() 会初始化 CUDA context，
+    导致后续 fork 的子进程继承已损坏的 CUDA 状态，
+    CatBoost 的 get_gpu_device_count() 在子进程中返回 0，触发
+    "poisson bootstrap is not supported on CPU"。
     """
-    # 1. PyTorch GPU 缓存
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
-
-    # 2. 强制 GC
+    # 强制 GC
     gc.collect()
 
-    # 3. 内存监控
+    # 内存监控
     log_memory(f"{model_name}|W{widx}")
 
 
@@ -59,16 +54,9 @@ def deep_cleanup_after_model(model_name):
     except Exception:
         pass
 
-    # 2. PyTorch GPU 全面清理
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-    except ImportError:
-        pass
+    # NOTE: 跳过 torch.cuda.* — 原因同 cleanup_after_window
 
-    # 3. 两轮 GC（第一轮释放循环引用，第二轮释放 weak ref 指向的对象）
+    # 两轮 GC（第一轮释放循环引用，第二轮释放 weak ref 指向的对象）
     gc.collect()
     gc.collect()
 
