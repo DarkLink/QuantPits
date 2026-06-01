@@ -165,8 +165,13 @@ def run_backtest_only(args, targets, params_base=None):
     )
 
     if params_base is None:
-        from quantpits.scripts.rolling_train import get_base_params
-        params_base = get_base_params()
+        import sys
+        rt_mod = sys.modules.get('rolling_train') or sys.modules.get('quantpits.scripts.rolling_train')
+        if rt_mod and hasattr(rt_mod, 'get_base_params'):
+            params_base = rt_mod.get_base_params()
+        else:
+            from quantpits.scripts.rolling_train import get_base_params
+            params_base = get_base_params()
 
     if os.path.exists(RECORD_OUTPUT_FILE):
         with open(RECORD_OUTPUT_FILE, 'r') as f:

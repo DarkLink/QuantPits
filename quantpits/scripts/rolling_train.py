@@ -148,8 +148,12 @@ def get_base_params():
     config = load_workspace_config(ROOT_DIR)
 
     from qlib.data import D
-    last_trade_date = D.calendar(future=False)[-1:][0]
-    anchor_date = last_trade_date.strftime('%Y-%m-%d')
+    try:
+        last_trade_date = D.calendar(future=False)[-1:][0]
+        anchor_date = last_trade_date.strftime('%Y-%m-%d')
+    except Exception as e:
+        print(f"⚠️ 警告：无法从 qlib 获取交易日历（可能由于环境为空或未初始化），使用默认锚点 '2024-12-31'。错误: {e}")
+        anchor_date = '2024-12-31'
 
     return {
         'market': config.get('market', 'csi300'),
