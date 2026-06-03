@@ -4,7 +4,7 @@ import os
 import json
 import sys
 import pytest
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 
 # Must set env before import because rolling_benchmark does os.chdir(env.ROOT_DIR)
 os.environ["QLIB_WORKSPACE_DIR"] = "/tmp/MockWorkspace_rolling_benchmark"
@@ -150,49 +150,59 @@ class TestFileIO:
 
 
 class TestCollectSystemInfo:
-    def test_collects_cpu_from_proc(self, monkeypatch):
-        mock_cpuinfo = "vendor_id : GenuineIntel\nmodel name : Intel(R) Test CPU\nflags : fpu\n"
-        with patch("builtins.open", mock_open(read_data=mock_cpuinfo)), \
-             patch("psutil.virtual_memory") as mock_vm:
+    """Tests for collect_system_info().
+
+    We monkeypatch rb._CPUINFO_PATH to point at a real temp file instead of
+    using mock_open. Python 3.8's mock_open.read() has a known bug where it
+    can return bytes even when read_data is a str, causing false failures.
+    """
+
+    def test_collects_cpu_from_proc(self, monkeypatch, tmp_path):
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text(
+            "vendor_id : GenuineIntel\nmodel name : Intel(R) Test CPU\nflags : fpu\n"
+        )
+        monkeypatch.setattr(rb, "_CPUINFO_PATH", str(cpuinfo))
+
+        with patch("psutil.virtual_memory") as mock_vm:
             mock_vm.return_value.total = 16 * 1024**3
-            with patch.object(rb, "get_gpu_info") as mock_gpu:
-                mock_gpu.return_value = {"name": "TestGPU", "vram_total_mb": 8192}
+            with patch.object(rb, "get_gpu_info", return_value={"name": "TestGPU", "vram_total_mb": 8192}):
                 info = rb.collect_system_info()
 
         assert "Intel(R) Test CPU" in info["cpu"]
         assert info["ram_total_mb"] == pytest.approx(16384, rel=0.1)
         assert info["gpu_name"] == "TestGPU"
 
-    def test_no_proc_cpuinfo_fallback(self, monkeypatch):
-        import builtins
-        _real_open = builtins.open
+    def test_no_proc_cpuinfo_fallback(self, monkeypatch, tmp_path):
+        # Point _CPUINFO_PATH at a path that does not exist
+        monkeypatch.setattr(rb, "_CPUINFO_PATH", str(tmp_path / "no_such_cpuinfo"))
 
-        def _selective_open(path, *args, **kwargs):
-            if path == "/proc/cpuinfo":
-                raise FileNotFoundError("mocked: no /proc/cpuinfo")
-            return _real_open(path, *args, **kwargs)
-
-        with patch("builtins.open", side_effect=_selective_open), \
-             patch("psutil.virtual_memory") as mock_vm:
+        with patch("psutil.virtual_memory") as mock_vm:
             mock_vm.return_value.total = 8 * 1024**3
             with patch.object(rb, "get_gpu_info", return_value={"name": "GPU", "vram_total_mb": 0}):
                 info = rb.collect_system_info()
         assert info["cpu"] == "Unknown"
 
-    def test_full_structure_keys(self, monkeypatch):
-        with patch("builtins.open", mock_open(read_data="model name : TestCPU\n")), \
-             patch("psutil.virtual_memory") as mock_vm:
+    def test_full_structure_keys(self, monkeypatch, tmp_path):
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text("model name : TestCPU\n")
+        monkeypatch.setattr(rb, "_CPUINFO_PATH", str(cpuinfo))
+
+        with patch("psutil.virtual_memory") as mock_vm:
             mock_vm.return_value.total = 32 * 1024**3
             with patch.object(rb, "get_gpu_info", return_value={"name": "A100", "vram_total_mb": 40960}):
                 info = rb.collect_system_info()
 
         for key in ["cpu", "cpu_count", "ram_total_mb", "gpu_name", "gpu_vram_mb",
-                     "platform", "python", "collected_at"]:
+                    "platform", "python", "collected_at"]:
             assert key in info, f"Missing key: {key}"
 
-    def test_collected_at_is_iso_string(self, monkeypatch):
-        with patch("builtins.open", mock_open(read_data="model name : X\n")), \
-             patch("psutil.virtual_memory") as mock_vm:
+    def test_collected_at_is_iso_string(self, monkeypatch, tmp_path):
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text("model name : X\n")
+        monkeypatch.setattr(rb, "_CPUINFO_PATH", str(cpuinfo))
+
+        with patch("psutil.virtual_memory") as mock_vm:
             mock_vm.return_value.total = 8 * 1024**3
             with patch.object(rb, "get_gpu_info", return_value={"name": "X", "vram_total_mb": 0}):
                 info = rb.collect_system_info()

@@ -54,6 +54,9 @@ BENCHMARK_EXPERIMENT = "Rolling_Benchmark"
 # 输出文件
 BENCHMARK_OUTPUT = os.path.join(ROOT_DIR, "data", "rolling_benchmark.json")
 
+# Overridable in tests (avoids mock_open which has Python 3.8 compatibility issues)
+_CPUINFO_PATH = "/proc/cpuinfo"
+
 
 # ============================================================================
 # GPU 监控
@@ -324,12 +327,12 @@ def collect_system_info():
 
     cpu_name = "Unknown"
     try:
-        with open("/proc/cpuinfo", "r") as f:
+        with open(_CPUINFO_PATH, "r") as f:
             content = f.read()
+        # Ensure we always work with str regardless of Python version or mock behaviour
+        if isinstance(content, bytes):
+            content = content.decode("utf-8", errors="replace")
         for line in content.splitlines():
-            # Handle both str (normal) and bytes (edge-case / mock)
-            if isinstance(line, bytes):
-                line = line.decode("utf-8", errors="replace")
             if line.startswith("model name"):
                 cpu_name = line.split(":")[1].strip()
                 break
