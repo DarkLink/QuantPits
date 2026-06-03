@@ -49,6 +49,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 | `--only-last-months N` | `0` | 仅使用最后 N 个月数据 (专为 OOS 测试设计) |
 | `--detailed-analysis` | false | 生成详尽的回测分析报告（类似实盘分析） |
 | `--verbose-backtest` | false | 开启 Qlib 回测的详细模式 |
+| `--norm-method` | `rank` | 截面归一化方法: `rank` (percentile rank [0,1]，推荐) 或 `zscore` |
 
 ## 多组合配置
 
@@ -298,3 +299,44 @@ python quantpits/scripts/order_gen.py
 | **`ensemble_fusion.py`** | **融合回测** | **选定模型/多组合** | **融合预测 + 绩效 + 对比** |
 | `signal_ranking.py` | 信号排名 | 融合 Recorder | Top N 排名 CSV |
 | `order_gen.py` | 生成订单 | 融合 Recorder + 持仓 | 买卖建议 + 多模型判断 |
+
+---
+
+## 归一化方法
+
+### rank (默认)
+
+截面 percentile rank 归一化，输出严格 **[0, 1]**。适合纯多头 TopK 选股：
+
+- 每个模型按当天预测分排名 → 映射到 [0, 1]
+- 模型未覆盖的股票填充 **0.5**（视为弃权/中性投票）
+- 融合时使用**并集**股票池（不会因为某个模型缺数据而丢失股票）
+- 各模型在等权融合时获得完全平等的投票权
+
+### zscore
+
+经典 Z-Score 归一化，保留模型的"确定度"信息：
+
+- 输出无界，极值股票的分数会主导融合信号
+- 模型未覆盖的股票保留 NaN → 融合时 `dropna` 取**交集**
+- 适合需要区分模型置信度的场景
+
+### OOS 分析时的一致性
+
+`analyze_ensembles.py` 会自动从 `run_metadata.json` 读取搜索时使用的归一化方法，保证 IS/OOS 使用相同的归一化策略。
+
+---
+
+## 已知限制 (Future Work)
+
+### 模型覆盖股票数不一致时的 rank 粒度差异
+
+在 rank 模式下，覆盖 300 只股票的模型 rank 步长为 `1/299`，而覆盖 500 只股票的模型步长为 `1/499`。粗粒度模型的信号会被细粒度模型的"量化噪声"稀释。将来可考虑按覆盖股票数对模型加权。
+
+### NaN → 0.5 的"弃权"假设
+
+rank 模式下，模型未覆盖的股票填充 0.5（中性分）。这假设所有模型对未覆盖股票的"不确定度"相同。当模型覆盖有系统性偏差时（例如某模型只覆盖大市值股票），对小票填充 0.5 可能过度乐观或悲观。
+
+### Fast 路径 NaN 处理不一致
+
+`brute_force_fast.py` 的 `load_predictions` 在合并时提前执行全局 `.dropna()`（交集），而标准路径保留并集、仅对缺失填 0.5。同一 combo 在不同路径下的结果不可直接对比。Fast 路径可能在未来版本被弃用。

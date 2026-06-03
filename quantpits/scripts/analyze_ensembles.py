@@ -953,6 +953,7 @@ def main():
     record_file = meta["record_file"]
     oos_start_date = meta.get("oos_start_date")
     oos_end_date = meta.get("oos_end_date")
+    norm_method = meta.get("norm_method", "zscore")
 
     # 构建 RunContext (自动检测新/旧目录结构)
     ctx = RunContext.from_metadata(args.metadata)
@@ -1073,7 +1074,7 @@ def main():
     for c in unique_candidates:
         unique_models.update(c.split(","))
     models_to_load_list = list(unique_models)
-    norm_df, _, _ = load_predictions_from_recorder(train_records, selected_models=models_to_load_list)
+    norm_df, _, _ = load_predictions_from_recorder(train_records, selected_models=models_to_load_list, norm_method=norm_method)
         
     # 根据元数据精确切分 OOS 区间
     start_date = pd.to_datetime(oos_start_date)

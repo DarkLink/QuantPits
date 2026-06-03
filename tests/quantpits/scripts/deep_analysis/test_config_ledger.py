@@ -140,3 +140,77 @@ def test_diff_snapshots_semantic_label(tmp_path):
     curr = {'hyperparams': {'m1': {'lr': 0.01, 'd_feat': 20}}}
     result = diff_snapshots(prev, curr)
     assert len(result) >= 1
+
+def test_generate_changelog(tmp_path):
+    from quantpits.scripts.deep_analysis.config_ledger import (
+        generate_changelog, save_snapshot, snapshot_configs
+    )
+    
+    ws = tmp_path / "ws"
+    config_dir = ws / "config"
+    config_dir.mkdir(parents=True)
+    data_dir = ws / "data"
+    data_dir.mkdir(parents=True)
+    
+    # Create simple config snapshots
+    (config_dir / "workflow_config_m1_Alpha158.yaml").write_text("task:\n  model:\n    class: ALSTMModel\n    kwargs:\n      lr: 0.01")
+    
+    # Save a first snapshot
+    snap1 = snapshot_configs(str(ws), snapshot_date="2026-01-01")
+    save_snapshot(str(ws), snap1)
+    
+    # Modify config for a second snapshot
+    (config_dir / "workflow_config_m1_Alpha158.yaml").write_text("task:\n  model:\n    class: ALSTMModel\n    kwargs:\n      lr: 0.02")
+    
+    # Add training history
+    train_hist = data_dir / "training_history.jsonl"
+    train_entry = {
+        "model_name": "m1_Alpha158",
+        "trained_at": "2026-01-02 12:00:00",
+        "actual_epochs": 10,
+        "IC_Mean": 0.05,
+        "ICIR": 1.2
+    }
+    train_hist.write_text(json.dumps(train_entry) + "\n")
+    
+    # Add action item history
+    action_hist = data_dir / "action_item_history.jsonl"
+    action_entry = {
+        "action_type": "Tuning",
+        "target": "m1_Alpha158",
+        "reason": "Optimize learning rate for ALSTMModel",
+        "confidence": 0.85,
+        "risk_level": "low"
+    }
+    action_hist.write_text(json.dumps(action_entry) + "\n")
+    
+    out_md = ws / "CHANGELOG.md"
+    
+    text = generate_changelog(str(ws), output_path=str(out_md), title="My Custom Changelog")
+    
+    assert "My Custom Changelog" in text
+    assert "Configuration Changes" in text
+    assert "m1_Alpha158" in text
+    assert "Recent Training Results" in text
+    assert "Recent Action Items" in text
+    assert out_md.exists()
+
+def test_config_ledger_cli(tmp_path):
+    import runpy
+    import sys
+    from unittest.mock import patch
+    
+    ws = tmp_path / "ws"
+    (ws / "config").mkdir(parents=True)
+    
+    test_argv = [
+        "config_ledger.py",
+        "--snapshot",
+        "--changelog",
+        "--workspace", str(ws)
+    ]
+    
+    with patch.object(sys, 'argv', test_argv):
+        runpy.run_module("quantpits.scripts.deep_analysis.config_ledger", run_name="__main__")
+
+

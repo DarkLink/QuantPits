@@ -13,6 +13,9 @@ python quantpits/scripts/brute_force_ensemble.py --max-combo-size 3
 # 全量搜索（10 个模型 = 1023 个组合，耗时较长）
 python quantpits/scripts/brute_force_ensemble.py
 
+# 使用 Z-Score 归一化（保留模型"确定度"信息，交集融合）
+python quantpits/scripts/brute_force_ensemble.py --norm-method zscore
+
 
 # 从上次中断处继续（Ctrl+C 中断或崩溃后均可）
 python quantpits/scripts/brute_force_ensemble.py --resume
@@ -29,7 +32,8 @@ python quantpits/scripts/brute_force_ensemble.py --use-groups --group-config con
 ### Stage 1 — 加载预测数据
 - 读取 `latest_train_records.json` 获取实验名和模型列表
 - 从 Qlib Recorder 加载每个模型的 `pred.pkl` 预测值
-- 按天做 Z-Score 归一化
+- 按天做截面归一化（默认 `rank`: percentile rank → [0,1]; 可选 `zscore`）
+- rank 模式下，模型未覆盖的股票填充 0.5（视为弃权/中性），融合时使用**并集**股票池
 
 ### Stage 2 — 相关性分析
 - 计算预测值相关性矩阵
@@ -73,6 +77,7 @@ python quantpits/scripts/brute_force_ensemble.py --use-groups --group-config con
 | `--batch-size` | `50` | 每批处理组合数（影响 checkpoint 粒度和内存） |
 | `--use-groups` | - | 启用分组搜索模式（每组只选一个模型） |
 | `--group-config` | `config/combo_groups.yaml` | 分组配置文件路径 |
+| `--norm-method` | `rank` | 截面归一化方法: `rank` (percentile rank [0,1]，推荐) 或 `zscore` |
 
 ## 输出文件
 
@@ -448,3 +453,19 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 ```
 
 > 详细的配置格式和融合回测说明，请参阅 [03_ENSEMBLE_FUSION_GUIDE](03_ENSEMBLE_FUSION_GUIDE.md)。
+
+---
+
+## 已知限制 (Future Work)
+
+### 模型覆盖股票数不一致时的 rank 粒度差异
+
+在 rank 模式下，覆盖 300 只股票的模型 rank 步长为 `1/299`，而覆盖 500 只股票的模型步长为 `1/499`。粗粒度模型的信号会被细粒度模型的"量化噪声"稀释。将来可考虑按覆盖股票数对模型加权。
+
+### NaN → 0.5 的"弃权"假设
+
+rank 模式下，模型未覆盖的股票填充 0.5（中性分）。这假设所有模型对未覆盖股票的"不确定度"相同。当模型覆盖有系统性偏差时（例如某模型只覆盖大市值股票），对小票填充 0.5 可能过度乐观或悲观。
+
+### Fast 路径 NaN 处理不一致
+
+`brute_force_fast.py` 的 `load_predictions` 在合并时提前执行全局 `.dropna()`（交集），而标准路径 (`predict_utils.py`) 保留并集、仅对缺失填 0.5。同一 combo 在不同路径下的结果不可直接对比。

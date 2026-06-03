@@ -157,7 +157,23 @@ def zscore_norm(series):
     return series.groupby(level="datetime", group_keys=False).apply(_norm_func)
 
 
-def load_predictions(train_records):
+def rank_norm(series):
+    """按天 Cross-Sectional Percentile Rank 归一化 -> [0, 1].
+
+    与 predict_utils.rank_norm 保持同步。
+    对每个交易日截面内所有股票按预测分排名，映射到 [0, 1]。
+    n=1 时返回 0.5。
+    """
+    def _rank_func(x):
+        n = len(x)
+        if n <= 1:
+            return pd.Series(0.5, index=x.index)
+        ranked = x.rank(method="average")
+        return (ranked - 1) / (n - 1)
+    return series.groupby(level="datetime", group_keys=False).apply(_rank_func)
+
+
+def load_predictions(train_records, norm_method="zscore"):
     """
     从 Qlib Recorder 加载所有模型的预测值，归一化后返回宽表。
 
@@ -210,13 +226,14 @@ def load_predictions(train_records):
     if not all_preds:
         raise ValueError("未加载到任何预测数据！")
 
-    # 合并 & Z-Score 归一化
+    # 合并 & 归一化
     merged_df = pd.concat(all_preds, axis=1).dropna()
     print(f"合并后数据维度: {merged_df.shape}")
 
+    norm_func = rank_norm if norm_method == "rank" else zscore_norm
     norm_df = pd.DataFrame(index=merged_df.index)
     for col in merged_df.columns:
-        norm_df[col] = zscore_norm(merged_df[col])
+        norm_df[col] = norm_func(merged_df[col])
 
     return norm_df, model_metrics
 
@@ -791,6 +808,10 @@ def main():
         "--cost-rate", type=float, default=0.002,
         help="单次换手交易费用率 (默认: 0.002 = 双边 0.2%%)",
     )
+    parser.add_argument(
+        "--norm-method", type=str, default="zscore", choices=["zscore", "rank"],
+        help="截面归一化方法 (默认: zscore)",
+    )
     args = parser.parse_args()
     
     with OperatorLog("brute_force_fast", args=sys.argv[1:]) as oplog:
@@ -834,7 +855,7 @@ def main():
             train_records = dict(train_records)
             train_records['models'] = filtered
             print(f"训练模式过滤: {args.training_mode} (剩余 {len(filtered)} 个模型)")
-        norm_df, model_metrics = load_predictions(train_records)
+        norm_df, model_metrics = load_predictions(train_records, norm_method=args.norm_method)
 
         # 划分数据集 (IS / OOS)
         is_norm_df, oos_norm_df = split_is_oos_by_args(norm_df, args)
@@ -903,7 +924,8 @@ def main():
             "exclude_last_months": args.exclude_last_months,
             "rebalance_freq": rebalance_freq,
             "use_groups": args.use_groups,
-            "group_config": args.group_config
+            "group_config": args.group_config,
+            "norm_method": args.norm_method,
         })
         print(f"请使用以下命令进行分析与 OOS 验证:")
         print(f"  python quantpits/scripts/analyze_ensembles.py --metadata {metadata_path}")

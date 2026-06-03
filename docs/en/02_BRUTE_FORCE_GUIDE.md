@@ -13,6 +13,9 @@ python quantpits/scripts/brute_force_ensemble.py --max-combo-size 3
 # Full exhaustive search (10 models = 1023 combos, highly time-intensive)
 python quantpits/scripts/brute_force_ensemble.py
 
+# Use Z-Score normalization (preserves model "confidence" info, intersection fusion)
+python quantpits/scripts/brute_force_ensemble.py --norm-method zscore
+
 
 # Resume from interruption (via Ctrl+C payload or fatal exit)
 python quantpits/scripts/brute_force_ensemble.py --resume
@@ -29,7 +32,8 @@ python quantpits/scripts/brute_force_ensemble.py --use-groups --group-config con
 ### Stage 1 — Load Predictions
 - Reads `latest_train_records.json` to acquire the experiment name and available model mapping.
 - Spawns Qlib Recorders to load `pred.pkl` prediction scores for each active model.
-- Conducts cross-sectional Z-Score normalization daily.
+- Conducts cross-sectional normalization daily (default `rank`: percentile rank → [0,1]; optional `zscore`).
+- In rank mode, stocks not covered by a model are filled with 0.5 (abstain/neutral), enabling **union**-based fusion.
 
 ### Stage 2 — Correlation Analysis
 - Evaluates prediction correlation matrices.
@@ -73,6 +77,7 @@ python quantpits/scripts/brute_force_ensemble.py --use-groups --group-config con
 | `--batch-size` | `50` | Combo count per persistence bucket (Impacts RAM intensity and checkpoint intervals). |
 | `--use-groups` | - | Activate manual exclusionary subset routing (selects at most one model per defined group block). |
 | `--group-config` | `config/combo_groups.yaml` | Overriding path for groupings definitions. |
+| `--norm-method` | `rank` | Cross-sectional normalization: `rank` (percentile [0,1], recommended) or `zscore`. |
 
 ## Output Files
 
@@ -446,4 +451,20 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 ```
 
 > For detailed config formatting and instructions, see [03_ENSEMBLE_FUSION_GUIDE](03_ENSEMBLE_FUSION_GUIDE.md).
+
+---
+
+## Known Limitations (Future Work)
+
+### Rank Granularity Mismatch Across Coverage Sizes
+
+In rank mode, a model covering 300 stocks produces rank steps of `1/299`, while a model covering 500 stocks produces steps of `1/499`. Coarser-grained model signals get diluted by finer-grained quantization noise during averaging. Future versions may weight models by coverage breadth.
+
+### NaN → 0.5 Abstention Assumption
+
+In rank mode, NaN values (stocks not covered by a model) are filled with 0.5 (neutral). This assumes all models are equally "uncertain" about stocks they do not cover. When coverage is systematically biased (e.g., a model only covers large-cap stocks), filling 0.5 for small-caps may be overly optimistic or pessimistic.
+
+### Fast Path NaN Handling Inconsistency
+
+`brute_force_fast.py`'s `load_predictions` applies a global `.dropna()` (intersection) at merge time, while the standard path (`predict_utils.py`) preserves the union and only fills missing cells with 0.5. The same combo evaluated on different paths will produce results that are not directly comparable. The fast path may be deprecated in a future release.
 

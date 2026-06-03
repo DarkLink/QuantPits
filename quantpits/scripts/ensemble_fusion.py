@@ -118,12 +118,12 @@ def get_default_combo(combos):
 # ============================================================================
 # Stage 1: 加载预测数据
 # ============================================================================
-def load_selected_predictions(train_records, selected_models):
+def load_selected_predictions(train_records, selected_models, norm_method="rank"):
     """
     从 Qlib Recorder 加载选定模型的预测值，归一化后返回宽表。
     """
     from quantpits.utils.predict_utils import load_predictions_from_recorder
-    return load_predictions_from_recorder(train_records, selected_models)
+    return load_predictions_from_recorder(train_records, selected_models, norm_method=norm_method)
 
 
 def filter_norm_df_by_args(norm_df, args):
@@ -1146,6 +1146,8 @@ def main():
     parser.add_argument('--detailed-analysis', action='store_true', help='生成详尽的回测分析报告（类似实盘分析）')
     parser.add_argument('--verbose-backtest', action='store_true', help='开启 Qlib 回测的详细日志模式')
     parser.add_argument('--save-csv', action='store_true', help='除了保存为 Qlib Recorder 外，同时输出 predictions csv')
+    parser.add_argument('--norm-method', type=str, default='rank', choices=['zscore', 'rank'],
+                        help='截面归一化方法 (默认: zscore)')
 
     args = parser.parse_args()
 
@@ -1282,7 +1284,7 @@ def main():
 
         # ---- Stage 1: 一次性加载所有模型预测 ----
         norm_df, model_metrics, loaded_models = load_selected_predictions(
-            train_records, sorted(all_needed_models)
+            train_records, sorted(all_needed_models), norm_method=args.norm_method
         )
 
         # ---- 时间窗口过滤 ----

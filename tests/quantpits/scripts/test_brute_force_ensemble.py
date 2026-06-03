@@ -75,6 +75,55 @@ def test_zscore_norm(mock_env):
     ], names=["datetime", "instrument"]))
     assert np.all(pu.zscore_norm(zero_series) == 0.0)
 
+
+def test_rank_norm(mock_env):
+    import quantpits.utils.predict_utils as pu
+    series = pd.Series([1, 2, 3, 10, 20, 30],
+                       index=pd.MultiIndex.from_arrays([
+                           pd.to_datetime(["2020-01-01"]*3 + ["2020-01-02"]*3),
+                           ["A", "B", "C", "A", "B", "C"]
+                       ], names=["datetime", "instrument"]))
+    normed = pu.rank_norm(series)
+    assert normed.min() >= 0
+    assert normed.max() <= 1
+    day1 = normed.xs("2020-01-01", level="datetime")
+    assert day1.iloc[0] < day1.iloc[-1]  # 高分 → 高 rank
+
+    # Single-value day → 0.5
+    zero = pd.Series([1.0, 1.0, 1.0], index=pd.MultiIndex.from_arrays([
+        pd.to_datetime(["2020-01-01"]*3), ["A", "B", "C"]
+    ], names=["datetime", "instrument"]))
+    normed2 = pu.rank_norm(zero)
+    assert (normed2 == 0.5).all()
+
+
+def test_rank_norm_nan_fill():
+    """rank 模式下 NaN 被填充为 0.5 (模型弃权=中性分)。"""
+    import quantpits.utils.predict_utils as pu
+
+    # 两个模型覆盖不同股票: A 有 stock1/2，B 只有 stock1
+    dates = pd.to_datetime(["2020-01-01", "2020-01-01"])
+    idx_a = pd.MultiIndex.from_arrays([dates, ["S1", "S2"]], names=["datetime", "instrument"])
+    idx_b = pd.MultiIndex.from_arrays([dates[:1], ["S1"]], names=["datetime", "instrument"])
+
+    series_a = pd.Series([0.1, 0.9], index=idx_a)
+    series_b = pd.Series([0.5], index=idx_b)
+
+    merged = pd.concat([series_a.rename("A"), series_b.rename("B")], axis=1)
+    norm_df = pd.DataFrame(index=merged.index)
+    norm_df["A"] = pu.rank_norm(merged["A"].dropna())
+    norm_df["B"] = pu.rank_norm(merged["B"].dropna())
+    # B 缺 S2 → NaN
+    assert pd.isna(norm_df.loc[("2020-01-01", "S2"), "B"])
+
+    # rank 模式填充 NaN → 0.5
+    filled = norm_df.fillna(0.5)
+    assert filled.loc[("2020-01-01", "S2"), "B"] == 0.5
+    # S1 原始值不变
+    assert filled.loc[("2020-01-01", "S1"), "A"] == 0.0  # rank: 低分→0
+    assert filled.loc[("2020-01-01", "S1"), "B"] == 0.5  # 单只股票→0.5
+
+
 # ── load_combo_groups ────────────────────────────────────────────────────
 def test_load_combo_groups(mock_env):
     bfe, workspace = mock_env

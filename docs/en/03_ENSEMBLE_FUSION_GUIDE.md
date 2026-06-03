@@ -49,6 +49,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 | `--only-last-months N` | `0` | Use only the last N months of data (Designed exclusively for OOS testing) |
 | `--detailed-analysis` | false | Generates a detailed backtest analysis report (similar to production reports) |
 | `--verbose-backtest` | false | Enables verbose mode for Qlib backtesting |
+| `--norm-method` | `rank` | Cross-sectional normalization: `rank` (percentile [0,1], recommended) or `zscore` |
 
 ## Multi-Combo Configurations
 
@@ -269,3 +270,44 @@ python quantpits/scripts/order_gen.py
 | **`ensemble_fusion.py`** | **Fusion Backtest** | **Targeted Combo sets** | **Fused Predictions + Risk Matrix** |
 | `signal_ranking.py` | Top N Output | Fusion Recorders | Ranked CSV sets |
 | `order_gen.py` | Target Execution | Fused Recorders + Current Pos | Buys/Sells + Multi-Model opinions |
+
+---
+
+## Normalization Methods
+
+### rank (default)
+
+Cross-sectional percentile rank normalization, output strictly **[0, 1]**. Recommended for long-only TopK strategies:
+
+- Each model's predictions are ranked within each trading day, then mapped to [0, 1].
+- Stocks not covered by a model are filled with **0.5** (abstain/neutral vote).
+- Fusion uses the **union** of all model coverages (no stocks lost due to partial coverage).
+- Each model gets equal voting power in equal-weight fusion.
+
+### zscore
+
+Classic Z-Score normalization. Preserves model "confidence" magnitude:
+
+- Unbounded output; extreme scores from one model can dominate the fused signal.
+- NaN cells (stocks not covered) remain NaN → fusion drops to **intersection** via `dropna(how='any')`.
+- Suitable when you want to differentiate model conviction levels.
+
+### OOS Analysis Consistency
+
+`analyze_ensembles.py` automatically reads the normalization method from `run_metadata.json`, ensuring the same normalization strategy is applied to both IS and OOS data.
+
+---
+
+## Known Limitations (Future Work)
+
+### Rank Granularity Mismatch Across Coverage Sizes
+
+In rank mode, a model covering 300 stocks produces rank steps of `1/299`, while a model covering 500 stocks produces steps of `1/499`. Coarser-grained model signals get diluted by finer-grained quantization noise during averaging. Future versions may weight models by coverage breadth.
+
+### NaN → 0.5 Abstention Assumption
+
+In rank mode, NaN values (stocks not covered by a model) are filled with 0.5 (neutral). This assumes all models are equally "uncertain" about stocks they do not cover. When coverage is systematically biased (e.g., a model only covers large-cap stocks), filling 0.5 for small-caps may be overly optimistic or pessimistic.
+
+### Fast Path NaN Handling Inconsistency
+
+`brute_force_fast.py`'s `load_predictions` applies a global `.dropna()` (intersection) at merge time, while the standard path (`predict_utils.py`) preserves the union and only fills missing cells with 0.5. The same combo evaluated on different paths will produce results that are not directly comparable. The fast path may be deprecated in a future release.

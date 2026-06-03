@@ -104,12 +104,12 @@ def load_config(record_file="latest_train_records.json"):
 # Stage 1: 加载预测数据
 # ============================================================================
 
-def load_predictions(train_records):
+def load_predictions(train_records, norm_method="rank"):
     """
     从 Qlib Recorder 加载所有模型的预测值，归一化后返回宽表。
     """
     from quantpits.utils.predict_utils import load_predictions_from_recorder
-    norm_df, model_metrics, _ = load_predictions_from_recorder(train_records)
+    norm_df, model_metrics, _ = load_predictions_from_recorder(train_records, norm_method=norm_method)
     return norm_df, model_metrics
 
 
@@ -455,6 +455,10 @@ def main():
         "--group-config", type=str, default="config/combo_groups.yaml",
         help="分组配置文件路径 (默认: config/combo_groups.yaml)",
     )
+    parser.add_argument(
+        "--norm-method", type=str, default="rank", choices=["zscore", "rank"],
+        help="截面归一化方法 (默认: zscore)",
+    )
     args = parser.parse_args()
 
     from quantpits.utils.operator_log import OperatorLog
@@ -498,7 +502,7 @@ def main():
             train_records = dict(train_records)
             train_records['models'] = filtered
             print(f"训练模式过滤: {args.training_mode} (剩余 {len(filtered)} 个模型)")
-        norm_df, model_metrics = load_predictions(train_records)
+        norm_df, model_metrics = load_predictions(train_records, norm_method=args.norm_method)
         
         # 划分数据集 (IS / OOS)
         is_norm_df, oos_norm_df = split_is_oos_by_args(norm_df, args)
@@ -544,7 +548,8 @@ def main():
             "exclude_last_years": args.exclude_last_years,
             "exclude_last_months": args.exclude_last_months,
             "use_groups": args.use_groups,
-            "group_config": args.group_config
+            "group_config": args.group_config,
+            "norm_method": args.norm_method,
         })
         print(f"请使用以下命令进行分析与 OOS 验证:")
         print(f"  python quantpits/scripts/analyze_ensembles.py --metadata {metadata_path}")

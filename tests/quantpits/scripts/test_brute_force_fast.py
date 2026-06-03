@@ -36,6 +36,32 @@ def test_zscore_norm(mock_env):
     assert np.isclose(normed.xs("2020-01-01", level="datetime").mean(), 0)
     assert np.isclose(normed.xs("2020-01-01", level="datetime").std(), 1)
 
+def test_rank_norm(mock_env):
+    bff, _ = mock_env
+    dates = pd.to_datetime(["2020-01-01"]*3 + ["2020-01-02"]*3)
+    idx = pd.MultiIndex.from_arrays([dates, ["A", "B", "C"]*2], names=["datetime", "instrument"])
+    series = pd.Series([1.0, 2.0, 3.0, 10.0, 20.0, 30.0], index=idx)
+    normed = bff.rank_norm(series)
+    # All values in [0, 1]
+    assert normed.min() >= 0
+    assert normed.max() <= 1
+    # 高分 → 高 rank
+    assert normed.xs("2020-01-01", level="datetime").iloc[0] < normed.xs("2020-01-01", level="datetime").iloc[-1]
+
+def test_rank_norm_zero_variance(mock_env):
+    bff, _ = mock_env
+    dates = pd.to_datetime(["2020-01-01"]*3 + ["2020-01-02"])
+    idx = pd.MultiIndex.from_arrays([dates, ["A", "B", "C", "D"]], names=["datetime", "instrument"])
+    series = pd.Series([1.0, 1.0, 1.0, 7.0], index=idx)
+    normed = bff.rank_norm(series)
+    # Ties → same rank
+    day1 = normed.xs("2020-01-01", level="datetime")
+    assert day1.iloc[0] == day1.iloc[1] == day1.iloc[2]
+    # Single instrument day → 0.5
+    day2 = normed.xs("2020-01-02", level="datetime")
+    assert day2.iloc[0] == 0.5
+
+
 def test_vectorized_topk_backtest_single(mock_env):
     bff, _ = mock_env
     # T=5, N=3. Top_k=1

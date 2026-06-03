@@ -107,6 +107,25 @@ def test_zscore_norm():
     assert norm.loc[("2020-01-02", "A")] == 0.0
     assert norm.loc[("2020-01-02", "B")] == 0.0
 
+
+def test_rank_norm():
+    import quantpits.utils.predict_utils as pu
+
+    dates = pd.to_datetime(["2020-01-01", "2020-01-01", "2020-01-02", "2020-01-02"])
+    instruments = ["A", "B", "A", "B"]
+    idx = pd.MultiIndex.from_arrays([dates, instruments], names=['datetime', 'instrument'])
+    series = pd.Series([10.0, 20.0, 5.0, 5.0], index=idx)
+
+    norm = pu.rank_norm(series)
+
+    # 2020-01-01: A=10, B=20 → A rank=0, B rank=1
+    assert np.isclose(norm.loc[("2020-01-01", "A")], 0.0)
+    assert np.isclose(norm.loc[("2020-01-01", "B")], 1.0)
+    # 2020-01-02: A=5, B=5 → ties → both 0.5
+    assert np.isclose(norm.loc[("2020-01-02", "A")], 0.5)
+    assert np.isclose(norm.loc[("2020-01-02", "B")], 0.5)
+
+
 @patch('qlib.workflow.R')
 def test_load_selected_predictions(mock_R, mock_env):
     ef, workspace = mock_env
@@ -142,8 +161,9 @@ def test_load_selected_predictions(mock_R, mock_env):
     assert "ModelB" in norm_df.columns
     assert metrics["ModelA"] == 1.5
     assert metrics["ModelB"] == 0.8
-    # Z-scores computed
-    assert np.isclose(norm_df.loc[("2026-03-01", "Inst1"), "ModelA"], -0.7071, atol=1e-3)
+    # rank 归一化: [0.1,0.2] → [0.0, 1.0]
+    assert np.isclose(norm_df.loc[("2026-03-01", "Inst1"), "ModelA"], 0.0)
+    assert np.isclose(norm_df.loc[("2026-03-01", "Inst2"), "ModelA"], 1.0)
 
 def test_calculate_weights_equal():
     import quantpits.scripts.ensemble_fusion as ef

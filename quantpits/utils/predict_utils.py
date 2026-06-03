@@ -12,19 +12,38 @@ def zscore_norm(series: pd.Series) -> pd.Series:
         return (x - x.mean()) / std
     return series.groupby(level="datetime", group_keys=False).apply(_norm_func)
 
+
+def rank_norm(series: pd.Series) -> pd.Series:
+    """按天 Cross-Sectional Percentile Rank 归一化 -> [0, 1].
+
+    对每个交易日截面内所有股票按预测分排名，映射到 [0, 1]，
+    使各模型在融合时获得完全平等的投票权。
+    n=1 (仅一只股票) 时返回 0.5。
+    """
+    def _rank_func(x):
+        n = len(x)
+        if n <= 1:
+            return pd.Series(0.5, index=x.index)
+        ranked = x.rank(method="average")
+        return (ranked - 1) / (n - 1)
+    return series.groupby(level="datetime", group_keys=False).apply(_rank_func)
+
+
 def load_predictions_from_recorder(
-    train_records: dict, 
-    selected_models: Optional[List[str]] = None
+    train_records: dict,
+    selected_models: Optional[List[str]] = None,
+    norm_method: str = "rank",
 ) -> Tuple[pd.DataFrame, Dict[str, float], List[str]]:
     """
     从 Qlib Recorder 加载所有模型或选定模型的预测值，归一化后返回宽表。
 
     Args:
-        train_records: 包含 experiment_name 和 models 字典 的记录信息。
-        selected_models: 选定的模型列表。如果为 None 则加载 models 字典中的所有模型。
+        train_records: 包含 experiment_name 和 models 字典的记录信息。
+        selected_models: 选定的模型列表。为 None 则加载全部。
+        norm_method: 归一化方式，\"zscore\" (默认) 或 \"rank\"。
 
     Returns:
-        norm_df: DataFrame, index=(datetime, instrument), columns=model_names，含 Z-Score 归一化的合法数据
+        norm_df: DataFrame, index=(datetime, instrument), columns=model_names
         model_metrics: dict, model_name -> ICIR
         loaded_models: 成功加载的模型列表
     """
@@ -85,14 +104,19 @@ def load_predictions_from_recorder(
     if not all_preds:
         raise ValueError("未加载到任何预测数据！")
 
-    # 合并 & Z-Score 归一化 (注意：不要在这里提前 dropna，避免由于单模型标的变动殃及其他模型)
+    # 合并 & 归一化 (注意：不要在这里提前 dropna，避免由于单模型标的变动殃及其他模型)
     merged_df = pd.concat(all_preds, axis=1)
     print(f"合并后数据维度: {merged_df.shape}")
 
+    norm_func = rank_norm if norm_method == "rank" else zscore_norm
     norm_df = pd.DataFrame(index=merged_df.index)
     for col in merged_df.columns:
-        # 独立依靠单模型自身非空范围进行 Z-Score
-        norm_df[col] = zscore_norm(merged_df[col].dropna())
+        # 独立依靠单模型自身非空范围进行归一化
+        norm_df[col] = norm_func(merged_df[col].dropna())
+
+    # rank 模式: 模型未覆盖的股票视为弃权 (0.5 中性分)，扩大可融合股票池
+    if norm_method == "rank":
+        norm_df = norm_df.fillna(0.5)
 
     return norm_df, model_metrics, loaded_models
 
