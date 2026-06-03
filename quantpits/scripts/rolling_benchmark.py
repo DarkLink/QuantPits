@@ -325,10 +325,14 @@ def collect_system_info():
     cpu_name = "Unknown"
     try:
         with open("/proc/cpuinfo", "r") as f:
-            for line in f:
-                if line.startswith("model name"):
-                    cpu_name = line.split(":")[1].strip()
-                    break
+            content = f.read()
+        for line in content.splitlines():
+            # Handle both str (normal) and bytes (edge-case / mock)
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="replace")
+            if line.startswith("model name"):
+                cpu_name = line.split(":")[1].strip()
+                break
     except Exception:
         pass
 

@@ -164,7 +164,15 @@ class TestCollectSystemInfo:
         assert info["gpu_name"] == "TestGPU"
 
     def test_no_proc_cpuinfo_fallback(self, monkeypatch):
-        with patch("builtins.open", side_effect=FileNotFoundError), \
+        import builtins
+        _real_open = builtins.open
+
+        def _selective_open(path, *args, **kwargs):
+            if path == "/proc/cpuinfo":
+                raise FileNotFoundError("mocked: no /proc/cpuinfo")
+            return _real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=_selective_open), \
              patch("psutil.virtual_memory") as mock_vm:
             mock_vm.return_value.total = 8 * 1024**3
             with patch.object(rb, "get_gpu_info", return_value={"name": "GPU", "vram_total_mb": 0}):

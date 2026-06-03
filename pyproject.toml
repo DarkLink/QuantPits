@@ -42,5 +42,18 @@ testpaths = [
     "tests",
 ]
 pythonpath = [
-    "."
+    ".",
+]
+
+[tool.coverage.run]
+omit = [
+    # Model wrapper shims: thin Qlib config files, not unit-testable
+    "quantpits/utils/model_wrappers/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "def __repr__",
 ]
