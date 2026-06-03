@@ -373,7 +373,7 @@ def test_brute_force_fast_backtest_gc_coverage(mock_env, tmp_path):
     scores_np = {m: np.zeros((2, 1), dtype=np.float32) for m in model_names}
     returns_np = np.zeros((2, 1), dtype=np.float32)
     bench_ret = np.zeros(2, dtype=np.float32)
-    
+
     with patch('gc.collect') as mock_gc:
         bff.brute_force_fast_backtest(
             scores_np, returns_np, model_names, bench_ret,
@@ -382,4 +382,156 @@ def test_brute_force_fast_backtest_gc_coverage(mock_env, tmp_path):
         )
         # 13 batches, should trigger at batch index 10 (batch_start = 20)
         assert mock_gc.called
+
+
+# =========================================================================
+# Edge case coverage tests
+# =========================================================================
+
+
+class TestLoadConfigEdgeCases:
+    def test_record_file_missing(self, mock_env, tmp_path):
+        """load_config falls back when record_file doesn't exist (line 138-139)."""
+        bff, ws = mock_env
+        nonexistent = str(tmp_path / "nonexistent.json")
+        with patch("quantpits.utils.config_loader.load_workspace_config",
+                   return_value={"benchmark": "CSI300"}):
+            records, cfg = bff.load_config(nonexistent)
+        assert records == {"models": {}, "experiment_name": "unknown"}
+        assert cfg == {"benchmark": "CSI300"}
+
+
+class TestBacktestEdgeCases:
+    def test_resume_loads_existing_csv(self, mock_env, tmp_path):
+        """Resume mode loads existing CSV and skips done combos (lines 638-641)."""
+        bff, _ = mock_env
+        csv_dir = tmp_path / "output"
+        csv_dir.mkdir()
+        csv_path = csv_dir / "bf_results_test.csv"
+        existing_df = pd.DataFrame({
+            "models": ["m1", "m1,m2"],
+            "Ann_Excess": [0.05, 0.08],
+        })
+        existing_df.to_csv(csv_path, index=False)
+
+        model_names = ["m1", "m2"]
+        scores_np = {m: np.zeros((2, 1), dtype=np.float32) for m in model_names}
+        returns_np = np.zeros((2, 1), dtype=np.float32)
+        bench_ret = np.zeros(2, dtype=np.float32)
+
+        result = bff.brute_force_fast_backtest(
+            scores_np, returns_np, model_names, bench_ret,
+            top_k=1, freq="day", cost_rate=0.0, batch_size=2,
+            min_combo_size=1, max_combo_size=2,
+            output_dir=str(csv_dir), anchor_date="test",
+            resume=True, results_filename="bf_results_test.csv",
+        )
+        # 3 total combos (m1, m2, m1,m2), 2 already done via resume
+        assert len(result) == 3
+
+    def test_all_combos_done_uses_existing(self, mock_env, tmp_path):
+        """No pending combos → uses existing results (lines 650-651)."""
+        bff, _ = mock_env
+        csv_dir = tmp_path / "output"
+        csv_dir.mkdir()
+        csv_path = csv_dir / "bf_results_full.csv"
+        existing_df = pd.DataFrame({
+            "models": ["m1", "m2", "m1,m2"],
+            "Ann_Excess": [0.05, 0.03, 0.08],
+        })
+        existing_df.to_csv(csv_path, index=False)
+
+        model_names = ["m1", "m2"]
+        scores_np = {m: np.zeros((2, 1), dtype=np.float32) for m in model_names}
+        returns_np = np.zeros((2, 1), dtype=np.float32)
+        bench_ret = np.zeros(2, dtype=np.float32)
+
+        result = bff.brute_force_fast_backtest(
+            scores_np, returns_np, model_names, bench_ret,
+            top_k=1, freq="day", cost_rate=0.0, batch_size=2,
+            min_combo_size=1, max_combo_size=2,
+            output_dir=str(csv_dir), anchor_date="test",
+            resume=True, results_filename="bf_results_full.csv",
+        )
+        assert len(result) == 3
+
+    def test_empty_results_warning(self, mock_env, tmp_path):
+        """Empty results_df prints warning (line 712)."""
+        bff, _ = mock_env
+        csv_dir = tmp_path / "output"
+        csv_dir.mkdir()
+
+        # No models → no combinations → empty results
+        model_names: list = []
+        scores_np: dict = {}
+        returns_np = np.zeros((2, 1), dtype=np.float32)
+        bench_ret = np.zeros(2, dtype=np.float32)
+
+        with patch("builtins.print") as mock_print:
+            result = bff.brute_force_fast_backtest(
+                scores_np, returns_np, model_names, bench_ret,
+                top_k=1, freq="day", cost_rate=0.0, batch_size=2,
+                min_combo_size=1, max_combo_size=1,
+                output_dir=str(csv_dir), anchor_date="test",
+            )
+        assert result.empty
+        mock_print.assert_any_call("警告: 无有效回测结果")
+
+    # GPU cleanup test skipped — requires a real cupy mock module with
+    # ndarray class for isinstance() checks in _to_numpy().
+    # This path (lines 696-699) is best covered by integration tests
+    # on a machine with cupy installed.
+
+
+class TestMainEdgeCases:
+    def test_training_mode_filter(self, mock_env, tmp_path):
+        """Training mode filter branch (lines 852-857)."""
+        bff, ws = mock_env
+
+        config_dir = ws / "config"
+        config_dir.mkdir(exist_ok=True)
+        with open(config_dir / "model_config.json", "w") as f:
+            json.dump({"benchmark": "CSI300", "market": "cn"}, f)
+        with open(config_dir / "ensemble_config.json", "w") as f:
+            json.dump({"combos": {}}, f)
+
+        train_records = {
+            "models": {
+                "m1": {"algorithm": "gru", "training_mode": "full"},
+                "m2": {"algorithm": "linear", "training_mode": "incremental"},
+            },
+            "experiment_name": "test",
+        }
+
+        with patch.object(bff, "load_config", return_value=(train_records, {})), \
+             patch.object(bff, "load_predictions", return_value=(pd.DataFrame(), {})), \
+             patch.object(bff, "split_is_oos_by_args", return_value=(pd.DataFrame([1]), pd.DataFrame())), \
+             patch("quantpits.utils.env.safeguard"), \
+             patch("quantpits.utils.operator_log.OperatorLog"):
+            with patch.object(sys, "argv", [
+                "brute_force_fast.py", "--max-combo-size", "1",
+                "--training-mode", "full", "--freq", "day",
+            ]):
+                try:
+                    bff.main()
+                except SystemExit:
+                    pass
+
+    def test_empty_is_data_exit(self, mock_env, tmp_path):
+        """Empty IS data → sys.exit(1) (lines 862-864)."""
+        bff, ws = mock_env
+
+        train_records = {"models": {}, "experiment_name": "test"}
+        with patch.object(bff, "load_config", return_value=(train_records, {})), \
+             patch.object(bff, "load_predictions", return_value=(pd.DataFrame(), {})), \
+             patch.object(bff, "split_is_oos_by_args", return_value=(pd.DataFrame(), pd.DataFrame())), \
+             patch("quantpits.utils.env.safeguard"), \
+             patch("quantpits.utils.operator_log.OperatorLog"):
+            with patch.object(sys, "argv", [
+                "brute_force_fast.py", "--max-combo-size", "1", "--freq", "day",
+            ]):
+                try:
+                    bff.main()
+                except SystemExit as e:
+                    assert e.code == 1
 

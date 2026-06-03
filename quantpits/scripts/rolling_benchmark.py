@@ -124,54 +124,101 @@ def get_gpu_vram_used_mb():
     return 0
 
 
+# GPU/CPU algorithm classification sets
+GPU_ALGORITHMS = {
+    "lstm", "gru", "alstm", "transformer", "localformer",
+    "catboost", "tcn", "tabnet", "sfm", "sandwich",
+    "tra", "adarnn", "add", "tft", "igmtf", "krnn",
+    "gats", "tcts",
+}
+CPU_ALGORITHMS = {"linear", "lightgbm", "mlp", "xgboost", "ridge"}
+
+
+def classify_model_device(algorithm: str) -> str:
+    """Classify a model as GPU/CPU based on its algorithm name.
+
+    Returns "GPU", "CPU", or "GPU?" for unknown algorithms.
+    """
+    algo = algorithm.lower()
+    if algo in GPU_ALGORITHMS:
+        return "GPU"
+    if algo in CPU_ALGORITHMS:
+        return "CPU"
+    return "GPU?"
+
+
+def compute_benchmark_summary(benchmarks: dict, sys_info: dict):
+    """Compute aggregate statistics and parallelism suggestions from benchmark results.
+
+    Args:
+        benchmarks: dict of {model_name: {wall_sec, peak_rss_mb, peak_vram_mb,
+                         success, device, ...}}
+        sys_info: system info dict from collect_system_info()
+
+    Returns:
+        dict with sorted_models, cpu_stats, gpu_stats, suggestions
+    """
+    sorted_bm = sorted(
+        benchmarks.items(),
+        key=lambda x: x[1].get("wall_sec", 0),
+        reverse=True,
+    )
+
+    cpu_models = [
+        (n, b) for n, b in sorted_bm
+        if b.get("device") == "cpu" and b.get("success")
+    ]
+    gpu_models = [
+        (n, b) for n, b in sorted_bm
+        if b.get("device") == "gpu" and b.get("success")
+    ]
+
+    total_wall = sum(b.get("wall_sec", 0) for _, b in sorted_bm)
+
+    result = {
+        "sorted_models": sorted_bm,
+        "total_wall_sec": total_wall,
+        "cpu_count": len(cpu_models),
+        "gpu_count": len(gpu_models),
+    }
+
+    if cpu_models:
+        result["cpu_avg_wall_sec"] = round(
+            sum(b["wall_sec"] for _, b in cpu_models) / len(cpu_models))
+        result["cpu_avg_rss_mb"] = round(
+            sum(b["peak_rss_mb"] for _, b in cpu_models) / len(cpu_models))
+
+    if gpu_models:
+        result["gpu_avg_wall_sec"] = round(
+            sum(b["wall_sec"] for _, b in gpu_models) / len(gpu_models))
+        result["gpu_avg_rss_mb"] = round(
+            sum(b["peak_rss_mb"] for _, b in gpu_models) / len(gpu_models))
+        result["gpu_avg_vram_mb"] = round(
+            sum(b["peak_vram_mb"] for _, b in gpu_models) / len(gpu_models))
+
+    # Parallelism suggestions
+    ram_avail = sys_info["ram_total_mb"] * 0.8
+    vram_avail = sys_info["gpu_vram_mb"] * 0.85
+
+    if cpu_models:
+        max_cpu_rss = max(b["peak_rss_mb"] for _, b in cpu_models)
+        cpu_parallel = max(1, int(ram_avail / max_cpu_rss)) if max_cpu_rss > 0 else 8
+        cpu_parallel = min(cpu_parallel, os.cpu_count() or 8)
+        result["cpu_parallel_suggestion"] = cpu_parallel
+        result["cpu_max_rss_mb"] = max_cpu_rss
+
+    if gpu_models:
+        max_gpu_vram = max(b["peak_vram_mb"] for _, b in gpu_models)
+        gpu_parallel = max(1, int(vram_avail / max_gpu_vram)) if max_gpu_vram > 0 else 1
+        result["gpu_parallel_suggestion"] = gpu_parallel
+        result["gpu_max_vram_mb"] = max_gpu_vram
+
+    return result
+
+
 # ============================================================================
 # 子进程 Benchmark 入口
 # ============================================================================
-
-def _benchmark_in_subprocess(qlib_config_dict, model_name, yaml_file, window,
-                              params_base, experiment_name, no_pretrain):
-    """
-    子进程入口: 初始化 qlib → 训练 → 返回 (result, peak_rss_mb, peak_vram_mb)。
-
-    在子进程中执行训练，通过 resource.getrusage 获取子进程 peak RSS。
-    GPU VRAM 通过训练前后的差值估算。
-    """
-    from qlib.config import C
-    C.register_from_C(qlib_config_dict)
-
-    # 训练前 baseline
-    vram_before = get_gpu_vram_used_mb()
-
-    # 用 resource module 追踪 peak RSS（子进程自身 + 子子进程）
-    # 注意: ru_maxrss 在 Linux 下单位是 KB
-    usage_before = resource.getrusage(resource.RUSAGE_SELF)
-
-    # 执行训练
-    from quantpits.scripts.rolling.training import train_window_model
-    result = train_window_model(
-        model_name=model_name,
-        yaml_file=yaml_file,
-        window=window,
-        params_base=params_base,
-        experiment_name=experiment_name,
-        no_pretrain=no_pretrain,
-    )
-
-    usage_after = resource.getrusage(resource.RUSAGE_SELF)
-    vram_after = get_gpu_vram_used_mb()
-
-    # peak RSS (KB → MB)
-    peak_rss_mb = round(usage_after.ru_maxrss / 1024)
-
-    # VRAM: 使用训练后的值作为估算（不是精确 peak，但足够参考）
-    peak_vram_mb = max(0, vram_after - vram_before)
-    # 如果训练后 VRAM 回落了（模型释放），用 vram_after 作为上界
-    # 更好的方案是后台线程采样，但对 benchmark 足够
-    if peak_vram_mb == 0 and vram_after > vram_before:
-        peak_vram_mb = vram_after - vram_before
-
-    return result, peak_rss_mb, peak_vram_mb
-
 
 def _benchmark_with_vram_sampling(qlib_config_dict, model_name, yaml_file,
                                    window, params_base, experiment_name,
@@ -434,14 +481,6 @@ def main():
     registry = load_model_registry()
 
     # 按算法分类，预判 GPU/CPU
-    gpu_algorithms = {
-        "lstm", "gru", "alstm", "transformer", "localformer",
-        "catboost", "tcn", "tabnet", "sfm", "sandwich",
-        "tra", "adarnn", "add", "tft", "igmtf", "krnn",
-        "gats", "tcts",
-    }
-    cpu_algorithms = {"linear", "lightgbm", "mlp", "xgboost", "ridge"}
-
     print(f"\n📋 Benchmark 计划:")
     print(f"{'='*70}")
     print(f"  {'模型名':<30} {'算法':<15} {'预判设备':<10}")
@@ -459,9 +498,7 @@ def main():
     pending = {}
     for name, info in targets.items():
         algo = info.get("algorithm", "unknown")
-        device = "GPU" if algo.lower() in gpu_algorithms else "CPU"
-        if algo.lower() not in gpu_algorithms and algo.lower() not in cpu_algorithms:
-            device = "GPU?"  # 未知算法默认标记为 GPU
+        device = classify_model_device(algo)
 
         status = ""
         if name in done_models:
@@ -541,7 +578,7 @@ def main():
                 # 补充算法信息
                 bm["algorithm"] = algo
                 bm["dataset"] = model_info.get("dataset", "unknown")
-                device = "gpu" if algo.lower() in gpu_algorithms else "cpu"
+                device = classify_model_device(algo).lower()
                 bm["device"] = device
 
                 output["benchmarks"][model_name] = bm
@@ -585,75 +622,47 @@ def main():
 
         benchmarks = output["benchmarks"]
         if benchmarks:
-            # 按 wall_sec 排序
-            sorted_bm = sorted(
-                benchmarks.items(),
-                key=lambda x: x[1].get("wall_sec", 0),
-                reverse=True,
-            )
+            summary = compute_benchmark_summary(benchmarks, sys_info)
+            sorted_bm = summary["sorted_models"]
 
             print(f"\n  {'模型名':<30} {'耗时(s)':<10} {'RSS(MB)':<10} "
                   f"{'VRAM(MB)':<10} {'设备':<6} {'状态'}")
             print(f"  {'-'*30} {'-'*10} {'-'*10} {'-'*10} {'-'*6} {'-'*6}")
 
-            total_wall = 0
             for name, bm in sorted_bm:
                 status = "✅" if bm.get("success") else "❌"
                 wall = bm.get("wall_sec", 0)
                 rss = bm.get("peak_rss_mb", 0)
                 vram = bm.get("peak_vram_mb", 0)
                 device = bm.get("device", "?")
-                total_wall += wall
                 print(f"  {name:<30} {wall:<10.1f} {rss:<10} "
                       f"{vram:<10} {device:<6} {status}")
 
+            total_wall = summary["total_wall_sec"]
             print(f"\n  总耗时: {total_wall:.0f}s ({total_wall/60:.1f}min)")
             print(f"  成功: {completed}, 失败: {failed}")
 
-            # 按设备分组统计
-            cpu_models = [
-                (n, b) for n, b in sorted_bm
-                if b.get("device") == "cpu" and b.get("success")
-            ]
-            gpu_models = [
-                (n, b) for n, b in sorted_bm
-                if b.get("device") == "gpu" and b.get("success")
-            ]
+            if "cpu_avg_wall_sec" in summary:
+                print(f"\n  CPU 模型 ({summary['cpu_count']}): "
+                      f"平均 {summary['cpu_avg_wall_sec']}s, "
+                      f"平均 RSS {summary['cpu_avg_rss_mb']}MB")
 
-            if cpu_models:
-                avg_cpu = sum(b["wall_sec"] for _, b in cpu_models) / len(cpu_models)
-                avg_rss = sum(b["peak_rss_mb"] for _, b in cpu_models) / len(cpu_models)
-                print(f"\n  CPU 模型 ({len(cpu_models)}): "
-                      f"平均 {avg_cpu:.0f}s, 平均 RSS {avg_rss:.0f}MB")
+            if "gpu_avg_wall_sec" in summary:
+                print(f"  GPU 模型 ({summary['gpu_count']}): "
+                      f"平均 {summary['gpu_avg_wall_sec']}s, "
+                      f"平均 RSS {summary['gpu_avg_rss_mb']}MB, "
+                      f"平均 VRAM {summary['gpu_avg_vram_mb']}MB")
 
-            if gpu_models:
-                avg_gpu = sum(b["wall_sec"] for _, b in gpu_models) / len(gpu_models)
-                avg_rss = sum(b["peak_rss_mb"] for _, b in gpu_models) / len(gpu_models)
-                avg_vram = sum(b["peak_vram_mb"] for _, b in gpu_models) / len(gpu_models)
-                print(f"  GPU 模型 ({len(gpu_models)}): "
-                      f"平均 {avg_gpu:.0f}s, 平均 RSS {avg_rss:.0f}MB, "
-                      f"平均 VRAM {avg_vram:.0f}MB")
-
-            # 并行度建议
-            ram_avail = sys_info["ram_total_mb"] * 0.8  # 留 20% 余量
-            vram_avail = sys_info["gpu_vram_mb"] * 0.85  # 留 15% 余量
-
-            if cpu_models:
-                max_cpu_rss = max(b["peak_rss_mb"] for _, b in cpu_models)
-                cpu_parallel = max(1, int(ram_avail / max_cpu_rss)) if max_cpu_rss > 0 else 8
-                cpu_parallel = min(cpu_parallel, os.cpu_count() or 8)
-                print(f"\n  💡 建议 CPU 并发度: {cpu_parallel} "
-                      f"(基于 max RSS {max_cpu_rss}MB, "
+            if "cpu_parallel_suggestion" in summary:
+                ram_avail = sys_info["ram_total_mb"] * 0.8
+                print(f"\n  💡 建议 CPU 并发度: {summary['cpu_parallel_suggestion']} "
+                      f"(基于 max RSS {summary['cpu_max_rss_mb']}MB, "
                       f"可用 RAM ~{ram_avail:.0f}MB)")
 
-            if gpu_models:
-                max_gpu_vram = max(b["peak_vram_mb"] for _, b in gpu_models)
-                if max_gpu_vram > 0:
-                    gpu_parallel = max(1, int(vram_avail / max_gpu_vram))
-                else:
-                    gpu_parallel = 1
-                print(f"  💡 建议 GPU 并发度: {gpu_parallel} "
-                      f"(基于 max VRAM {max_gpu_vram}MB, "
+            if "gpu_parallel_suggestion" in summary:
+                vram_avail = sys_info["gpu_vram_mb"] * 0.85
+                print(f"  💡 建议 GPU 并发度: {summary['gpu_parallel_suggestion']} "
+                      f"(基于 max VRAM {summary['gpu_max_vram_mb']}MB, "
                       f"可用 VRAM ~{vram_avail:.0f}MB)")
 
         print(f"\n  📁 结果文件: {BENCHMARK_OUTPUT}")

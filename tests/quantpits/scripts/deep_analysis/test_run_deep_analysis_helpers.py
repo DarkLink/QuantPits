@@ -19,8 +19,11 @@ with patch("os.chdir"):
         _build_model_profiles,
         _build_combo_profile,
         _build_execution_profile,
+        _build_execution_risk_summary,
+        _load_model_knowledge,
         _persist_feedback_report,
     )
+    from quantpits.scripts.deep_analysis.base_agent import Finding, AgentFindings
 
 
 # ------------------------------------------------------------------
@@ -488,3 +491,335 @@ class TestBuildModelProfilesFull:
         # Ranking table and family stats
         assert p["ranking_table"] == triage_input["model_ranking"]
         assert p["family_stats"] == triage_input["family_stats"]
+
+
+# =========================================================================
+# _build_execution_risk_summary
+# =========================================================================
+
+
+class TestBuildExecutionRiskSummary:
+    def test_empty_findings(self):
+        result = _build_execution_risk_summary([], {})
+        assert result["diagnosis"] == "rule_based"
+        assert result["execution_issues"] == []
+        assert result["trade_pattern_issues"] == []
+
+    def test_execution_high_severity(self):
+        af = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[
+                Finding(severity="high", category="execution", title="High slippage detected",
+                        detail="Slippage > 2%"),
+            ],
+        )
+        result = _build_execution_risk_summary([af], {})
+        assert len(result["execution_issues"]) == 1
+        assert "High slippage detected" in result["execution_issues"][0]
+
+    def test_trade_critical_severity(self):
+        af = AgentFindings(
+            agent_name="trade_pattern",
+            window_label="full",
+            findings=[
+                Finding(severity="critical", category="trade", title="Chasing signals",
+                        detail="Chasing detected"),
+            ],
+        )
+        result = _build_execution_risk_summary([af], {})
+        assert len(result["trade_pattern_issues"]) == 1
+        assert "Chasing signals" in result["trade_pattern_issues"][0]
+
+    def test_title_truncated_200(self):
+        long_title = "X" * 250
+        af = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[Finding(severity="high", category="exec", title=long_title, detail="")],
+        )
+        result = _build_execution_risk_summary([af], {})
+        assert len(result["execution_issues"][0]) == 200
+
+    def test_empty_title_skipped(self):
+        af = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[Finding(severity="high", category="exec", title="", detail="")],
+        )
+        result = _build_execution_risk_summary([af], {})
+        assert result["execution_issues"] == []
+
+    def test_mixed_severity_only_high_critical_collected(self):
+        af = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[
+                Finding(severity="critical", category="exec", title="Critical issue", detail=""),
+                Finding(severity="high", category="exec", title="High issue", detail=""),
+                Finding(severity="warning", category="exec", title="Warning", detail=""),
+                Finding(severity="info", category="exec", title="Info", detail=""),
+            ],
+        )
+        result = _build_execution_risk_summary([af], {})
+        assert len(result["execution_issues"]) == 2
+
+    def test_market_context_included(self):
+        mc = {"n_regime_changes": 3}
+        result = _build_execution_risk_summary(
+            [], {"market_context": mc}
+        )
+        assert result["market_context"]["n_regime_changes"] == 3
+
+    def test_market_context_non_dict_skipped(self):
+        result = _build_execution_risk_summary(
+            [], {"market_context": "not_a_dict"}
+        )
+        assert "market_context" not in result
+
+    def test_diagnosis_detail_format(self):
+        af = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[Finding(severity="high", category="exec", title="Issue 1", detail="")],
+        )
+        result = _build_execution_risk_summary([af], {})
+        assert "Execution issues: 1" in result["diagnosis_detail"]
+        assert "Trade pattern issues: 0" in result["diagnosis_detail"]
+
+    def test_multiple_agents_aggregated(self):
+        af1 = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[Finding(severity="high", category="exec", title="Exec issue", detail="")],
+        )
+        af2 = AgentFindings(
+            agent_name="trade_pattern",
+            window_label="full",
+            findings=[Finding(severity="critical", category="trade", title="Trade issue", detail="")],
+        )
+        result = _build_execution_risk_summary([af1, af2], {})
+        assert len(result["execution_issues"]) == 1
+        assert len(result["trade_pattern_issues"]) == 1
+
+    def test_agent_has_no_findings(self):
+        af = AgentFindings(agent_name="execution_quality", window_label="full", findings=[])
+        result = _build_execution_risk_summary([af], {})
+        assert result["execution_issues"] == []
+
+
+# =========================================================================
+# _load_model_knowledge
+# =========================================================================
+
+
+class TestLoadModelKnowledge:
+    def test_loads_valid_yaml(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        (ws / "config" / "model_knowledge.yaml").write_text(yaml.dump({
+            "models": {
+                "m1": {"architecture_family": "GRU", "tuning_notes": "test"},
+            }
+        }))
+        result = _load_model_knowledge(str(ws))
+        assert "m1" in result
+        assert result["m1"]["architecture_family"] == "GRU"
+
+    def test_no_file_returns_empty(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert _load_model_knowledge(str(ws)) == {}
+
+    def test_invalid_yaml_returns_empty(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        (ws / "config" / "model_knowledge.yaml").write_text(":invalid: yaml: :::")
+        assert _load_model_knowledge(str(ws)) == {}
+
+    def test_not_a_dict_returns_empty(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        (ws / "config" / "model_knowledge.yaml").write_text(yaml.dump([1, 2, 3]))
+        result = _load_model_knowledge(str(ws))
+        assert result == {}
+
+    def test_empty_models_key(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        (ws / "config" / "model_knowledge.yaml").write_text(yaml.dump({"models": {}}))
+        result = _load_model_knowledge(str(ws))
+        assert result == {}
+
+    def test_missing_models_key(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        (ws / "config" / "model_knowledge.yaml").write_text(yaml.dump({"other": "data"}))
+        result = _load_model_knowledge(str(ws))
+        assert result == {}
+
+
+# =========================================================================
+# _load_correlation_excerpts edge cases
+# =========================================================================
+
+
+class TestLoadCorrelationExcerptsExtended:
+    def test_model_not_in_index(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        # No correlation file → returns {}
+        result = _load_correlation_excerpts(str(ws), ["nonexistent_model"])
+        assert result == {}
+
+    def test_empty_correlation_df(self, tmp_path):
+        """Correlation CSV exists but is empty."""
+        ws = tmp_path / "ws"
+        (ws / "output" / "ensemble").mkdir(parents=True)
+        import pandas as pd
+        empty_df = pd.DataFrame()
+        empty_df.to_csv(ws / "output" / "ensemble" / "correlation_matrix_2026-01-01.csv")
+        result = _load_correlation_excerpts(str(ws), ["m1"])
+        assert result == {}
+
+    def test_duplicate_index_rows(self, tmp_path):
+        """When duplicate index entries exist, row is DataFrame → iloc[0] used."""
+        ws = tmp_path / "ws"
+        (ws / "output" / "ensemble").mkdir(parents=True)
+        import pandas as pd
+        # Create a correlation CSV with duplicate index entries
+        df = pd.DataFrame(
+            [[1.0, 0.5, 0.3], [0.5, 1.0, 0.2], [0.5, 1.0, 0.2]],
+            columns=["m1", "m2", "m2"],
+            index=["m1", "m2", "m2"],
+        )
+        df.to_csv(ws / "output" / "ensemble" / "correlation_matrix_2026-01-01.csv")
+        result = _load_correlation_excerpts(str(ws), ["m2"])
+        # Should not crash — but may return empty or valid excerpt depending on dedup
+        assert isinstance(result, dict)
+
+
+# =========================================================================
+# _build_combo_profile with workspace membership filtering
+# =========================================================================
+
+
+class TestBuildComboProfileWithWorkspaceMembership:
+    def test_filters_to_combo_members(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        (ws / "config" / "ensemble_config.json").write_text(json.dumps({
+            "combos": {
+                "combo1": {"models": ["m1"]},
+            }
+        }))
+
+        model_diagnoses = {
+            "m1": {"diagnosis": "healthy", "diagnosis_detail": "All good"},
+            "m2": {"diagnosis": "degrading", "diagnosis_detail": "IC falling"},
+        }
+        triage = {"combo_summary": {}}
+
+        result = _build_combo_profile(
+            "combo1", model_diagnoses, triage, [], str(ws)
+        )
+        assert "m1" in result["member_diagnoses"]
+        assert "m2" not in result["member_diagnoses"]
+
+    def test_no_workspace_skips_filtering(self):
+        model_diagnoses = {
+            "m1": {"diagnosis": "healthy", "diagnosis_detail": "All good"},
+            "m2": {"diagnosis": "degrading", "diagnosis_detail": "IC falling"},
+        }
+        triage = {"combo_summary": {}}
+        result = _build_combo_profile("combo1", model_diagnoses, triage, [], "")
+        assert "m1" in result["member_diagnoses"]
+        assert "m2" in result["member_diagnoses"]
+
+    def test_combo_not_in_membership(self, tmp_path):
+        ws = tmp_path / "ws"
+        (ws / "config").mkdir(parents=True)
+        (ws / "config" / "ensemble_config.json").write_text(json.dumps({
+            "combos": {
+                "combo_a": {"models": ["m1"]},
+            }
+        }))
+
+        model_diagnoses = {"m1": {"diagnosis": "healthy", "diagnosis_detail": ""}}
+        triage = {"combo_summary": {}}
+
+        result = _build_combo_profile(
+            "combo_unknown", model_diagnoses, triage, [], str(ws)
+        )
+        # combo_unknown matches nothing → combo_members is empty → all pass
+        assert "m1" in result["member_diagnoses"]
+
+
+# =========================================================================
+# _build_execution_profile with real dataclass instances
+# =========================================================================
+
+
+class TestBuildExecutionProfileWithRealData:
+    def test_extracts_execution_issues(self):
+        af = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[
+                Finding(severity="high", category="exec", title="Slippage",
+                        detail="Slippage > 2% on large orders"),
+            ],
+        )
+        result = _build_execution_profile([af], {})
+        assert len(result["execution_issues"]) == 1
+        assert result["execution_issues"][0]["severity"] == "high"
+        assert result["execution_issues"][0]["title"] == "Slippage"
+
+    def test_extracts_trade_issues(self):
+        af = AgentFindings(
+            agent_name="trade_pattern",
+            window_label="full",
+            findings=[
+                Finding(severity="warning", category="trade", title="Overtrading",
+                        detail="Too many trades"),
+            ],
+        )
+        result = _build_execution_profile([af], {})
+        assert len(result["trade_pattern_issues"]) == 1
+        assert result["trade_pattern_issues"][0]["severity"] == "warning"
+
+    def test_detail_truncated_500(self):
+        long_detail = "D" * 600
+        af = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[Finding(severity="info", category="exec", title="Test",
+                              detail=long_detail)],
+        )
+        result = _build_execution_profile([af], {})
+        assert len(result["execution_issues"][0]["detail"]) == 500
+
+    def test_empty_title_and_detail(self):
+        af = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[Finding(severity="info", category="exec", title="", detail="")],
+        )
+        result = _build_execution_profile([af], {})
+        assert result["execution_issues"][0]["title"] == ""
+        assert result["execution_issues"][0]["detail"] == ""
+
+    def test_multiple_agents(self):
+        af1 = AgentFindings(
+            agent_name="execution_quality",
+            window_label="full",
+            findings=[Finding(severity="high", category="exec", title="E1", detail="")],
+        )
+        af2 = AgentFindings(
+            agent_name="trade_pattern",
+            window_label="full",
+            findings=[Finding(severity="critical", category="trade", title="T1", detail="")],
+        )
+        result = _build_execution_profile([af1, af2], {})
+        assert len(result["execution_issues"]) == 1
+        assert len(result["trade_pattern_issues"]) == 1

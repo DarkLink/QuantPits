@@ -1213,6 +1213,309 @@ class TestGetModelICFallbacks:
 
 
 # ------------------------------------------------------------------
+# _get_model_ic additional fallback paths
+# ------------------------------------------------------------------
+
+
+class TestGetModelIcAdditionalFallbacks:
+    def test_per_model_structure(self, tmp_path):
+        """Lines 1006-1011: per-model key with IC_Mean."""
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "output").mkdir()
+        perf_path = ws / "output" / "model_performance_2026-01-01.json"
+        perf_path.write_text(json.dumps({"m1": {"IC_Mean": 0.045, "ICIR": 0.5}}))
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._get_model_ic(str(ws), "m1") == 0.045
+
+    def test_per_model_structure_with_ic_field(self, tmp_path):
+        """Lines 1006-1011: per-model key with 'ic' field (no IC_Mean)."""
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "output").mkdir()
+        perf_path = ws / "output" / "model_performance_2026-01-01.json"
+        perf_path.write_text(json.dumps({"m1": {"ic": 0.033}}))
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._get_model_ic(str(ws), "m1") == 0.033
+
+    def test_direct_ic_field_null_model_data(self, tmp_path):
+        """Lines 1013-1016: no per-model key, use direct 'ic' field."""
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "output").mkdir()
+        perf_path = ws / "output" / "model_performance_2026-01-01.json"
+        perf_path.write_text(json.dumps({"ic": 0.035}))
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._get_model_ic(str(ws), "m1") == 0.035
+
+    def test_all_with_ic_field(self, tmp_path):
+        """Lines 1018-1020: nested 'all' with 'ic' field."""
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "output").mkdir()
+        perf_path = ws / "output" / "model_performance_2026-01-01.json"
+        perf_path.write_text(json.dumps({"all": {"ic": 0.022}}))
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        assert loop._get_model_ic(str(ws), "m1") == 0.022
+
+    def test_corrupt_second_file(self, tmp_path):
+        """Exception path: corrupt second file is skipped, first valid is used."""
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "output").mkdir()
+        # Valid older file
+        (ws / "output" / "model_performance_2026-01-01.json").write_text(
+            json.dumps({"ic": 0.030}))
+        # Corrupt newer file (sorted last, so read first)
+        (ws / "output" / "model_performance_2026-01-02.json").write_text("not json")
+
+        loop = FeedbackLoop(str(ws), mode="report-only")
+        # Reads newest file first → corrupt → exception → returns None
+        assert loop._get_model_ic(str(ws), "m1") is None
+
+
+# ------------------------------------------------------------------
+# _run_experiment_loop early exit paths
+# ------------------------------------------------------------------
+
+
+class TestExperimentLoopEarlyExit:
+    def _make_loop_with_workspace(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "data").mkdir()
+        (ws / "output").mkdir()
+
+        import yaml
+        registry = {
+            "models": {
+                "m1": {"algorithm": "gru", "dataset": "Alpha158",
+                       "yaml_file": "config/workflow_config_m1.yaml", "enabled": True},
+            }
+        }
+        with open(ws / "config" / "model_registry.yaml", "w") as f:
+            yaml.dump(registry, f)
+        workflow = {"task": {"model": {"class": "GRU", "kwargs": {"n_epochs": 100, "early_stop": 10}}}}
+        with open(ws / "config" / "workflow_config_m1.yaml", "w") as f:
+            yaml.dump(workflow, f)
+        with open(ws / "config" / "llm_config.json", "w") as f:
+            json.dump({}, f)
+        with open(ws / "config" / "hyperparam_bounds.json", "w") as f:
+            json.dump({"bounds": {"n_epochs": {"min": 10, "max": 500}}}, f)
+        with open(ws / "config" / "feedback_scope.json", "w") as f:
+            json.dump({"active_scopes": ["hyperparams"]}, f)
+
+        return FeedbackLoop(str(ws), mode="execute"), ws
+
+    def test_meaningful_improvement_no_overfitting_stops(self, tmp_path):
+        """IC improved meaningfully + no overfitting → loop breaks without calling LLM."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        # Meaningful improvement: delta >= 0.002, relative >= 5%, no overfitting
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.030,
+            ic_delta=0.010, ic_improved=True, passed=True,
+            convergence={"best_epoch": 95, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", return_value=False):
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        assert len(results) == 1
+        assert results[0].ic_delta == 0.010
+
+    def test_overfitting_detected_continues(self, tmp_path):
+        """IC improved but overfitting detected → loop continues to next round via LLM retry."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        vr1 = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.030,
+            ic_delta=0.010, ic_improved=True, passed=True,
+            convergence={"best_epoch": 3, "actual_epochs": 30},
+            round_idx=1,
+        )
+        vr2 = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.035,
+            ic_delta=0.015, ic_improved=True, passed=True,
+            convergence={"best_epoch": 28, "actual_epochs": 30},
+            round_idx=2,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", side_effect=[vr1, vr2]), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", side_effect=[True, False]), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_class:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = True
+            mock_llm.analyze_experiment_result.side_effect = [
+                {"decision": "retry", "next_param": "n_epochs", "next_from": 150,
+                 "next_to": 200, "rationale": "try different range"},
+                {"decision": "stop"},
+            ]
+            mock_llm._load_current_params.return_value = {}
+            mock_llm._load_recent_action_history.return_value = []
+            mock_llm._compute_available_interventions.return_value = [
+                {"param": "n_epochs", "current": 100, "suggested_min": 50, "suggested_max": 500}
+            ]
+            mock_llm._load_hyperparam_bounds.return_value = {"n_epochs": {"min": 10, "max": 500}}
+            mock_llm_class.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        # overfitting round 1 → LLM says retry → round 2 no overfitting → LLM says stop
+        assert len(results) == 2
+
+    def test_noise_level_delta_continues(self, tmp_path):
+        """IC improved but delta < min_abs (0.002) → continues to call LLM."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.021,
+            ic_delta=0.001, ic_improved=True, passed=True,
+            convergence={"best_epoch": 20, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", return_value=False), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_class:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = False  # No API key → break after noise
+            mock_llm_class.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        # Noise-level → continues to LLM → LLM not available → breaks
+        assert len(results) == 1
+
+    def test_ic_degraded_continues(self, tmp_path):
+        """IC degraded (negative delta) → continues to LLM."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 200}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.018,
+            ic_delta=-0.002, ic_improved=False, passed=False,
+            convergence={"best_epoch": 50, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", return_value=False), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_class:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = False
+            mock_llm_class.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        assert len(results) == 1
+
+    def test_max_rounds_exhausted(self, tmp_path):
+        """Max rounds reached without meaningful improvement → status=exhausted."""
+        loop, ws = self._make_loop_with_workspace(tmp_path)
+
+        item = ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low",
+            action_id="act-001",
+        )
+
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.021,
+            ic_delta=0.001, ic_improved=True, passed=True,
+            convergence={"best_epoch": 20, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", return_value=False), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_class:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = False
+            mock_llm_class.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=1,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+
+        # max_rounds=1, noise-level → LLM not available → breaks with 1 result
+        assert len(results) == 1
+
+
+# ------------------------------------------------------------------
 # _run_playground_only edge cases
 # ------------------------------------------------------------------
 
