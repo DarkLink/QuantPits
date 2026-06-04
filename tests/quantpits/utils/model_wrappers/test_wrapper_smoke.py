@@ -195,13 +195,18 @@ class TestMROCorrectness:
 class TestGATsPlus:
     """Test GATsPlus internals without requiring a full dataset."""
 
+    pytestmark = pytest.mark.skipif(
+        not __import__("importlib").util.find_spec("torch"),
+        reason="torch not installed",
+    )
+
     @pytest.fixture
     def model(self):
+        torch = pytest.importorskip("torch", reason="torch not installed")
         try:
             from quantpits.utils.model_wrappers.pytorch_gats_plus import GATsPlus
         except ImportError as exc:
             pytest.skip(f"qlib dependency missing: {exc}")
-        import torch
         # Construct without GPU requirement, no model_path
         obj = GATsPlus.__new__(GATsPlus)
         obj.device = torch.device("cpu")
@@ -210,14 +215,14 @@ class TestGATsPlus:
         return obj
 
     def test_mse_loss(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         pred  = torch.tensor([1.0, 2.0, 3.0])
         label = torch.tensor([1.0, 2.0, 3.0])
         loss = model.mse(pred, label)
         assert abs(loss.item()) < 1e-6
 
     def test_correlation_loss_perfect_correlation(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         pred  = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
         label = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
         loss = model.correlation_loss(pred, label)
@@ -225,7 +230,7 @@ class TestGATsPlus:
         assert abs(loss.item()) < 1e-5
 
     def test_correlation_loss_in_range(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         torch.manual_seed(1)
         pred  = torch.randn(30)
         label = torch.randn(30)
@@ -233,14 +238,15 @@ class TestGATsPlus:
         assert 0.0 <= loss.item() <= 2.0 + 1e-6
 
     def test_correlation_loss_batch_size_one_returns_zero(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         pred  = torch.tensor([1.0])
         label = torch.tensor([2.0])
         loss = model.correlation_loss(pred, label)
         assert abs(loss.item()) < 1e-6
 
     def test_loss_fn_mse(self, model):
-        import torch, math
+        torch = pytest.importorskip("torch")
+        math = __import__("math")
         model.loss = "mse"
         pred  = torch.tensor([1.0, float("nan"), 3.0])
         label = torch.tensor([1.0, 2.0, 3.0])
@@ -251,7 +257,7 @@ class TestGATsPlus:
         assert isinstance(loss.item(), float)
 
     def test_loss_fn_corr_mode(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         model.loss = "corr"
         pred  = torch.tensor([1.0, 2.0, 3.0, 4.0])
         label = torch.tensor([4.0, 3.0, 2.0, 1.0])
@@ -260,13 +266,13 @@ class TestGATsPlus:
         assert abs(loss.item() - 2.0) < 1e-4
 
     def test_loss_fn_unknown_raises(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         model.loss = "huber"
         with pytest.raises(ValueError, match="unknown loss"):
             model.loss_fn(torch.randn(5), torch.randn(5))
 
     def test_metric_fn_ic(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         model.metric = "ic"
         pred  = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
         label = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -274,7 +280,7 @@ class TestGATsPlus:
         assert abs(score - 1.0) < 1e-4
 
     def test_metric_fn_ric(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         model.metric = "ric"
         pred  = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
         label = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -282,7 +288,7 @@ class TestGATsPlus:
         assert abs(score - 1.0) < 1e-4
 
     def test_metric_fn_loss_mode(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         model.metric = "loss"
         model.loss = "mse"
         pred  = torch.tensor([1.0, 2.0, 3.0])
@@ -292,13 +298,13 @@ class TestGATsPlus:
         assert abs(score.item()) < 1e-6
 
     def test_metric_fn_unknown_raises(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         model.metric = "sharpe"
         with pytest.raises(ValueError, match="unknown metric"):
             model.metric_fn(torch.randn(5), torch.randn(5))
 
     def test_metric_fn_insufficient_data_returns_zero(self, model):
-        import torch
+        torch = pytest.importorskip("torch")
         model.metric = "ic"
         # Only 1 valid point after mask
         pred  = torch.tensor([1.0, float("inf")])
@@ -313,11 +319,11 @@ class TestGATsPlus:
 
     def test_gat_model_forward_shape(self):
         """GATModel.forward should output shape [N] for N stock samples."""
+        torch = pytest.importorskip("torch", reason="torch not installed")
         try:
             from quantpits.utils.model_wrappers.pytorch_gats_plus import GATModel
         except ImportError as exc:
             pytest.skip(f"qlib dependency missing: {exc}")
-        import torch
         model = GATModel(d_feat=6, hidden_size=32, num_layers=1, base_model="GRU")
         model.eval()
         x = torch.randn(10, 20, 6)  # [N_stocks, T_steps, D_feat]
@@ -340,7 +346,7 @@ class TestLSTMICLoss:
         return LSTMICModel.__new__(LSTMICModel), ICLoss
 
     def test_icloss_perfect_correlation(self, icmodel):
-        import torch
+        torch = pytest.importorskip("torch")
         _, ICLoss = icmodel
         criterion = ICLoss()
         pred  = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -349,7 +355,8 @@ class TestLSTMICLoss:
         assert abs(loss.item()) < 1e-5
 
     def test_icloss_nan_masking(self, icmodel):
-        import torch, math
+        torch = pytest.importorskip("torch")
+        math = __import__("math")
         _, ICLoss = icmodel
         criterion = ICLoss()
         pred  = torch.tensor([1.0, float("nan"), 3.0])
@@ -358,7 +365,7 @@ class TestLSTMICLoss:
         assert math.isfinite(loss.item())
 
     def test_icloss_backward(self, icmodel):
-        import torch
+        torch = pytest.importorskip("torch")
         _, ICLoss = icmodel
         criterion = ICLoss()
         pred  = torch.randn(20, requires_grad=True)
@@ -440,7 +447,7 @@ class TestLSTMRankModel:
         assert abs(rank_ic - 1.0) < 1e-4
 
     def test_mse_loss_fn(self, model_cls):
-        import torch
+        torch = pytest.importorskip("torch")
         obj = model_cls.__new__(model_cls)
         obj.loss = "mse"
         pred   = torch.tensor([1.0, 2.0, 3.0])
@@ -450,7 +457,8 @@ class TestLSTMRankModel:
         assert abs(loss.item()) < 1e-6
 
     def test_mse_loss_fn_ignores_nan(self, model_cls):
-        import torch, math
+        torch = pytest.importorskip("torch")
+        math = __import__("math")
         obj = model_cls.__new__(model_cls)
         obj.loss = "mse"
         pred   = torch.tensor([1.0, float("nan"), 3.0])
@@ -462,7 +470,7 @@ class TestLSTMRankModel:
         assert isinstance(loss.item(), float)
 
     def test_mse_loss_none_weight_defaults_to_ones(self, model_cls):
-        import torch
+        torch = pytest.importorskip("torch")
         obj = model_cls.__new__(model_cls)
         obj.loss = "mse"
         pred  = torch.tensor([2.0, 3.0])
@@ -472,7 +480,7 @@ class TestLSTMRankModel:
         assert abs(loss_w_none.item() - loss_w_ones.item()) < 1e-6
 
     def test_unknown_loss_raises(self, model_cls):
-        import torch
+        torch = pytest.importorskip("torch")
         obj = model_cls.__new__(model_cls)
         obj.loss = "huber"
         with pytest.raises(ValueError, match="unknown loss"):

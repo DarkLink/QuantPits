@@ -4,11 +4,14 @@ Tests for ICMetricMixin and ICLoss.
 These tests are deliberately self-contained: they only depend on torch and
 the two mixin/loss classes from quantpits.  No qlib init, no dataset, no GPU
 required.
+
+Skipped automatically in environments without torch (e.g. the lightweight
+Docker CI image that only installs [test] extras).
 """
 
 import math
 import pytest
-import torch
+torch = pytest.importorskip("torch", reason="torch not installed – skipping IC mixin tests")
 
 from quantpits.utils.model_wrappers.ic_metric_mixin import ICLoss, ICMetricMixin
 
