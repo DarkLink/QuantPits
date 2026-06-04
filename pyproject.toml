@@ -46,7 +46,13 @@ pythonpath = [
 ]
 
 [tool.coverage.run]
-omit = []
+omit = [
+    # model_wrappers: tests exist (142 cases) but require torch+qlib which
+    # are not installed in the lightweight Docker CI image ([test] extras only).
+    # Nearly all tests skip in CI, so omitting avoids inflating the miss count.
+    # Run locally with the qlib_cupy conda env to see full coverage.
+    "quantpits/utils/model_wrappers/*",
+]
 
 [tool.coverage.report]
 exclude_lines = [

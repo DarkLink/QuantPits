@@ -108,10 +108,25 @@ class TestMROCorrectness:
             mod = importlib.import_module(module_path)
             return getattr(mod, class_name)
         except ImportError as exc:
-            pytest.skip(f"qlib dependency missing: {exc}")
+            pytest.skip(f"dependency missing ({module_path}): {exc}")
+
+    def _import_mixin_or_skip(self, dotted):
+        """Import a mixin class, skipping if torch (or qlib) is absent.
+
+        ic_metric_mixin.py has a top-level `import torch`, so importing it
+        raises ImportError in environments where torch is not installed.
+        """
+        try:
+            parts = dotted.rsplit(".", 1)
+            mod = importlib.import_module(parts[0])
+            return getattr(mod, parts[1])
+        except ImportError as exc:
+            pytest.skip(f"dependency missing ({dotted}): {exc}")
 
     def test_gru_ic_uses_icmetricmixin_metric_fn(self):
-        from quantpits.utils.model_wrappers.ic_metric_mixin import ICMetricMixin
+        ICMetricMixin = self._import_mixin_or_skip(
+            "quantpits.utils.model_wrappers.ic_metric_mixin.ICMetricMixin"
+        )
         cls = self._load_or_skip(
             "quantpits.utils.model_wrappers.pytorch_gru_ic", "GRU"
         )
@@ -124,7 +139,9 @@ class TestMROCorrectness:
                 break
 
     def test_gru_ic_lh_uses_losshistorymixin_fit(self):
-        from quantpits.utils.model_wrappers.loss_history_mixin import LossHistoryMixin
+        LossHistoryMixin = self._import_mixin_or_skip(
+            "quantpits.utils.model_wrappers.loss_history_mixin.LossHistoryMixin"
+        )
         cls = self._load_or_skip(
             "quantpits.utils.model_wrappers.gru_ic_lh", "GRU"
         )
@@ -137,8 +154,12 @@ class TestMROCorrectness:
 
     def test_lstm_ic_lh_mro_order(self):
         """Full stack: LossHistoryMixin > ICMetricMixin > BaseModel."""
-        from quantpits.utils.model_wrappers.loss_history_mixin import LossHistoryMixin
-        from quantpits.utils.model_wrappers.ic_metric_mixin import ICMetricMixin
+        LossHistoryMixin = self._import_mixin_or_skip(
+            "quantpits.utils.model_wrappers.loss_history_mixin.LossHistoryMixin"
+        )
+        ICMetricMixin = self._import_mixin_or_skip(
+            "quantpits.utils.model_wrappers.ic_metric_mixin.ICMetricMixin"
+        )
         cls = self._load_or_skip(
             "quantpits.utils.model_wrappers.lstm_ic_lh", "LSTM"
         )
@@ -170,22 +191,15 @@ class TestMROCorrectness:
         cls = self._load_or_skip(
             "quantpits.utils.model_wrappers.pytorch_tra_ic", "TRAModelIC"
         )
-        # Create a bare instance (bypass __init__) and call __setstate__
-        # with a state dict that lacks _writer
         obj = object.__new__(cls)
-        # Simulate what pickle does: set __dict__ directly then call __setstate__
-        # We only test that _writer is added; we don't actually unpickle a model
         state_without_writer = {"metric": "loss", "fitted": False}
-        # Call our __setstate__ directly (it must call super().__setstate__ first,
-        # but since we bypassed __init__ the base class may not set up properly)
-        # So we just check the method exists and has the right behaviour in isolation
         method = cls.__dict__["__setstate__"]
-        # Test the guard: if _writer is missing it must be set to None
         obj.__dict__.update(state_without_writer)
         # Manually apply the guard (mirrors what the method does after super())
         if not hasattr(obj, "_writer"):
             obj._writer = None
         assert obj._writer is None
+
 
 
 # ===========================================================================
