@@ -1045,20 +1045,45 @@ def main():
     # --- 5.6–5.8. Critic + Validation + Persist (if --critic) ---
     if args.critic or args.critic_dry_run:
         from quantpits.scripts.deep_analysis.llm_interface import LLMInterface as _LLMInterface
+        from quantpits.scripts.deep_analysis.llm_trace import LLMTraceLogger as _LLMTraceLogger
+        from quantpits.scripts.deep_analysis.langfuse_adapter import LangfuseAdapter as _LangfuseAdapter
 
-        critic_llm = _LLMInterface(
-            api_key=args.api_key,
-            model=args.llm_model,
-            base_url=args.base_url,
-        )
-
-        # Detect layered skill files
+        # Detect layered skill files (needed for pipeline_stage in trace logger)
         _skills_dir = os.path.join(workspace_root, 'config', 'skills')
         _layered_skills_available = all(
             os.path.exists(os.path.join(_skills_dir, f))
             for f in ['triage_system.md', 'model_critic_system.md',
                        'combo_critic_system.md', 'synthesizer_system.md']
         )
+
+        # Load workspace LLM config for trace settings
+        _ws_llm_cfg = {}
+        _llm_cfg_path = os.path.join(workspace_root, 'config', 'llm_config.json')
+        if os.path.exists(_llm_cfg_path):
+            try:
+                with open(_llm_cfg_path) as _f:
+                    _ws_llm_cfg = json.load(_f)
+            except Exception:
+                pass
+        _langfuse = _LangfuseAdapter.from_config(_ws_llm_cfg)
+        _critic_trace_logger = _LLMTraceLogger.from_llm_config(
+            llm_config=_ws_llm_cfg,
+            workspace_root=workspace_root,
+            run_date=data_date,
+            workspace_name=os.path.basename(workspace_root),
+            pipeline_stage="layered" if _layered_skills_available else "single_stage",
+            langfuse_adapter=_langfuse,
+        )
+
+        critic_llm = _LLMInterface(
+            api_key=args.api_key,
+            model=args.llm_model,
+            base_url=args.base_url,
+            trace_logger=_critic_trace_logger,
+        )
+
+        # (layered skills already detected above)
+
 
         if _layered_skills_available and critic_llm.is_available(workspace_root):
             action_items = _run_critic_layered(
@@ -1082,20 +1107,51 @@ def main():
                 dry_run=args.critic_dry_run,
             )
 
+        # Finalise traces — write manifest.json
+        _trace_dir = _critic_trace_logger.finalize()
+        if _trace_dir:
+            print(f"   📋 LLM traces: {_trace_dir}")
+
     # --- 6. LLM Executive Summary ---
     print("\n📝 Generating executive summary...")
     from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
+    from quantpits.scripts.deep_analysis.llm_trace import LLMTraceLogger
+    from quantpits.scripts.deep_analysis.langfuse_adapter import LangfuseAdapter
 
     if args.llm:
+        _ws_llm_cfg_summary = {}
+        _llm_cfg_path2 = os.path.join(workspace_root, 'config', 'llm_config.json')
+        if os.path.exists(_llm_cfg_path2):
+            try:
+                with open(_llm_cfg_path2) as _ff:
+                    _ws_llm_cfg_summary = json.load(_ff)
+            except Exception:
+                pass
+        _langfuse_summary = LangfuseAdapter.from_config(_ws_llm_cfg_summary)
+        _summary_trace_logger = LLMTraceLogger.from_llm_config(
+            llm_config=_ws_llm_cfg_summary,
+            workspace_root=workspace_root,
+            run_date=data_date,
+            workspace_name=os.path.basename(workspace_root),
+            pipeline_stage="summary",
+            langfuse_adapter=_langfuse_summary,
+        )
         llm = LLMInterface(
             api_key=args.api_key,
             model=args.llm_model,
             base_url=args.base_url,
+            trace_logger=_summary_trace_logger,
         )
     else:
+        _summary_trace_logger = None
         llm = LLMInterface()  # No API key → template mode
 
     executive_summary = llm.generate_executive_summary(synthesis_result, workspace_root)
+
+    if _summary_trace_logger is not None:
+        _sum_dir = _summary_trace_logger.finalize()
+        if _sum_dir:
+            print(f"   📋 Summary traces: {_sum_dir}")
 
     # Strip leading "Executive Summary" title markers from LLM output to
     # avoid double headers — ReportGenerator already emits the section title.

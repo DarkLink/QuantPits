@@ -119,7 +119,8 @@ def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_sn
     assert result == 0
     mock_coord.assert_called_once()
     mock_synth.assert_called_once()
-    mock_llm.assert_called_once_with(api_key='sk-test', model='gpt-4', base_url=None)
+    from unittest.mock import ANY
+    mock_llm.assert_called_once_with(api_key='sk-test', model='gpt-4', base_url=None, trace_logger=ANY)
     mock_report_gen.assert_called_once()
     mock_snap_configs.assert_called_once()
     mock_save_snap.assert_called_once()

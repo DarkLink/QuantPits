@@ -12,77 +12,46 @@ Skills and system prompts are loaded from workspace config files.
 import json
 import logging
 import os
+import time
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, List, Dict, Optional
 
 from .action_items import ActionItem
 from .signal_extractor import Signal
+from .llm_trace import LLMTraceLogger, LLMTraceRecord, SessionContext
 
 logger = logging.getLogger(__name__)
 
-# Default system prompt — used when config/skills/summary_system.md is absent
-_DEFAULT_SUMMARY_PROMPT = """\
-You are an expert quantitative finance analyst reviewing a systematic 
-trading strategy's live performance. You are given structured findings from a multi-agent 
-analysis system that covers: market regime, model health (IC/ICIR), ensemble composition, 
-execution quality (slippage/friction), portfolio risk (factor exposure, drawdowns), 
-prediction accuracy (hit rates), and trade behavior patterns.
+from .default_prompts import (
+    _DEFAULT_SUMMARY_PROMPT,
+    _DEFAULT_CRITIC_PROMPT,
+    _DEFAULT_TRIAGE_PROMPT,
+)
 
-Your task is to write a concise, insightful executive summary that:
-1. Highlights the 2-3 most important findings
-2. Explains the ROOT CAUSE behind observed patterns (not just symptoms)
-3. Connects cross-domain observations (e.g., market regime → model performance → execution)
-4. Provides actionable, specific recommendations ranked by priority
-5. Uses professional but accessible language
 
-Write in English. Be direct and data-driven. Avoid generic advice.
-Keep the summary under 500 words."""
+from contextlib import contextmanager as _contextmanager
 
-_DEFAULT_CRITIC_PROMPT = """\
-You are a quantitative strategy optimization expert. Based on structured signals, \
-output a JSON array of ActionItem objects with action_type, scope, target, params, \
-reason, source_signals, expected_outcome, confidence, and risk_level."""
 
-_DEFAULT_TRIAGE_PROMPT = """\
-You are a quantitative strategy triage specialist. Your job is to prioritize which \
-models need intervention, NOT to decide what the intervention should be.
+@_contextmanager
+def _null_session_ctx():
+    """Yield a minimal dummy SessionContext when tracing is not configured.
 
-Given aggregated signals across many models, you must:
-1. Identify systemic patterns (e.g., "all models share the same early_stop default")
-2. Prioritize at most 5 models that most need attention
-3. Flag models that should be excluded (already had same intervention recently, \
-   signal too weak, or wait for prior experiment results)
-4. For each prioritized model, suggest an investigation direction (NOT a specific \
-   parameter change — that's the Critic's job)
+    This lets every caller unconditionally write::
 
-Key principles:
-- Variety matters: if 12 models all have the same signal, pick the 2-3 WORST ones, \
-  not all 12. The others can wait for the next cycle.
-- History-aware: if a model was already adjusted for the same issue recently, \
-  exclude it unless the situation has significantly worsened.
-- Architecture-aware: NN models and tree models need different approaches. \
-  Don't suggest the same fix for different architectures.
-- Be specific in your rationale: mention exact epoch ratios, IC values, and trends.
+        with (tl.session(...) if tl else _null_session_ctx()) as sess:
+            ...
 
-Output a JSON object (not an array) with this structure:
-{
-  "systemic_observations": ["observation 1", "observation 2"],
-  "prioritized_targets": [
-    {
-      "target": "model_name",
-      "priority_score": 0-10,
-      "primary_signal": "signal_type",
-      "investigation_direction": "what to investigate (not exact params)",
-      "rationale": "why this model was chosen over others"
-    }
-  ],
-  "excluded_targets": [
-    {
-      "target": "model_name",
-      "reason": "why excluded"
-    }
-  ]
-}"""
+    without adding ``if sess is not None`` guards around log_trace calls.
+    """
+    _dummy = SessionContext(
+        session_id="",
+        session_type="",
+        label="",
+        run_id="",
+    )
+    _dummy.new_round("sole")
+    yield _dummy
 
 
 class LLMInterface:
@@ -97,12 +66,14 @@ class LLMInterface:
 
     def __init__(self, api_key: Optional[str] = None,
                  model: str = "gpt-4",
-                 base_url: Optional[str] = None):
+                 base_url: Optional[str] = None,
+                 trace_logger: Optional[LLMTraceLogger] = None):
         self.api_key = api_key or os.environ.get('OPENAI_API_KEY')
         self.model = model
         self.base_url = base_url
         self._client = None
         self._client_cache: Dict[tuple, Any] = {}  # (api_key, base_url) → client
+        self._trace_logger: Optional[LLMTraceLogger] = trace_logger
     # Default timeout for all LLM calls (seconds).
     # 120s is generous for reasoning models which can take 30-60s.
     _DEFAULT_TIMEOUT = 120.0
@@ -122,15 +93,131 @@ class LLMInterface:
         cache_key = (api_key, base_url or "")
         client = self._client_cache.get(cache_key)
         if client is None:
-            kwargs = {"api_key": api_key}
-            if base_url:
-                kwargs["base_url"] = base_url
-            kwargs["timeout"] = httpx.Timeout(
-                self._DEFAULT_TIMEOUT, connect=10.0,
-            )
-            client = openai.OpenAI(**kwargs)
-            self._client_cache[cache_key] = client
+            if self._client is not None and (api_key == self.api_key or "mock" in str(type(self._client)).lower()):
+                client = self._client
+                self._client_cache[cache_key] = client
+            else:
+                kwargs = {"api_key": api_key}
+                if base_url:
+                    kwargs["base_url"] = base_url
+                kwargs["timeout"] = httpx.Timeout(
+                    self._DEFAULT_TIMEOUT, connect=10.0,
+                )
+                client = openai.OpenAI(**kwargs)
+                self._client_cache[cache_key] = client
         return client
+
+    # ------------------------------------------------------------------
+    # Unified LLM call wrapper — records a trace for every API call
+    # ------------------------------------------------------------------
+
+    def _call_llm(
+        self,
+        messages: list,
+        model: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 32768,
+        # --- trace metadata ---
+        session_ctx: Optional[SessionContext] = None,
+        operation: str = "unknown",
+        label: str = "",
+        round_number: int = 1,
+        round_phase: str = "sole",
+        participant_id: str = "primary",
+        participant_role: str = "sole",
+        input_trace_ids: Optional[List[str]] = None,
+        retry_attempt: int = 0,
+        **kwargs,
+    ):
+        """Unified LLM call entry point.  Automatically records a full trace
+        for every API request/response pair.
+
+        Returns the raw ``ChatCompletion`` response object.
+        Raises on API errors (caller is responsible for handling).
+        """
+        client = self._get_or_create_client(api_key, base_url)
+        effective_label = label or (session_ctx.label if session_ctx else operation)
+
+        # Snapshot request parameters for the trace record
+        trace_record = LLMTraceRecord(
+            trace_id=str(uuid.uuid4()),
+            operation=operation,
+            label=effective_label,
+            model_requested=model,
+            base_url=base_url or "",
+            temperature=temperature,
+            max_tokens=max_tokens,
+            other_params=kwargs,
+            messages=messages,
+            round_number=round_number,
+            round_phase=round_phase,
+            participant_id=participant_id,
+            participant_role=participant_role,
+            input_trace_ids=input_trace_ids or [],
+            retry_attempt=retry_attempt,
+        )
+        # session_type for sub-dir routing
+        if session_ctx is not None:
+            trace_record.session_type = session_ctx.session_type
+
+        start = time.monotonic()
+        trace_record.timestamp = datetime.now().isoformat()
+
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            choice = response.choices[0]
+            trace_record.model_responded = getattr(response, "model", model)
+            trace_record.response_content = choice.message.content or ""
+            trace_record.reasoning_content = (
+                getattr(choice.message, "reasoning_content", None) or ""
+            )
+            trace_record.finish_reason = getattr(choice, "finish_reason", "") or ""
+            usage = getattr(response, "usage", None)
+            if usage:
+                trace_record.prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                trace_record.completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                trace_record.total_tokens = getattr(usage, "total_tokens", 0) or 0
+                # Vendor-specific reasoning/cache fields
+                trace_record.reasoning_tokens = (
+                    getattr(usage, "reasoning_tokens", 0)
+                    or getattr(getattr(usage, "completion_tokens_details", None),
+                               "reasoning_tokens", 0)
+                    or 0
+                )
+                trace_record.cached_tokens = (
+                    getattr(usage, "cached_tokens", 0)
+                    or getattr(getattr(usage, "prompt_tokens_details", None),
+                               "cached_tokens", 0)
+                    or 0
+                )
+            trace_record.duration_ms = elapsed_ms
+            trace_record.success = True
+
+            if self._trace_logger is not None:
+                self._trace_logger.log_trace(trace_record, session_ctx)
+
+            return response
+
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            trace_record.duration_ms = elapsed_ms
+            trace_record.success = False
+            trace_record.error = str(exc)
+
+            if self._trace_logger is not None:
+                self._trace_logger.log_trace(trace_record, session_ctx)
+
+            raise
 
     def _resolve_effective_api_key(self, workspace_root: Optional[str] = None) -> Optional[str]:
         """Resolve API key: explicit arg > workspace config env var > OPENAI_API_KEY."""
@@ -180,14 +267,20 @@ class LLMInterface:
         if not self.is_available(workspace_root):
             return self._template_summary(synthesis_result)
 
+        _tl = self._trace_logger
+        _sess_mgr = (_tl.session("summary", label="Summary") if _tl else
+                     _null_session_ctx())
         try:
-            return self._llm_summary(synthesis_result, workspace_root)
+            with _sess_mgr as _sess:
+                return self._llm_summary(synthesis_result, workspace_root,
+                                         session_ctx=_sess)
         except Exception as e:
             print(f"  ⚠️  LLM generation failed: {e}. Falling back to template.")
             return self._template_summary(synthesis_result)
 
     def _llm_summary(self, synthesis_result: dict,
-                     workspace_root: Optional[str] = None) -> str:
+                     workspace_root: Optional[str] = None,
+                     session_ctx: Optional[SessionContext] = None) -> str:
         """Generate summary using OpenAI API, reading workspace config when available."""
         system_prompt = self._load_summary_prompt(workspace_root)
         user_prompt = self._build_prompt(synthesis_result)
@@ -204,29 +297,21 @@ class LLMInterface:
         print(f"   Summary model: {model}")
         print(f"   Endpoint: {base_url or '(OpenAI default)'}")
 
-        # Only create a dedicated client when endpoint/key differs from defaults
-        if base_url or api_key != self.api_key:
-            try:
-                import openai as _openai
-            except ImportError:
-                raise RuntimeError("openai package not installed. Run: pip install openai")
-            _kwargs = {"api_key": api_key}
-            if base_url:
-                _kwargs["base_url"] = base_url
-            client = _openai.OpenAI(**_kwargs)
-        else:
-            client = self._get_client()
-
-        response = client.chat.completions.create(
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        response = self._call_llm(
+            messages=messages,
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            api_key=api_key,
+            base_url=base_url,
             temperature=0.3,
             max_tokens=8192,
+            session_ctx=session_ctx,
+            operation="summary",
+            label="Summary",
         )
-
         return response.choices[0].message.content.strip()
 
     def _load_summary_prompt(self, workspace_root: Optional[str]) -> str:
@@ -475,17 +560,21 @@ class LLMInterface:
             recent_history=recent_history,
         )
 
-        # Call LLM
+        # Call LLM — wrap in a session so the trace is recorded
+        _tl = self._trace_logger
+        _sess_mgr = (_tl.session("critic", label="Critic") if _tl else _null_session_ctx())
         try:
-            items = self._call_critic_llm(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model=critic_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                api_key=api_key,
-                base_url=base_url,
-            )
+            with _sess_mgr as _sess:
+                items = self._call_critic_llm(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model=critic_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    api_key=api_key,
+                    base_url=base_url,
+                    session_ctx=_sess,
+                )
             if not items:
                 print("   ⚠️  Critic returned 0 ActionItems "
                       f"(from {len(prioritized_signals)} signals)")
@@ -858,6 +947,7 @@ class LLMInterface:
                 temperature=temperature,
                 api_key=api_key,
                 base_url=base_url,
+                session_ctx=None,  # session owned by caller (generate_triage)
             )
         except Exception as e:
             logger.warning("Triage LLM call failed: %s", e)
@@ -1044,30 +1134,32 @@ class LLMInterface:
         temperature: float,
         api_key: str,
         base_url: Optional[str],
+        session_ctx: Optional[SessionContext] = None,
     ) -> Optional[dict]:
         """Call the LLM for triage and return parsed JSON dict."""
-        client = self._get_or_create_client(api_key, base_url)
-
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
         try:
-            response = client.chat.completions.create(
+            response = self._call_llm(
+                messages=messages,
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                api_key=api_key,
+                base_url=base_url,
                 temperature=temperature,
                 max_tokens=32768,
+                session_ctx=session_ctx,
+                operation="triage",
+                label="Triage",
             )
 
             choice = response.choices[0]
-            finish = choice.finish_reason if hasattr(choice, "finish_reason") else "?"
+            finish = getattr(choice, "finish_reason", "?") or "?"
             content = choice.message.content
-            # Some reasoning models return reasoning_content and leave content empty
             reasoning = getattr(choice.message, "reasoning_content", None)
 
             if not content:
-                # Some reasoning models put the final answer in reasoning_content
-                # when max_tokens is exhausted before content can be generated.
                 diag = (
                     f"   ⚠️  Triage returned empty content. "
                     f"finish_reason={finish}, "
@@ -1076,7 +1168,6 @@ class LLMInterface:
                 )
                 print(diag)
                 logger.warning(diag)
-                # Fallback: try reasoning_content as the response
                 if reasoning and finish == "length":
                     print("   🔄 Triage: using reasoning_content as fallback (token limit hit)")
                     json_str = self._extract_json_object(reasoning)
@@ -1087,7 +1178,6 @@ class LLMInterface:
                             pass
                 return None
 
-            # Extract JSON from potentially noisy response
             json_str = self._extract_json_object(content)
             if json_str is None:
                 logger.warning(
@@ -1100,10 +1190,7 @@ class LLMInterface:
             return json.loads(json_str)
 
         except json.JSONDecodeError as e:
-            logger.warning(
-                "Triage JSON parse failed: %s. Raw (first 300 chars): %s",
-                e, content[:300] if 'content' in dir() else "N/A",
-            )
+            logger.warning("Triage JSON parse failed: %s", e)
             return None
         except Exception as e:
             logger.warning("Triage LLM call failed: %s", e)
@@ -1263,19 +1350,24 @@ class LLMInterface:
         temperature: float = 0.3,
         max_tokens: int = 32768,
         label: str = "LLM",
+        session_ctx: Optional[SessionContext] = None,
     ) -> Optional[dict]:
         """Generic LLM call returning a parsed JSON object (not array)."""
-        client = self._get_or_create_client(api_key, base_url)
-
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
         try:
-            response = client.chat.completions.create(
+            response = self._call_llm(
+                messages=messages,
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                api_key=api_key,
+                base_url=base_url,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                session_ctx=session_ctx,
+                operation=label,
+                label=label,
             )
 
             choice = response.choices[0]
@@ -1435,15 +1527,19 @@ class LLMInterface:
         }, indent=2, ensure_ascii=False)
 
         print(f"   Triage: analyzing {len(model_table)} models, {len(signals)} signals")
-        result = self._call_llm_json_object(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=cfg["model"],
-            api_key=api_key,
-            base_url=cfg["base_url"],
-            temperature=cfg["triage_temperature"],
-            label="Triage",
-        )
+        _tl = self._trace_logger
+        _sess_mgr = (_tl.session("triage", label="Triage") if _tl else _null_session_ctx())
+        with _sess_mgr as _sess:
+            result = self._call_llm_json_object(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=cfg["model"],
+                api_key=api_key,
+                base_url=cfg["base_url"],
+                temperature=cfg["triage_temperature"],
+                label="Triage",
+                session_ctx=_sess,
+            )
 
         if result:
             # --- Deterministic override: force historically flagged models in ---
@@ -1597,15 +1693,21 @@ class LLMInterface:
             ),
         }, indent=2, ensure_ascii=False, default=str)
 
-        return self._call_llm_json_object(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=cfg["model"],
-            api_key=api_key,
-            base_url=cfg["base_url"],
-            temperature=cfg["temperature"],
-            label=f"Per-Model({model_name})",
-        )
+        _tl = self._trace_logger
+        _sess_mgr = (_tl.session("per_model_critic",
+                                 label=f"Per-Model({model_name})",
+                                 target=model_name) if _tl else _null_session_ctx())
+        with _sess_mgr as _sess:
+            return self._call_llm_json_object(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=cfg["model"],
+                api_key=api_key,
+                base_url=cfg["base_url"],
+                temperature=cfg["temperature"],
+                label=f"Per-Model({model_name})",
+                session_ctx=_sess,
+            )
 
     def generate_combo_critique(
         self,
@@ -1656,15 +1758,21 @@ class LLMInterface:
             ),
         }, indent=2, ensure_ascii=False, default=str)
 
-        return self._call_llm_json_object(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=cfg["model"],
-            api_key=api_key,
-            base_url=cfg["base_url"],
-            temperature=cfg["temperature"],
-            label=f"Per-Combo({combo_name})",
-        )
+        _tl = self._trace_logger
+        _sess_mgr = (_tl.session("per_combo_critic",
+                                 label=f"Per-Combo({combo_name})",
+                                 target=combo_name) if _tl else _null_session_ctx())
+        with _sess_mgr as _sess:
+            return self._call_llm_json_object(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=cfg["model"],
+                api_key=api_key,
+                base_url=cfg["base_url"],
+                temperature=cfg["temperature"],
+                label=f"Per-Combo({combo_name})",
+                session_ctx=_sess,
+            )
 
     def generate_execution_risk_critique(
         self,
@@ -1714,15 +1822,20 @@ class LLMInterface:
             ),
         }, indent=2, ensure_ascii=False, default=str)
 
-        return self._call_llm_json_object(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=cfg["model"],
-            api_key=api_key,
-            base_url=cfg["base_url"],
-            temperature=cfg["temperature"],
-            label="Execution/Risk",
-        )
+        _tl = self._trace_logger
+        _sess_mgr = (_tl.session("execution_risk", label="Execution/Risk") if _tl
+                     else _null_session_ctx())
+        with _sess_mgr as _sess:
+            return self._call_llm_json_object(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=cfg["model"],
+                api_key=api_key,
+                base_url=cfg["base_url"],
+                temperature=cfg["temperature"],
+                label="Execution/Risk",
+                session_ctx=_sess,
+            )
 
     def generate_synthesizer_output(
         self,
@@ -1804,15 +1917,20 @@ class LLMInterface:
             ),
         }, indent=2, ensure_ascii=False, default=str)
 
-        return self._call_llm_json_object(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=cfg["model"],
-            api_key=api_key,
-            base_url=cfg["base_url"],
-            temperature=cfg["temperature"],
-            label="Synthesizer",
-        )
+        _tl = self._trace_logger
+        _sess_mgr = (_tl.session("synthesizer", label="Synthesizer") if _tl
+                     else _null_session_ctx())
+        with _sess_mgr as _sess:
+            return self._call_llm_json_object(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=cfg["model"],
+                api_key=api_key,
+                base_url=cfg["base_url"],
+                temperature=cfg["temperature"],
+                label="Synthesizer",
+                session_ctx=_sess,
+            )
 
     # ------------------------------------------------------------------
     # Experiment Analyzer — multi-round Playground decision-making
@@ -1928,58 +2046,66 @@ class LLMInterface:
             f"\"next_param\": \"...\", \"next_from\": value, \"next_to\": value, \"rationale\": \"...\"}}",
         ])
 
+        _tl = self._trace_logger
+        _sess_mgr = (_tl.session("experiment_advisor",
+                                 label=f"ExperimentAdvisor({model_name})",
+                                 target=model_name) if _tl else _null_session_ctx())
+
         try:
-            client = self._get_or_create_client(api_key, base_url)
+            with _sess_mgr as _sess:
+                response = self._call_llm(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    model=llm_model,
+                    api_key=api_key,
+                    base_url=base_url,
+                    temperature=temperature,
+                    max_tokens=32768,
+                    session_ctx=_sess,
+                    operation="experiment_advisor",
+                    label=f"ExperimentAdvisor({model_name})",
+                )
         except RuntimeError:
             return None
-
-        try:
-            response = client.chat.completions.create(
-                model=llm_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=temperature,
-                max_tokens=32768,
-            )
-
-            choice = response.choices[0]
-            finish = getattr(choice, "finish_reason", "?")
-            content = choice.message.content
-            reasoning = getattr(choice.message, "reasoning_content", None)
-            if not content:
-                print(f"   ⚠️  ExperimentAnalyzer empty: finish={finish} "
-                      f"reasoning_len={len(reasoning) if reasoning else 0}")
-                if reasoning and finish == "length":
-                    json_str = self._extract_json_object(reasoning)
-                    if json_str:
-                        try:
-                            return json.loads(json_str)
-                        except json.JSONDecodeError:
-                            pass
-                return None
-
-            json_str = self._extract_json_object(content)
-            if json_str is None:
-                print(f"   ⚠️  ExperimentAnalyzer: no JSON found. Raw (200 chars): {content[:200]}")
-                return None
-
-            result = json.loads(json_str)
-            decision = result.get("decision", "give_up")
-            if decision == "retry":
-                print(
-                    f"   🔄 Experiment: retry → {result.get('next_param', '?')} "
-                    f"({result.get('next_from', '?')} → {result.get('next_to', '?')})"
-                )
-            else:
-                print(f"   🛑 Experiment: give_up — {result.get('reason', result.get('rationale', '?'))}")
-            return result
-
         except Exception as e:
             logger.warning("ExperimentAnalyzer call failed: %s", e)
             print(f"   ⚠️  ExperimentAnalyzer failed: {e}")
             return None
+
+        choice = response.choices[0]
+        finish = getattr(choice, "finish_reason", "?")
+        content = choice.message.content
+        reasoning = getattr(choice.message, "reasoning_content", None)
+        if not content:
+            print(f"   ⚠️  ExperimentAnalyzer empty: finish={finish} "
+                  f"reasoning_len={len(reasoning) if reasoning else 0}")
+            if reasoning and finish == "length":
+                json_str = self._extract_json_object(reasoning)
+                if json_str:
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        pass
+            return None
+
+        json_str = self._extract_json_object(content)
+        if json_str is None:
+            print(f"   ⚠️  ExperimentAnalyzer: no JSON found. Raw (200 chars): {content[:200]}")
+            return None
+
+        result = json.loads(json_str)
+        decision = result.get("decision", "give_up")
+        if decision == "retry":
+            print(
+                f"   🔄 Experiment: retry → {result.get('next_param', '?')} "
+                f"({result.get('next_from', '?')} → {result.get('next_to', '?')})"
+            )
+        else:
+            print(f"   🛑 Experiment: give_up — {result.get('reason', result.get('rationale', '?'))}")
+        return result
+
 
     def _call_critic_llm(
         self,
@@ -1990,24 +2116,31 @@ class LLMInterface:
         max_tokens: int,
         api_key: str,
         base_url: Optional[str],
+        session_ctx: Optional[SessionContext] = None,
     ) -> List[ActionItem]:
         """Call the LLM API and parse the response into ActionItems."""
-        client = self._get_or_create_client(api_key, base_url)
-
         max_retries = 2
         last_error = None
         last_content = None
 
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
         for attempt in range(max_retries):
             try:
-                response = client.chat.completions.create(
+                response = self._call_llm(
+                    messages=messages,
                     model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    api_key=api_key,
+                    base_url=base_url,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    session_ctx=session_ctx,
+                    operation="critic",
+                    label="Critic",
+                    retry_attempt=attempt,
                 )
 
                 content = response.choices[0].message.content

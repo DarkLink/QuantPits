@@ -209,6 +209,8 @@ Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback 
 | [52 — 数据基础设施](52_OOMRL_DATA_INFRASTRUCTURE.md) | OperatorLog、Config Ledger、训练收敛日志、Agent 增强 |
 | [53 — LLM Critic 指南](53_OOMRL_CRITIC_GUIDE.md) | Signal 提取、Critic 模式、ActionItem 结构、Skills |
 | [54 — 反馈闭环执行](54_OOMRL_FEEDBACK_LOOP.md) | Playground、Adapter、Orchestrator、Promote、回退 |
+| [55 — OOM-RL 每周操作指南](55_OOMRL_WEEKLY_OPERATIONS.md) | 日常运维、干预检查、特殊情况处理 |
+| [56 — LLM 观测与追踪](56_LLM_OBSERVABILITY_GUIDE.md) | LLM Traces、Reasoning 记录、Langfuse、多模型研讨预留 |
 
 ### 快速流程
 

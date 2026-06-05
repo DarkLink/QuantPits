@@ -218,6 +218,8 @@ Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback 
 | [52 — Data Infrastructure](52_OOMRL_DATA_INFRASTRUCTURE.md) | OperatorLog, Config Ledger, training history, agent enhancements |
 | [53 — LLM Critic Guide](53_OOMRL_CRITIC_GUIDE.md) | Signal extraction, Critic mode, ActionItem structure, Skills |
 | [54 — Feedback Loop Guide](54_OOMRL_FEEDBACK_LOOP.md) | Playground, Adapter, Orchestrator, Promote, rollback |
+| [55 — OOM-RL Weekly Operations Guide](55_OOMRL_WEEKLY_OPERATIONS.md) | Daily operations, intervention checks, edge cases |
+| [56 — LLM Observability & Tracing](56_LLM_OBSERVABILITY_GUIDE.md) | LLM Traces, Reasoning capture, Langfuse, multi-model prep |
 
 ### Quick Flow
 

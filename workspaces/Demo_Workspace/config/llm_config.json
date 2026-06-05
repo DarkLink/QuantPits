@@ -8,5 +8,15 @@
     "temperature": 0.3,
     "max_tokens": 32768,
     "mcp_enabled": false,
-    "mcp_tools": []
+    "mcp_tools": [],
+    "trace": {
+        "enabled": true,
+        "output_dir": "output/deep_analysis/llm_traces",
+        "langfuse": {
+            "enabled": false,
+            "host": "http://localhost:3000",
+            "public_key_env": "LANGFUSE_PUBLIC_KEY",
+            "secret_key_env": "LANGFUSE_SECRET_KEY"
+        }
+    }
 }
