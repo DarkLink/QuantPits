@@ -183,6 +183,7 @@ class FeedbackLoop:
         """
         self.workspace_root = os.path.abspath(workspace_root)
         self.mode = mode
+        self._run_label = ""
 
     def run(
         self,
@@ -194,6 +195,7 @@ class FeedbackLoop:
         skip_retrain: bool = False,
         max_experiment_rounds: int = 3,
         resume: bool = False,
+        run_label: str = "",
     ) -> FeedbackReport:
         """Execute the feedback loop.
 
@@ -213,6 +215,7 @@ class FeedbackLoop:
             FeedbackReport with results.
         """
         date_str = datetime.now().strftime("%Y-%m-%d")
+        self._run_label = run_label
         report = FeedbackReport(run_date=date_str, mode=self.mode)
 
         # playground-only shortcut: no ActionItems needed
@@ -1152,7 +1155,8 @@ class FeedbackLoop:
         """Save FeedbackReport to output/deep_analysis/."""
         out_dir = os.path.join(self.workspace_root, "output", "deep_analysis")
         os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, f"feedback_report_{report.run_date}.json")
+        _label_suffix = f"_{self._run_label}" if self._run_label else ""
+        path = os.path.join(out_dir, f"feedback_report_{report.run_date}{_label_suffix}.json")
 
         with open(path, "w", encoding="utf-8") as f:
             json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)

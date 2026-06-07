@@ -69,9 +69,9 @@ python -m quantpits.scripts.run_deep_analysis --critic
 ```
 
 **Output files** (under `output/deep_analysis/`):
-- `action_items_{date}.json` — LLM-generated ActionItem list
-- `feedback_report_{date}.json` — Feedback loop evaluation report
-- `deep_analysis_report_v6-new_{date}.md` — Full analysis report
+- `action_items_{date}[_{label}].json` — LLM-generated ActionItem list
+- `feedback_report_{date}[_{label}].json` — Feedback loop evaluation report
+- `deep_analysis_report_{date}[_{label}].md` — Full analysis report
 
 **Key metrics to watch**:
 - `feedback_summary.accuracy` — feedback loop quality (null = no suggestions were executed last week)

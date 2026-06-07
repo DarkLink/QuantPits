@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import pytest
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 # Ensure openai module is mocked — but don't overwrite an existing mock
@@ -380,12 +381,13 @@ class TestComputeAvailableInterventions:
         assert not result["m1"]["exhausted"]
 
     def test_computes_recently_adjusted(self):
+        _recent = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
         signals = [
             Signal("underfitting", "warning", "hyperparams", "Agent1", "m1", context="test"),
         ]
         current_params = {"m1": {"n_epochs": 200, "lr": 0.001, "dropout": 0.0}}
         recent_history = [
-            {"_run_date": "2026-05-06", "target": "m1", "params": {"lr": {"from": 0.001, "to": 0.01}}},
+            {"_run_date": _recent, "target": "m1", "params": {"lr": {"from": 0.001, "to": 0.01}}},
         ]
 
         interface = LLMInterface()
@@ -395,12 +397,13 @@ class TestComputeAvailableInterventions:
         assert "dropout" in result["m1"]["untouched"]
 
     def test_exhausted_when_all_tunable_adjusted(self):
+        _recent = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
         signals = [
             Signal("underfitting", "warning", "hyperparams", "Agent1", "m1", context="test"),
         ]
         current_params = {"m1": {"n_epochs": 200, "lr": 0.001}}
         recent_history = [
-            {"_run_date": "2026-05-06", "target": "m1", "params": {"lr": {}, "n_epochs": {}}},
+            {"_run_date": _recent, "target": "m1", "params": {"lr": {}, "n_epochs": {}}},
         ]
 
         interface = LLMInterface()

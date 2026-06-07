@@ -125,6 +125,7 @@ class TestMainCriticMode:
         args.shareable = False
         args.critic = True  # Enable critic mode
         args.critic_dry_run = False
+        args.run_label = ''
         mock_parse_args.return_value = args
         mock_load_config.return_value = {}
 
@@ -167,6 +168,7 @@ class TestMainCriticMode:
         args.shareable = False
         args.critic = False
         args.critic_dry_run = True  # critic dry-run only
+        args.run_label = ''
         mock_parse_args.return_value = args
         mock_load_config.return_value = {}
 
@@ -211,6 +213,7 @@ class TestMainCriticMode:
         args.shareable = True  # Shareable mode
         args.critic = False
         args.critic_dry_run = False
+        args.run_label = ''
         mock_parse_args.return_value = args
         mock_load_config.return_value = {}
 
@@ -251,6 +254,7 @@ class TestMainCriticMode:
         args.shareable = False
         args.critic = False
         args.critic_dry_run = False
+        args.run_label = ''
         mock_parse_args.return_value = args
         mock_load_config.return_value = {}
 
@@ -292,6 +296,7 @@ class TestMainCriticMode:
         args.shareable = False
         args.critic = False
         args.critic_dry_run = False
+        args.run_label = ''
         mock_parse_args.return_value = args
         mock_load_config.return_value = {}
 
@@ -337,6 +342,7 @@ class TestMainCriticMode:
         args.shareable = False
         args.critic = False
         args.critic_dry_run = False
+        args.run_label = ''
         mock_parse_args.return_value = args
         mock_load_config.return_value = {}
 
@@ -378,6 +384,7 @@ class TestMainCriticMode:
         args.shareable = False
         args.critic = False
         args.critic_dry_run = False
+        args.run_label = ''
         mock_parse_args.return_value = args
         # Config provides the date
         mock_load_config.return_value = {'freq_change_date': '2024-10-21'}
@@ -423,6 +430,7 @@ class TestMainCriticMode:
         args.shareable = False
         args.critic = False
         args.critic_dry_run = False
+        args.run_label = ''
         mock_parse_args.return_value = args
         mock_load_config.return_value = {}
 
@@ -467,6 +475,7 @@ class TestMainCriticMode:
         args.shareable = False
         args.critic = False
         args.critic_dry_run = False
+        args.run_label = ''
         mock_parse_args.return_value = args
         mock_load_config.return_value = {}
 

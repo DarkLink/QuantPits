@@ -69,9 +69,9 @@ python -m quantpits.scripts.run_deep_analysis --critic
 ```
 
 **输出文件**（位于 `output/deep_analysis/`）：
-- `action_items_{date}.json` — LLM 生成的 ActionItem 列表
-- `feedback_report_{date}.json` — 闭环评估报告
-- `deep_analysis_report_v5-new_{date}.md` — 完整分析报告
+- `action_items_{date}[_{label}].json` — LLM 生成的 ActionItem 列表
+- `feedback_report_{date}[_{label}].json` — 闭环评估报告
+- `deep_analysis_report_{date}[_{label}].md` — 完整分析报告
 
 **关注指标**：
 - `feedback_summary.accuracy` — 闭环质量（null 表示上周无建议被执行）
@@ -81,7 +81,7 @@ python -m quantpits.scripts.run_deep_analysis --critic
 
 ### 步骤 4：评估 Action Items
 
-阅读 `action_items_{date}.json`，逐条判断。
+阅读 `action_items_{date}[_{label}].json`，逐条判断。
 
 **首要参考：model_knowledge.yaml**
 

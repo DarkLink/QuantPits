@@ -366,3 +366,40 @@ def test_llm_trace_logger_langfuse_exceptions(tmp_path):
         assert rec.round_number == 1  # Should be set from session context
 
     logger.finalize()
+
+
+def test_llm_trace_logger_with_run_label(tmp_path):
+    logger = LLMTraceLogger(
+        output_dir=str(tmp_path),
+        run_id="abc12345",
+        run_date="2026-06-05",
+        run_label="after-retrain",
+        enabled=True,
+    )
+    assert logger.run_label == "after-retrain"
+    assert logger.run_dir == os.path.join(str(tmp_path), "2026-06-05_after-retrain_run_abc12345")
+    assert os.path.exists(logger.run_dir)
+
+    # get_run_summary should include the label
+    summary = logger.get_run_summary()
+    assert summary["run_label"] == "after-retrain"
+
+    logger.finalize()
+
+
+def test_llm_trace_logger_from_config_with_run_label(tmp_path):
+    cfg = {"trace": {"enabled": True, "output_dir": "traces"}}
+    logger = LLMTraceLogger.from_llm_config(cfg, str(tmp_path), run_label="v2")
+    assert logger.run_label == "v2"
+    assert "v2" in logger.run_dir
+
+
+def test_llm_trace_logger_without_label_is_unchanged(tmp_path):
+    logger = LLMTraceLogger(
+        output_dir=str(tmp_path),
+        run_id="abc12345",
+        run_date="2026-06-05",
+        enabled=True,
+    )
+    assert logger.run_label == ""
+    assert logger.run_dir == os.path.join(str(tmp_path), "2026-06-05_run_abc12345")

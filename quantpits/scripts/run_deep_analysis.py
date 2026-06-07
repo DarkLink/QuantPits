@@ -26,6 +26,7 @@ import os
 import sys
 import json
 import argparse
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -90,6 +91,11 @@ def parse_args():
     parser.add_argument(
         '--critic-dry-run', action='store_true',
         help='Generate ActionItems but do not persist to files (preview mode)')
+    parser.add_argument(
+        '--run-label', type=str, default='',
+        help='Label for this run (e.g., "after-retrain"). '
+             'When set, output filenames include the label to prevent '
+             'collisions when running multiple analyses on the same date.')
     return parser.parse_args()
 
 
@@ -115,6 +121,7 @@ def _run_critic_single_stage(
     workspace_root: str,
     data_date: str = "",
     dry_run: bool = False,
+    run_label: str = "",
 ) -> list:
     """Run the original single-stage Critic flow."""
     from quantpits.scripts.deep_analysis.action_items import (
@@ -139,7 +146,7 @@ def _run_critic_single_stage(
 
     if not dry_run:
         print("\n💾 Persisting action items...")
-        snap_path = persist_action_items(action_items, workspace_root, run_date=data_date)
+        snap_path = persist_action_items(action_items, workspace_root, run_date=data_date, run_label=run_label)
         print(f"   → Saved to {snap_path}")
     else:
         print("\n🏜️  Dry-run mode — action items not persisted.")
@@ -163,6 +170,7 @@ def _run_critic_layered(
     workspace_root: str,
     data_date: str = "",
     dry_run: bool = False,
+    run_label: str = "",
 ) -> list:
     """
     Run the layered pipeline:
@@ -397,11 +405,11 @@ def _run_critic_layered(
     # --- Persist ---
     if not dry_run:
         print("\n💾 Persisting action items...")
-        snap_path = persist_action_items(action_items, workspace_root, run_date=data_date)
+        snap_path = persist_action_items(action_items, workspace_root, run_date=data_date, run_label=run_label)
         print(f"   → Saved to {snap_path}")
 
         if synthesizer_output:
-            _persist_feedback_report(synthesizer_output, feedback_eval, workspace_root, data_date)
+            _persist_feedback_report(synthesizer_output, feedback_eval, workspace_root, data_date, run_label=run_label)
     else:
         print("\n🏜️  Dry-run mode — action items not persisted.")
         for ai in action_items:
@@ -909,8 +917,9 @@ def _persist_feedback_report(
     feedback_eval: dict,
     workspace_root: str,
     data_date: str = "",
+    run_label: str = "",
 ) -> None:
-    """Persist synthesizer output as feedback_report_{date}.json."""
+    """Persist synthesizer output as feedback_report_{date}[_{label}].json."""
     date_str = data_date or datetime.now().strftime("%Y-%m-%d")
     output_dir = os.path.join(workspace_root, 'output', 'deep_analysis')
     os.makedirs(output_dir, exist_ok=True)
@@ -924,7 +933,8 @@ def _persist_feedback_report(
         "feedback_summary": feedback_eval.get("quality_summary", {}),
     }
 
-    path = os.path.join(output_dir, f"feedback_report_{date_str}.json")
+    _label_part = f"_{run_label}" if run_label else ""
+    path = os.path.join(output_dir, f"feedback_report_{date_str}{_label_part}.json")
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(report, f, indent=2, ensure_ascii=False, default=str)
     print(f"   → Feedback report saved to {path}")
@@ -951,6 +961,7 @@ def main():
     args = parse_args()
     workspace_root = env.ROOT_DIR
     data_date = _resolve_data_date()
+    run_label = re.sub(r'[\\/]', '-', args.run_label.strip())
 
     print("=" * 60)
     print("  🤖 MAS Deep Analysis System")
@@ -1073,6 +1084,7 @@ def main():
             workspace_name=os.path.basename(workspace_root),
             pipeline_stage="layered" if _layered_skills_available else "single_stage",
             langfuse_adapter=_langfuse,
+            run_label=run_label,
         )
 
         critic_llm = _LLMInterface(
@@ -1095,6 +1107,7 @@ def main():
                 workspace_root=workspace_root,
                 data_date=data_date,
                 dry_run=args.critic_dry_run,
+                run_label=run_label,
             )
         else:
             if not _layered_skills_available:
@@ -1105,6 +1118,7 @@ def main():
                 workspace_root=workspace_root,
                 data_date=data_date,
                 dry_run=args.critic_dry_run,
+                run_label=run_label,
             )
 
         # Finalise traces — write manifest.json
@@ -1135,6 +1149,7 @@ def main():
             workspace_name=os.path.basename(workspace_root),
             pipeline_stage="summary",
             langfuse_adapter=_langfuse_summary,
+            run_label=run_label,
         )
         llm = LLMInterface(
             api_key=args.api_key,
@@ -1179,11 +1194,14 @@ def main():
     report_gen = ReportGenerator(all_findings, synthesis_result, executive_summary)
     report_md = report_gen.generate()
 
-    # Write output — inject date into filename if not already present
+    # Write output — inject date (and optional label) into filename if not already present
     output_path = os.path.join(workspace_root, args.output)
     _base, _ext = os.path.splitext(output_path)
     if data_date not in _base:
-        output_path = f"{_base}_{data_date}{_ext}"
+        _suffix = data_date
+        if run_label:
+            _suffix += f"_{run_label}"
+        output_path = f"{_base}_{_suffix}{_ext}"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(report_md)

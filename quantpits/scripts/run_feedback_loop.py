@@ -116,6 +116,10 @@ def main():
              "continue with ExperimentAnalyzer suggesting new params",
     )
     parser.add_argument(
+        '--run-label', type=str, default='',
+        help='Label for this run; injected into feedback report filename '
+             'to match the label used during --critic')
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging",
@@ -195,6 +199,7 @@ def main():
         skip_retrain=args.skip_retrain,
         max_experiment_rounds=args.max_experiment_rounds,
         resume=args.resume,
+        run_label=args.run_label.strip(),
     )
 
     # Print summary

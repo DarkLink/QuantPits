@@ -92,6 +92,7 @@ def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_sn
     args.shareable = False
     args.critic = False
     args.critic_dry_run = False
+    args.run_label = ''
     mock_parse_args.return_value = args
 
     mock_load_config.return_value = {'freq_change_date': '2024-01-01'}
@@ -146,9 +147,10 @@ def test_main_no_agents(mock_exists, mock_report_gen, mock_llm, mock_synth, mock
     args.no_snapshot = True
     args.notes_file = None
     args.notes = ''
+    args.run_label = ''
     mock_parse_args.return_value = args
     mock_load_config.return_value = {}
-    
+
     result = run_deep_analysis.main()
     assert result == 1
 
@@ -175,6 +177,7 @@ def test_main_snapshot_failure(mock_exists, mock_snap_configs, mock_report_gen, 
     args.output = 'report.md'
     args.critic = False
     args.critic_dry_run = False
+    args.run_label = ''
     mock_parse_args.return_value = args
     mock_load_config.return_value = {}
     
@@ -213,6 +216,7 @@ def test_main_llm_not_available(mock_exists, mock_report_gen, mock_llm,
     args.output = 'report.md'
     args.critic = False
     args.critic_dry_run = False
+    args.run_label = ''
     mock_parse_args.return_value = args
     mock_load_config.return_value = {}
     

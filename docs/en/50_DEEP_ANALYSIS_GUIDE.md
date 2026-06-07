@@ -40,6 +40,9 @@ python -m quantpits.scripts.run_deep_analysis \
 # Specific agents only
 python -m quantpits.scripts.run_deep_analysis --agents model_health,prediction_audit
 
+# Run with label (prevents overwriting when running multiple times on same date)
+python -m quantpits.scripts.run_deep_analysis --critic --run-label after-retrain
+
 # Custom time windows
 python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 ```
@@ -57,6 +60,7 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 | `--base-url` | (llm_config.json) | API base URL override |
 | `--critic` | (flag) | **OOM-RL Phase 3** — Enable Critic mode, generate ActionItems |
 | `--critic-dry-run` | (flag) | Critic preview mode, generate ActionItems without persisting |
+| `--run-label` | `""` | Run label (e.g., "after-retrain"), injected into output filenames to prevent same-date overwrites |
 | `--agents` | `all` | Comma-separated agent names |
 | `--notes` | `""` | Free-text external context |
 | `--notes-file` | `None` | File path containing external notes |

@@ -34,6 +34,9 @@ python -m quantpits.scripts.run_deep_analysis \
 # 仅运行特定代理
 python -m quantpits.scripts.run_deep_analysis --agents model_health,prediction_audit
 
+# 带标签运行（同日多次运行不覆盖）
+python -m quantpits.scripts.run_deep_analysis --critic --run-label after-retrain
+
 # 自定义时间窗口
 python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 ```
@@ -51,6 +54,7 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 | `--base-url` | (llm_config.json) | API base URL 覆盖 |
 | `--critic` | (flag) | **OOM-RL Phase 3** — 启用 Critic 模式，生成 ActionItems |
 | `--critic-dry-run` | (flag) | Critic 预览模式，生成 ActionItems 但不持久化到文件 |
+| `--run-label` | `""` | 运行标签（如 "after-retrain"），注入输出文件名防止同日多次运行覆盖 |
 | `--agents` | `all` | 逗号分隔的代理名称 |
 | `--notes` | `""` | 自由文本形式的外部上下文 |
 | `--notes-file` | `None` | 包含外部笔记的文件路径 |

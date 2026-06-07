@@ -293,6 +293,7 @@ class LLMTraceLogger:
         run_date: Optional[str] = None,
         workspace: str = "",
         pipeline_stage: str = "single_stage",
+        run_label: str = "",
         langfuse_adapter: Optional[Any] = None,
         enabled: bool = True,
     ) -> None:
@@ -303,12 +304,14 @@ class LLMTraceLogger:
             run_date: Date string for run directory prefix (YYYY-MM-DD); today if not given.
             workspace: Workspace name embedded in each trace record.
             pipeline_stage: "single_stage" | "layered".
+            run_label: Optional human-readable label injected into run_dir name.
             langfuse_adapter: Optional LangfuseAdapter; no-op when None.
             enabled: Set to False to disable all logging (no-op mode).
         """
         self.enabled = enabled
         self.workspace = workspace
         self.pipeline_stage = pipeline_stage
+        self.run_label = run_label
         self._langfuse = langfuse_adapter
 
         if not enabled:
@@ -322,9 +325,12 @@ class LLMTraceLogger:
 
         self.run_id = run_id or str(uuid.uuid4()).replace("-", "")[:8]
         self.run_date = run_date or datetime.now().strftime("%Y-%m-%d")
+        _label_segment = self.run_date
+        if self.run_label:
+            _label_segment += f"_{self.run_label}"
         self.run_dir = os.path.join(
             output_dir,
-            f"{self.run_date}_run_{self.run_id}",
+            f"{_label_segment}_run_{self.run_id}",
         )
         os.makedirs(self.run_dir, exist_ok=True)
 
@@ -530,6 +536,7 @@ class LLMTraceLogger:
         return {
             "run_id": self.run_id,
             "run_date": self.run_date,
+            "run_label": self.run_label,
             "workspace": self.workspace,
             "pipeline_stage": self.pipeline_stage,
             "summary": {
@@ -606,6 +613,7 @@ class LLMTraceLogger:
         workspace_name: str = "",
         pipeline_stage: str = "single_stage",
         langfuse_adapter: Optional[Any] = None,
+        run_label: str = "",
     ) -> "LLMTraceLogger":
         """Create a LLMTraceLogger from a parsed llm_config.json dict.
 
@@ -627,7 +635,8 @@ class LLMTraceLogger:
         if not enabled:
             logger.info("LLMTraceLogger: tracing disabled by config")
             return cls(output_dir="", enabled=False, run_date=run_date,
-                       workspace=workspace_name, pipeline_stage=pipeline_stage)
+                       workspace=workspace_name, pipeline_stage=pipeline_stage,
+                       run_label=run_label)
 
         rel_output_dir = trace_cfg.get("output_dir", "output/deep_analysis/llm_traces")
         output_dir = os.path.join(workspace_root, rel_output_dir)
@@ -638,5 +647,6 @@ class LLMTraceLogger:
             workspace=workspace_name,
             pipeline_stage=pipeline_stage,
             langfuse_adapter=langfuse_adapter,
+            run_label=run_label,
             enabled=True,
         )

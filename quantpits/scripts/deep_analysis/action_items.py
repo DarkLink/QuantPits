@@ -212,13 +212,14 @@ def persist_action_items(
     items: List[ActionItem],
     workspace_root: str,
     run_date: Optional[str] = None,
+    run_label: str = "",
 ) -> str:
     """
     Save validated ActionItems to workspace.
 
     Writes:
-    - output/deep_analysis/action_items_{date}.json  (full snapshot)
-    - data/action_item_history.jsonl                  (append audit trail)
+    - output/deep_analysis/action_items_{date}[_{label}].json  (full snapshot)
+    - data/action_item_history.jsonl                             (append audit trail)
 
     Returns the path to the snapshot JSON.
     """
@@ -228,7 +229,8 @@ def persist_action_items(
     out_dir = os.path.join(workspace_root, "output", "deep_analysis")
     os.makedirs(out_dir, exist_ok=True)
 
-    snapshot_path = os.path.join(out_dir, f"action_items_{date_str}.json")
+    _label_suffix = f"_{run_label}" if run_label else ""
+    snapshot_path = os.path.join(out_dir, f"action_items_{date_str}{_label_suffix}.json")
     with open(snapshot_path, "w", encoding="utf-8") as f:
         json.dump(
             [item.to_dict() for item in items],
@@ -247,6 +249,8 @@ def persist_action_items(
         for item in items:
             record = item.to_dict()
             record["_run_date"] = date_str
+            if run_label:
+                record["_run_label"] = run_label
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     logger.info("ActionItems appended to %s", history_path)
 

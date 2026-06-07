@@ -298,3 +298,45 @@ class TestPersistence:
         items = [ActionItem(action_type="test")]
         path = persist_action_items(items, ws, run_date="2026-01-01")
         assert os.path.exists(path)
+
+    def test_persist_with_run_label(self, tmp_path):
+        ws = str(tmp_path / "ws")
+        os.makedirs(os.path.join(ws, "data"), exist_ok=True)
+        os.makedirs(os.path.join(ws, "output", "deep_analysis"), exist_ok=True)
+
+        items = [ActionItem(
+            action_type="retrain",
+            scope="model_selection",
+            target="alstm_Alpha158",
+            scope_status="in_scope",
+        )]
+
+        path = persist_action_items(items, ws, run_date="2026-06-05", run_label="after-retrain")
+
+        # Snapshot filename should include the label
+        assert "after-retrain" in path
+        assert os.path.basename(path) == "action_items_2026-06-05_after-retrain.json"
+        assert os.path.exists(path)
+
+        # History record should include _run_label
+        history_path = os.path.join(ws, "data", "action_item_history.jsonl")
+        with open(history_path, "r") as f:
+            record = json.loads(f.readline())
+        assert record["_run_date"] == "2026-06-05"
+        assert record["_run_label"] == "after-retrain"
+
+    def test_persist_without_label_is_unchanged(self, tmp_path):
+        """Backward compat: no label = same filename as before."""
+        ws = str(tmp_path / "ws")
+        os.makedirs(os.path.join(ws, "data"), exist_ok=True)
+        os.makedirs(os.path.join(ws, "output", "deep_analysis"), exist_ok=True)
+
+        items = [ActionItem(action_type="test")]
+        path = persist_action_items(items, ws, run_date="2026-06-05")
+        assert os.path.basename(path) == "action_items_2026-06-05.json"
+
+        # History should NOT have _run_label when not provided
+        history_path = os.path.join(ws, "data", "action_item_history.jsonl")
+        with open(history_path, "r") as f:
+            record = json.loads(f.readline())
+        assert "_run_label" not in record
