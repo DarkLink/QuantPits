@@ -420,6 +420,11 @@ def main():
         help="输出根目录 (默认: output/ensemble_runs)",
     )
     parser.add_argument(
+        "--run-label", type=str, default="",
+        help="运行标签，注入输出目录名以避免同日期多次运行互相覆盖。"
+             "例如 --run-label rolling 会产生 brute_force_2026-06-05_rolling/",
+    )
+    parser.add_argument(
         "--start-date", type=str, default=None,
         help="回测开始日期 YYYY-MM-DD",
     )
@@ -491,6 +496,7 @@ def main():
             base_dir=args.output_dir,
             script_name="brute_force",
             anchor_date=anchor_date,
+            run_label=args.run_label.strip() if args.run_label else "",
         )
         ctx.ensure_dirs()
         print(f"输出目录: {ctx.run_dir}")
@@ -535,9 +541,11 @@ def main():
         oos_dates_all = oos_norm_df.index.get_level_values("datetime")
         
         from quantpits.utils.search_utils import save_run_metadata
+        run_label = args.run_label.strip() if getattr(args, 'run_label', None) else ""
         metadata_path = save_run_metadata(ctx, {
             "anchor_date": anchor_date,
             "script_used": "brute_force_ensemble",
+            "run_label": run_label,
             "freq": args.freq,
             "record_file": args.record_file,
             "training_mode": getattr(args, "training_mode", None),

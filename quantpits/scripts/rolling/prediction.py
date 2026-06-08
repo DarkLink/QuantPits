@@ -17,17 +17,102 @@ def _filter_pred_to_test_segment(pred, window):
     return pred[mask]
 
 
+def _repair_truncated_prediction(model_name, model_info, comp, window_map,
+                                  rolling_exp_name, params_base):
+    """
+    检测并修复因训练时数据不完整而被截断的 window 预测。
+
+    当一个窗口不再是"最后一个窗口"时，后续数据更新可能已补全其 test 范围。
+    此函数检查 pred.pkl 是否覆盖完整的 test 段，若不完整则用原模型权重重新预测。
+
+    Args:
+        model_name: 模型名
+        model_info: 模型配置 (含 yaml_file)
+        comp: dict {window_idx, record_id}，已完成窗口记录
+        window_map: dict {window_idx: window}，当前完整窗口列表
+        rolling_exp_name: per-window MLflow 实验名
+        params_base: 基础参数
+
+    Returns:
+        (pred_df, repaired: bool)
+    """
+    from qlib.workflow import R
+    from quantpits.utils.train_utils import inject_config
+    from qlib.utils import init_instance_by_config
+
+    widx = comp['window_idx']
+    w = window_map.get(widx)
+    if not w:
+        return None, False
+
+    rec = R.get_recorder(
+        recorder_id=comp['record_id'],
+        experiment_name=rolling_exp_name,
+    )
+
+    pred = rec.load_object("pred.pkl")
+    dates = pred.index.get_level_values('datetime')
+    pred_max = dates.max()
+    test_end = pd.Timestamp(w['test_end'])
+
+    # 允许 1 天的容差（跨周末等情况）
+    if pred_max >= test_end - pd.Timedelta(days=1):
+        return pred, False
+
+    print(f"    🔧 Window {widx}: 预测被截断 ({pred_max.date()} < {test_end.date()}), "
+          f"自动补全...")
+
+    try:
+        model = rec.load_object("model.pkl")
+    except Exception as e:
+        print(f"    ⚠️  Window {widx}: 无法加载模型权重 ({e}), 跳过修复")
+        return pred, False
+
+    yaml_file = model_info['yaml_file']
+    params = dict(params_base)
+    params['start_time'] = w['train_start']
+    params['end_time'] = w['test_end']
+    params['fit_start_time'] = w['train_start']
+    params['fit_end_time'] = w['train_end']
+    params['valid_start_time'] = w['valid_start']
+    params['valid_end_time'] = w['valid_end']
+    params['test_start_time'] = w['test_start']
+    params['test_end_time'] = w['test_end']
+
+    task_config = inject_config(yaml_file, params, model_name=model_name)
+    dataset_cfg = task_config['task']['dataset']
+    dataset = init_instance_by_config(dataset_cfg)
+
+    new_pred = model.predict(dataset=dataset)
+    if isinstance(new_pred, pd.Series):
+        new_pred = new_pred.to_frame('score')
+    elif isinstance(new_pred, pd.DataFrame) and 'score' not in new_pred.columns:
+        new_pred.columns = ['score']
+
+    # 写回 MLflow，覆盖旧的截断预测
+    rec.save_objects(**{"pred.pkl": new_pred})
+
+    new_dates = new_pred.index.get_level_values('datetime')
+    print(f"    🔧 Window {widx}: 补全完成 "
+          f"({new_dates.min().date()} ~ {new_dates.max().date()}, "
+          f"{len(new_pred)} rows)")
+
+    return new_pred, True
+
+
 def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
                                     combined_exp_name, anchor_date,
-                                    windows, extra_preds=None):
+                                    windows, extra_preds=None,
+                                    targets=None, params_base=None):
     """
     将各 window 的 pred.pkl 拼接成完整时间序列。
 
     对每个模型：
-    1. 从各 window recorder 加载 pred.pkl
-    2. 截取仅 test 段的预测（避免训练集内预测泄漏到下游回测）
-    3. pd.concat (日期不重叠)
-    4. 保存到 Rolling_Combined 实验的新 recorder
+    1. 检测并修复因训练时数据不完整而被截断的历史窗口预测
+    2. 从各 window recorder 加载 pred.pkl
+    3. 截取仅 test 段的预测（避免训练集内预测泄漏到下游回测）
+    4. pd.concat (日期不重叠)
+    5. 保存到 Rolling_Combined 实验的新 recorder
 
     Args:
         state: RollingState
@@ -37,6 +122,8 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
         anchor_date: 锚点日期
         windows: list of dict, 完整的 rolling windows 列表（用于 test 段截取）
         extra_preds: dict {model_name: DataFrame}, 额外的 predict-only 预测
+        targets: dict {model_name: model_info}, 提供 yaml_file 用于修复截断窗口
+        params_base: dict, 基础参数（提供 market/benchmark 等，用于修复时构建 dataset）
 
     Returns:
         dict: {model_name: combined_record_id}
@@ -51,12 +138,16 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
     window_map = {w['window_idx']: w for w in windows}
 
     combined_records = {}
+    repaired_total = 0
 
     for model_name in model_names:
         completions = state.get_completed_record_ids(model_name)
         if not completions:
             print(f"  [{model_name}] 无已完成的 window, 跳过")
             continue
+
+        model_info = targets.get(model_name) if targets else None
+        last_widx = completions[-1]['window_idx']
 
         print(f"\n  [{model_name}] 拼接 {len(completions)} 个 windows...")
 
@@ -68,7 +159,21 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
                     recorder_id=comp['record_id'],
                     experiment_name=rolling_exp_name
                 )
-                pred = rec.load_object("pred.pkl")
+
+                # 对非最后窗口检测截断并自动修复
+                # （最后窗口的截断由 --predict-only 处理，不在此修复）
+                pred = None
+                if widx != last_widx and model_info and params_base:
+                    pred, repaired = _repair_truncated_prediction(
+                        model_name, model_info, comp, window_map,
+                        rolling_exp_name, params_base,
+                    )
+                    if repaired:
+                        repaired_total += 1
+
+                if pred is None:
+                    pred = rec.load_object("pred.pkl")
+
                 # 统一为单列 score DataFrame，避免下游 columns 不匹配
                 if isinstance(pred, pd.DataFrame) and 'score' in pred.columns:
                     pred = pred[['score']]
@@ -151,6 +256,9 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
         combined_records[model_name] = combined_rid
 
         print(f"  [{model_name}] Combined Recorder: {combined_rid}")
+
+    if repaired_total > 0:
+        print(f"\n  🔧 共修复 {repaired_total} 个被截断的历史窗口预测")
 
     return combined_records
 

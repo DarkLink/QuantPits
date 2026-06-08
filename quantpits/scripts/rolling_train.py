@@ -281,6 +281,8 @@ def run_cold_start(args, targets, rolling_cfg):
             combined_exp_name=combined_exp_name,
             anchor_date=anchor_date,
             windows=windows,
+            targets=targets,
+            params_base=params_base,
         )
         combined_records.update(model_combined)
 
@@ -302,6 +304,8 @@ def run_cold_start(args, targets, rolling_cfg):
                 combined_exp_name=combined_exp_name,
                 anchor_date=anchor_date,
                 windows=windows,
+                targets=targets,
+                params_base=params_base,
             )
             combined_records.update(extra_combined)
 
@@ -397,6 +401,8 @@ def run_daily(args, targets, rolling_cfg):
                 combined_exp_name=combined_exp_name,
                 anchor_date=anchor_date,
                 windows=windows,
+                targets=targets,
+                params_base=params_base,
             )
             combined_records.update(model_combined)
 
@@ -430,6 +436,7 @@ def run_daily(args, targets, rolling_cfg):
             combined_records = concatenate_rolling_predictions(
                 state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
                 windows=windows, extra_preds=extra_preds,
+                targets=targets, params_base=params_base,
             )
             if combined_records:
                 save_rolling_records(combined_records, combined_exp_name, anchor_date)
@@ -514,6 +521,7 @@ def run_predict_only(args, targets, rolling_cfg):
         combined_records = concatenate_rolling_predictions(
             state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
             windows=windows, extra_preds=extra_preds,
+            targets=targets, params_base=params_base,
         )
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name, anchor_date)

@@ -23,14 +23,23 @@ class RunContext:
     base_dir: str       # e.g. "output/ensemble_runs"
     script_name: str    # e.g. "brute_force", "brute_force_fast", "minentropy"
     anchor_date: str    # e.g. "2026-04-03"
+    run_label: str = "" # optional label to disambiguate same-date runs
 
     # ------------------------------------------------------------------
     # 核心路径属性
     # ------------------------------------------------------------------
     @property
+    def _dir_name(self) -> str:
+        """目录名: {script_name}_{anchor_date}[_{run_label}]"""
+        base = f"{self.script_name}_{self.anchor_date}"
+        if self.run_label:
+            base += f"_{self.run_label}"
+        return base
+
+    @property
     def run_dir(self) -> str:
-        """运行根目录: base_dir/{script_name}_{anchor_date}/"""
-        return os.path.join(self.base_dir, f"{self.script_name}_{self.anchor_date}")
+        """运行根目录: base_dir/{_dir_name}/"""
+        return os.path.join(self.base_dir, self._dir_name)
 
     @property
     def is_dir(self) -> str:
@@ -91,11 +100,17 @@ class RunContext:
         metadata_dir = os.path.dirname(os.path.abspath(metadata_path))
         dir_basename = os.path.basename(metadata_dir)
 
-        # 检测是新结构 (目录名 = script_date) 还是旧结构
+        # 检测是新结构 (目录名 = script_date[_label]) 还是旧结构
+        run_label = ""
         expected_dir_name = f"{script_name}_{anchor_date}"
-        if dir_basename == expected_dir_name:
-            # 新结构：parent of metadata_dir 就是 base_dir
+        if dir_basename == expected_dir_name or dir_basename.startswith(expected_dir_name + "_"):
+            # 新结构（含 --run-label 变体）：parent of metadata_dir 就是 base_dir
             resolved_base = os.path.dirname(metadata_dir)
+            # 从目录名反推 run_label
+            if dir_basename != expected_dir_name:
+                run_label = dir_basename[len(expected_dir_name) + 1:]
+            else:
+                run_label = ""
         else:
             # 旧结构兼容：用 metadata 所在目录做 run_dir
             # 此时不再创建 is/oos 子目录，回退到平铺模式
@@ -108,6 +123,7 @@ class RunContext:
             base_dir=resolved_base,
             script_name=script_name,
             anchor_date=anchor_date,
+            run_label=run_label,
         )
 
         # 如果旧结构，检查实际 run_dir 是否就是 metadata 所在目录

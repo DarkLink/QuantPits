@@ -764,6 +764,10 @@ def main():
         help="输出根目录 (默认: output/ensemble_runs)",
     )
     parser.add_argument(
+        "--run-label", type=str, default="",
+        help="运行标签，注入输出目录名以避免同日期多次运行互相覆盖",
+    )
+    parser.add_argument(
         "--resume", action="store_true",
         help="从已有 CSV 继续 (跳过已完成的组合)",
     )
@@ -844,6 +848,7 @@ def main():
             base_dir=args.output_dir,
             script_name="brute_force_fast",
             anchor_date=anchor_date,
+            run_label=args.run_label.strip() if args.run_label else "",
         )
         ctx.ensure_dirs()
         print(f"输出目录: {ctx.run_dir}")
