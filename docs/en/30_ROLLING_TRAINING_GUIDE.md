@@ -86,79 +86,154 @@ The last window's `test_end` is automatically truncated to `anchor_date` (the la
 
 ## Execution Modes
 
-### Mode 1: Cold Start
+### Quick Reference
 
-**Required for the first run.** Generates all windows and trains them sequentially.
+| Flag | Effect on State | Training Scope | Use Case |
+|------|----------------|---------------|---------|
+| `--cold-start` | **Wipes everything** | All windows | First run, full rebuild |
+| `--merge` | **No deletion**, fill gaps only | Missing windows only | New data arrived (new windows), add new models |
+| `--retrain-models` | **Clears specific models** | All windows for those models | After hyperparameter / code changes |
+| `--retrain-last` | **Deletes last window** | Last window | Data correction, forced last-window retrain |
+| `--predict-only` | No change | No training, predict only | Quick prediction needed |
+| `--resume` | No change | Unfinished windows | Resume after interruption |
+| `--clear-state` | **Wipes everything** | — | Abandon all history, start over |
+
+### Core Concept
+
+All training modes share the same underlying logic:
+1. Read `rolling_config.yaml`, generate full window list from current qlib data date
+2. For each model × window, check if a record exists in `rolling_state.json`
+3. **Record exists → skip**, **no record → train**
+4. Concatenate all window test segments into one prediction file
+
+This guarantees no window is trained twice. Different modes only differ in **which records get cleared** before training.
+
+---
+
+### Mode 1: Full Cold Start (`--cold-start`)
+
+**Clears all records in `rolling_state.json`**, retrains every window for every model from scratch.
 
 ```bash
-# Cold start all enabled models
 python quantpits/scripts/rolling_train.py --cold-start --all-enabled
-
-# Specify models
 python quantpits/scripts/rolling_train.py --cold-start --models linear_Alpha158
-
-# Append new models (Merge Mode)
-python quantpits/scripts/rolling_train.py --merge --models new_model_A
-
-# Dry-run: preview window slicing only
-python quantpits/scripts/rolling_train.py --cold-start --dry-run --all-enabled
+python quantpits/scripts/rolling_train.py --cold-start --dry-run --all-enabled  # preview only
 ```
 
-Cold Start Add-on Features:
-- `--merge`: Append new models to an existing cold-started state. Already-trained models will not be re-trained. It performs window training only for the newly added models, then merges their global predictions (`pred.pkl`) with existing ones.
-- `--backtest`: Append this flag to automatically execute a complete Qlib backtest over the aggregate time frame after all training, predicting, and merging finishes. Standardized backtest artifacts (returns reports, positions) will be saved.
+> [!CAUTION]
+> `--cold-start` is irreversible. All training history for all models is permanently lost.
 
-Cold start workflow:
-1. Read parameters from `rolling_config.yaml`
-2. Generate all rolling windows (up to anchor_date)
-3. Train + predict for each window × model combination
-4. Concatenate all windows' predictions into a continuous time series
-5. Save `latest_train_records.json` (using `@rolling` suffix keys)
+---
 
-### Mode 2: Daily Mode
+### Mode 2: Fill-Missing (`--merge`)
 
-Automatically detects whether new windows need training:
-- **New window detected** → Train new window + re-concatenate
-- **No new window** → Predict using the latest model
+**Does not delete any existing records.** Auto-detects and trains only missing windows. This is the most common maintenance command.
+
+**Typical scenarios**:
+
+1. **New windows appear after qlib data update** (e.g., month rolls over, W41 appears)
+   ```bash
+   python quantpits/scripts/rolling_train.py --merge --all-enabled
+   ```
+   Internally: generates window list → detects W41 not in state → trains only W41 → re-stitches predictions.
+
+2. **Add brand-new models to existing state**
+   ```bash
+   python quantpits/scripts/rolling_train.py --merge --models new_model_A
+   ```
+   New model has zero records in state → trains all 41 windows. Existing models untouched.
+
+> [!TIP]
+   > This is the standard way to "fill-train the last window". No need for `--retrain-last` (which force-retrains an already-existing window). Just use `--merge` to detect and train newly-appeared windows.
+
+---
+
+### Mode 3: Rebuild Specific Models (`--retrain-models`)
+
+**Clears the specified models' records from state**, retrains all their windows from scratch. Other models are completely unaffected.
 
 ```bash
-python quantpits/scripts/rolling_train.py --all-enabled
+# Single model
+python quantpits/scripts/rolling_train.py --retrain-models alstm_Alpha158
+
+# Batch
+python quantpits/scripts/rolling_train.py --retrain-models alstm_Alpha158,gru_Alpha158
 ```
 
-### Mode 3: Predict Only
+Use case: after hyperparameter adjustments, code changes, or wrapper upgrades.
 
-Use the most recently trained window's model to predict on new data:
+---
+
+### Mode 4: Retrain Last Window (`--retrain-last`)
+
+**Deletes the last window's records from state**, then fills them via daily mode. Use for data corrections or when the last window must be forcibly retrained.
+
+```bash
+# All models' last window
+python quantpits/scripts/rolling_train.py --retrain-last --all-enabled
+
+# Limit to specific models
+python quantpits/scripts/rolling_train.py --retrain-last --models gru_Alpha360
+```
+
+> [!TIP]
+> If a **new** window appeared due to data update (not retraining an existing one), use `--merge` instead.
+
+---
+
+### Mode 5: Predict Only (`--predict-only`)
+
+No training. Uses the latest window's model weights to predict on current data.
 
 ```bash
 python quantpits/scripts/rolling_train.py --predict-only --all-enabled
 ```
 
-### Mode 4: Standalone Backtest Evaluation
+**Window gap detection**: when qlib data has been updated but new windows haven't been trained:
 
-If a run was previously executed and `latest_train_records.json` exists with concatenated rolling predictions, but the comprehensive backtest was skipped (or is desired to be rerun with updated configs), you can use the standalone backtest mode. This mode skips all machine learning training and prediction steps. It directly runs a full Qlib Backtest simulation using the stored concatenated prediction scores (`pred.pkl`).
+1. Detects whether each model has untrained windows (state's latest window < current available window)
+2. **Default behavior**: skips models with gaps, prints clear guidance with two options:
+   - `--retrain-models <model>` (recommended, proper training)
+   - `--allow-stale-predict` (expedient, predict with old weights)
+3. **`--allow-stale-predict`**: when explicitly enabled, uses old weights to cover all available data. Later `--retrain-models` will overwrite the gap predictions.
 
-```bash
-python quantpits/scripts/rolling_train.py --backtest-only
-```
+---
 
-Standardized artifacts (`report_normal_<freq>.pkl`, `positions_normal_<freq>.pkl`, etc.) and indicator summaries will be stored under the designated comprehensive MLflow record.
+### Mode 6: Resume (`--resume`)
 
-### Crash Recovery
-
-After interruption, automatically skips completed window × model pairs:
+After interruption, automatically skips completed windows and continues from where it stopped.
 
 ```bash
 python quantpits/scripts/rolling_train.py --resume
 ```
 
-### State Inspection
+---
+
+### Mode 7: Standalone Backtest (`--backtest-only`)
+
+Skips training and prediction. Runs a full Qlib backtest directly on existing stitched predictions.
 
 ```bash
-# View current state
-python quantpits/scripts/rolling_train.py --show-state
+python quantpits/scripts/rolling_train.py --backtest-only
+```
 
-# Clear state (start fresh)
-python quantpits/scripts/rolling_train.py --clear-state
+---
+
+### Daily Operations Cheat Sheet
+
+```bash
+# After weekly data update
+python quantpits/scripts/rolling_train.py --merge --all-enabled       # fill new windows
+python quantpits/scripts/rolling_train.py --predict-only --all-enabled  # predict
+
+# After hyperparameter tuning
+python quantpits/scripts/rolling_train.py --retrain-models alstm_Alpha158
+
+# Data correction
+python quantpits/scripts/rolling_train.py --retrain-last --all-enabled
+
+# View status
+python quantpits/scripts/rolling_train.py --show-state
 ```
 
 ---

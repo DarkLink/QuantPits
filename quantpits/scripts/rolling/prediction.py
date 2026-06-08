@@ -99,13 +99,24 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
                 elif isinstance(extra_df, pd.DataFrame):
                     extra_df.columns = ['score']
 
-                # extra_preds 来自 predict_with_latest_model，也需要截取 test 段
-                # 使用最新已完成 window 的 test 范围
-                if completions:
+                # extra_preds 来自 predict_with_latest_model，也需要截取 test 段。
+                # 如果该模型存在 gap（最新完成 window 落后于可用 window），
+                # 且 extra_preds 非空（意味着 --allow-stale-predict 已启用），
+                # 则扩展到最后一个可用 window 的 test 范围。
+                filter_window = None
+                if completions and windows:
+                    model_last_widx = completions[-1]['window_idx']
+                    global_last_widx = windows[-1]['window_idx']
+                    if model_last_widx < global_last_widx:
+                        # gap + extra_preds → stale predict 模式，扩展范围
+                        filter_window = windows[-1]
+                    else:
+                        filter_window = window_map.get(model_last_widx)
+                elif completions:
                     last_widx = completions[-1]['window_idx']
-                    last_w = window_map.get(last_widx)
-                    if last_w:
-                        extra_df = _filter_pred_to_test_segment(extra_df, last_w)
+                    filter_window = window_map.get(last_widx)
+                if filter_window:
+                    extra_df = _filter_pred_to_test_segment(extra_df, filter_window)
 
                 all_preds.append(extra_df)
                 dts = extra_df.index.get_level_values('datetime')
@@ -177,11 +188,16 @@ def save_rolling_records(combined_records, combined_exp_name, anchor_date):
 
 
 def predict_with_latest_model(model_name, model_info, state,
-                              rolling_exp_name, params_base, anchor_date, windows):
+                              rolling_exp_name, params_base, anchor_date,
+                              windows, allow_stale_predict=False):
     """
     使用最近一个 window 训练的模型对最新数据预测。
 
     用于日常模式中距离上次 rolling 未超过 step 的情况。
+
+    Args:
+        allow_stale_predict: 是否允许用旧权重预测新窗口数据。
+            默认 False，gap 时只预测已训练窗口范围。
     """
     from quantpits.utils.train_utils import inject_config
     from qlib.utils import init_instance_by_config
@@ -189,18 +205,47 @@ def predict_with_latest_model(model_name, model_info, state,
 
     completions = state.get_completed_record_ids(model_name)
     if not completions:
-        print(f"  [{model_name}] 无历史 rolling 模型，需要先 --cold-start")
+        print(f"  [{model_name}] 无历史 rolling 训练记录，请先通过以下方式添加模型：")
+        print(f"     --merge --models {model_name}       (追加新模型，不影响现有)")
+        print(f"     --retrain-models {model_name}        (重建模型，不影响其他)")
+        print(f"  ⚠️  请勿使用 --cold-start，会清除所有其他模型的训练记录！")
         return None
 
     # 取最新 window 的模型
     latest = completions[-1]
     widx = latest['window_idx']
+
+    # 检测是否存在未训练的窗口 (state 中最新 window 落后于当前可用数据)
+    last_window = windows[-1] if windows else None
+    last_widx = last_window['window_idx'] if last_window else widx
+    gap_windows = last_widx - widx
+
+    if gap_windows > 0:
+        if allow_stale_predict:
+            print(f"  ⚠️  [{model_name}] 有 {gap_windows} 个新窗口未训练 "
+                  f"(state 最新 W{widx}, 当前数据到 W{last_widx})")
+            print(f"     已开启 --allow-stale-predict，将用 W{widx} 权重尽力预测全部可用数据")
+            print(f"     建议尽快 --retrain-models {model_name}")
+        else:
+            print(f"  ⛔ [{model_name}] 有 {gap_windows} 个新窗口未训练 "
+                  f"(state 最新 W{widx}, 当前数据到 W{last_widx})")
+            print(f"     未开启 --allow-stale-predict，仅预测已训练窗口范围")
+            print(f"     如需覆盖全部数据: --allow-stale-predict 或 --retrain-models {model_name}")
+            return None  # 跳过，不生成任何预测
+
     print(f"  [{model_name}] 加载 Window {widx} 模型进行预测...")
 
     window = next((w for w in windows if w['window_idx'] == widx), None)
     if not window:
         print(f"  [{model_name}] 无法找到对应的 window 数据划分: {widx}")
         return None
+
+    # 当有未训练窗口且允许 stale predict 时，扩展预测范围到最后一个可用窗口
+    # 的 test_end，避免拼接时最新数据缺失。
+    effective_test_end = (
+        last_window.get('test_end') if (gap_windows > 0 and allow_stale_predict)
+        else window.get('test_end', window.get('test_end_time'))
+    )
 
     try:
         rec = R.get_recorder(
@@ -215,17 +260,16 @@ def predict_with_latest_model(model_name, model_info, state,
         params['anchor_date'] = anchor_date
 
         # 补齐基于该 window 的日期范围，以满足 inject_config 检查。
-        # 注意：windows 是用当前 anchor_date 动态重新生成的，所以最后一个
-        # window 的 test_end 会自动延伸到 min(test_end_full, anchor_date)，
+        # 当存在未训练窗口时，end_time 扩展到最后一个可用窗口，
         # 确保 dataset 能覆盖到最新数据。
         params['start_time'] = window['train_start']
-        params['end_time'] = window['test_end']
+        params['end_time'] = effective_test_end
         params['fit_start_time'] = window['train_start']
         params['fit_end_time'] = window['train_end']
         params['valid_start_time'] = window['valid_start']
         params['valid_end_time'] = window['valid_end']
         params['test_start_time'] = window['test_start']
-        params['test_end_time'] = window['test_end']
+        params['test_end_time'] = effective_test_end
 
         task_config = inject_config(yaml_file, params, model_name=model_name)
 

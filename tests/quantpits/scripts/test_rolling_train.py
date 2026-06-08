@@ -360,7 +360,7 @@ class TestRollingStateExtra:
         state_file = tmp_path / "state.json"
         state = RollingState(state_file=str(state_file))
         state.init_run({}, '2025-01-01', 1)
-        
+
         # Empty state
         assert state.get_last_completed_window_idx() is None
         assert state.remove_window(0) is False
@@ -372,6 +372,76 @@ class TestRollingStateExtra:
         assert state.get_last_completed_window_idx() == 1
         assert state.remove_window(1) is True
         assert state.get_last_completed_window_idx() == 0
+
+    # ----- remove_model -------------------------------------------------
+
+    def test_remove_model_basic(self, tmp_path):
+        """Remove a model present in multiple windows."""
+        state_file = tmp_path / "state.json"
+        state = RollingState(state_file=str(state_file))
+        state.init_run({}, '2025-01-01', 3)
+        state.mark_window_model_done(0, 'keep', 'r_k0')
+        state.mark_window_model_done(0, 'drop', 'r_d0')
+        state.mark_window_model_done(1, 'keep', 'r_k1')
+        state.mark_window_model_done(1, 'drop', 'r_d1')
+        state.mark_window_model_done(2, 'drop', 'r_d2')
+
+        removed = state.remove_model('drop')
+        assert removed == 3
+
+        # Reload from disk to confirm persistence
+        state2 = RollingState(state_file=str(state_file))
+        cw = state2.get_all_completed_windows()
+        assert 'drop' not in cw['0']
+        assert 'drop' not in cw['1']
+        assert '2' not in cw  # window 2 should be cleaned (only had 'drop')
+
+    def test_remove_model_not_found(self, tmp_path):
+        """Removing a model not in state returns 0."""
+        state_file = tmp_path / "state.json"
+        state = RollingState(state_file=str(state_file))
+        state.init_run({}, '2025-01-01', 1)
+        state.mark_window_model_done(0, 'keep', 'r0')
+
+        removed = state.remove_model('ghost')
+        assert removed == 0
+
+        # Existing model untouched
+        assert state.is_window_model_done(0, 'keep')
+
+    def test_remove_model_preserves_others(self, tmp_path):
+        """Other models and their windows are completely preserved."""
+        state_file = tmp_path / "state.json"
+        state = RollingState(state_file=str(state_file))
+        state.init_run({}, '2025-01-01', 2)
+        state.mark_window_model_done(0, 'a', 'ra0')
+        state.mark_window_model_done(0, 'b', 'rb0')
+        state.mark_window_model_done(1, 'a', 'ra1')
+        state.mark_window_model_done(1, 'b', 'rb1')
+
+        state.remove_model('a')
+
+        cw = state.get_all_completed_windows()
+        assert cw['0'] == {'b': 'rb0'}
+        assert cw['1'] == {'b': 'rb1'}
+
+    def test_remove_model_clears_empty_windows(self, tmp_path):
+        """Windows that become empty after removal are cleaned up."""
+        state_file = tmp_path / "state.json"
+        state = RollingState(state_file=str(state_file))
+        state.init_run({}, '2025-01-01', 3)
+        state.mark_window_model_done(0, 'solo', 'r0')
+        state.mark_window_model_done(1, 'solo', 'r1')
+        state.mark_window_model_done(2, 'shared', 'r2_0')
+        state.mark_window_model_done(2, 'other', 'r2_1')
+
+        state.remove_model('solo')
+
+        cw = state.get_all_completed_windows()
+        assert '0' not in cw
+        assert '1' not in cw
+        assert '2' in cw  # window 2 still has 'other'
+        assert cw['2'] == {'shared': 'r2_0', 'other': 'r2_1'}
 
 
 class TestResolveTargetModels:
@@ -1013,16 +1083,93 @@ class TestMainFlowsExtended:
         rt, capsys = mock_env
         rt, _ = mock_env
         args = mock.MagicMock(show_state=False, clear_state=False, retrain_last=True, resume=False, cold_start=False, merge=False, predict_only=False, backtest_only=False, all_enabled=True)
-        
+
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
              mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
              mock.patch('rolling_train.RollingState') as mock_state_cls:
-            
+
             mock_state = mock_state_cls.return_value
             mock_state.anchor_date = None
             rt.main()
             # Should exit before run_daily due to no anchor_date
+
+    def test_main_retrain_models_removes_and_merges(self, mock_env):
+        """--retrain-models removes the model from state and enters merge mode."""
+        rt, _ = mock_env
+        args = mock.MagicMock(
+            show_state=False, clear_state=False, retrain_last=False, retrain_models='m1',
+            resume=False, cold_start=False, merge=False, predict_only=False,
+            backtest_only=False, all_enabled=False, dry_run=False, backtest=False,
+            no_pretrain=False,
+        )
+
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('rolling_train.resolve_target_models', return_value={'m1': {}}), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.run_cold_start') as mock_run_cold:
+
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = "2024-01-01"
+            mock_state.remove_model.return_value = 5
+
+            rt.main()
+            mock_state.remove_model.assert_called_with('m1')
+            # Should set merge=True and models='m1' and enter cold_start
+            assert args.merge is True
+            assert args.models == 'm1'
+            mock_run_cold.assert_called_once()
+
+    def test_main_retrain_models_no_state(self, mock_env):
+        """--retrain-models exits early when no rolling state exists."""
+        rt, _ = mock_env
+        args = mock.MagicMock(
+            show_state=False, clear_state=False, retrain_last=False, retrain_models='m1',
+            resume=False, cold_start=False, merge=False, predict_only=False,
+            backtest_only=False, all_enabled=False,
+        )
+
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.run_cold_start') as mock_run_cold:
+
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = None
+
+            rt.main()
+            # Should not reach run_cold_start
+            mock_run_cold.assert_not_called()
+
+    def test_main_retrain_models_multiple(self, mock_env):
+        """--retrain-models with comma-separated list removes each model."""
+        rt, _ = mock_env
+        args = mock.MagicMock(
+            show_state=False, clear_state=False, retrain_last=False,
+            retrain_models='m1,m2 , m3',  # whitespace tolerated
+            resume=False, cold_start=False, merge=False, predict_only=False,
+            backtest_only=False, all_enabled=False, dry_run=False, backtest=False,
+            no_pretrain=False,
+        )
+
+        with mock.patch('rolling_train.parse_args', return_value=args), \
+             mock.patch('rolling_train.resolve_target_models', return_value={'m1': {}, 'm2': {}, 'm3': {}}), \
+             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
+             mock.patch('rolling_train.RollingState') as mock_state_cls, \
+             mock.patch('rolling_train.run_cold_start') as mock_run_cold:
+
+            mock_state = mock_state_cls.return_value
+            mock_state.anchor_date = "2024-01-01"
+            mock_state.remove_model.return_value = 3
+
+            rt.main()
+            assert mock_state.remove_model.call_count == 3
+            mock_state.remove_model.assert_any_call('m1')
+            mock_state.remove_model.assert_any_call('m2')
+            mock_state.remove_model.assert_any_call('m3')
+            assert args.merge is True
+            mock_run_cold.assert_called_once()
 
 
 class TestRunModesExtra:
@@ -1274,6 +1421,49 @@ class TestMoreFunctionalLogic:
             windows = [{'window_idx': 0}]
             res = rt.predict_with_latest_model('m1', {'yaml_file':'m1.yaml'}, state, 'exp', {}, '2024-01-01', windows=windows)
             assert res is None
+
+    def test_predict_with_latest_model_gap_blocked_without_flag(self, mock_env):
+        """Without --allow-stale-predict, gap models return None."""
+        rt, _ = mock_env
+        state = mock.MagicMock()
+        state.get_completed_record_ids.return_value = [{'window_idx': 0, 'record_id': 'r0'}]
+        # Current windows go up to W2, but model only has W0
+        windows = [{'window_idx': 0}, {'window_idx': 1}, {'window_idx': 2}]
+        res = rt.predict_with_latest_model('m1', {'yaml_file':'m1.yaml'}, state, 'exp', {}, '2024-01-01', windows=windows)
+        assert res is None  # blocked without --allow-stale-predict
+
+    def test_predict_with_latest_model_gap_allowed_with_flag(self, mock_env):
+        """With --allow-stale-predict, gap models proceed with best-effort prediction."""
+        rt, _ = mock_env
+        state = mock.MagicMock()
+        state.get_completed_record_ids.return_value = [{'window_idx': 0, 'record_id': 'r0'}]
+        windows = [
+            {'window_idx': 0, 'train_start': '2020-01-01', 'train_end': '2020-12-31',
+             'valid_start': '2021-01-01', 'valid_end': '2021-12-31',
+             'test_start': '2022-01-01', 'test_end': '2022-01-31'},
+            {'window_idx': 1, 'train_start': '2020-02-01', 'train_end': '2021-01-31',
+             'valid_start': '2021-02-01', 'valid_end': '2022-01-31',
+             'test_start': '2022-02-01', 'test_end': '2022-02-28'},
+        ]
+        with mock.patch('qlib.workflow.R', create=True) as mock_r:
+            rec = mock.MagicMock()
+            mock_model = mock.MagicMock()
+            mock_pred = mock.MagicMock()
+            mock_pred.empty = False
+            mock_model.predict.return_value = mock_pred
+            rec.load_object.return_value = mock_model
+            mock_r.get_recorder.return_value = rec
+            with mock.patch('quantpits.utils.train_utils.inject_config') as mock_inject, \
+                 mock.patch('qlib.utils.init_instance_by_config') as mock_init:
+                mock_inject.return_value = {
+                    'task': {'dataset': {'class': 'DatasetH'}}
+                }
+                mock_init.return_value = mock.MagicMock()
+                res = rt.predict_with_latest_model(
+                    'm1', {'yaml_file':'m1.yaml'}, state, 'exp', {}, '2024-01-01',
+                    windows=windows, allow_stale_predict=True
+                )
+                assert res is not None
 
 
 class TestMoreMainFlows:

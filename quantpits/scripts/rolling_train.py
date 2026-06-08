@@ -81,31 +81,56 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  %(prog)s --cold-start --all-enabled           # 冷启动所有 enabled 模型
-  %(prog)s --cold-start --models linear_Alpha158  # 冷启动指定模型
-  %(prog)s --all-enabled                         # 日常模式
-  %(prog)s --predict-only --all-enabled          # 仅预测
-  %(prog)s --cold-start --dry-run --all-enabled  # 查看 windows 划分
-  %(prog)s --show-state                          # 查看状态
-  %(prog)s --resume                              # 断点恢复
+  # 首次使用：全量冷启动
+  %(prog)s --cold-start --all-enabled
+
+  # 数据更新后：补训新出现的窗口 (如月末进入下月)
+  %(prog)s --merge --all-enabled
+
+  # 调整了某个模型的超参：重建该模型全部窗口
+  %(prog)s --retrain-models alstm_Alpha158
+
+  # 重训最后一个窗口 (如数据修正)
+  %(prog)s --retrain-last --all-enabled
+
+  # 仅预测，不训练
+  %(prog)s --predict-only --all-enabled
+
+  # 追加新模型到已有状态
+  %(prog)s --merge --models new_model_A,new_model_B
+
+  # 查看状态 / 断点恢复
+  %(prog)s --show-state
+  %(prog)s --resume
         """
     )
 
     mode = parser.add_argument_group('运行模式')
     mode.add_argument('--cold-start', action='store_true',
-                      help='冷启动：生成所有 windows 并训练')
+                      help='全量冷启动：清空所有模型的全部训练记录，从头训练全部窗口。'
+                           '⚠️  不可逆，其他模型的历史全部丢失')
+    mode.add_argument('--merge', action='store_true',
+                      help='补训模式：自动检测并训练每个模型的缺失窗口，已有记录不重训。'
+                           '适用场景：(1) qlib 数据更新后补训新窗口 '
+                           '(2) 追加新模型到已有状态。不影响其他模型')
+    mode.add_argument('--retrain-models', type=str,
+                      help='重建指定模型：清除该模型全部窗口记录后从头训练，'
+                           '不影响其他模型。逗号分隔。'
+                           '适用场景：模型超参或代码变更后需要全量重建')
+    mode.add_argument('--retrain-last', action='store_true',
+                      help='重训最后一个窗口：清除最后窗口的训练记录后补训，'
+                           '适用于数据修正等场景。搭配 --models 可限定模型范围')
     mode.add_argument('--predict-only', action='store_true',
-                      help='仅使用最新模型预测，不训练')
+                      help='仅预测，不训练：用最新窗口权重预测当前数据')
     mode.add_argument('--resume', action='store_true',
                       help='从断点恢复训练')
-    mode.add_argument('--merge', action='store_true',
-                      help='合并冷启动：在已有 rolling 状态基础上追加新模型')
-    mode.add_argument('--retrain-last', action='store_true',
-                      help='重训最后一个 window：清除 state 中最后 window 的记录后走日常流程')
     mode.add_argument('--backtest', action='store_true',
                       help='训练拼接完成后，对产出的合成预测进行全量回测')
     mode.add_argument('--backtest-only', action='store_true',
-                      help='仅对 latest_rolling_records.json 中的模型进行回测 (跳过训练预测)')
+                      help='仅对 latest_train_records.json 中的模型进行回测 (跳过训练预测)')
+    mode.add_argument('--allow-stale-predict', action='store_true',
+                      help='允许 predict-only 在存在未训练窗口时，用旧权重预测新数据。'
+                           '默认关闭，gap 时仅预测已训练窗口范围')
 
     select = parser.add_argument_group('模型选择')
     select.add_argument('--models', type=str,
@@ -298,10 +323,10 @@ def run_cold_start(args, targets, rolling_cfg):
     print(f"  Trained: {total_trained} tasks")
     print(f"  Combined records: {len(combined_records)}")
     print(f"\n  💡 后续步骤:")
-    print(f"     穷举: python quantpits/scripts/brute_force_fast.py "
-          f"--record-file latest_rolling_records.json")
+    print(f"     穷举: python quantpits/scripts/brute_force_ensemble.py "
+          f"--use-groups --training-mode rolling")
     print(f"     融合: python quantpits/scripts/ensemble_fusion.py "
-          f"--from-config --record-file latest_rolling_records.json")
+          f"--from-config --training-mode rolling")
     print(f"{'='*60}")
 
 
@@ -418,6 +443,7 @@ def run_predict_only(args, targets, rolling_cfg):
     params_base = get_base_params()
     anchor_date = params_base['anchor_date']
     freq = params_base['freq'].upper()
+    allow_stale = getattr(args, 'allow_stale_predict', False)
 
     state = RollingState()
     if not state.anchor_date:
@@ -435,14 +461,52 @@ def run_predict_only(args, targets, rolling_cfg):
 
     rolling_exp_name = f"Rolling_Windows_{freq}"
     extra_preds = {}
+    gap_models = []  # 有未训练窗口的模型
+    gap_skipped = []  # 因未开启 --allow-stale-predict 而跳过 gap 的模型
 
     for model_name, model_info in targets.items():
+        # 检测是否存在未训练的窗口
+        completions = state.get_completed_record_ids(model_name) if state.anchor_date else []
+        if completions and windows:
+            try:
+                last_completed = int(completions[-1]['window_idx'])
+                last_available = int(windows[-1]['window_idx'])
+                if last_completed < last_available:
+                    gap_models.append((model_name, last_completed, last_available))
+            except (TypeError, ValueError, KeyError):
+                pass  # 跳过数据不完整的测试 mock
+
         pred = predict_with_latest_model(
             model_name, model_info, state,
-            rolling_exp_name, params_base, anchor_date, windows=windows
+            rolling_exp_name, params_base, anchor_date,
+            windows=windows, allow_stale_predict=allow_stale
         )
         if pred is not None and not pred.empty:
             extra_preds[model_name] = pred
+        elif completions and not allow_stale:
+            # 因未开启 allow_stale_predict，gap 模型被跳过
+            for name, comp, avail in gap_models:
+                if name == model_name:
+                    gap_skipped.append((name, comp, avail))
+                    break
+
+    if gap_skipped:
+        print(f"\n{'='*60}")
+        print(f"⛔ 以下模型存在未训练的窗口，已跳过（未开启 --allow-stale-predict）：")
+        for name, comp, avail in gap_skipped:
+            print(f"   {name}: 已训练到 W{comp}, 当前数据到 W{avail} "
+                  f"(缺 {avail - comp} 个窗口)")
+        print(f"   选项 1: --retrain-models <模型名>  (推荐，完整训练新窗口)")
+        print(f"   选项 2: --allow-stale-predict       (权宜之计，用旧权重预测)")
+        print(f"{'='*60}")
+    elif gap_models and allow_stale:
+        print(f"\n{'='*60}")
+        print(f"⚠️  以下模型存在未训练的窗口，已用旧权重尽力预测 (--allow-stale-predict)：")
+        for name, comp, avail in gap_models:
+            print(f"   {name}: 已训练到 W{comp}, 当前数据到 W{avail} "
+                  f"(缺 {avail - comp} 个窗口)")
+        print(f"   建议尽快执行: --retrain-models <模型名>")
+        print(f"{'='*60}")
 
     if extra_preds:
         combined_exp_name = f"Rolling_Combined_{freq}"
@@ -493,12 +557,52 @@ def main():
             print("❌ 无 rolling 状态，请先 --cold-start")
             return
         last_idx = state.get_last_completed_window_idx()
-        if last_idx is not None:
-            state.remove_window(last_idx)
-            print(f"🔄 已清除 Window {last_idx} 的训练记录，将重新训练")
-        else:
+        if last_idx is None:
             print("ℹ️  没有已完成的 window 可以重训")
             return
+        # 如果指定了 --models，只清除指定模型在最后 window 中的记录
+        if isinstance(args.models, str) and args.models.strip():
+            target_models = [m.strip() for m in args.models.split(',') if m.strip()]
+            wkey = str(last_idx)
+            cw = state.get_all_completed_windows()
+            removed = 0
+            for model_name in target_models:
+                if wkey in cw and model_name in cw[wkey]:
+                    del cw[wkey][model_name]
+                    removed += 1
+            if removed > 0:
+                state.save()
+                print(f"🔄 Window {last_idx}: 已清除 {removed} 个模型的训练记录")
+            else:
+                print(f"ℹ️  Window {last_idx}: 指定模型均无记录，跳过")
+        else:
+            state.remove_window(last_idx)
+            print(f"🔄 已清除 Window {last_idx} 的全部训练记录，将重新训练")
+
+    # --retrain-models: 清除指定模型的全部 window 记录，然后全量重建
+    # isinstance guard: argparse sends str or None; avoids mock leak in tests
+    if isinstance(args.retrain_models, str) and args.retrain_models.strip():
+        state = RollingState()
+        if not state.anchor_date:
+            print("❌ 无 rolling 状态，请先 --cold-start")
+            return
+        model_list = [m.strip() for m in args.retrain_models.split(',') if m.strip()]
+        if not model_list:
+            print("❌ --retrain-models 需要至少一个模型名")
+            return
+        removed_total = 0
+        for model_name in model_list:
+            removed = state.remove_model(model_name)
+            if removed > 0:
+                print(f"🔄 {model_name}: 已清除 {removed} 个 window 记录")
+                removed_total += removed
+            else:
+                print(f"ℹ️  {model_name}: state 中无记录，将全量训练")
+        if removed_total > 0:
+            print(f"✅ 共清除 {removed_total} 条记录，其他模型不受影响")
+        # 自动进入 merge 模式，以指定的模型作为训练目标
+        args.models = args.retrain_models
+        args.merge = True
 
     # 解析目标模型
     has_selection = any([
@@ -529,7 +633,13 @@ def main():
 
     from quantpits.utils.operator_log import OperatorLog
     with OperatorLog("rolling_train", args=sys.argv[1:]) as oplog:
-        # 选择运行模式
+        # 模式分发：
+        #   --cold-start / --resume / --merge / --retrain-models
+        #     → run_cold_start (全窗口训练，merge 时仅补缺)
+        #   --retrain-last / 无参数默认
+        #     → run_daily (仅训练缺失窗口，速度快)
+        #   --predict-only → run_predict_only
+        #   --backtest-only → run_backtest_only
         if args.backtest_only:
             env.init_qlib()
             params_base = get_base_params()
@@ -539,7 +649,6 @@ def main():
         elif args.cold_start or args.resume or args.merge:
             run_cold_start(args, targets, rolling_cfg)
         elif args.retrain_last:
-            # --retrain-last 走日常流程（会检测到被清除的 window 并重训）
             run_daily(args, targets, rolling_cfg)
         else:
             run_daily(args, targets, rolling_cfg)

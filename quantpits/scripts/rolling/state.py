@@ -93,6 +93,21 @@ class RollingState:
             return None
         return max(int(k) for k in completed.keys())
 
+    def remove_model(self, model_name):
+        """删除指定模型在所有 window 中的训练记录（供 --retrain-models 使用）"""
+        count = 0
+        for key in list(self._state['completed_windows'].keys()):
+            if model_name in self._state['completed_windows'][key]:
+                del self._state['completed_windows'][key][model_name]
+                count += 1
+        # 清理空 window
+        empty = [k for k, v in self._state['completed_windows'].items() if not v]
+        for k in empty:
+            del self._state['completed_windows'][k]
+        if count > 0:
+            self.save()
+        return count
+
     def remove_window(self, window_idx):
         """删除指定 window 的所有训练记录（供 --retrain-last 使用）"""
         key = str(window_idx)

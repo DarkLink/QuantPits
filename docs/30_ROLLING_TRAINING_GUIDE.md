@@ -85,91 +85,152 @@ Test:  [T + X + Y + nZ, T + X + Y + (n+1)Z − 1d]
 
 ## 运行模式
 
-### 模式一：冷启动
+### 参数速查
 
-**首次运行必须执行冷启动。** 生成所有 windows 并逐个训练。
+| 参数 | 对 state 的影响 | 训练范围 | 使用场景 |
+|------|----------------|---------|---------|
+| `--cold-start` | **清空全部** | 全部窗口 | 首次使用、彻底重建 |
+| `--merge` | **不删除**，只补缺 | 仅缺失窗口 | qlib 数据更新后补训新窗口、追加新模型 |
+| `--retrain-models` | **清空指定模型** | 该模型全部窗口 | 模型超参/代码变更后重建 |
+| `--retrain-last` | **删除最后窗口** | 最后窗口 | 数据修正、最后窗口重训 |
+| `--predict-only` | 不修改 | 不训练，仅预测 | 仅需要最新预测时 |
+| `--resume` | 不修改 | 未完成的窗口 | 中断后继续 |
+| `--clear-state` | **清空全部** | — | 放弃所有历史，重新开始 |
+
+### 核心概念
+
+所有涉及训练的 mode 共享同一个底层逻辑：
+1. 从 `rolling_config.yaml` 读取参数，结合当前 qlib 数据日期生成完整 window 列表
+2. 对每个 model × window，检查 `rolling_state.json` 中是否已有记录
+3. **有记录 → 跳过**，**无记录 → 训练**
+4. 拼接全部 window 的 test 段预测 + 可选 `--backtest`
+
+这保证了同一窗口不会重复训练，不同模式只是"哪些记录需要清空"不同。
+
+---
+
+### 模式一：全量冷启动 (`--cold-start`)
+
+**清空 `rolling_state.json` 中全部记录**，从头训练所有模型的全部窗口。
 
 ```bash
-# 全量冷启动
 python quantpits/scripts/rolling_train.py --cold-start --all-enabled
-
-# 指定模型
 python quantpits/scripts/rolling_train.py --cold-start --models linear_Alpha158
-
-# 追加新模型 (Merge Mode)
-python quantpits/scripts/rolling_train.py --merge --models new_model_A
-
-# Dry-run: 仅查看窗口划分
-python quantpits/scripts/rolling_train.py --cold-start --dry-run --all-enabled
+python quantpits/scripts/rolling_train.py --cold-start --dry-run --all-enabled  # 仅查看
 ```
 
-冷启动扩展功能：
-- `--merge`：在已有的一批训练结果之上追加新的模型。已经训练完毕的模型将不再重复训练，仅针对新加入的模型执行全窗口的冷启动，完成后统一合并 `pred.pkl`。
-- `--backtest`：附加此参数，在所有窗口训练预测合并完成后，将自动执行一次针对整体时间的完整 Qlib 回测，生成包含收益率报告与仓位数据的标准化产物。
+> [!CAUTION]
+> `--cold-start` 不可逆，所有模型的全部训练记录永久丢失。
 
-冷启动流程：
-1. 从 `rolling_config.yaml` 读取参数
-2. 生成所有 rolling windows（到 anchor_date 为止）
-3. 对每个 window × 每个模型执行训练 + 预测
-4. 拼接所有 windows 的预测为连续时间序列（**仅截取各 window 的 test 段**，避免训练集内预测泄漏）
-5. 保存 `latest_train_records.json` (以 `@rolling` 后缀写入)
+---
 
-### 模式二：日常模式
+### 模式二：补训 (`--merge`)
 
-自动检测是否有新 window 需要训练：
-- **有新 window** → 训练新 window + 重新拼接
-- **无新 window** → 使用最近模型执行预测
+**不删除任何已有记录**，自动检测并训练缺失的窗口。是日常最常用的维护命令。
+
+**典型场景**：
+
+1. **qlib 数据更新后补训新窗口**（如月末进入下月，出现 W41）
+   ```bash
+   python quantpits/scripts/rolling_train.py --merge --all-enabled
+   ```
+   内部流程：生成窗口列表 → 检测到 W41 不在 state 中 → 仅训练 W41 → 重新拼接预测。
+
+2. **追加全新模型到已有状态**
+   ```bash
+   python quantpits/scripts/rolling_train.py --merge --models new_model_A
+   ```
+   新模型在 state 中无任何记录 → 训练全部 41 个窗口。已有模型不受影响。
+
+> [!TIP]
+> 这就是"补训最后一个窗口"的标准做法。不需要 `--retrain-last`（那是强制重训已存在的窗口），直接用 `--merge` 检测并训练新出现的窗口。
+
+---
+
+### 模式三：重建指定模型 (`--retrain-models`)
+
+**清空指定模型在 state 中的全部记录**，从头训练该模型的所有窗口。其他模型完全不受影响。
 
 ```bash
-python quantpits/scripts/rolling_train.py --all-enabled
+# 单个模型
+python quantpits/scripts/rolling_train.py --retrain-models alstm_Alpha158
+
+# 批量
+python quantpits/scripts/rolling_train.py --retrain-models alstm_Alpha158,gru_Alpha158
 ```
 
-### 模式三：仅预测
+适用场景：模型超参调整后、代码变更后、wrapper 升级后。
 
-使用最近一个 window 训练的模型对最新数据预测：
+---
+
+### 模式四：重训最后窗口 (`--retrain-last`)
+
+**删除 state 中最后窗口的记录**，然后通过日常模式补训。适用于数据修正等需要强制重训最后一个窗口的场景。
+
+```bash
+# 全部模型的最后窗口
+python quantpits/scripts/rolling_train.py --retrain-last --all-enabled
+
+# 限定模型范围
+python quantpits/scripts/rolling_train.py --retrain-last --models gru_Alpha360
+```
+
+> [!TIP]
+> 如果是 qlib 数据更新导致出现**新窗口**（不是重训已有窗口），请用 `--merge`。
+
+---
+
+### 模式五：仅预测 (`--predict-only`)
+
+不训练，使用最新 window 权重对当前数据预测。
 
 ```bash
 python quantpits/scripts/rolling_train.py --predict-only --all-enabled
 ```
 
-### 模式四：单独回测评估
+**窗口落后检测**：当 qlib 数据已更新但未补训新窗口时：
 
-如果之前已经运行过冷启动或合并流程，且 `latest_train_records.json` 存在滚动预测记录，但缺失回测报告（或希望使用新配置重新回测），可以使用独立回测模式。此模式将跳过所有的训练和预测环节，直接使用历史拼接好的全局预测分 (`pred.pkl`) 执行完整的 Qlib 回测。
+1. 检测每个模型是否有未训练的窗口（state 最新 window < 当前可用 window）
+2. **默认行为**：跳过有 gap 的模型，提示 `--retrain-models` 或 `--allow-stale-predict`
+3. **`--allow-stale-predict`**：显式开启后用旧权重尽力预测，事后可通过补训覆盖
 
-```bash
-python quantpits/scripts/rolling_train.py --backtest-only
-```
+---
 
-生成的标准化产物 (`report_normal_<freq>.pkl`, `positions_normal_<freq>.pkl` 等) 以及 indicator 分析指标将保存在 MLflow 的 Combined 实验记录下。
+### 模式六：断点恢复 (`--resume`)
 
-### 模式五：重训最后一个 Window
-
-如果最近一次滚动训练的数据有问题（如数据修正），可以重训最后一个 window。
-此模式会清除 `rolling_state.json` 中最后一个 window 的记录，然后走日常模式自动重训。
-
-```bash
-python quantpits/scripts/rolling_train.py --retrain-last --all-enabled
-```
-
-> [!TIP]
-> 如果整个模型有问题，应使用 `--clear-state` + `--cold-start` 全量重建。
-
-### 断点恢复
-
-训练中断时，自动跳过已完成的 window × model：
+训练中断时，跳过已完成的 window，从断点继续。
 
 ```bash
 python quantpits/scripts/rolling_train.py --resume
 ```
 
-### 状态查看
+---
+
+### 模式七：独立回测 (`--backtest-only`)
+
+跳过训练和预测，直接对已有拼接预测执行全量回测。
 
 ```bash
-# 查看当前状态
-python quantpits/scripts/rolling_train.py --show-state
+python quantpits/scripts/rolling_train.py --backtest-only
+```
 
-# 清除状态（重新开始）
-python quantpits/scripts/rolling_train.py --clear-state
+---
+
+### 日常运维速查
+
+```bash
+# 每周数据更新后
+python quantpits/scripts/rolling_train.py --merge --all-enabled    # 补训新窗口
+python quantpits/scripts/rolling_train.py --predict-only --all-enabled  # 预测
+
+# 调参后重建
+python quantpits/scripts/rolling_train.py --retrain-models alstm_Alpha158
+
+# 数据修正
+python quantpits/scripts/rolling_train.py --retrain-last --all-enabled
+
+# 查看状态
+python quantpits/scripts/rolling_train.py --show-state
 ```
 
 ---
