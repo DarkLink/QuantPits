@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantpits"
-version = "0.4.2-alpha"
+version = "0.4.3-alpha"
 description = "QuantPits: An advanced, production-ready quantitative trading system built on top of Microsoft Qlib."
 authors = [
     {name = "DarkLink"}

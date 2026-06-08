@@ -6,7 +6,7 @@ try:
     __version__ = version("quantpits")
 except PackageNotFoundError:
     # Package is not installed (running from source without pip install -e .)
-    __version__ = "0.4.2-alpha"
+    __version__ = "0.4.3-alpha"
 
 # Explicitly import subpackages so that `quantpits.utils` and `quantpits.scripts`
 # are accessible as attributes on Python 3.8–3.10.
