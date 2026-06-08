@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3-alpha] - 2026-06-08
+
+This release ships a major rolling-train architecture overhaul that eliminates session-long OOM hangs, hardens the OOM-RL Critic pipeline with diversity-aware guardrails and per-model tuning knowledge, introduces rank percentile normalization for ensemble fusion, and adds a full LLM observability stack. Python 3.8–3.10 compatibility is restored across the test suite.
+
+25 commits, 85 files changed, ~12,600 lines added across source, tests, and docs since v0.4.2-alpha.
+
+### Added
+
+#### Rolling Train — Subprocess Isolation & OOM Prevention
+- **Rolling subpackage extraction**: Refactored the monolithic `rolling_train.py` (1,300+ lines) into a `rolling/` subpackage (`windows`, `state`, `training`, `prediction`, `backtest`, `memory`), with a slim CLI entry point.
+- **Per-window subprocess isolation**: Each training run is offloaded to a `ProcessPoolExecutor(max_workers=1)` using `spawn` context, so OS-level teardown fully reclaims memory held by Qlib `MemCache`, PyTorch CUDA cache, and Pandas DataFrames — eliminating WSL/Windows system hangs on long rolling runs.
+- **Three-level memory management** (`memory.py`): per-window cleanup → per-model deep cleanup (Qlib `H.clear()` + double GC) → real-time pressure monitoring that raises `MemoryError` at 90 % system usage.
+- **Model-first execution loop**: Inverted from window→model to model→window, enabling immediate prediction concatenation and cache release per model.
+- **`--retrain-models`**: Rebuild specific models without affecting others, backed by `RollingState.remove_model()` for targeted state cleanup.
+- **`--allow-stale-predict`**: Predict-only mode now blocks by default on untrained windows; the flag opts into best-effort prediction with old weights.
+- **Window gap detection**: Concatenation no longer silently drops data when a gap exists between trained windows and current data.
+- **Auto-repair truncated predictions**: During merge/daily concatenation, automatically detects windows whose predictions were truncated by the training-time anchor, reloads original weights, and re-predicts with the complete test range.
+
+#### OOM-RL Critic Pipeline Enhancements
+- **Per-model tuning knowledge** (`model_knowledge.yaml`): Records architecture family, regularization direction, known effective/ineffective parameters, and experimental history — injected into Per-Model LLM prompts so the Critic respects model-specific constraints.
+- **Diversity-aware guardrails**: Orthogonal/diversifier signals (`avg_corr`, `group_label`, `is_diversifier`) from combo groups YAML and correlation matrix are injected into prompts; diversifier models (avg\_corr < 0.15) can no longer be disabled on IC alone.
+- **Execution/Risk Critic**: Dedicated `execution_risk_system.md` skill and `generate_execution_risk_critique()` — execution/risk analysis now uses its own prompt instead of reusing the model critic prompt.
+- **Single-variable experiment strategy**: Synthesizer and Experiment Analyzer enforce isolating each parameter change in separate Playground rounds to prevent masking (beneficial + harmful = neutral).
+- **Standalone Experiment Advisor**: `LLMInterface.suggest_next_experiment()` wraps the ExperimentAnalyzer LLM for manual Playground workflows, auto-loading convergence data and persisting rounds to `experiment_history.jsonl`.
+- **`model_selection` scope**: New `ModelSelectionAdapter` (disable/enable model) with LOO delta pre-check, combo linkage warnings, and config backup.
+- **Deterministic combo routing override**: When OOS Calmar slope < −0.3 but Triage returns zero combos, automatically injects up to 3 combos for Per-Combo diagnosis.
+- **Synthesizer output calibration**: Output volume guidance (2–5 items), blocked-actions table in reports, and `accuracy_decided` metric excluding pending verifications.
+
+#### Ensemble Fusion
+- **Rank percentile normalization**: Cross-sectional `[0, 1]` percentile rank as an alternative to Z-Score, now the default for long-only TopK strategies. NaN cells are filled with 0.5 (neutral vote), enabling union-based fusion instead of strict intersection.
+- **`--norm-method` CLI**: Added to `ensemble_fusion.py`, `brute_force_ensemble.py`, and `brute_force_fast.py` (choices: `zscore` | `rank`).
+
+#### LLM Observability
+- **Trace logging system** (`llm_trace.py`, `langfuse_adapter.py`): Captures every LLM API call with duration, token counts, thinking blocks, and workspace details; unified `_call_llm` wrapper with session context tracking.
+- **`--run-label`**: Added to `run_deep_analysis.py`, `run_feedback_loop.py`, `brute_force_ensemble.py`, and `brute_force_fast.py` to disambiguate same-date runs — labels flow into output filenames, trace directories, and action item history.
+
+### Fixed
+- **CUDA fork corruption** (`rolling`): Removed `torch.cuda.*` calls from parent-process cleanup that initialized CUDA, corrupting GPU detection in forked subprocesses (CatBoost fell back to CPU, conflicting with `bootstrap_type=Poisson`). Switched to `spawn` context.
+- **Triage zero-combo routing**: Added `prioritized_combos` and `needs_execution_risk` to Triage JSON schema — the LLM wasn't outputting combo routes because the output format never asked for them.
+- **`action_aggregator` null-params crash**: Handle null `params` from non-hyperparam ActionItems (e.g. `disable_model`, `retrain`).
+- **Changelog param column**: Parse parameter name from `diff_snapshots` `key` field (format `model.param`) instead of missing `param` key.
+- **Correlation matrix discovery**: Recursive walk under `output/` instead of flat glob; strip `@static` suffix from column/index names; deduplicate rows from `@static`/`@rolling` suffix collisions.
+- **Python 3.8–3.10 compatibility**: Added missing `__init__.py` for `utils` and `tools` subpackages; explicit subpackage imports in `quantpits/__init__.py` for `unittest.mock.patch` resolution; replaced `mock_open` with real temp files in system-info tests.
+
+### Changed
+- **Rolling Train docs** (`30_ROLLING_TRAINING_GUIDE.md`, CN/EN): Full rewrite with quick-reference table, core concept explanation, per-mode chapters, and daily operations cheat sheet.
+- **Predict-only UX**: Per-model missing-record messages now suggest `--merge` or `--retrain-models` instead of the destructive `--cold-start`.
+- **`--retrain-last` scoping**: Now respects `--models` for scoped last-window retraining.
+
+### Documentation
+- 2 new documentation guides (bilingual CN/EN):
+  - `55_OOMRL_WEEKLY_OPERATIONS` — Full weekly ops workflow (data import → post-trade → analysis → playground → promote → train → fusion → orders) with Playground safety model and troubleshooting FAQ.
+  - `56_LLM_OBSERVABILITY_GUIDE` — LLM trace logging setup, session context, and Langfuse integration guide.
+- Updated `02_BRUTE_FORCE_GUIDE`, `03_ENSEMBLE_FUSION_GUIDE` (CN/EN): normalization comparison, `--norm-method` parameter tables, and Known Limitations section.
+
+### Testing
+- **142 new model-wrapper tests**: Pure-function unit tests for `ICLoss`, `ICMetricMixin.metric_fn`, `LossHistoryMixin.fit()`, and parametrized import smoke tests for all 41 thin wrapper modules with MRO correctness checks. Gracefully skip when `torch` is absent.
+- Expanded coverage for `rolling_benchmark`, `run_deep_analysis`, `feedback_loop`, `brute_force_fast`, `order_gen`, `static_train`, `run_analysis`, `search_utils`, `config_ledger`, `feedback_evaluator`, `promote_config`, `signal_extractor`, `synthesizer`, `model_selection_adapter`, and `llm_trace` (100% coverage).
+- Python 3.8 CI hardening: selective `/proc/cpuinfo` mocking, `psutil` compatibility, `bytes`-decode guards.
+
 ## [0.4.2-alpha] - 2026-05-17
 
 This release stabilizes the OOM-RL Phase 4 pipeline following first-production validation, hardens the layered LLM analysis system, and closes a set of critical/high-priority bugs identified during the code review. It also ships a confirmed-working closed-loop feedback cycle.
@@ -260,7 +320,9 @@ This is a core Alpha version containing multiple architectural refactorings, fea
 
 Initial public release. The system architecture has been initially open-sourced, and the entire process from Qlib training to order generation and visualization has been successfully completed. It is currently in the Alpha stage, contains known bugs, and is for testing and learning purposes only.
 
-[Unreleased]: https://github.com/DarkLink/QuantPits/compare/v0.4.1-alpha...HEAD
+[Unreleased]: https://github.com/DarkLink/QuantPits/compare/v0.4.3-alpha...HEAD
+[0.4.3-alpha]: https://github.com/DarkLink/QuantPits/compare/v0.4.2-alpha...v0.4.3-alpha
+[0.4.2-alpha]: https://github.com/DarkLink/QuantPits/compare/v0.4.1-alpha...v0.4.2-alpha
 [0.4.1-alpha]: https://github.com/DarkLink/QuantPits/compare/v0.4.0-alpha...v0.4.1-alpha
 [0.4.0-alpha]: https://github.com/DarkLink/QuantPits/compare/v0.3.2-alpha...v0.4.0-alpha
 [0.3.2-alpha]: https://github.com/DarkLink/QuantPits/compare/v0.3.1-alpha...v0.3.2-alpha

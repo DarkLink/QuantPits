@@ -192,3 +192,25 @@ workspaces/Demo_Workspace/data/*
 *.log
 *.zip
 *.tar.gz
+
+# AI assistant configs and scratch files
+.claude/
+CLAUDE.md
+brain/
+
+# Local planning and design docs (not part of the shipped product)
+plan/
+
+# Research papers (maintained on a separate branch)
+papers/
+
+# ML training artifacts generated at runtime
+catboost_info/
+mlruns/
+home/
+
+# One-off / migration scripts (local tooling, not shipped)
+quantpits/scripts/oneoff/
+
+# Root-level config overrides (workspace-specific, not shipped)
+/config/
