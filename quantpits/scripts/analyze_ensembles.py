@@ -41,13 +41,15 @@ from qlib.backtest.exchange import Exchange
 
 def run_single_backtest_oos(
     combo_models, norm_df, top_k, drop_n, benchmark, freq,
-    trade_exchange, bt_start, bt_end, st_config=None, bt_config=None
+    trade_exchange, bt_start, bt_end, st_config=None, bt_config=None,
+    weight_df=None,
 ):
     """单独运行一次标准回测，用于 OOS 精确验证 (委托给 search_utils)"""
     from quantpits.utils.search_utils import run_single_backtest
     return run_single_backtest(
         combo_models, norm_df, top_k, drop_n, benchmark, freq,
-        trade_exchange, bt_start, bt_end, st_config, bt_config
+        trade_exchange, bt_start, bt_end, st_config, bt_config,
+        weight_df=weight_df,
     )
 
 
@@ -1107,11 +1109,19 @@ def main():
         codes=all_codes_oos,
         **exchange_kwargs
     )
-    
+
+    # OOS 动态权重：若 IS 搜索使用了非等权方法，OOS 验证也用同方法
+    oos_weight_df = None
+    weight_method = meta.get("weight_method", "equal")
+    if weight_method == "rolling_sharpe":
+        from quantpits.utils.search_utils import compute_rolling_sharpe_weights
+        print(f"\n>>> OOS 验证使用动态权重 (rolling_sharpe)，与 IS 搜索一致")
+        oos_weight_df = compute_rolling_sharpe_weights(oos_norm_df, top_k)
+
     oos_results = []
     print(f"\n⚔️ === 开始多维精准 OOS 回测验证 (Threads={args.max_workers}) ===")
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    
+
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         future_to_combo = {}
         for combo_str in unique_candidates:
@@ -1120,7 +1130,7 @@ def main():
                 run_single_backtest_oos,
                 combo, oos_norm_df, top_k, drop_n, benchmark, freq,
                 trade_exchange_oos, oos_start_date, oos_end_date,
-                st_config, bt_config
+                st_config, bt_config, oos_weight_df,
             )
             future_to_combo[future] = combo_str
             

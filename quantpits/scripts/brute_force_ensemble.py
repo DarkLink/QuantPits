@@ -69,7 +69,8 @@ from quantpits.utils.search_utils import (
     _signal_handler, _install_signal_handlers, _restore_signal_handlers,
     run_single_backtest, _append_results_to_csv,
     split_is_oos_by_args, load_combo_groups, generate_grouped_combinations,
-    worker_init, run_backtest_in_worker,
+    worker_init, run_backtest_in_worker, compute_rolling_sharpe_weights,
+    extract_group_model_names,
 )
 import quantpits.utils.search_utils as _su
 
@@ -104,12 +105,14 @@ def load_config(record_file="latest_train_records.json"):
 # Stage 1: 加载预测数据
 # ============================================================================
 
-def load_predictions(train_records, norm_method="rank"):
+def load_predictions(train_records, norm_method="rank", selected_models=None):
     """
     从 Qlib Recorder 加载所有模型的预测值，归一化后返回宽表。
     """
     from quantpits.utils.predict_utils import load_predictions_from_recorder
-    norm_df, model_metrics, _ = load_predictions_from_recorder(train_records, norm_method=norm_method)
+    norm_df, model_metrics, _ = load_predictions_from_recorder(
+        train_records, selected_models=selected_models, norm_method=norm_method
+    )
     return norm_df, model_metrics
 
 
@@ -161,6 +164,7 @@ def brute_force_backtest(
     min_combo_size, max_combo_size, output_dir, anchor_date=None, resume=False,
     n_jobs=4, use_groups=False, group_config=None,
     batch_size=50, results_filename="results.csv",
+    weight_method="equal",
 ):
     """
     暴力穷举所有模型组合并回测。
@@ -274,6 +278,11 @@ def brute_force_backtest(
             unit="combo",
         )
 
+        # ── 动态权重预计算 (仅在主进程，每模型全局计算一次) ──
+        weight_df = None
+        if weight_method == "rolling_sharpe":
+            weight_df = compute_rolling_sharpe_weights(norm_df, top_k)
+
         # spawn: 每个 worker 是全新 Python 进程，不继承主进程的 Qlib 锁状态
         # 同时限制 BLAS 线程数，避免 8 worker × 32 OpenBLAS threads 撑爆 pthread_create
         import multiprocessing as mp
@@ -292,7 +301,7 @@ def brute_force_backtest(
                 initargs=(
                     norm_df, exchange_kwargs, all_codes,
                     bt_start, bt_end, exchange_freq,
-                    st_config, bt_config,
+                    st_config, bt_config, weight_df,
                 ),
             ) as executor:
                 for batch_start in range(0, len(pending), batch_size):
@@ -464,6 +473,11 @@ def main():
         "--norm-method", type=str, default="rank", choices=["zscore", "rank"],
         help="截面归一化方法 (默认: zscore)",
     )
+    parser.add_argument(
+        "--weight-method", type=str, default="equal",
+        choices=["equal", "rolling_sharpe"],
+        help="融合权重方法 (默认: equal, 可选: rolling_sharpe 动态权重)",
+    )
     args = parser.parse_args()
 
     from quantpits.utils.operator_log import OperatorLog
@@ -508,7 +522,26 @@ def main():
             train_records = dict(train_records)
             train_records['models'] = filtered
             print(f"训练模式过滤: {args.training_mode} (剩余 {len(filtered)} 个模型)")
-        norm_df, model_metrics = load_predictions(train_records, norm_method=args.norm_method)
+
+        # Stage 1b: 应用 --use-groups 过滤 (在加载前缩小模型范围，避免全量计算)
+        selected_models = None
+        if args.use_groups and args.group_config:
+            group_models = extract_group_model_names(args.group_config)
+            current_models = set(train_records.get('models', {}).keys())
+            selected_models = sorted(group_models & current_models)
+            missing = group_models - current_models
+            if missing:
+                print(f"warning: 分组配置中的模型不在训练记录中: {sorted(missing)}，已忽略")
+            if not selected_models:
+                print("错误: --use-groups 过滤后无有效模型可加载！")
+                print(f"  分组配置中的模型: {sorted(group_models)}")
+                print(f"  训练记录中的模型: {sorted(current_models)}")
+                sys.exit(1)
+            print(f"分组过滤: 从 {len(current_models)} 个模型中选择 {len(selected_models)} 个")
+
+        norm_df, model_metrics = load_predictions(
+            train_records, norm_method=args.norm_method, selected_models=selected_models
+        )
         
         # 划分数据集 (IS / OOS)
         is_norm_df, oos_norm_df = split_is_oos_by_args(norm_df, args)
@@ -534,6 +567,7 @@ def main():
             use_groups=args.use_groups,
             group_config=args.group_config,
             batch_size=args.batch_size,
+            weight_method=args.weight_method,
         )
 
         # 导出 Metadata
@@ -558,6 +592,7 @@ def main():
             "use_groups": args.use_groups,
             "group_config": args.group_config,
             "norm_method": args.norm_method,
+            "weight_method": args.weight_method,
         })
         print(f"请使用以下命令进行分析与 OOS 验证:")
         print(f"  python quantpits/scripts/analyze_ensembles.py --metadata {metadata_path}")

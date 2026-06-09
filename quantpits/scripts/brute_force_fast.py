@@ -173,7 +173,7 @@ def rank_norm(series):
     return series.groupby(level="datetime", group_keys=False).apply(_rank_func)
 
 
-def load_predictions(train_records, norm_method="zscore"):
+def load_predictions(train_records, norm_method="zscore", selected_models=None):
     """
     从 Qlib Recorder 加载所有模型的预测值，归一化后返回宽表。
 
@@ -185,6 +185,8 @@ def load_predictions(train_records, norm_method="zscore"):
     from quantpits.utils.train_utils import get_experiment_name_for_model
 
     models = train_records["models"]
+    if selected_models is not None:
+        models = {k: v for k, v in models.items() if k in selected_models}
 
     all_preds = []
     model_metrics = {}
@@ -860,7 +862,27 @@ def main():
             train_records = dict(train_records)
             train_records['models'] = filtered
             print(f"训练模式过滤: {args.training_mode} (剩余 {len(filtered)} 个模型)")
-        norm_df, model_metrics = load_predictions(train_records, norm_method=args.norm_method)
+
+        # Stage 1b: 应用 --use-groups 过滤 (在加载前缩小模型范围，避免全量计算)
+        selected_models = None
+        if args.use_groups and args.group_config:
+            from quantpits.utils.search_utils import extract_group_model_names
+            group_models = extract_group_model_names(args.group_config)
+            current_models = set(train_records.get('models', {}).keys())
+            selected_models = sorted(group_models & current_models)
+            missing = group_models - current_models
+            if missing:
+                print(f"warning: 分组配置中的模型不在训练记录中: {sorted(missing)}，已忽略")
+            if not selected_models:
+                print("错误: --use-groups 过滤后无有效模型可加载！")
+                print(f"  分组配置中的模型: {sorted(group_models)}")
+                print(f"  训练记录中的模型: {sorted(current_models)}")
+                sys.exit(1)
+            print(f"分组过滤: 从 {len(current_models)} 个模型中选择 {len(selected_models)} 个")
+
+        norm_df, model_metrics = load_predictions(
+            train_records, norm_method=args.norm_method, selected_models=selected_models
+        )
 
         # 划分数据集 (IS / OOS)
         is_norm_df, oos_norm_df = split_is_oos_by_args(norm_df, args)

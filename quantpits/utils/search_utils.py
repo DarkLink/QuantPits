@@ -57,9 +57,40 @@ def _restore_signal_handlers():
 # 单组合回测核心
 # ============================================================================
 
+def _compute_combo_score(norm_df, combo_models, weight_df=None):
+    """合成组合信号。
+
+    Args:
+        norm_df: 归一化预测宽表
+        combo_models: 组合中的模型名列表
+        weight_df: 可选，动态权重 DataFrame (index=datetime, columns=models)
+
+    Returns:
+        combo_score: Series (MultiIndex: datetime, instrument)
+    """
+    combo_data = norm_df[list(combo_models)].dropna(how='any')
+
+    if weight_df is not None:
+        weight_dates = weight_df.index
+        date_mask = combo_data.index.get_level_values('datetime').isin(weight_dates)
+        combo_data = combo_data[date_mask]
+        if len(combo_data) == 0:
+            return norm_df[list(combo_models)].dropna(how='any').mean(axis=1)
+
+        dates = combo_data.index.get_level_values('datetime')
+        w = weight_df.loc[dates, list(combo_models)]
+        w_sum = w.sum(axis=1).replace(0, 1.0)
+        w = w.div(w_sum, axis=0)
+        combo_score = (combo_data.values * w.values).sum(axis=1)
+        return pd.Series(combo_score, index=combo_data.index)
+
+    return combo_data.mean(axis=1)
+
+
 def run_single_backtest(
     combo_models, norm_df, top_k, drop_n, benchmark, freq,
-    trade_exchange, bt_start, bt_end, st_config=None, bt_config=None
+    trade_exchange, bt_start, bt_end, st_config=None, bt_config=None,
+    weight_df=None,
 ):
     """对指定的模型组合进行回测，返回指标字典或 None"""
     from quantpits.utils import strategy
@@ -70,8 +101,8 @@ def run_single_backtest(
     if bt_config is None:
         bt_config = strategy.get_backtest_config(st_config)
 
-    # 1. 合成信号 (等权均值，归一化后的) (仅在当前组合子集上求交集 dropna)
-    combo_score = norm_df[list(combo_models)].dropna(how='any').mean(axis=1)
+    # 1. 合成信号
+    combo_score = _compute_combo_score(norm_df, combo_models, weight_df)
 
     import copy
     st_config = copy.deepcopy(st_config)
@@ -119,6 +150,83 @@ def run_single_backtest(
     except Exception as e:
         print(f"  [ERROR] Combo {combo_models} failed: {e}")
         return None
+
+
+# ============================================================================
+# 动态权重计算 (Rolling TopK Sharpe)
+# ============================================================================
+
+def compute_rolling_sharpe_weights(norm_df, top_k, window=60, min_periods=20,
+                                    label_field=None):
+    """为每个模型计算基于滚动 TopK Sharpe 的动态权重。
+
+    对每个模型，每天取其预测分值最高的 top_k 只股票，计算这些股票
+    未来 6 日收益率的均值，然后对该序列计算滚动 Sharpe，shift(1)
+    避免未来信息泄露，最后跨模型归一化。
+
+    Args:
+        norm_df: 归一化预测宽表 (MultiIndex: datetime, instrument; columns: models)
+        top_k: 每日选取的 TopK 股票数
+        window: 滚动 Sharpe 窗口 (交易日)
+        min_periods: 滚动窗口最小样本数
+        label_field: 前向收益标签字段，默认 ['Ref($close, -6)/$close - 1']
+
+    Returns:
+        weight_df: DataFrame (index=datetime, columns=models) 每模型每日权重
+    """
+    from qlib.data import D
+
+    if label_field is None:
+        label_field = ['Ref($close, -6)/$close - 1']
+
+    model_names = list(norm_df.columns)
+
+    instruments = norm_df.index.get_level_values('instrument').unique().tolist()
+    start_date = norm_df.index.get_level_values('datetime').min()
+    end_date = norm_df.index.get_level_values('datetime').max()
+
+    print(f"\n>>> 计算滚动 TopK Sharpe 动态权重 (Window={window}, TopK={top_k})")
+    print(f"    标签字段: {label_field[0]}")
+    print(f"    日期范围: {start_date.date()} ~ {end_date.date()}")
+
+    label_df = D.features(instruments, label_field,
+                          start_time=start_date, end_time=end_date)
+    label_df.columns = ['label']
+
+    eval_df = norm_df.join(label_df, how='inner')
+
+    dates = eval_df.index.get_level_values('datetime').unique().sort_values()
+    perf_dict = {m: [] for m in model_names}
+
+    for date in dates:
+        if date not in eval_df.index:
+            for m in model_names:
+                perf_dict[m].append(0)
+            continue
+        day_data = eval_df.loc[date]
+        for model in model_names:
+            top_stocks = day_data.nlargest(top_k, model)
+            perf_dict[model].append(top_stocks['label'].mean())
+
+    daily_topk_ret = pd.DataFrame(perf_dict, index=dates)
+
+    rolling_mean = daily_topk_ret.rolling(window=window, min_periods=min_periods).mean()
+    rolling_std = daily_topk_ret.rolling(window=window, min_periods=min_periods).std()
+    rolling_sharpe = (rolling_mean / (rolling_std + 1e-9)).fillna(0)
+
+    raw_weights = rolling_sharpe.copy()
+    raw_weights[raw_weights < 0] = 0
+    weight_sum = raw_weights.sum(axis=1)
+    equal_w = pd.DataFrame(1.0 / len(model_names),
+                           index=raw_weights.index, columns=raw_weights.columns)
+    final_weights = raw_weights.div(weight_sum, axis=0).fillna(equal_w)
+    final_weights = final_weights.shift(1).fillna(1.0 / len(model_names))
+
+    print('    平均权重分布:')
+    for m, w in final_weights.mean().sort_values(ascending=False).items():
+        print(f"      {m:<30}: {w:.4f} ({w*100:.1f}%)")
+
+    return final_weights
 
 
 # ============================================================================
@@ -181,6 +289,34 @@ def split_is_oos_by_args(norm_df, args):
 # ============================================================================
 # 模型分组 & 组合生成
 # ============================================================================
+
+def extract_group_model_names(group_config_path):
+    """Extract flat set of model names from a group config YAML.
+
+    Unlike load_combo_groups, this does NOT validate against available_models.
+    Intended for early filtering BEFORE predictions are loaded, so we know
+    which models to load without loading everything first.
+
+    Args:
+        group_config_path: path to combo_groups.yaml
+
+    Returns:
+        set of model name strings (bare names, as written in YAML)
+    """
+    with open(group_config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    raw_groups = cfg.get("groups", {})
+    if not raw_groups:
+        raise ValueError(f"分组配置为空: {group_config_path}")
+
+    all_models = set()
+    for models in raw_groups.values():
+        all_models.update(models)
+
+    print(f"从分组配置中提取到 {len(all_models)} 个模型: {sorted(all_models)}")
+    return all_models
+
 
 def load_combo_groups(group_config_path, available_models):
     """
@@ -266,6 +402,7 @@ def generate_grouped_combinations(groups, min_combo_size=1, max_combo_size=0):
 # Process pool worker globals & helpers
 # ============================================================================
 _worker_norm_df = None
+_worker_weight_df = None
 _worker_trade_exchange = None
 _worker_bt_start = None
 _worker_bt_end = None
@@ -274,7 +411,7 @@ _worker_bt_config = None
 
 
 def worker_init(norm_df, exchange_kwargs, all_codes, bt_start, bt_end,
-                exchange_freq, st_config, bt_config):
+                exchange_freq, st_config, bt_config, weight_df=None):
     """Initialize a ProcessPoolExecutor worker: fresh Qlib init + pre-create Exchange.
 
     Called once per worker process.  Because the pool uses ``spawn`` (not
@@ -302,10 +439,11 @@ def worker_init(norm_df, exchange_kwargs, all_codes, bt_start, bt_end,
         **_exch_kwargs,
     )
 
-    global _worker_norm_df, _worker_trade_exchange
+    global _worker_norm_df, _worker_weight_df, _worker_trade_exchange
     global _worker_bt_start, _worker_bt_end
     global _worker_st_config, _worker_bt_config
     _worker_norm_df = norm_df
+    _worker_weight_df = weight_df
     _worker_trade_exchange = trade_exchange
     _worker_bt_start = bt_start
     _worker_bt_end = bt_end
@@ -323,6 +461,7 @@ def run_backtest_in_worker(combo_models, top_k, drop_n, benchmark, freq):
         combo_models, _worker_norm_df, top_k, drop_n, benchmark, freq,
         _worker_trade_exchange, _worker_bt_start, _worker_bt_end,
         _worker_st_config, _worker_bt_config,
+        weight_df=_worker_weight_df,
     )
 
 
