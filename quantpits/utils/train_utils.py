@@ -493,12 +493,12 @@ def inject_config(yaml_path, params, model_name=None, no_pretrain=False):
     dh['instruments'] = params['market']
 
     # 1. 注入 Label (根据频次)
-    # 如果 freq 为 week，标记可能是 Ref(-6) 或 Ref(-2)
-    # 策略：如果 model_config 中有 label_formula 则使用，否则根据频次猜测
+    # 多标签 YAML（如 TCTS）保留原值，单标签按频次注入
     if 'label_formula' in params:
         dh['label'] = [params['label_formula']]
+    elif isinstance(dh.get('label'), list) and len(dh['label']) > 1:
+        pass  # 保留多标签配置（如 TCTS 多步预测）
     elif freq == 'week':
-        # Qlib 默认日频数据下，周收益率通常取 5-6 天
         dh['label'] = ["Ref($close, -6) / Ref($close, -1) - 1"]
     else:
         dh['label'] = ["Ref($close, -2) / Ref($close, -1) - 1"]
