@@ -729,6 +729,10 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
             # 初始化模型和数据集
             model_cfg = task_config['task']['model']
             model = init_instance_by_config(model_cfg)
+
+            # 将 workspace 策略参数注入到模型（含 standalone 不继承 mixin 的）
+            model.topk = params.get('topk', getattr(model, 'topk', 20))
+            model.n_drop = params.get('n_drop', getattr(model, 'n_drop', 3))
             
             dataset_cfg = task_config['task']['dataset']
             dataset = init_instance_by_config(dataset_cfg)
@@ -890,7 +894,10 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
             elif score_handler.epoch_early_stopped:
                 early_stopped = True
 
-            score_type = model_kwargs.get('metric') if model_kwargs.get('metric') not in (None, '', 'loss') else 'loss'
+            score_type = getattr(model, 'metric', None)
+            if score_type in (None, '', 'loss', 'mse'):
+                score_type = 'loss'
+            # score_type is now: 'ir', 'ic', 'rank_ic', or 'loss'
 
             convergence_log = {
                 "experiment_name": experiment_name,
