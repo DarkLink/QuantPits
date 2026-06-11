@@ -118,6 +118,7 @@ class StrategyMetricMixin:
         logger.info("training with StrategyMetric (metric=%s, topk=%d)...",
                     self.metric, self.topk)
         self.fitted = True
+        best_param = copy.deepcopy(self._get_inner_state_dict())
 
         for step in range(self.n_epochs):
             logger.info("Epoch%d:", step)

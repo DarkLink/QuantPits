@@ -895,7 +895,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
                 early_stopped = True
 
             score_type = getattr(model, 'metric', None)
-            if score_type in (None, '', 'loss', 'mse'):
+            if not isinstance(score_type, str) or score_type in (None, '', 'loss', 'mse'):
                 score_type = 'loss'
             # score_type is now: 'ir', 'ic', 'rank_ic', or 'loss'
 

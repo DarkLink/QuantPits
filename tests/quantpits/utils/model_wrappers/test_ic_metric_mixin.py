@@ -13,7 +13,7 @@ import math
 import pytest
 torch = pytest.importorskip("torch", reason="torch not installed – skipping IC mixin tests")
 
-from quantpits.utils.model_wrappers.ic_metric_mixin import ICLoss, ICMetricMixin
+from quantpits.utils.model_wrappers.mixins.ic import ICLoss, ICMetricMixin
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +365,7 @@ class TestGeneralPTNNMetricFn:
     def model(self):
         """Import lazily so the test is skipped if qlib is unavailable."""
         try:
-            from quantpits.utils.model_wrappers.pytorch_general_nn_ic import GeneralPTNN
+            from quantpits.utils.model_wrappers.custom.pytorch_general_nn import GeneralPTNN
         except ImportError as exc:
             pytest.skip(f"qlib not available: {exc}")
         return GeneralPTNN.__new__(GeneralPTNN)

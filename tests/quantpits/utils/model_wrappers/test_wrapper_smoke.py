@@ -24,53 +24,54 @@ import pytest
 # ---------------------------------------------------------------------------
 
 IC_WRAPPERS = [
-    ("quantpits.utils.model_wrappers.pytorch_gru_ic",           "GRU"),
-    ("quantpits.utils.model_wrappers.pytorch_lstm_ic",          "LSTM"),
-    ("quantpits.utils.model_wrappers.pytorch_alstm_ic",         "ALSTM"),
-    ("quantpits.utils.model_wrappers.pytorch_alstm_ts_ic",      "ALSTM"),
-    ("quantpits.utils.model_wrappers.pytorch_adarnn_ic",        "ADARNN"),
-    ("quantpits.utils.model_wrappers.pytorch_gats_ts_ic",       "GATs"),
-    ("quantpits.utils.model_wrappers.pytorch_igmtf_ic",         "IGMTF"),
-    ("quantpits.utils.model_wrappers.pytorch_krnn_ic",          "KRNN"),
-    ("quantpits.utils.model_wrappers.pytorch_localformer_ic",   "LocalformerModel"),
-    ("quantpits.utils.model_wrappers.pytorch_localformer_ts_ic","LocalformerModelIC"),
-    ("quantpits.utils.model_wrappers.pytorch_sandwich_ic",      "Sandwich"),
-    ("quantpits.utils.model_wrappers.pytorch_sfm_ic",           "SFM"),
-    ("quantpits.utils.model_wrappers.pytorch_tabnet_ic",        "TabNet"),
-    ("quantpits.utils.model_wrappers.pytorch_tcn_ic",           "TCN"),
-    ("quantpits.utils.model_wrappers.pytorch_tcn_ts_ic",        "TCNIC"),
-    ("quantpits.utils.model_wrappers.pytorch_tra_ic",           "TRAModelIC"),
-    ("quantpits.utils.model_wrappers.pytorch_transformer_ic",   "Transformer"),
-    ("quantpits.utils.model_wrappers.pytorch_transformer_ts_ic","TransformerModelIC"),
-    ("quantpits.utils.model_wrappers.pytorch_general_nn_ic",    "GeneralPTNN"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_gru",           "GRU"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_lstm",          "LSTM"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_alstm",         "ALSTM"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_alstm_ts",      "ALSTM"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_adarnn",        "ADARNN"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_gats_ts",       "GATs"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_igmtf",         "IGMTF"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_krnn",          "KRNN"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_localformer",   "LocalformerModel"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_localformer_ts","LocalformerModelIC"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_sandwich",      "Sandwich"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_sfm",           "SFM"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_tabnet",        "TabnetModel"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_tcn",           "TCN"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_tcn_ts",        "TCNIC"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_tra",           "TRAModelIC"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_transformer",   "TransformerModel"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_transformer_ts","TransformerModelIC"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_general_nn",    "GeneralPTNN"),
 ]
 
 LH_WRAPPERS = [
-    ("quantpits.utils.model_wrappers.gru_ic_lh",            "GRU"),
-    ("quantpits.utils.model_wrappers.lstm_ic_lh",           "LSTM"),
-    ("quantpits.utils.model_wrappers.alstm_ic_lh",          "ALSTM"),
-    ("quantpits.utils.model_wrappers.alstm_ts_ic_lh",       "ALSTM"),
-    ("quantpits.utils.model_wrappers.adarnn_ic_lh",         "ADARNN"),
-    ("quantpits.utils.model_wrappers.gats_plus_lh",         "GATsPlus"),
-    ("quantpits.utils.model_wrappers.gats_ts_ic_lh",        "GATs"),
-    ("quantpits.utils.model_wrappers.igmtf_ic_lh",          "IGMTF"),
-    ("quantpits.utils.model_wrappers.krnn_ic_lh",           "KRNN"),
-    ("quantpits.utils.model_wrappers.localformer_ic_lh",    "LocalformerModel"),
-    ("quantpits.utils.model_wrappers.localformer_ts_ic_lh", "LocalformerModelIC"),
-    ("quantpits.utils.model_wrappers.sandwich_ic_lh",       "Sandwich"),
-    ("quantpits.utils.model_wrappers.sfm_ic_lh",            "SFM"),
-    ("quantpits.utils.model_wrappers.tabnet_ic_lh",         "TabnetModel"),
-    ("quantpits.utils.model_wrappers.tcn_ic_lh",            "TCN"),
-    ("quantpits.utils.model_wrappers.tcn_ts_ic_lh",         "TCNIC"),
-    ("quantpits.utils.model_wrappers.tra_ic_lh",            "TRAModelIC"),
-    ("quantpits.utils.model_wrappers.transformer_ic_lh",    "TransformerModel"),
-    ("quantpits.utils.model_wrappers.transformer_ts_ic_lh", "TransformerModelIC"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_gru",            "GRU"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_lstm",           "LSTM"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_alstm",          "ALSTM"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_alstm_ts",       "ALSTM"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_adarnn",         "ADARNN"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_gats_plus",      "GATsPlus"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_gats_ts",        "GATs"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_igmtf",          "IGMTF"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_krnn",           "KRNN"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_localformer",    "LocalformerModel"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_localformer_ts", "LocalformerModelIC"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_sandwich",       "Sandwich"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_sfm",            "SFM"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_tabnet",         "TabnetModel"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_tcn",            "TCN"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_tcn_ts",         "TCNIC"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_tra",            "TRAModelIC"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_transformer",    "TransformerModel"),
+    ("quantpits.utils.model_wrappers.lh.pytorch_transformer_ts", "TransformerModelIC"),
 ]
 
 STANDALONE_MODELS = [
-    ("quantpits.utils.model_wrappers.pytorch_gats_plus",    "GATsPlus"),
-    ("quantpits.utils.model_wrappers.pytorch_lstm_ic_loss", "LSTMICModel"),
-    ("quantpits.utils.model_wrappers.pytorch_lstm_rank",    "LSTMRankModel"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_gats_plus",    "GATsPlus"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_lstm_ic_loss", "LSTMICModel"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_lstm_rank",    "LSTMRankModel"),
+    ("quantpits.utils.model_wrappers.custom.pytorch_tcts",         "TCTS"),
 ]
 
 ALL_WRAPPERS = IC_WRAPPERS + LH_WRAPPERS + STANDALONE_MODELS
@@ -123,27 +124,27 @@ class TestMROCorrectness:
         except ImportError as exc:
             pytest.skip(f"dependency missing ({dotted}): {exc}")
 
-    def test_gru_ic_uses_icmetricmixin_metric_fn(self):
-        ICMetricMixin = self._import_mixin_or_skip(
-            "quantpits.utils.model_wrappers.ic_metric_mixin.ICMetricMixin"
+    def test_gru_ic_uses_strategymetricmixin_metric_fn(self):
+        StrategyMetricMixin = self._import_mixin_or_skip(
+            "quantpits.utils.model_wrappers.mixins.strategy.StrategyMetricMixin"
         )
         cls = self._load_or_skip(
-            "quantpits.utils.model_wrappers.pytorch_gru_ic", "GRU"
+            "quantpits.utils.model_wrappers.custom.pytorch_gru", "GRU"
         )
-        # The MRO-resolved metric_fn must be from ICMetricMixin, not base GRU
+        # The MRO-resolved metric_fn must be from StrategyMetricMixin, not base GRU
         for klass in cls.__mro__:
             if "metric_fn" in klass.__dict__:
-                assert klass is ICMetricMixin, (
-                    f"Expected ICMetricMixin.metric_fn to win, got {klass}"
+                assert klass is StrategyMetricMixin, (
+                    f"Expected StrategyMetricMixin.metric_fn to win, got {klass}"
                 )
                 break
 
     def test_gru_ic_lh_uses_losshistorymixin_fit(self):
         LossHistoryMixin = self._import_mixin_or_skip(
-            "quantpits.utils.model_wrappers.loss_history_mixin.LossHistoryMixin"
+            "quantpits.utils.model_wrappers.mixins.loss_history.LossHistoryMixin"
         )
         cls = self._load_or_skip(
-            "quantpits.utils.model_wrappers.gru_ic_lh", "GRU"
+            "quantpits.utils.model_wrappers.lh.pytorch_gru", "GRU"
         )
         for klass in cls.__mro__:
             if "fit" in klass.__dict__:
@@ -153,52 +154,40 @@ class TestMROCorrectness:
                 break
 
     def test_lstm_ic_lh_mro_order(self):
-        """Full stack: LossHistoryMixin > ICMetricMixin > BaseModel."""
+        """Full stack: LossHistoryMixin > StrategyMetricMixin > BaseModel."""
         LossHistoryMixin = self._import_mixin_or_skip(
-            "quantpits.utils.model_wrappers.loss_history_mixin.LossHistoryMixin"
+            "quantpits.utils.model_wrappers.mixins.loss_history.LossHistoryMixin"
         )
-        ICMetricMixin = self._import_mixin_or_skip(
-            "quantpits.utils.model_wrappers.ic_metric_mixin.ICMetricMixin"
+        StrategyMetricMixin = self._import_mixin_or_skip(
+            "quantpits.utils.model_wrappers.mixins.strategy.StrategyMetricMixin"
         )
         cls = self._load_or_skip(
-            "quantpits.utils.model_wrappers.lstm_ic_lh", "LSTM"
+            "quantpits.utils.model_wrappers.lh.pytorch_lstm", "LSTM"
         )
         mro = cls.__mro__
         lh_idx = next(
             (i for i, k in enumerate(mro) if k is LossHistoryMixin), None
         )
-        ic_idx = next(
-            (i for i, k in enumerate(mro) if k is ICMetricMixin), None
+        sm_idx = next(
+            (i for i, k in enumerate(mro) if k is StrategyMetricMixin), None
         )
         assert lh_idx is not None, "LossHistoryMixin must be in MRO"
-        assert ic_idx is not None, "ICMetricMixin must be in MRO"
-        assert lh_idx < ic_idx, (
-            "LossHistoryMixin must precede ICMetricMixin in MRO"
+        assert sm_idx is not None, "StrategyMetricMixin must be in MRO"
+        assert lh_idx < sm_idx, (
+            "LossHistoryMixin must precede StrategyMetricMixin in MRO"
         )
 
-    def test_tra_model_ic_has_setstate(self):
-        """TRAModelIC must define __setstate__ to fix pickle round-trip."""
+    def test_tra_model_ic_uses_strategymetricmixin(self):
+        """TRAModelIC must use StrategyMetricMixin in its MRO."""
+        StrategyMetricMixin = self._import_mixin_or_skip(
+            "quantpits.utils.model_wrappers.mixins.strategy.StrategyMetricMixin"
+        )
         cls = self._load_or_skip(
-            "quantpits.utils.model_wrappers.pytorch_tra_ic", "TRAModelIC"
+            "quantpits.utils.model_wrappers.custom.pytorch_tra", "TRAModelIC"
         )
-        # __setstate__ must be in TRAModelIC's own __dict__, not inherited
-        assert "__setstate__" in cls.__dict__, (
-            "TRAModelIC must override __setstate__ to re-init _writer"
+        assert StrategyMetricMixin in cls.__mro__, (
+            "TRAModelIC must inherit from StrategyMetricMixin"
         )
-
-    def test_tra_model_ic_setstate_adds_writer(self):
-        """__setstate__ must add _writer=None if missing from pickled state."""
-        cls = self._load_or_skip(
-            "quantpits.utils.model_wrappers.pytorch_tra_ic", "TRAModelIC"
-        )
-        obj = object.__new__(cls)
-        state_without_writer = {"metric": "loss", "fitted": False}
-        method = cls.__dict__["__setstate__"]
-        obj.__dict__.update(state_without_writer)
-        # Manually apply the guard (mirrors what the method does after super())
-        if not hasattr(obj, "_writer"):
-            obj._writer = None
-        assert obj._writer is None
 
 
 
@@ -218,7 +207,7 @@ class TestGATsPlus:
     def model(self):
         torch = pytest.importorskip("torch", reason="torch not installed")
         try:
-            from quantpits.utils.model_wrappers.pytorch_gats_plus import GATsPlus
+            from quantpits.utils.model_wrappers.custom.pytorch_gats_plus import GATsPlus
         except ImportError as exc:
             pytest.skip(f"qlib dependency missing: {exc}")
         # Construct without GPU requirement, no model_path
@@ -335,7 +324,7 @@ class TestGATsPlus:
         """GATModel.forward should output shape [N] for N stock samples."""
         torch = pytest.importorskip("torch", reason="torch not installed")
         try:
-            from quantpits.utils.model_wrappers.pytorch_gats_plus import GATModel
+            from quantpits.utils.model_wrappers.custom.pytorch_gats_plus import GATModel
         except ImportError as exc:
             pytest.skip(f"qlib dependency missing: {exc}")
         model = GATModel(d_feat=6, hidden_size=32, num_layers=1, base_model="GRU")
@@ -352,7 +341,7 @@ class TestLSTMICLoss:
     @pytest.fixture
     def icmodel(self):
         try:
-            from quantpits.utils.model_wrappers.pytorch_lstm_ic_loss import (
+            from quantpits.utils.model_wrappers.custom.pytorch_lstm_ic_loss import (
                 LSTMICModel, ICLoss
             )
         except ImportError as exc:
@@ -403,14 +392,14 @@ class TestLSTMICLoss:
         labels = np.arange(n, dtype=float)  # identical → rank_ic = 1.0
 
         # Patch the method reference
-        from quantpits.utils.model_wrappers.pytorch_lstm_ic_loss import LSTMICModel
+        from quantpits.utils.model_wrappers.custom.pytorch_lstm_ic_loss import LSTMICModel
         rank_ic, ic = LSTMICModel.calc_ic(None, preds, labels, idx)
         assert abs(rank_ic - 1.0) < 1e-4, f"rank_ic should be 1.0, got {rank_ic}"
         assert abs(ic - 1.0) < 1e-4, f"ic should be 1.0, got {ic}"
 
     def test_calc_ic_anti_correlated(self, icmodel):
         import numpy as np, pandas as pd
-        from quantpits.utils.model_wrappers.pytorch_lstm_ic_loss import LSTMICModel
+        from quantpits.utils.model_wrappers.custom.pytorch_lstm_ic_loss import LSTMICModel
         dates = pd.date_range("2020-01-01", periods=2)
         instruments = ["A", "B", "C", "D", "E"]
         idx = pd.MultiIndex.from_product([dates, instruments],
@@ -428,7 +417,7 @@ class TestLSTMRankModel:
     @pytest.fixture
     def model_cls(self):
         try:
-            from quantpits.utils.model_wrappers.pytorch_lstm_rank import LSTMRankModel
+            from quantpits.utils.model_wrappers.custom.pytorch_lstm_rank import LSTMRankModel
             return LSTMRankModel
         except ImportError as exc:
             pytest.skip(f"qlib dependency missing: {exc}")
@@ -499,3 +488,73 @@ class TestLSTMRankModel:
         obj.loss = "huber"
         with pytest.raises(ValueError, match="unknown loss"):
             obj.loss_fn(torch.randn(5), torch.randn(5), weight=None)
+
+
+class TestTCTS:
+    """Test TCTS.metric_fn (pure numpy IC / Rank-IC computation)."""
+
+    @pytest.fixture
+    def model(self):
+        try:
+            from quantpits.utils.model_wrappers.custom.pytorch_tcts import TCTS
+        except ImportError as exc:
+            pytest.skip(f"qlib dependency missing: {exc}")
+        obj = TCTS.__new__(TCTS)
+        obj.metric = "ic"
+        return obj
+
+    def test_ic_perfect_correlation(self, model):
+        import numpy as np
+        model.metric = "ic"
+        pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        label = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        score = model.metric_fn(pred, label)
+        assert abs(score - 1.0) < 1e-5
+
+    def test_ic_perfect_negative(self, model):
+        import numpy as np
+        model.metric = "ic"
+        pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        label = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
+        score = model.metric_fn(pred, label)
+        assert abs(score + 1.0) < 1e-5
+
+    def test_rank_ic_perfect(self, model):
+        import numpy as np
+        model.metric = "rank_ic"
+        pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        label = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        score = model.metric_fn(pred, label)
+        assert abs(score - 1.0) < 1e-5
+
+    def test_nan_in_label_masked(self, model):
+        import numpy as np
+        model.metric = "ic"
+        pred = np.array([1.0, 2.0, 3.0, 4.0])
+        label = np.array([1.0, 2.0, float("nan"), 4.0])
+        score = model.metric_fn(pred, label)
+        assert abs(score - 1.0) < 1e-5
+
+    def test_all_nan_labels_returns_zero(self, model):
+        import numpy as np
+        model.metric = "ic"
+        pred = np.array([1.0, 2.0, 3.0])
+        label = np.array([float("nan"), float("nan"), float("nan")])
+        score = model.metric_fn(pred, label)
+        assert score == 0.0
+
+    def test_fewer_than_two_valid_returns_zero(self, model):
+        import numpy as np
+        model.metric = "ic"
+        pred = np.array([1.0])
+        label = np.array([1.0])
+        score = model.metric_fn(pred, label)
+        assert score == 0.0
+
+    def test_unknown_metric_returns_zero(self, model):
+        import numpy as np
+        model.metric = "unknown"
+        pred = np.array([1.0, 2.0, 3.0])
+        label = np.array([1.0, 2.0, 3.0])
+        score = model.metric_fn(pred, label)
+        assert score == 0.0

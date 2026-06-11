@@ -7,7 +7,7 @@ fit() and verify every behaviour of the mixin.
 """
 
 import pytest
-from quantpits.utils.model_wrappers.loss_history_mixin import LossHistoryMixin
+from quantpits.utils.model_wrappers.mixins.loss_history import LossHistoryMixin
 
 
 # ---------------------------------------------------------------------------
@@ -373,3 +373,19 @@ class TestLossHistoryMixinFit:
         # call 0 → train, call 1 → valid, call 2 → train → 2 train + 1 valid
         assert len(result["train_loss"]) == 2
         assert len(result.get("valid_loss", [])) == 1
+
+    def test_other_type_error_re_raised(self):
+        class _TypeErrorBase:
+            def test_epoch(self, tag):
+                return (0.1, 0.9)
+
+            def fit(self, dataset, evals_result=None, save_path=None):
+                raise TypeError("some other error")
+
+        class TypeErrorModel(LossHistoryMixin, _TypeErrorBase):
+            pass
+
+        m = TypeErrorModel()
+        with pytest.raises(TypeError, match="some other error"):
+            m.fit(None)
+

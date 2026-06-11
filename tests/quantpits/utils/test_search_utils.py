@@ -110,3 +110,118 @@ class TestRunBacktestInWorker:
                                         benchmark="SH000300", freq="day",
                                     )
         assert result["sharpe"] == 2.0
+
+
+class TestComputeComboScore:
+    def test_overlapping_weight_df(self):
+        import pandas as pd
+        from quantpits.utils.search_utils import _compute_combo_score
+        idx = pd.MultiIndex.from_product(
+            [pd.date_range("2020-01-01", periods=2), ["A", "B"]],
+            names=["datetime", "instrument"]
+        )
+        norm_df = pd.DataFrame(
+            {"m1": [1.0, 2.0, 3.0, 4.0], "m2": [2.0, 3.0, 4.0, 5.0]},
+            index=idx
+        )
+        weight_df = pd.DataFrame(
+            {"m1": [0.6, 0.4], "m2": [0.4, 0.6]},
+            index=pd.date_range("2020-01-01", periods=2)
+        )
+        res = _compute_combo_score(norm_df, ["m1", "m2"], weight_df)
+        assert isinstance(res, pd.Series)
+        assert len(res) == 4
+
+    def test_non_overlapping_weight_df(self):
+        import pandas as pd
+        from quantpits.utils.search_utils import _compute_combo_score
+        idx = pd.MultiIndex.from_product(
+            [pd.date_range("2020-01-01", periods=2), ["A", "B"]],
+            names=["datetime", "instrument"]
+        )
+        norm_df = pd.DataFrame(
+            {"m1": [1.0, 2.0, 3.0, 4.0], "m2": [2.0, 3.0, 4.0, 5.0]},
+            index=idx
+        )
+        weight_df = pd.DataFrame(
+            {"m1": [0.6, 0.4], "m2": [0.4, 0.6]},
+            index=pd.date_range("2020-02-01", periods=2)
+        )
+        res = _compute_combo_score(norm_df, ["m1", "m2"], weight_df)
+        assert isinstance(res, pd.Series)
+        assert len(res) == 4
+
+
+class TestComputeRollingSharpeWeights:
+    def test_compute_rolling_sharpe_weights_successful(self):
+        import pandas as pd
+        import numpy as np
+        from quantpits.utils import search_utils
+        idx = pd.MultiIndex.from_product(
+            [pd.date_range("2020-01-01", periods=5), ["A", "B"]],
+            names=["datetime", "instrument"]
+        )
+        norm_df = pd.DataFrame(
+            {"m1": np.random.randn(10), "m2": np.random.randn(10)},
+            index=idx
+        )
+        mock_label_df = pd.DataFrame(
+            {"label_col": np.random.randn(10)},
+            index=idx
+        )
+        with patch("qlib.data.D.features", return_value=mock_label_df):
+            res = search_utils.compute_rolling_sharpe_weights(
+                norm_df, top_k=1, window=3, min_periods=1, label_field=["label_col"]
+            )
+            assert isinstance(res, pd.DataFrame)
+            assert list(res.columns) == ["m1", "m2"]
+
+
+class TestSplitIsOosByArgs:
+    def test_split_by_args_various_cutoffs(self):
+        import pandas as pd
+        import numpy as np
+        from quantpits.utils import search_utils
+        idx = pd.MultiIndex.from_product(
+            [pd.date_range("2020-01-01", periods=24), ["A"]],
+            names=["datetime", "instrument"]
+        )
+        norm_df = pd.DataFrame({"m1": np.arange(24)}, index=idx)
+        
+        class Args:
+            start_date = "2020-01-02"
+            end_date = "2020-01-20"
+            exclude_last_years = 1
+            exclude_last_months = 2
+            
+        is_df, oos_df = search_utils.split_is_oos_by_args(norm_df, Args())
+        assert isinstance(is_df, pd.DataFrame)
+        assert isinstance(oos_df, pd.DataFrame)
+
+
+class TestExtractGroupModelNames:
+    def test_extract_group_model_names_successful(self, tmp_path):
+        import pytest
+        from quantpits.utils import search_utils
+        yaml_content = """
+        groups:
+          group_a:
+            - model_1
+            - model_2
+          group_b:
+            - model_3
+        """
+        yaml_file = tmp_path / "combo_groups.yaml"
+        yaml_file.write_text(yaml_content)
+        
+        res = search_utils.extract_group_model_names(str(yaml_file))
+        assert res == {"model_1", "model_2", "model_3"}
+        
+    def test_extract_group_model_names_empty_raises(self, tmp_path):
+        import pytest
+        from quantpits.utils import search_utils
+        empty_yaml = tmp_path / "empty.yaml"
+        empty_yaml.write_text("groups: {}")
+        with pytest.raises(ValueError, match="分组配置为空"):
+            search_utils.extract_group_model_names(str(empty_yaml))
+
