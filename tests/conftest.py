@@ -5,28 +5,37 @@ import sys
 @pytest.fixture(autouse=True)
 def prevent_mlruns(monkeypatch, tmp_path):
     """
-    Globally redirect MLflowExpManager's URI to a temporary directory so that
-    unmocked instances of Qlib workflow recorder won't create 'mlruns' in the project root.
-    This is safer than mocking the entire class because it preserves object types.
+    Globally redirect MLflowExpManager's URI to a temporary SQLite database so
+    that unmocked instances of Qlib workflow recorder won't create artefacts in
+    the project root.  Uses SQLite (not file://) so the fixture works on both
+    mlflow < 3.0 and mlflow ≥ 3.0 without requiring MLFLOW_ALLOW_FILE_STORE.
+
+    Setting MLFLOW_ALLOW_FILE_STORE=true is also applied as a belt-and-braces
+    guard: some tests reload env.py which may detect legacy mlruns/ data and
+    set a file:// URI; the env var prevents mlflow ≥ 3.0 from blocking it.
     """
+    # Guard against mlflow ≥ 3.0 file-store gate for any file:// URIs that
+    # might be set by tests that reload env.py with legacy mlruns/ data.
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+
     import qlib.workflow.expm
     original_init = qlib.workflow.expm.MLflowExpManager.__init__
-    
+
     def mocked_init(self, uri, default_exp_name, *args, **kwargs):
-        # Force the URI to be in the tmp_path to avoid creating mlruns in root
-        safe_uri = f"file://{tmp_path / 'mock_mlruns'}"
-        
+        # Force the URI to a per-test SQLite DB to avoid writing to the project root.
+        safe_uri = f"sqlite:///{tmp_path / 'mock_mlflow.db'}"
+
         # Log the caller so we can clean up the tests later
         import traceback
         with open("unmocked_mlruns.log", "a") as f:
-            f.write("="*60 + "\\n")
+            f.write("=" * 60 + "\\n")
             f.write(f"WARNING: Unmocked MLflowExpManager created for {default_exp_name}!\\n")
             f.write("This means a test failed to properly mock qlib.workflow.R.\\n")
             # Only print the last 15 stack frames to avoid huge logs
             traceback.print_stack(limit=15, file=f)
-            
+
         original_init(self, safe_uri, default_exp_name, *args, **kwargs)
-        
+
     monkeypatch.setattr(qlib.workflow.expm.MLflowExpManager, "__init__", mocked_init)
 
 

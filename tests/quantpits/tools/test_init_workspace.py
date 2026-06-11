@@ -28,7 +28,7 @@ def test_init_workspace_success(tmp_path):
     assert (target / "data").exists()
     assert (target / "output").exists()
     assert (target / "archive").exists()
-    assert (target / "mlruns").exists()
+    assert (target / "mlflow.db").exists()
 
     # Config should be copied
     assert (target / "config" / "model_config.json").exists()

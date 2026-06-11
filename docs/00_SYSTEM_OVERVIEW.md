@@ -10,7 +10,7 @@
 
 系统严格区分了 **Engine (代码)** 和 **Workspace (数据与配置)**，实现多实例并行：
 - **Engine (`quantpits/`)**: 存放被全局共用的所有核心脚本（`scripts/`）、分析面板（`dashboard.py`）及系统文档（`docs/`）。
-- **Workspace (`workspaces/` 下目录)**: 任何进行实盘交易或模拟的独立集合。包含了该实例独有的 `config/`、`data/`、`output/`，以及隔离的 `mlruns/`。
+- **Workspace (`workspaces/` 下目录)**: 任何进行实盘交易或模拟的独立集合。包含了该实例独有的 `config/`、`data/`、`output/`，以及隔离的 MLflow 数据（新工作区默认为 `mlflow.db`，旧工作区兼容 `mlruns/`）。
 
 **如何使用工作区？**
 1. 创建新工作区：使用 `python quantpits/tools/init_workspace.py --source workspaces/A --target workspaces/B` 快速搭建。
@@ -18,7 +18,7 @@
 3. (可选) 自定义数据源：在 `run_env.sh` 中取消注释 `QLIB_DATA_DIR` / `QLIB_REGION`，即可为该工作区指向不同的 Qlib 数据目录（默认 `~/.qlib/qlib_data/cn_data`、`cn`）。
 4. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
    > [!IMPORTANT]
-   > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 `mlruns/` 目录，并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径。
+   > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 MLflow 数据库（新工作区默认 `mlflow.db` / SQLite；含历史 `mlruns/` 数据的旧工作区自动回退到 `file://` 并设置 `MLFLOW_ALLOW_FILE_STORE=true`），并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径。如需使用自定义后端，在 `run_env.sh` 中设置 `MLFLOW_TRACKING_URI` 即可，`env.py` 会优先使用该值。
 
 ---
 
@@ -493,7 +493,7 @@ python -m quantpits.scripts.static_train --all-enabled
 
 | 目录/文件 | 用途 |
 |-----------|------|
-| `(Qlib Recorders)` | 各模型和 ensemble 的预测结果（储存于 mlruns） |
+| `(Qlib Recorders)` | 各模型和 ensemble 的预测结果（储存于 mlflow.db / mlruns） |
 | `(Qlib Recorders)` | 滚动训练预测结果 |
 | `ensemble_runs/` | 穷举搜索产出物：每次运行居一个独立子目录，内含 `is/`、`oos/`、`summary.md` |
 | `ensemble/` | 融合配置、排行榜、图表、跨组合对比 |

@@ -60,10 +60,17 @@ backtest:
             f.write(default_yaml)
             
     # 2. Create empty data, output, archive directories
-    for d in ["data", "output", "archive", "mlruns"]:
+    for d in ["data", "output", "archive"]:
         dir_path = os.path.join(target, d)
         print(f"Creating empty directory: {dir_path}")
         os.makedirs(dir_path)
+
+    # Create an empty mlflow.db placeholder so that env.py picks up the
+    # SQLite backend instead of falling back to the deprecated file-store.
+    # (The file will be populated on the first mlflow operation.)
+    db_path = os.path.join(target, "mlflow.db")
+    open(db_path, "a").close()
+    print(f"Creating SQLite backend placeholder: {db_path}")
     # 3. Create activation script
     is_windows = platform.system() == "Windows"
     script_ext = ".ps1" if is_windows else ".sh"

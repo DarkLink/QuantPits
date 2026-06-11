@@ -37,7 +37,10 @@ def test_env_workspace_env(monkeypatch, tmp_path):
     
     assert env.ROOT_DIR == str(workspace)
     assert env._workspace_arg is None
-    assert "mlruns" in os.environ["MLFLOW_TRACKING_URI"]
+    # Backend is sqlite:// (new clean workspace) or file:// (legacy data detected)
+    assert "MLFLOW_TRACKING_URI" in os.environ
+    uri = os.environ["MLFLOW_TRACKING_URI"]
+    assert "mlruns" in uri or "mlflow.db" in uri
     
     sys.argv.clear()
     sys.argv.extend(original_argv)
@@ -107,7 +110,9 @@ def test_set_root_dir_updates_env(monkeypatch, tmp_path):
 
     assert env.ROOT_DIR == str(ws2)
     assert os.environ["QLIB_WORKSPACE_DIR"] == str(ws2)
-    assert "Workspace2" in os.environ["MLFLOW_TRACKING_URI"]
+    # URI must reference the new workspace; accept either backend.
+    uri = os.environ["MLFLOW_TRACKING_URI"]
+    assert "Workspace2" in uri or str(ws2) in uri
 
 
 def test_set_root_dir_patches_train_utils(monkeypatch, tmp_path):
@@ -206,3 +211,85 @@ def test_safeguard(monkeypatch, tmp_path, capsys):
     assert "SAFEGUARD ACTIVATED" in captured.out
     assert "TestScript" in captured.out
     assert "MockWorkspace" in captured.out
+
+
+# ── _resolve_mlflow_backend() tests ──────────────────────────────────────────
+
+def test_env_sqlite_default(monkeypatch, tmp_path):
+    """Clean workspace (no mlruns/) should default to sqlite:// backend."""
+    workspace = tmp_path / "CleanWorkspace"
+    workspace.mkdir()
+
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
+    from quantpits.utils import env
+    importlib.reload(env)
+
+    uri = os.environ["MLFLOW_TRACKING_URI"]
+    assert uri.startswith("sqlite:///"), f"Expected sqlite:// URI, got: {uri}"
+    assert "mlflow.db" in uri
+    assert str(workspace) in uri
+
+
+def test_env_legacy_mlruns_detection(monkeypatch, tmp_path):
+    """Workspace with non-empty mlruns/ should fall back to file:// backend."""
+    workspace = tmp_path / "LegacyWorkspace"
+    workspace.mkdir()
+    # Simulate legacy data: a numeric experiment directory inside mlruns/
+    (workspace / "mlruns" / "0").mkdir(parents=True)
+
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
+    from quantpits.utils import env
+    importlib.reload(env)
+
+    uri = os.environ["MLFLOW_TRACKING_URI"]
+    assert uri.startswith("file://"), f"Expected file:// URI for legacy workspace, got: {uri}"
+    assert "mlruns" in uri
+    # MLFLOW_ALLOW_FILE_STORE must be set so mlflow ≥ 3.0 does not block
+    assert os.environ.get("MLFLOW_ALLOW_FILE_STORE", "").lower() == "true"
+
+
+def test_env_respects_existing_tracking_uri(monkeypatch, tmp_path):
+    """User-supplied MLFLOW_TRACKING_URI must not be overwritten by env.py."""
+    workspace = tmp_path / "UserWorkspace"
+    workspace.mkdir()
+    custom_uri = f"sqlite:///{tmp_path}/custom.db"
+
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", custom_uri)
+
+    from quantpits.utils import env
+    importlib.reload(env)
+
+    assert os.environ["MLFLOW_TRACKING_URI"] == custom_uri, (
+        "env.py must not overwrite a user-supplied MLFLOW_TRACKING_URI"
+    )
+
+
+def test_env_mlflow3_allow_file_store(monkeypatch, tmp_path):
+    """When the resolved backend is file://, MLFLOW_ALLOW_FILE_STORE must be set."""
+    workspace = tmp_path / "FileStoreWorkspace"
+    workspace.mkdir()
+    # Provide a file:// URI directly via the environment (simulates user override)
+    mlruns_abs = str(workspace / "mlruns")
+    os.makedirs(mlruns_abs, exist_ok=True)
+    file_uri = f"file://{mlruns_abs}"
+
+    monkeypatch.setattr(sys, 'argv', ['script.py'])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", file_uri)
+    monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
+
+    from quantpits.utils import env
+    importlib.reload(env)
+
+    assert os.environ["MLFLOW_TRACKING_URI"] == file_uri
+    assert os.environ.get("MLFLOW_ALLOW_FILE_STORE", "").lower() == "true", (
+        "MLFLOW_ALLOW_FILE_STORE must be 'true' when backend is file://"
+    )
