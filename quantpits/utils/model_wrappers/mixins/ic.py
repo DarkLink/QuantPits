@@ -23,6 +23,10 @@ class ICLoss(nn.Module):
         super().__init__()
 
     def forward(self, pred, label):
+        # Normalise to 1-D so that isfinite masks don't broadcast to [N,N]
+        # when pred is [N,1] (e.g. GeneralPTNN / Net output) and label is [N].
+        pred = pred.squeeze()
+        label = label.squeeze()
         mask = torch.isfinite(label) & torch.isfinite(pred)
         pred = pred[mask]
         label = label[mask]

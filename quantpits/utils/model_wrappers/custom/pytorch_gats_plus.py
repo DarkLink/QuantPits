@@ -204,19 +204,20 @@ class GATsPlus(Model):
         if self.metric in ("", "loss"):
             # Negative loss so that larger is better (consistent with IC)
             return -self.loss_fn(p, l)
-        
+
         # Pearson IC
-        elif self.metric == "ic":
+        elif self.metric in ("ic", "ir"):
+            # "ir" early-stopping is handled at epoch level via mini-backtest;
+            # use Pearson IC here as the per-batch score for train logging.
             if len(p) < 2: return 0.0
             vx = p - torch.mean(p)
             vy = l - torch.mean(l)
             ic = torch.sum(vx * vy) / (torch.sqrt(torch.sum(vx ** 2)) * torch.sqrt(torch.sum(vy ** 2)) + 1e-8)
             return ic.item()
-        
+
         # Rank IC (Spearman)
         elif self.metric == "ric":
             if len(p) < 2: return 0.0
-            # Move to CPU for scipy rank calculation (PyTorch sort is tricky for rank values)
             p_np = p.detach().cpu().numpy()
             l_np = l.detach().cpu().numpy()
             return spearmanr(p_np, l_np)[0]
@@ -431,7 +432,7 @@ class GATsPlus(Model):
                 for data in valid_loader:
                     d = data.squeeze()
                     f = d[:, :, 0:-1].to(self.device)
-                    l = d[:, -1].to(self.device)
+                    l = d[:, -1, -1].to(self.device)  # last timestep, last col (label)
                     p = self.GAT_model(f.float())
                     if p.dim() > 1 and p.shape[-1] == 1:
                         p = p.squeeze(-1)

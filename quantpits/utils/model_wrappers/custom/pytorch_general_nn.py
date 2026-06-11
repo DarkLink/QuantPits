@@ -76,9 +76,11 @@ class GeneralPTNN(ICMetricMixin, _Base):
         if ists:
             dl_train.config(fillna_type="ffill+bfill")
             dl_valid.config(fillna_type="ffill+bfill")
+            valid_index = dl_valid.get_index()
         else:
+            # Save the MultiIndex BEFORE overwriting dl_valid with numpy values
+            valid_index = dl_valid.index
             dl_train, dl_valid = dl_train.values, dl_valid.values
-        valid_index = dl_valid.get_index() if ists else None
 
         if reweighter is None:
             wl_train = np.ones(len(dl_train))
@@ -114,6 +116,9 @@ class GeneralPTNN(ICMetricMixin, _Base):
 
         self.logger.info("training GeneralPTNN (metric=ir, topk=%d)...", topk)
         self.fitted = True
+        # Safety: initialise best_param to current weights so load_state_dict
+        # never fails even if no epoch ever beats -inf IR.
+        best_param = copy.deepcopy(self._get_inner_module_general().state_dict())
 
         for step in range(self.n_epochs):
             self.logger.info("Epoch%d:", step)

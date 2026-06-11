@@ -39,8 +39,8 @@ class GATs(StrategyMetricMixin, _Base):
         with torch.no_grad():
             for data in valid_data:
                 data = data.squeeze()
-                feature = data[:, 0:-1].to(self.device)
-                label = data[:, -1].to(self.device)
+                feature = data[:, :, 0:-1].to(self.device)  # [batch, seq_len, d_feat]
+                label = data[:, -1, -1].to(self.device)     # last timestep, last col
                 pred = inner(feature.float())
                 if pred.dim() > 1 and pred.shape[-1] == 1:
                     pred = pred.squeeze(-1)
