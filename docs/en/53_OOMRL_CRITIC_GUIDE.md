@@ -47,7 +47,7 @@ class Signal:
     context: str        # Human-readable one-line description
 ```
 
-### The 12 Signal Types
+### The 13 Signal Types
 
 | Signal Type | Source Agent | Scope | Trigger Condition |
 |-------------|-------------|-------|-------------------|
@@ -62,6 +62,7 @@ class Signal:
 | `poor_predictor` | Prediction Audit | model_selection | Model in underperformers list |
 | `regime_instability` | Market Regime | hyperparams | regime_switches ≥ 3 |
 | `combo_stale` | Ensemble Eval | combo_search | Last evaluation > 30 days ago |
+| `training_window_mismatch` | Training Window Analyzer | training_config | Rule-detected window config issue (bounds, ratio, train-end gap, anchor staleness, regime mismatch) |
 | `cross_agent_convergence` | Cross-Agent | (best scope) | Same target flagged by ≥ 2 agents at warning |
 
 ---
@@ -127,8 +128,8 @@ Markdown files under `config/skills/` are concatenated to form the system prompt
 @dataclass
 class ActionItem:
     action_id: str              # UUID, auto-generated
-    action_type: str            # "adjust_hyperparam" | "disable_model" | "trigger_search"
-    scope: str                  # "hyperparams" | "model_selection" | "combo_search" | "strategy_params"
+    action_type: str            # "adjust_hyperparam" | "disable_model" | "trigger_search" | "adjust_training_window"
+    scope: str                  # "hyperparams" | "model_selection" | "combo_search" | "strategy_params" | "training_config"
     target: str                 # Target model/combo name (e.g., "alstm_Alpha158")
     params: dict                # e.g., {"early_stop": {"from": 10, "to": 20}}
     reason: str                 # LLM rationale for the change

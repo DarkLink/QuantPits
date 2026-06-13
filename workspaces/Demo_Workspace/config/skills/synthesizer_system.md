@@ -178,3 +178,17 @@
 - self_corrections 规则是对特定错误模式的修正，不应导致整体性收缩
 - 对每个有 severe_underfitting / ic_decay 信号的模型，至少评估是否值得产出建议
   （即使最终决定不产出，也应在 cross_validation_notes 中说明为什么跳过）
+
+## 训练窗口分析响应（全局仲裁视角）
+
+`training_window_analysis` 来自独立的规则分析器，**不是 LLM 输出**。你必须据此调整全局仲裁：
+
+1. **窗口问题优先于模型问题**：如果分析器发现 `anchor_stale`（severity="warning"）、`valid_window_too_short`（severity="warning"）、`train_end_too_far`（severity="warning" 或 "critical"）或 `regime_window_mismatch`，说明当前训练数据划分可能存在问题。在全局诊断中应优先输出 `adjust_training_window` ActionItem（scope="training_config"，action_type="adjust_training_window"），使用分析器的 `recommendation` 作为 params 中的 `to` 值。
+
+   - 特别关注 `train_end_too_far`：在 slide 模式下，train_end = anchor - (valid + test) 年。当 gap 较大（如 ≥ 5 年）且 regime 切换频繁时，severity 为 critical。此问题是结构性的——训练数据终点太远导致模型学的都是过时模式。应建议缩小 valid_set_window 和/或 test_set_window（**不是** train_set_windows），保持 test_set_window ≥ 2 年（IS/OOS 搜索最低要求）。
+
+2. **调参建议降级**：如果产出了 `adjust_training_window`，同一轮中的 per-model 调参建议应降级（降低 confidence、降低 priority），或标注为 "待窗口调整后重新评估"。避免在窗口不合适的情况下对模型进行过度微调。
+
+3. **频率感知的全局评估**：在 global_diagnosis 中，如果 `freq` 为 `week` 且 `training_window_analysis` 包含 severity="warning" 的 findings，系统性风险的严重程度应比日频同等情况下调低一档。周频数据本身噪声更大，窗口问题的统计证据不如日频强。
+
+4. **分析器 findings 的确定性**：分析器发现是纯规则驱动的——如果它说 `valid_window_too_short`（ratio < 0.15）或 `train_end_too_far`（gap ≥ 5y），这是一个数学事实，不是观点。不要质疑或忽略它。如果分析器没有发现，也不要凭空制造窗口调整建议。

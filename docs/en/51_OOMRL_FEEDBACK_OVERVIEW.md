@@ -83,8 +83,8 @@ Typical adoption rhythm:
 ## Quick Start
 
 ```bash
-# 1. Run Deep Analysis + Critic (produces ActionItems)
-python -m quantpits.scripts.run_deep_analysis --critic
+# 1. Run Deep Analysis + Critic + Window Analysis (produces ActionItems)
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 
 # 2. Preview what the Feedback Loop will do
 python -m quantpits.scripts.run_feedback_loop \

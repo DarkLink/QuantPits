@@ -45,6 +45,9 @@ python -m quantpits.scripts.run_deep_analysis --critic --run-label after-retrain
 
 # Custom time windows
 python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
+
+# Enable training window analysis (rule-based, independent of Critic)
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 ```
 
 ## CLI Parameters
@@ -60,6 +63,7 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 | `--base-url` | (llm_config.json) | API base URL override |
 | `--critic` | (flag) | **OOM-RL Phase 3** — Enable Critic mode, generate ActionItems |
 | `--critic-dry-run` | (flag) | Critic preview mode, generate ActionItems without persisting |
+| `--window-analysis` | (flag) | Enable rule-based training window analysis (TrainingWindowAnalyzer), runs independently of Critic |
 | `--run-label` | `""` | Run label (e.g., "after-retrain"), injected into output filenames to prevent same-date overwrites |
 | `--agents` | `all` | Comma-separated agent names |
 | `--notes` | `""` | Free-text external context |
@@ -121,6 +125,32 @@ Analyzes trading behavior patterns and signal discipline.
 - **Input**: `trade_classification.csv`, `trade_log_full.csv`, `holding_log_full.csv`
 - **Outputs**: Signal/Substitute/Manual ratio, concentration trends, discipline score
 
+### 8. Training Window Analyzer (`TrainingWindowAnalyzer`)
+
+A **purely rule-driven**, independent analyzer that runs after the agents but before
+signal extraction. Enabled via the `--window-analysis` flag.
+
+It detects structural problems in the training data split configuration without
+any LLM dependency:
+
+- **Input**: `model_config.json` (window parameters), `training_history.jsonl`
+  (anchor history), regime switch data from the Market Regime agent
+- **Output**: List of `WindowAnalysisFinding` objects with severity
+  (critical/warning/info), metrics, and actionable recommendations
+
+**Six detection rules**:
+1. **Window size bounds**: `train_set_windows` < 4 years → critical, > 15 years → info
+2. **Validation ratio**: `valid / train` < 0.15 → early stopping unreliable
+3. **Train-end gap**: In slide mode, `train_end = anchor - (valid + test)` years.
+   When gap ≥ 5 years with ≥ 20 regime switches → critical
+4. **Anchor staleness**: latest anchor > 90 days ago → warning, > 60 days → info
+5. **Regime vs. window mismatch**: high-vol regime needs ≥ 10 years of training;
+   ≥ 3 regime switches needs ≥ 8 years of training
+6. **Frequency compatibility**: daily frequency with large window count → data overload
+
+Findings flow into the LLM Critic as `training_window_mismatch` signals and
+appear in all layered pipeline prompts as the `training_window_analysis` field.
+
 ## Data Discovery
 
 The system scans both **active workspace** and **archive** directories:
@@ -165,8 +195,10 @@ Each run automatically snapshots current configurations to `data/config_history/
   - All `workflow_config_*.yaml` hyperparameters
   - `ensemble_config.json` (tracks active combo + composition)
   - `strategy_config.yaml`
+  - `model_config.json` (training window parameters: train/valid/test sizes, slice mode, freq)
 
-This enables future diff analysis for hyperparameter tuning impact assessment.
+This enables future diff analysis for both hyperparameter tuning and training
+window change impact assessment.
 
 ## Report Structure
 
@@ -228,8 +260,8 @@ Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback 
 ### Quick Flow
 
 ```bash
-# Step 1: Deep Analysis + Critic → produce ActionItems
-python -m quantpits.scripts.run_deep_analysis --critic
+# Step 1: Deep Analysis + Critic + Window Analysis → produce ActionItems
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 
 # Step 2: Preview the Feedback Loop
 python -m quantpits.scripts.run_feedback_loop \

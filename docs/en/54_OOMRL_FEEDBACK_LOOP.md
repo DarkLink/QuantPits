@@ -119,7 +119,7 @@ class TrainingAdapter:
 class AdapterResult:
     success: bool
     action_id: str
-    adapter_type: str              # "training" | "search" | "fusion"
+    adapter_type: str              # "training" | "data_split" | "model_selection"
     modified_files: List[str]
     changes: List[dict]            # [{param, old, new, file}]
     error: str
@@ -136,6 +136,50 @@ class TrainingAdapter(BaseAdapter):
 ```
 
 Future adapters (Search, Fusion) self-register by adding the decorator.
+
+---
+
+## 2b. Data Split Adapter (Training Window Adjustment)
+
+**File**: `quantpits/scripts/deep_analysis/adapters/data_split_adapter.py`
+
+Translates `adjust_training_window` ActionItems into modifications of
+`model_config.json`. Unlike TrainingAdapter (which edits per-model YAML),
+this adapter modifies a single global config file affecting all models.
+
+### Modifiable Fields
+
+| Field | Type | Bounds |
+|-------|------|--------|
+| `train_set_windows` | int/float | [2, 20] |
+| `valid_set_window` | int/float | [1, 6] |
+| `test_set_window` | int/float | [1, 8] |
+| `data_slice_mode` | str | `"slide"` or `"fixed"` |
+
+> **Note**: Fractional years (e.g., 1.5) are supported. `add_year_with_nextday`
+> uses `int(n * 365.25)` for day computation.
+
+### Safety Mechanisms
+
+1. **"from" value verification**: current file value must match `params[key]["from"]`
+2. **Bounds double-check**: validates `to` against `config/training_window_bounds.json`
+3. **Timestamped backup**: backs up to `config/_backup/model_config.json.{timestamp}`
+4. **Atomic write**: temp file → `os.replace()` to prevent partial writes
+
+### Registration
+
+```python
+@register_adapter("adjust_training_window")
+class DataSplitAdapter(BaseAdapter):
+    ...
+```
+
+### Validation Strategy
+
+Training window changes are global (affect all models). Current strategy:
+- Apply the config change, skip per-model retrain validation
+- Flag for manual global retrain verification
+- After promotion, the next full retrain automatically uses new window params
 
 ---
 

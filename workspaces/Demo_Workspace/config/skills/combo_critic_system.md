@@ -70,3 +70,23 @@ Output a JSON object (not an array):
 - Consecutive negative excess returns or declining OOS Calmar trend → needs attention.
 - If all members have healthy Per-Model diagnoses but combo performance is poor → likely a weighting or market regime issue, not a member issue.
 - Do not generate executable ActionItems outside active_scopes.
+
+## Data Split Awareness
+
+When the prompt includes `training_split_info` or `oos_trend` contains `split_definition`, use the data split configuration to inform combo analysis:
+
+1. **IS/OOS transition boundary**: `split_definition` provides the boundary between IS (in-sample search) and OOS (out-of-sample validation). If OOS Calmar starts declining continuously after the IS→OOS transition point, this strongly suggests the combo overfit the IS period rather than member models failing. In this case, `trigger_search` (re-search with updated IS window) is more appropriate than `replace_member` (swapping individual members).
+
+2. **OOS window vs. model test window**: Compare `split_definition.eval_start` (OOS evaluation start) with `training_split_info.test_end_time` (model test window end). If the OOS evaluation window lies entirely after the model test window, and the combo performs poorly in that window, the model system is collectively stale — prefer triggering retrains for key members rather than adjusting combo structure.
+
+3. **`only_last_years` meaning**: If `split_definition.only_last_years` = 1 (most recent 1 year as OOS), the IS search used older data. OOS degradation may reflect market structure change rather than model problems. Label this as a possible attribution direction when diagnosing `degrading`.
+
+4. **Frequency impact on OOS statistical reliability**: At weekly frequency, OOS evaluation produces ~52 data points per year. If `oos_trend.runs` < 10 (fewer than 10 OOS evaluations), the Calmar slope has limited statistical significance. Respond more conservatively to `oos_degradation` signals (e.g., prefer `trigger_search` over `replace_member`).
+
+## Training Window Analysis Response
+
+When `training_window_analysis` contains findings:
+
+- If `anchor_stale` or `regime_window_mismatch` findings exist (severity ≥ warning), combo OOS degradation may stem from training window misalignment with current market, not member model problems. Prefer `trigger_search` (re-search with updated data window) over `replace_member`.
+- If `training_window_analysis` suggests adjusting `train_set_windows` or `valid_set_window`, consider outputting an `adjust_training_window` ActionItem (scope="training_config"), using the analyzer's `recommendation` field as the `to` value in params.
+- Window adjustments are global changes affecting all models and combos. If you suggest `adjust_training_window`, downgrade or annotate per-model tuning suggestions as "re-evaluate after window change".

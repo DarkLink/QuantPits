@@ -44,7 +44,7 @@ class Signal:
     context: str        # 人类可读的一句话描述
 ```
 
-### 12 种 Signal 类型
+### 13 种 Signal 类型
 
 | Signal Type | 来源 Agent | Scope | 触发条件 |
 |-------------|-----------|-------|---------|
@@ -59,6 +59,7 @@ class Signal:
 | `poor_predictor` | Prediction Audit | model_selection | 模型在 underperformers 列表 |
 | `regime_instability` | Market Regime | hyperparams | regime_switches >= 3 |
 | `combo_stale` | Ensemble Eval | combo_search | 上次评估 > 30 天 |
+| `training_window_mismatch` | Training Window Analyzer | training_config | 规则检测到窗口配置问题（bound check、ratio check、train-end gap、anchor staleness、regime mismatch） |
 | `cross_agent_convergence` | Cross-Agent | (最佳 scope) | 同一 target 被 >= 2 个 agent 以 warning 标记 |
 
 ---
@@ -123,8 +124,8 @@ class Signal:
 @dataclass
 class ActionItem:
     action_id: str              # UUID, 自动生成
-    action_type: str            # "adjust_hyperparam" | "disable_model" | "trigger_search"
-    scope: str                  # "hyperparams" | "model_selection" | "combo_search" | "strategy_params"
+    action_type: str            # "adjust_hyperparam" | "disable_model" | "trigger_search" | "adjust_training_window"
+    scope: str                  # "hyperparams" | "model_selection" | "combo_search" | "strategy_params" | "training_config"
     target: str                 # 目标模型/组合名称 (如 "alstm_Alpha158")
     params: dict                # e.g. {"early_stop": {"from": 10, "to": 20}}
     reason: str                 # LLM 给出的变更理由

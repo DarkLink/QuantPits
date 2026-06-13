@@ -92,6 +92,9 @@ def parse_args():
         '--critic-dry-run', action='store_true',
         help='Generate ActionItems but do not persist to files (preview mode)')
     parser.add_argument(
+        '--window-analysis', action='store_true',
+        help='Enable rule-based training window analysis (independent of Critic)')
+    parser.add_argument(
         '--run-label', type=str, default='',
         help='Label for this run (e.g., "after-retrain"). '
              'When set, output filenames include the label to prevent '
@@ -1045,11 +1048,41 @@ def main():
     n_recs = len(synthesis_result.get('recommendations', []))
     print(f"   → {n_cross} cross-agent findings, {n_recs} recommendations")
 
+    # --- 5.4. Training Window Analysis (rule-based, independent) ---
+    window_findings = []
+    if getattr(args, 'window_analysis', False):
+        print("\n🔍 Running Training Window Analyzer...")
+        from quantpits.scripts.deep_analysis.training_window_analyzer import TrainingWindowAnalyzer
+
+        window_analyzer = TrainingWindowAnalyzer(
+            workspace_root=workspace_root,
+            reference_date=data_date,
+        )
+
+        # Gather market regime metrics from agent findings
+        market_regime_metrics = {}
+        for af in all_findings:
+            if getattr(af, 'agent_name', '') == "Market Regime":
+                market_regime_metrics = getattr(af, 'raw_metrics', {})
+                break
+
+        window_findings = window_analyzer.analyze(
+            market_regime_metrics=market_regime_metrics,
+        )
+        print(f"   → {len(window_findings)} window analysis findings")
+        for f in window_findings:
+            print(f"      [{getattr(f, 'severity', '?')}] {getattr(f, 'finding_type', '?')}: "
+                  f"{getattr(f, 'context', '')[:120]}")
+
     # --- 5.5. Signal Extraction ---
     print("\n📡 Extracting structured signals...")
     from quantpits.scripts.deep_analysis.signal_extractor import SignalExtractor
 
-    signal_extractor = SignalExtractor(reference_date=data_date, workspace_root=workspace_root)
+    signal_extractor = SignalExtractor(
+        reference_date=data_date,
+        workspace_root=workspace_root,
+        window_analysis_findings=window_findings,
+    )
     signals = signal_extractor.extract(all_findings, synthesis_result)
     print(f"   → {len(signals)} signals extracted")
 

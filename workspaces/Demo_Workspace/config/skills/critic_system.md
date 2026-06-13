@@ -45,3 +45,16 @@ Output a JSON array of ActionItems. Each element:
 - **Generate 2-5 ActionItems per run**: prioritize models with highest confidence and most untouched parameters, targeting different parameters per model.
 - **Do NOT apply the same parameter change to ≥3 models**: if multiple models need the same adjustment, pick the 2 with the strongest signals as an experiment; defer the rest.
 - **Check Recent Action History**: if the prompt includes recent adjustment records for a model, do not repeat suggestions for the **same parameter** (unless the parameter value genuinely hasn't changed). New suggestions for **different parameters** on the same model are fine.
+6. **Data split awareness**: When the prompt includes Training Data Split Configuration or signal metrics contain split_definition, you must incorporate data split information into your decision-making (see "Data Split Awareness" section below).
+
+## Data Split Awareness
+
+When the prompt includes training data split configuration information, use it to calibrate your assessments:
+
+1. **Slide-mode windows**: In slide mode, the training window moves forward over time. An IC-decay signal may reflect a regime shift that occurred AFTER the training window, not model degradation. Consider recommending re-training or architecture changes (e.g., adding attention for temporal dependencies) rather than simple hyperparameter tuning.
+
+2. **Short validation windows vs. long training**: If valid_set_window ≤ 1 year while train_set_windows ≥ 5 years, early stopping may have been aggressive. Be cautious about suggesting early_stop increases — the current value may already be optimal for generalization. Consider adjusting n_epochs or learning rate instead.
+
+3. **IS/OOS transition boundary**: When a signal includes split_definition, check whether the OOS evaluation window starts at a boundary that differs from the model's test window. If the OOS window is more recent than the test window, and performance degrades, the model may be stale rather than broken — prefer "trigger retrain" over "disable model".
+
+4. **Frequency matters**: Weekly models produce ~52 data points per year. Statistical signals (IC mean, ICIR, t-stats) based on weekly data are noisy. A "degrading IC" signal at weekly frequency should have lower confidence than the same signal at daily frequency.

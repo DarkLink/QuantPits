@@ -39,6 +39,9 @@ python -m quantpits.scripts.run_deep_analysis --critic --run-label after-retrain
 
 # 自定义时间窗口
 python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
+
+# 启用训练窗口分析（规则驱动，独立于 Critic）
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 ```
 
 ## CLI 参数
@@ -54,6 +57,7 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 | `--base-url` | (llm_config.json) | API base URL 覆盖 |
 | `--critic` | (flag) | **OOM-RL Phase 3** — 启用 Critic 模式，生成 ActionItems |
 | `--critic-dry-run` | (flag) | Critic 预览模式，生成 ActionItems 但不持久化到文件 |
+| `--window-analysis` | (flag) | 启用规则驱动的训练窗口分析（TrainingWindowAnalyzer），独立于 Critic 运行 |
 | `--run-label` | `""` | 运行标签（如 "after-retrain"），注入输出文件名防止同日多次运行覆盖 |
 | `--agents` | `all` | 逗号分隔的代理名称 |
 | `--notes` | `""` | 自由文本形式的外部上下文 |
@@ -114,6 +118,25 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 - **输入**: `trade_classification.csv`, `trade_log_full.csv`, `holding_log_full.csv`
 - **输出**: 信号/替代/手动比例、集中度趋势、纪律评分
 
+### 8. 训练窗口分析器 (`TrainingWindowAnalyzer`)
+
+一个**纯规则驱动**的独立分析器，在 Agent 运行之后、Signal 提取之前执行。通过 `--window-analysis` 标志启用。
+
+它检测训练数据划分配置中的结构性问题，不依赖 LLM：
+
+- **输入**: `model_config.json`（窗口参数）、`training_history.jsonl`（anchor 历史）、Market Regime Agent 的 regime 切换数据
+- **输出**: `WindowAnalysisFinding` 列表，包含 severity（critical/warning/info）、metrics、和可执行的建议
+
+**六条检测规则**：
+1. **窗口大小边界**: `train_set_windows` < 4 年 → critical，> 15 年 → info
+2. **验证比率**: `valid / train` < 0.15 → early stopping 不可靠
+3. **训练终点距离 (train-end gap)**: 在 slide 模式下，`train_end = anchor - (valid + test)` 年。当 gap ≥ 5 年且 regime 切换 ≥ 20 次 → critical
+4. **Anchor 陈旧度**: 最新 anchor > 90 天 → warning，> 60 天 → info
+5. **Regime vs 窗口不匹配**: 高波动 regime 需要 ≥ 10 年训练窗口；≥ 3 次 regime 切换需要 ≥ 8 年训练窗口
+6. **频率兼容性**: 日频 + 大窗口数 → 数据量过大
+
+分析结果通过 `training_window_mismatch` 信号注入 LLM Critic，同时在所有分层流水线 prompt 中以 `training_window_analysis` 字段提供。
+
 ## 数据发现
 
 系统会同时扫描 **活动工作区** 和 **归档** 目录：
@@ -158,8 +181,9 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
   - 所有 `workflow_config_*.yaml` 超参数
   - `ensemble_config.json` (跟踪活跃组合及其构成)
   - `strategy_config.yaml`
+  - `model_config.json` (训练窗口参数：train/valid/test 窗口大小、slice mode、freq 等)
 
-这使得未来可以通过差异分析来评估超参数调整的影响。
+这使得未来可以通过差异分析来评估超参数调整和训练窗口变更的影响。
 
 ## 报告结构
 
@@ -219,8 +243,8 @@ Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback 
 ### 快速流程
 
 ```bash
-# Step 1: Deep Analysis + Critic → 产出 ActionItems
-python -m quantpits.scripts.run_deep_analysis --critic
+# Step 1: Deep Analysis + Critic + 窗口分析 → 产出 ActionItems
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 
 # Step 2: 预览 Feedback Loop
 python -m quantpits.scripts.run_feedback_loop \

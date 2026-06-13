@@ -517,6 +517,9 @@ class LLMInterface:
         # Load recent action history for dedup
         recent_history = self._load_recent_action_history(workspace_root, limit=20)
 
+        # Load training data split info so the Critic understands the data regime
+        training_split_info = self._load_training_split_info(workspace_root)
+
         # --- Decide: two-stage or single-stage ---
         triage_skill = self._load_triage_skill(workspace_root)
         use_triage = (
@@ -558,6 +561,7 @@ class LLMInterface:
         user_prompt = self._build_critic_prompt(
             prioritized_signals, active_scopes, hyperparam_bounds, current_params,
             recent_history=recent_history,
+            training_split_info=training_split_info,
         )
 
         # Call LLM — wrap in a session so the trace is recorded
@@ -600,6 +604,36 @@ class LLMInterface:
         except Exception as e:
             logger.warning("Failed to load llm_config.json: %s", e)
             return {}
+
+    def _load_training_split_info(self, workspace_root: str) -> dict:
+        """
+        Load training data split configuration from model_config.json.
+
+        Returns a dict of split-relevant fields so the Critic understands
+        the data regime (train/valid/test boundaries, slice mode, etc.).
+        Returns empty dict if file is absent.
+        """
+        path = os.path.join(workspace_root, "config", "model_config.json")
+        if not os.path.exists(path):
+            logger.warning("model_config.json not found at %s", path)
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as e:
+            logger.warning("Failed to load model_config.json: %s", e)
+            return {}
+
+        # Extract only the fields relevant to data split understanding
+        relevant_keys = [
+            "train_set_windows", "valid_set_window", "test_set_window",
+            "data_slice_mode", "train_date_mode", "freq",
+            "start_time", "fit_start_time", "fit_end_time",
+            "valid_start_time", "valid_end_time",
+            "test_start_time", "test_end_time",
+            "backtest_start_time", "backtest_end_time",
+        ]
+        return {k: raw[k] for k in relevant_keys if k in raw}
 
     def _load_active_scopes(self, workspace_root: str) -> List[str]:
         """Load active_scopes from feedback_scope.json."""
@@ -1273,6 +1307,7 @@ class LLMInterface:
         hyperparam_bounds: Optional[dict] = None,
         current_params: Optional[dict] = None,
         recent_history: Optional[List[dict]] = None,
+        training_split_info: Optional[dict] = None,
     ) -> str:
         """Build the user prompt for the Critic LLM call."""
         signals_json = json.dumps(
@@ -1307,6 +1342,88 @@ class LLMInterface:
                 f"Do NOT guess or invent parameter values.\n"
                 f"```json\n{json.dumps(current_params, indent=2, ensure_ascii=False)}\n```"
             )
+
+        if training_split_info:
+            tw = training_split_info.get("train_set_windows")
+            vw = training_split_info.get("valid_set_window")
+            ts = training_split_info.get("test_set_window")
+            mode = training_split_info.get("data_slice_mode", "unknown")
+            freq = training_split_info.get("freq", "unknown")
+
+            if tw is not None:
+                window_desc = f"{tw}y train / {vw}y valid / {ts}y test"
+            else:
+                window_desc = "explicit dates (see below)"
+
+            # Build date boundary lines
+            date_fields = [
+                ("fit_start_time", "Train start"),
+                ("fit_end_time", "Train end"),
+                ("valid_start_time", "Valid start"),
+                ("valid_end_time", "Valid end"),
+                ("test_start_time", "Test start"),
+                ("test_end_time", "Test end"),
+                ("backtest_start_time", "Backtest start"),
+                ("backtest_end_time", "Backtest end"),
+            ]
+            date_lines = []
+            for key, label in date_fields:
+                if key in training_split_info and training_split_info[key]:
+                    date_lines.append(f"  - {label}: {training_split_info[key]}")
+
+            ts_lines = [
+                f"## Training Data Split Configuration",
+                f"The models were trained with the following data split regime. "
+                f"Use this context when evaluating signals (IC decay, overfitting, "
+                f"OOS degradation, etc.) — the split configuration may explain or "
+                f"mitigate certain signals.",
+                f"",
+                f"- **Window sizes**: {window_desc}",
+                f"- **Slice mode**: `{mode}` "
+                f"({'backward-looking from anchor date — windows slide forward each retrain' if mode == 'slide' else 'fixed date ranges — windows are static across retrains'})",
+                f"- **Date mode**: `{training_split_info.get('train_date_mode', 'unknown')}`",
+                f"- **Frequency**: `{freq}`",
+            ]
+            if date_lines:
+                ts_lines.append(f"- **Date boundaries**:")
+                ts_lines.extend(date_lines)
+
+            ts_lines.append("")
+            ts_lines.append(
+                f"**Guidance for interpreting signals with split context:**"
+            )
+            ts_lines.append(
+                f"1. In `{mode}` mode, the training window "
+                f"{'slides forward each retrain' if mode == 'slide' else 'is fixed'}. "
+                f"If you see IC decay or model staleness, consider whether the decay "
+                f"period falls within the training window (model degradation) or "
+                f"outside it (regime shift requiring re-training rather than "
+                f"hyperparameter changes)."
+            )
+            if vw is not None and tw is not None:
+                if vw <= 1 and tw >= 5:
+                    ts_lines.append(
+                        f"2. The validation window ({vw}y) is short relative to "
+                        f"training ({tw}y). Early stopping may have been aggressive "
+                        f"— be cautious about suggesting `early_stop` increases. "
+                        f"Consider adjusting `n_epochs` or `learning_rate` instead."
+                    )
+                else:
+                    ts_lines.append(
+                        f"2. The validation window ({vw}y) relative to training "
+                        f"({tw}y) gives reasonable early stopping reliability."
+                    )
+            if ts is not None:
+                ts_lines.append(
+                    f"3. The test window is {ts}y — "
+                    f"{'performance metrics span a substantial out-of-sample period' if ts >= 2 else 'performance metrics cover a limited out-of-sample period'}."
+                )
+            ts_lines.append(
+                f"4. Trading frequency is `{freq}` — "
+                f"{'fewer data points per year (~52), so trend signals have lower statistical power and higher variance' if freq == 'week' else 'more data points per year (~252), so trend signals are more reliable'}."
+            )
+
+            parts.append("\n".join(ts_lines))
 
         if recent_history:
             # Filter history to only targets present in the current signals
@@ -1509,6 +1626,7 @@ class LLMInterface:
             "combo_summary": combo_summary,
             "signal_summary": signal_summary,
             "recent_action_history": history_summary,
+            "training_window_analysis": triage_input.get("training_window_analysis", []),
             "instructions": (
                 "Based on the above data, decide: "
                 "1) Which models need Per-Model LLM deep analysis (prioritized_models, max 8)? "
@@ -1652,6 +1770,9 @@ class LLMInterface:
         # Load active scopes
         active_scopes = self._load_active_scopes(workspace_root)
 
+        # Load training split info for data regime awareness
+        training_split_info = self._load_training_split_info(workspace_root)
+
         # Inject tuning_knowledge only if non-empty (avoid prompt bloat)
         tuning_knowledge = model_profile.get("tuning_knowledge", {})
 
@@ -1670,6 +1791,8 @@ class LLMInterface:
             "signals": [s.to_dict() for s in model_profile.get("signals", [])],
             "current_params": model_profile.get("current_params", {}),
             "hyperparam_bounds": model_profile.get("hyperparam_bounds", {}),
+            "training_split_info": training_split_info if training_split_info else None,
+            "training_window_analysis": model_profile.get("training_window_analysis", []),
             "instructions": (
                 f"Diagnose {model_name} based on the profile above. "
                 "Consider: training history, ranking context, correlation structure, "
@@ -1738,6 +1861,9 @@ class LLMInterface:
 
         active_scopes = self._load_active_scopes(workspace_root)
 
+        # Load training split info for data regime awareness
+        training_split_info = self._load_training_split_info(workspace_root)
+
         user_prompt = json.dumps({
             "combo_name": combo_name,
             "active_scopes": active_scopes,
@@ -1747,6 +1873,8 @@ class LLMInterface:
             "pairwise_correlation": combo_profile.get("pairwise_correlation", {}),
             "oos_trend": combo_profile.get("oos_trend", {}),
             "market_context": combo_profile.get("market_context", {}),
+            "training_split_info": training_split_info if training_split_info else None,
+            "training_window_analysis": combo_profile.get("training_window_analysis", []),
             "instructions": (
                 f"Analyze combo '{combo_name}' based on the profile above. "
                 "Consider: member health (from Per-Model diagnoses), LOO deltas, "
@@ -1877,12 +2005,17 @@ class LLMInterface:
         # Load history for dedup
         recent_history = self._load_recent_action_history(workspace_root, limit=30)
 
+        # Load training split info for data regime awareness
+        training_split_info = self._load_training_split_info(workspace_root)
+
         user_prompt = json.dumps({
             "active_scopes": active_scopes,
             "model_diagnoses": model_diagnoses,
             "combo_diagnoses": combo_diagnoses,
             "execution_risk_output": execution_risk_output,
+            "training_split_info": training_split_info if training_split_info else None,
             "rule_aggregator": rule_aggregator_result,
+            "training_window_analysis": triage_result.get("training_window_analysis", []),
             "feedback_loop": feedback_eval,
             "triage_summary": {
                 "systemic_observations": triage_result.get("systemic_observations", []),

@@ -65,7 +65,7 @@ This updates `cash` and `holdings` in `prod_config.json`, which is required for 
 ### Step 3: Run Deep Analysis (Critic Mode)
 
 ```bash
-python -m quantpits.scripts.run_deep_analysis --critic
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 ```
 
 **Output files** (under `output/deep_analysis/`):
@@ -379,7 +379,7 @@ source workspaces/Demo_Workspace/run_env.sh
 python -m quantpits.scripts.prod_post_trade
 
 # 3. Analysis
-python -m quantpits.scripts.run_deep_analysis --critic
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 
 # 4. Review action items
 cat workspaces/Demo_Workspace/output/deep_analysis/action_items_$(date +%Y-%m-%d).json | python -m json.tool | less

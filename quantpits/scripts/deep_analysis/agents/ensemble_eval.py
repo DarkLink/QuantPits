@@ -516,6 +516,8 @@ class EnsembleEvolutionAgent(BaseAgent):
                     'only_last_months': data.get('exclude_last_months', 0),
                     'eval_start': data.get('oos_start_date'),
                     'eval_end': data.get('oos_end_date'),
+                    'is_start_date': data.get('is_start_date'),
+                    'is_end_date': data.get('is_end_date'),
                     'calmar': oos.get('oos_calmar', oos.get('calmar')),
                     'annualized_return': oos.get('ann_ret'),
                     'annualized_excess': oos.get('oos_excess_return', oos.get('excess_return')),
@@ -594,6 +596,24 @@ class EnsembleEvolutionAgent(BaseAgent):
                                              'oos_calmar': latest_oos, 'full_calmar': latest_full})
         if decay_ratios:
             result['is_oos_decay'] = decay_ratios
+
+        # Extract split definition from latest OOS record for Critic awareness
+        if oos_records:
+            latest = oos_records[-1]
+            result['split_definition'] = {
+                'only_last_years': latest.get('only_last_years', 0),
+                'only_last_months': latest.get('only_last_months', 0),
+                'is_start_date': latest.get('is_start_date'),
+                'is_end_date': latest.get('is_end_date'),
+                'eval_start': latest.get('eval_start'),
+                'eval_end': latest.get('eval_end'),
+                'note': (
+                    f"OOS evaluation window: {latest.get('eval_start','?')} to "
+                    f"{latest.get('eval_end','?')}. IS data is everything before "
+                    f"the OOS window. exclude_last_years={latest.get('only_last_years',0)}, "
+                    f"exclude_last_months={latest.get('only_last_months',0)}."
+                ),
+            }
 
         return result
 

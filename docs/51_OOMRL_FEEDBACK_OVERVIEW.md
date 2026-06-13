@@ -77,6 +77,13 @@ train_single_model()            run_deep_analysis.py            run_feedback_loo
             "agents": ["execution_quality", "trade_pattern"],
             "adapters": ["fusion_adapter"],
             "enabled": false
+        },
+        "training_config": {
+            "description": "训练数据划分配置调整（窗口大小、切片模式）",
+            "agents": ["market_regime", "model_health"],
+            "adapters": ["data_split_adapter"],
+            "enabled": false,
+            "focus_metrics": ["IC", "ICIR", "OOS Calmar"]
         }
     }
 }

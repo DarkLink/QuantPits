@@ -356,20 +356,29 @@ class FeedbackLoop:
         adapter_results = []
         validation_results = []
 
+        SUPPORTED_ACTION_TYPES = {"adjust_hyperparam", "adjust_training_window"}
+
         for item in items:
-            if item.action_type != "adjust_hyperparam":
+            if item.action_type not in SUPPORTED_ACTION_TYPES:
                 logger.warning(
                     "Skipping unsupported action_type '%s' for item %s",
                     item.action_type, item.action_id,
                 )
                 print(
                     f"   ⏭️  Skipping '{item.action_type}' for {item.target} "
-                    f"(conf={item.confidence}) — only 'adjust_hyperparam' is "
-                    f"auto-executable. Manual action may be needed."
+                    f"(conf={item.confidence}) — supported: "
+                    f"{SUPPORTED_ACTION_TYPES}"
                 )
                 continue
 
-            missing = adapter.check_pretrain_deps(item)
+            # Select the appropriate adapter for this action type
+            if item.action_type == "adjust_training_window":
+                from quantpits.scripts.deep_analysis.adapters.data_split_adapter import DataSplitAdapter
+                current_adapter = DataSplitAdapter(playground_root)
+            else:
+                current_adapter = adapter
+
+            missing = current_adapter.check_pretrain_deps(item) if hasattr(current_adapter, 'check_pretrain_deps') else []
             if missing:
                 logger.warning(
                     "Missing pretrain deps for %s: %s (will use random init)",
@@ -377,7 +386,7 @@ class FeedbackLoop:
                 )
 
             if dry_run:
-                preview = adapter.preview(item)
+                preview = current_adapter.preview(item)
                 adapter_results.append({
                     "action_id": item.action_id,
                     "dry_run": True,
@@ -399,7 +408,7 @@ class FeedbackLoop:
                 })
 
             if apply_first:
-                result = adapter.apply(item)
+                result = current_adapter.apply(item)
                 adapter_results.append({
                     "action_id": result.action_id,
                     "success": result.success,
@@ -411,17 +420,26 @@ class FeedbackLoop:
                     continue
 
             if not skip_retrain and max_experiment_rounds > 0:
-                all_vrs = self._run_experiment_loop(
-                    item=item,
-                    playground_root=playground_root,
-                    training_history=training_history,
-                    adapter=adapter,
-                    max_rounds=max_experiment_rounds,
-                    skip_first_train=resume,
-                    pg_mgr=pg_mgr,
-                )
-                for vr in all_vrs:
-                    validation_results.append(asdict(vr))
+                if item.action_type == "adjust_training_window":
+                    # Training window changes are global; retrain validation
+                    # is expensive (needs multiple models). Skip experiment
+                    # loop and flag for manual retrain.
+                    print(
+                        f"   ℹ️  Training window change applied to "
+                        f"{item.target}. Retrain manually to validate."
+                    )
+                else:
+                    all_vrs = self._run_experiment_loop(
+                        item=item,
+                        playground_root=playground_root,
+                        training_history=training_history,
+                        adapter=adapter,
+                        max_rounds=max_experiment_rounds,
+                        skip_first_train=resume,
+                        pg_mgr=pg_mgr,
+                    )
+                    for vr in all_vrs:
+                        validation_results.append(asdict(vr))
 
         report.adapter_results = adapter_results
         report.validation_results = validation_results

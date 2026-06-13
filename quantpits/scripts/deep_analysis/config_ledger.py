@@ -84,6 +84,7 @@ def snapshot_configs(workspace_root: str, snapshot_date: Optional[str] = None) -
         'hyperparams': {},
         'ensemble_config': {},
         'strategy_config': {},
+        'model_config': {},
     }
 
     # 1. Parse all workflow_config_*.yaml files
@@ -108,6 +109,15 @@ def snapshot_configs(workspace_root: str, snapshot_date: Optional[str] = None) -
         try:
             with open(strategy_path, 'r') as f:
                 snapshot['strategy_config'] = yaml.safe_load(f)
+        except Exception:
+            pass
+
+    # 4. Snapshot model_config.json (training window params)
+    model_config_path = os.path.join(config_dir, 'model_config.json')
+    if os.path.exists(model_config_path):
+        try:
+            with open(model_config_path, 'r') as f:
+                snapshot['model_config'] = json.load(f)
         except Exception:
             pass
 
@@ -256,6 +266,26 @@ def diff_snapshots(old: dict, new: dict) -> List[dict]:
             'impact_domain': 'Strategy',
             'semantic_label': 'RiskLimitAdjustment' # Default label
         })
+
+    # 4. Model config changes (training window params)
+    old_mc = old.get('model_config', {})
+    new_mc = new.get('model_config', {})
+    window_keys = [
+        'train_set_windows', 'valid_set_window', 'test_set_window',
+        'data_slice_mode', 'freq',
+    ]
+    for key in window_keys:
+        ov = old_mc.get(key)
+        nv = new_mc.get(key)
+        if ov != nv:
+            changes.append({
+                'type': 'training_config',
+                'key': f'model_config.{key}',
+                'old': ov,
+                'new': nv,
+                'impact_domain': 'Dataset',
+                'semantic_label': 'WindowResize' if 'window' in key else 'ConfigChange',
+            })
 
     return changes
 

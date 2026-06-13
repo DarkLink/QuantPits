@@ -29,3 +29,4 @@ def get_adapter(action_type: str):
 # Import adapters so they self-register via @register_adapter
 from quantpits.scripts.deep_analysis.adapters.training_adapter import TrainingAdapter  # noqa: F401, E402
 from quantpits.scripts.deep_analysis.adapters.model_selection_adapter import ModelSelectionAdapter  # noqa: F401, E402
+from quantpits.scripts.deep_analysis.adapters.data_split_adapter import DataSplitAdapter  # noqa: F401, E402

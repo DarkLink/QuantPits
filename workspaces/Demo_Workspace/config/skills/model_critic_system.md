@@ -44,7 +44,7 @@ You must output one of the following diagnosis conclusions:
 
 ### Training Randomness Warning
 
-- **Single-training ICIR can vary ±40-90%** — do not generate tuning ActionItems based on a single training result alone.
+- **Single-training ICIR can vary substantially** — do not generate tuning ActionItems based on a single training result alone.
 - best_epoch=0 with normal IC → likely a random seed issue. Suggest retraining, not tuning.
 - best_epoch=0 with IC≈0 → verify whether the model architecture is suitable for this dataset at all.
 
@@ -98,3 +98,25 @@ Output a JSON object (not an array):
 - For models with long training times, tuning suggestions should be more conservative (higher experiment cost).
 - Do not generate executable ActionItems outside active_scopes.
 - If the diagnosis is keep_as_diversifier, explain why in cross_references.notes.
+
+## Data Split Awareness
+
+When the prompt includes `training_split_info`, use the data split configuration to inform your diagnosis:
+
+1. **IC decay in slide-mode windows**: In slide mode, the training window moves forward each retrain. If a model shows IC decay or model_stale, consider whether the decay period falls outside the training window (market regime shift) rather than model degradation. Prefer diagnosing `needs_retrain` over `needs_tuning` — retraining may be more effective than tuning.
+
+2. **Validation window length vs. early stopping**: If `valid_set_window` ≤ 1 year while `train_set_windows` ≥ 5 years, early stopping may have been overly aggressive. For models with low best_epoch, do not casually suggest increasing `early_stop` or reducing `n_epochs` — the current values may already be optimal for generalization. Consider adjusting architecture capacity (e.g., hidden_size) or regularization (e.g., dropout) instead.
+
+3. **Test window coverage**: `test_set_window` determines the out-of-sample period for model evaluation. If the test window is short (≤1 year), IC and ICIR have limited statistical reliability — moderately reduce confidence (e.g., multiply by 0.8).
+
+4. **Frequency impact on confidence**: Weekly models produce ~52 data points per year, daily ~252. Statistical signals (IC mean, ICIR, IC trend) based on weekly data are noisier. An "IC decay" signal at weekly frequency should have ~0.1-0.2 lower confidence than the same signal at daily frequency.
+
+## Training Window Analysis Response
+
+When the prompt includes `training_window_analysis`, this comes from a deterministic rule-based analyzer (TrainingWindowAnalyzer) — **it is NOT an LLM opinion**. You must adjust your diagnosis accordingly:
+
+- If `training_window_analysis` contains findings with severity="critical" or "warning", the current data split configuration may be suboptimal. Prefer diagnosing `needs_retrain` (retrain with updated/better window) over `needs_tuning` (tune parameters).
+- If finding_type is `anchor_stale`: the model's anchor_date is too old. Suggest `retrain` rather than tuning. In slide mode, retrain will automatically slide the window forward.
+- If finding_type is `valid_window_too_short`: the validation window is too short relative to training, making early stopping results unreliable. Do not recommend tuning based on best_epoch or IC decay signals — first suggest fixing the window ratio via `adjust_training_window`.
+- If finding_type is `train_end_too_far`: the training data ends too far from the anchor (gap = valid + test years). This means the model learned patterns from (anchor - gap) years ago, which may be irrelevant in markets with frequent regime switches. Per-model IC decay is more likely data staleness than model failure — prefer `adjust_training_window` to shrink valid/test windows and bring train_end forward, rather than tuning individual models.
+- If finding_type is `regime_window_mismatch`: frequent regime switches with insufficient training window coverage. Per-model IC decay is more likely a market issue than a model issue — note this in your diagnosis and lower confidence on tuning suggestions.

@@ -65,7 +65,7 @@ python -m quantpits.scripts.prod_post_trade
 ### 步骤 3：跑 Deep Analysis（Critic 模式）
 
 ```bash
-python -m quantpits.scripts.run_deep_analysis --critic
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 ```
 
 **输出文件**（位于 `output/deep_analysis/`）：
@@ -369,7 +369,7 @@ source workspaces/Demo_Workspace/run_env.sh
 python -m quantpits.scripts.prod_post_trade
 
 # 3. 分析
-python -m quantpits.scripts.run_deep_analysis --critic
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 
 # 4. 查看 action items
 cat workspaces/Demo_Workspace/output/deep_analysis/action_items_$(date +%Y-%m-%d).json | python -m json.tool | less

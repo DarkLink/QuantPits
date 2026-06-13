@@ -1,0 +1,17 @@
+{
+    "_comment": "Training window parameter bounds for adjust_training_window ActionItems",
+    "bounds": {
+        "train_set_windows": {"min": 2, "max": 20, "max_change_pct": 100},
+        "valid_set_window": {"min": 1, "max": 6, "max_change_pct": 100},
+        "test_set_window": {"min": 1, "max": 8, "max_change_pct": 100},
+        "data_slice_mode": {"allowed_values": ["slide", "fixed"]}
+    },
+    "staleness": {
+        "max_anchor_age_days": 90,
+        "warn_anchor_age_days": 60
+    },
+    "validation_ratio": {
+        "min_valid_to_train_ratio": 0.1,
+        "warn_valid_to_train_ratio_low": 0.15
+    }
+}

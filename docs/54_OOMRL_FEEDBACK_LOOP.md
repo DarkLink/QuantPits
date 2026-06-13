@@ -113,7 +113,7 @@ class TrainingAdapter:
 class AdapterResult:
     success: bool
     action_id: str
-    adapter_type: str              # "training" | "search" | "fusion"
+    adapter_type: str              # "training" | "data_split" | "model_selection"
     modified_files: List[str]
     changes: List[dict]            # [{param, old, new, file}]
     error: str
@@ -130,6 +130,56 @@ class TrainingAdapter(BaseAdapter):
 ```
 
 后续新增 SearchAdapter 或 FusionAdapter 只需装饰即可自动注册到 Orchestrator。
+
+---
+
+## 2b. Data Split Adapter (训练窗口调整)
+
+**文件**: `quantpits/scripts/deep_analysis/adapters/data_split_adapter.py`
+
+将 `adjust_training_window` 类型的 ActionItem 转化为 `model_config.json` 的实际修改。与 TrainingAdapter 不同，DataSplitAdapter 修改的是全局配置文件（影响所有模型），而非单个模型的 YAML。
+
+### 允许修改的字段
+
+| 字段 | 类型 | 边界 |
+|------|------|------|
+| `train_set_windows` | int/float | [2, 20] |
+| `valid_set_window` | int/float | [1, 6] |
+| `test_set_window` | int/float | [1, 8] |
+| `data_slice_mode` | str | `"slide"` 或 `"fixed"` |
+
+> **注意**: 支持 fractional years（如 1.5），`add_year_with_nextday` 使用 `int(n * 365.25)` 计算天数。
+
+### 安全机制
+
+1. **"from" 值验证**: 文件的当前值必须等于 `params[key]["from"]`，防止配置被意外修改
+2. **边界二次校验**: 对照 `config/training_window_bounds.json` 验证 `to` 值
+3. **时间戳备份**: 修改前自动备份到 `config/_backup/model_config.json.{timestamp}`
+4. **原子写入**: 先写临时文件，再 `os.replace()` 覆盖，防止部分写入
+
+### 注册
+
+```python
+@register_adapter("adjust_training_window")
+class DataSplitAdapter(BaseAdapter):
+    ...
+```
+
+### 验证策略
+
+训练窗口变更是全局性的（影响所有模型），不适合逐模型验证。当前策略：
+- 应用变更后跳过自动重训验证
+- 标记为需要手动全局重训验证
+- 通过 `--promote` 推广后，下一次全量重训会自动使用新窗口参数
+
+### 核心接口
+
+```python
+class DataSplitAdapter:
+    def __init__(self, workspace_root: str)
+    def apply(self, item: ActionItem) -> AdapterResult
+    def preview(self, item: ActionItem) -> dict       # 干跑，不写文件
+```
 
 ---
 

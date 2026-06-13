@@ -42,7 +42,8 @@ class SignalExtractor:
     """
 
     def __init__(self, reference_date: Optional[str] = None,
-                 workspace_root: Optional[str] = None):
+                 workspace_root: Optional[str] = None,
+                 window_analysis_findings: Optional[List] = None):
         """
         Args:
             reference_date: YYYY-MM-DD string used for staleness checks.
@@ -50,12 +51,15 @@ class SignalExtractor:
             workspace_root: Path to workspace root dir.  If provided, the
                             extractor can read training_history.jsonl for
                             per-epoch loss analysis (optimizer thrashing).
+            window_analysis_findings: Pre-computed findings from
+                            TrainingWindowAnalyzer (if available).
         """
         self._ref_date = (
             datetime.strptime(reference_date, "%Y-%m-%d")
             if reference_date else datetime.now()
         )
         self._workspace_root = workspace_root
+        self._window_analysis_findings = window_analysis_findings or []
 
     # ------------------------------------------------------------------
     # Public API
@@ -102,6 +106,10 @@ class SignalExtractor:
         if self._workspace_root:
             signals.extend(self._extract_optimizer_thrashing())
 
+        # --- Training Window Analysis signals (rule-based, independent) ---
+        if self._window_analysis_findings:
+            signals.extend(self._extract_training_window())
+
         return signals
 
     def extract_triage_input(
@@ -144,6 +152,9 @@ class SignalExtractor:
             "family_stats": family_stats,
             "combo_summary": combo_summary,
             "signal_distribution": signal_dist,
+            "training_window_analysis": [
+                f.to_dict() for f in self._window_analysis_findings
+            ] if self._window_analysis_findings else [],
         }
 
     # ------------------------------------------------------------------
@@ -396,6 +407,7 @@ class SignalExtractor:
                     'calmar_slope': oos.get('oos_calmar_slope'),
                     'runs': oos.get('oos_runs'),
                     'latest_calmar': oos.get('latest_oos_calmar'),
+                    'split_definition': oos.get('split_definition', {}),
                 }
         return summary
 
@@ -604,6 +616,7 @@ class SignalExtractor:
                             "oos_runs": runs,
                             "latest_oos_calmar": oos.get("latest_oos_calmar"),
                             "best_oos_calmar": oos.get("best_oos_calmar"),
+                            "split_definition": oos.get("split_definition", {}),
                         },
                         context=(
                             f"OOS Calmar degrading (slope={slope:.3f}, "
@@ -622,6 +635,7 @@ class SignalExtractor:
                             "oos_calmar_slope": slope,
                             "oos_runs": runs,
                             "sample_size_warning": True,
+                            "split_definition": oos.get("split_definition", {}),
                         },
                         context=(
                             f"OOS Calmar slope negative ({slope:.3f}) but only "
@@ -851,6 +865,42 @@ class SignalExtractor:
                     f"({thrash_count}/{len(rel_changes)} epochs, "
                     f"ratio {thrash_ratio:.0%})"
                 ),
+            ))
+
+        return signals
+
+    # ------------------------------------------------------------------
+    # Training Window Analysis signals (from TrainingWindowAnalyzer)
+    # ------------------------------------------------------------------
+
+    def _extract_training_window(self) -> List[Signal]:
+        """Convert TrainingWindowAnalyzer findings into Signals."""
+        signals: List[Signal] = []
+
+        severity_map = {
+            "critical": "critical",
+            "warning": "warning",
+            "info": "info",
+        }
+
+        for finding in self._window_analysis_findings:
+            finding_type = getattr(finding, "finding_type", "")
+            severity = severity_map.get(
+                getattr(finding, "severity", "warning"), "warning"
+            )
+
+            signals.append(Signal(
+                signal_type="training_window_mismatch",
+                severity=severity,
+                scope="training_config",
+                source_agent="Training Window Analyzer",
+                target=getattr(finding, "target", "global"),
+                metrics={
+                    "finding_type": finding_type,
+                    **(getattr(finding, "metrics", {}) or {}),
+                    "recommendation": getattr(finding, "recommendation", ""),
+                },
+                context=getattr(finding, "context", ""),
             ))
 
         return signals

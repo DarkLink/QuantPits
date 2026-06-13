@@ -86,6 +86,11 @@ class ActionItemValidator:
         self.workspace_root = workspace_root
         self._active_scopes = self._load_active_scopes(feedback_scope_path)
         self._bounds = self._load_bounds(hyperparam_bounds_path)
+        # Load training_window_bounds if available
+        tw_bounds_path = os.path.join(
+            workspace_root, "config", "training_window_bounds.json"
+        )
+        self._tw_bounds = self._load_bounds(tw_bounds_path)
 
     @staticmethod
     def _load_active_scopes(path: str) -> List[str]:
@@ -138,6 +143,14 @@ class ActionItemValidator:
             # Step 2: Hyperparam bounds check (only for adjust_hyperparam)
             if item.action_type == "adjust_hyperparam":
                 rejected = self._check_hyperparam_bounds(item)
+                if rejected:
+                    item.scope_status = "rejected"
+                    item.rejected_reason = rejected
+                    continue
+
+            # Step 3: Training window bounds check (only for adjust_training_window)
+            if item.action_type == "adjust_training_window":
+                rejected = self._check_training_window_bounds(item)
                 if rejected:
                     item.scope_status = "rejected"
                     item.rejected_reason = rejected
@@ -200,6 +213,62 @@ class ActionItemValidator:
                         f"{old_val} → {new_val} ({change_pct:.1f}%) "
                         f"exceeds max_change_pct ({max_pct}%)"
                     )
+
+        return None
+
+    def _check_training_window_bounds(self, item: ActionItem) -> Optional[str]:
+        """
+        Check training window params against training_window_bounds.json.
+
+        Returns rejection reason string if failed, None if passed.
+        """
+        if not self._tw_bounds:
+            logger.warning(
+                "training_window_bounds.json not found — allowing by default"
+            )
+            return None
+
+        for param_name, change_spec in item.params.items():
+            if not isinstance(change_spec, dict):
+                continue
+
+            new_val = change_spec.get("to")
+            param_bounds = self._tw_bounds.get(param_name, {})
+
+            if not param_bounds:
+                continue  # Unknown param — allow by default
+
+            b_min = param_bounds.get("min")
+            b_max = param_bounds.get("max")
+
+            # Numeric bounds check
+            if new_val is not None:
+                if (
+                    b_min is not None
+                    and isinstance(new_val, (int, float))
+                    and new_val < b_min
+                ):
+                    return (
+                        f"Parameter '{param_name}' value {new_val} "
+                        f"below minimum {b_min}"
+                    )
+                if (
+                    b_max is not None
+                    and isinstance(new_val, (int, float))
+                    and new_val > b_max
+                ):
+                    return (
+                        f"Parameter '{param_name}' value {new_val} "
+                        f"above maximum {b_max}"
+                    )
+
+            # Allowed values check (for data_slice_mode)
+            allowed = param_bounds.get("allowed_values")
+            if allowed and new_val not in allowed:
+                return (
+                    f"Parameter '{param_name}' value '{new_val}' "
+                    f"not in allowed {allowed}"
+                )
 
         return None
 
