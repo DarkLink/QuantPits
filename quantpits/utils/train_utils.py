@@ -508,6 +508,12 @@ def inject_config(yaml_path, params, model_name=None, no_pretrain=False):
         segs['train'] = [params['fit_start_time'], params['fit_end_time']]
         segs['valid'] = [params['valid_start_time'], params['valid_end_time']]
         segs['test'] = [params['test_start_time'], params['test_end_time']]
+        # TabNet 等模型需要 pretrain / pretrain_validation 段
+        # 它们通常与 train / valid 相同，必须随滑动窗口一起更新
+        if 'pretrain' in segs:
+            segs['pretrain'] = [params['fit_start_time'], params['fit_end_time']]
+        if 'pretrain_validation' in segs:
+            segs['pretrain_validation'] = [params['valid_start_time'], params['valid_end_time']]
 
     if 'port_analysis_config' in config:
         from quantpits.utils import strategy
