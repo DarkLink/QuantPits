@@ -181,3 +181,115 @@ def test_load_model_predictions_rename_columns(mock_exists, mock_file, mock_env)
         
         result = utils.load_model_predictions("test_model")
         assert "score" in result.columns
+
+
+# ── load_model_predictions — additional edge cases ────────────────────────
+
+@patch('builtins.open', new_callable=mock_open, read_data='INVALID JSON {{{')
+@patch('quantpits.scripts.analysis.utils.os.path.exists')
+def test_load_model_predictions_corrupt_records_json(mock_exists, mock_file, mock_env):
+    """Lines 154-155: corrupt latest_train_records.json → exception swallowed."""
+    utils, _, _, _ = mock_env
+    mock_exists.return_value = True
+    result = utils.load_model_predictions("GATs")
+    assert result.empty
+
+
+@patch('builtins.open', new_callable=mock_open, read_data='{"models": {"GATs": "rec_1"}, "experiment_name": "exp"}')
+@patch('quantpits.scripts.analysis.utils.os.path.exists')
+def test_load_model_predictions_recorder_exception(mock_exists, mock_file, mock_env):
+    """Lines 164-166: recorder.load_object raises exception → empty DataFrame."""
+    utils, _, _, _ = mock_env
+    mock_exists.return_value = True
+    with patch('qlib.workflow.R') as mock_R:
+        mock_rec = MagicMock()
+        mock_rec.load_object.side_effect = Exception("Bad pred.pkl")
+        mock_R.get_recorder.return_value = mock_rec
+        result = utils.load_model_predictions("GATs")
+        assert result.empty
+
+
+@patch('builtins.open', new_callable=mock_open, read_data='{"models": {"GATs": "rec_1"}, "experiment_name": "exp"}')
+@patch('quantpits.scripts.analysis.utils.os.path.exists')
+def test_load_model_predictions_series_to_dataframe(mock_exists, mock_file, mock_env):
+    """Line 169: prediction is a Series → converted to DataFrame with 'score' column."""
+    utils, _, _, _ = mock_env
+    mock_exists.return_value = True
+    s = pd.Series([0.5, 0.3], name="pred")
+    with patch('qlib.workflow.R') as mock_R:
+        mock_rec = MagicMock()
+        mock_rec.load_object.return_value = s
+        mock_R.get_recorder.return_value = mock_rec
+        result = utils.load_model_predictions("GATs")
+        assert "score" in result.columns
+
+
+@patch('builtins.open', new_callable=mock_open, read_data='{"models": {"GATs": "rec_1"}, "experiment_name": "exp"}')
+@patch('quantpits.scripts.analysis.utils.os.path.exists')
+def test_load_model_predictions_datetime_as_column(mock_exists, mock_file, mock_env):
+    """Lines 180-181: datetime is a column (not in index) → set_index."""
+    utils, _, _, _ = mock_env
+    mock_exists.return_value = True
+    df = pd.DataFrame({
+        "datetime": ["2026-03-01", "2026-03-01"],
+        "instrument": ["SZ000001", "SZ000002"],
+        "score": [0.5, 0.3],
+    })
+    with patch('qlib.workflow.R') as mock_R:
+        mock_rec = MagicMock()
+        mock_rec.load_object.return_value = df
+        mock_R.get_recorder.return_value = mock_rec
+        result = utils.load_model_predictions("GATs")
+        assert not result.empty
+        assert "datetime" in result.index.names
+
+
+@patch('builtins.open', new_callable=mock_open, read_data='{"models": {"GATs": "rec_1"}, "experiment_name": "exp"}')
+@patch('quantpits.scripts.analysis.utils.os.path.exists')
+def test_load_model_predictions_numeric_column_auto_rename(mock_exists, mock_file, mock_env):
+    """Line 176: no '0' column, no 'score' column, but numeric cols exist → rename first."""
+    utils, _, _, _ = mock_env
+    mock_exists.return_value = True
+    df = pd.DataFrame({
+        "datetime": pd.to_datetime(["2026-03-01"]),
+        "instrument": ["SZ000001"],
+        "prediction": [0.5],  # numeric column, not named '0' or 'score'
+    }).set_index(["datetime", "instrument"])
+    with patch('qlib.workflow.R') as mock_R:
+        mock_rec = MagicMock()
+        mock_rec.load_object.return_value = df
+        mock_R.get_recorder.return_value = mock_rec
+        result = utils.load_model_predictions("GATs")
+        assert "score" in result.columns
+
+
+# ── get_daily_features / get_forward_returns with market=None ─────────
+
+def test_get_daily_features_market_default(mock_env):
+    """Line 61,63: market=None triggers load_market_config() fallback + default features."""
+    utils, _, config_dir, _ = mock_env
+    with open(config_dir / "model_config.json", "w") as f:
+        json.dump({"market": "csi500", "benchmark": "SH000905"}, f)
+    with patch('qlib.data.D') as mock_D:
+        mock_instruments = MagicMock()
+        mock_D.instruments.return_value = mock_instruments
+        # Need 8 columns to match default features dict
+        mock_D.features.return_value = pd.DataFrame(
+            np.zeros((1, 8)),
+            columns=range(8),
+        )
+        utils.get_daily_features("2026-01-01", "2026-01-05", market=None)
+        mock_D.instruments.assert_called_once_with(market="csi500")
+
+
+def test_get_forward_returns_market_default(mock_env):
+    """Line 90: market=None triggers load_market_config() fallback."""
+    utils, _, config_dir, _ = mock_env
+    with open(config_dir / "model_config.json", "w") as f:
+        json.dump({"market": "csi500", "benchmark": "SH000905"}, f)
+    with patch('qlib.data.D') as mock_D:
+        mock_instruments = MagicMock()
+        mock_D.instruments.return_value = mock_instruments
+        mock_D.features.return_value = pd.DataFrame({"return_1d": [0.01]})
+        utils.get_forward_returns("2026-01-01", "2026-01-05", market=None)
+        mock_D.instruments.assert_called_once_with(market="csi500")

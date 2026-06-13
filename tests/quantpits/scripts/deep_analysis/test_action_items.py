@@ -61,6 +61,18 @@ class TestActionItem:
         item = ActionItem.from_dict(d)
         assert item.action_id == "fixed-id-123"
 
+    def test_from_dict_empty_action_id_generates_uuid(self):
+        d = {"action_id": "", "action_type": "test"}
+        item = ActionItem.from_dict(d)
+        assert item.action_id
+        assert len(item.action_id) == 36
+
+    def test_from_dict_no_action_id_generates_uuid(self):
+        d = {"action_type": "test"}
+        item = ActionItem.from_dict(d)
+        assert item.action_id
+        assert len(item.action_id) == 36
+
 
 # ------------------------------------------------------------------
 # ActionItemValidator
@@ -92,6 +104,17 @@ class TestActionItemValidator:
                     "n_epochs": {"min": 10, "max": 500, "max_change_pct": 50},
                     "lr": {"min": 1e-5, "max": 1e-2, "max_change_pct": 100},
                     "dropout": {"min": 0.0, "max": 0.8, "max_change_pct": None},
+                }
+            }, f)
+
+        # training_window_bounds.json
+        with open(config_dir / "training_window_bounds.json", "w") as f:
+            json.dump({
+                "bounds": {
+                    "train_set_windows": {"min": 2, "max": 20},
+                    "valid_set_window": {"min": 1, "max": 6},
+                    "test_set_window": {"min": 1, "max": 8},
+                    "data_slice_mode": {"allowed_values": ["slide", "fixed"]},
                 }
             }, f)
 
@@ -238,6 +261,104 @@ class TestActionItemValidator:
         )
         result = v.validate([item])
         # Skipped (not a dict), so no bounds check → in_scope
+        assert result[0].scope_status == "in_scope"
+
+    # ── Training window bounds checks ────────────────────────────────
+
+    def test_tw_below_min(self, validator_workspace):
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            params={"train_set_windows": {"from": 8, "to": 1}},
+        )
+        result = v.validate([item])
+        assert result[0].scope_status == "rejected"
+        assert "below minimum" in result[0].rejected_reason
+
+    def test_tw_above_max(self, validator_workspace):
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            params={"train_set_windows": {"from": 8, "to": 25}},
+        )
+        result = v.validate([item])
+        assert result[0].scope_status == "rejected"
+        assert "above maximum" in result[0].rejected_reason
+
+    def test_tw_allowed_values_violation(self, validator_workspace):
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            params={"data_slice_mode": {"from": "slide", "to": "rotate"}},
+        )
+        result = v.validate([item])
+        assert result[0].scope_status == "rejected"
+        assert "not in allowed" in result[0].rejected_reason
+
+    def test_tw_valid_change(self, validator_workspace):
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            params={"train_set_windows": {"from": 8, "to": 12}},
+        )
+        result = v.validate([item])
+        assert result[0].scope_status == "in_scope"
+
+    def test_tw_unknown_param_passes(self, validator_workspace):
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            params={"freq": {"from": "week", "to": "day"}},
+        )
+        result = v.validate([item])
+        assert result[0].scope_status == "in_scope"
+
+    def test_tw_no_bounds_file_passes(self, tmp_path):
+        ws = str(tmp_path / "ws")
+        os.makedirs(os.path.join(ws, "config"), exist_ok=True)
+        # feedback_scope.json with hyperparams active
+        with open(os.path.join(ws, "config", "feedback_scope.json"), "w") as f:
+            json.dump({"active_scopes": ["hyperparams"], "available_scopes": {}}, f)
+        # no training_window_bounds.json → _tw_bounds = {}
+        v = ActionItemValidator(
+            feedback_scope_path=os.path.join(ws, "config", "feedback_scope.json"),
+            hyperparam_bounds_path=os.path.join(ws, "config", "hyperparam_bounds.json"),
+            workspace_root=ws,
+        )
+        item = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            params={"train_set_windows": {"from": 8, "to": 1}},
+        )
+        result = v.validate([item])
+        assert result[0].scope_status == "in_scope"
+
+    def test_tw_non_dict_change_spec_skipped(self, validator_workspace):
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            params={"train_set_windows": 10},
+        )
+        result = v.validate([item])
+        assert result[0].scope_status == "in_scope"
+
+    def test_tw_corrupt_bounds_passes(self, validator_workspace):
+        bounds_path = os.path.join(validator_workspace, "config", "training_window_bounds.json")
+        with open(bounds_path, "w") as f:
+            f.write("not valid json {{{")
+        v = self._make_validator(validator_workspace)
+        item = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            params={"train_set_windows": {"from": 8, "to": 1}},
+        )
+        result = v.validate([item])
         assert result[0].scope_status == "in_scope"
 
     def test_multiple_items_mixed(self, validator_workspace):

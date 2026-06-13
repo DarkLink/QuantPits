@@ -1519,3 +1519,253 @@ class TestExperimentLoopEarlyExit:
 # _run_playground_only edge cases
 # ------------------------------------------------------------------
 
+
+class TestPlaygroundOnlyEdgeCases:
+    def _make_playground_loop(self, tmp_path, mode="playground"):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "data").mkdir()
+        (ws / "output").mkdir()
+
+        with open(ws / "config" / "model_registry.yaml", "w") as f:
+            yaml.dump({"models": {"m1": {"algorithm": "gru", "dataset": "Alpha158",
+                       "yaml_file": "config/wf.yaml", "enabled": True}}}, f)
+        with open(ws / "config" / "wf.yaml", "w") as f:
+            yaml.dump({"task": {"model": {"class": "GRU", "kwargs": {"n_epochs": 100}}}}, f)
+        with open(ws / "config" / "hyperparam_bounds.json", "w") as f:
+            json.dump({"bounds": {"n_epochs": {"min": 10, "max": 500}}}, f)
+        with open(ws / "config" / "feedback_scope.json", "w") as f:
+            json.dump({"active_scopes": ["hyperparams"]}, f)
+
+        return FeedbackLoop(str(ws), mode=mode), ws
+
+    def test_corrupt_llm_config(self, tmp_path):
+        """Lines 769-773: corrupt llm_config.json → exception swallowed."""
+        loop, ws = self._make_playground_loop(tmp_path, mode="playground")
+        with open(ws / "config" / "llm_config.json", "w") as f:
+            f.write("not valid json {{{")
+
+        # _run_playground_only takes: report, models, skip_models,
+        # max_experiment_rounds, skip_retrain
+        report = FeedbackReport(run_date="2026-06-13", mode="playground")
+
+        with patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_cls, \
+             patch.object(loop, "_save_report"), \
+             patch("quantpits.scripts.deep_analysis.feedback_loop.PlaygroundManager") as mock_pg:
+            mock_pg_instance = MagicMock()
+            mock_pg_instance.create_or_sync.return_value = str(tmp_path / "PG")
+            mock_pg.return_value = mock_pg_instance
+
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = False
+            mock_llm_cls.return_value = mock_llm
+
+            result = loop._run_playground_only(
+                report=report, models=["m1"], skip_models=None,
+                max_experiment_rounds=1, skip_retrain=False,
+            )
+        assert result.summary
+
+
+# ------------------------------------------------------------------
+# _run_experiment_loop additional error paths
+# ------------------------------------------------------------------
+
+
+class TestExperimentLoopErrorPaths:
+    def _make_loop(self, tmp_path):
+        ws = tmp_path / "TestWS"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "data").mkdir()
+        (ws / "output").mkdir()
+
+        with open(ws / "config" / "model_registry.yaml", "w") as f:
+            yaml.dump({"models": {"m1": {"algorithm": "gru", "dataset": "Alpha158",
+                       "yaml_file": "config/wf.yaml", "enabled": True}}}, f)
+        with open(ws / "config" / "wf.yaml", "w") as f:
+            yaml.dump({"task": {"model": {"class": "GRU", "kwargs": {"n_epochs": 100, "early_stop": 10}}}}, f)
+        with open(ws / "config" / "llm_config.json", "w") as f:
+            json.dump({}, f)
+        with open(ws / "config" / "hyperparam_bounds.json", "w") as f:
+            json.dump({"bounds": {"n_epochs": {"min": 10, "max": 500}}}, f)
+
+        return FeedbackLoop(str(ws), mode="execute"), ws
+
+    def _make_item(self):
+        return ActionItem(
+            action_type="adjust_hyperparam", scope="hyperparams", target="m1",
+            params={"n_epochs": {"from": 100, "to": 150}},
+            reason="test", source_signals=["underfitting"],
+            confidence=0.7, risk_level="low", action_id="act-err",
+        )
+
+    def test_retrain_returns_none_breaks(self, tmp_path):
+        """Line 539: _retrain_and_validate returns None → loop breaks."""
+        loop, ws = self._make_loop(tmp_path)
+        item = self._make_item()
+
+        with patch.object(loop, "_retrain_and_validate", return_value=None), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"):
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+        assert results == []
+
+    def test_corrupt_llm_config_in_loop(self, tmp_path):
+        """Lines 636-637: corrupt llm_config.json in experiment loop."""
+        loop, ws = self._make_loop(tmp_path)
+        item = self._make_item()
+
+        with open(ws / "config" / "llm_config.json", "w") as f:
+            f.write("not json {{{")
+
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.018,
+            ic_delta=-0.002, ic_improved=False, passed=False,
+            convergence={"best_epoch": 50, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", return_value=False), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_cls:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = False
+            mock_llm_cls.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+        assert len(results) == 1
+
+    def test_llm_give_up_decision(self, tmp_path):
+        """Lines 686-690: LLM returns 'give_up' → loop breaks."""
+        loop, ws = self._make_loop(tmp_path)
+        item = self._make_item()
+
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.018,
+            ic_delta=-0.002, ic_improved=False, passed=False,
+            convergence={"best_epoch": 50, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", return_value=False), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_cls:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = True
+            mock_llm.analyze_experiment_result.return_value = {
+                "decision": "give_up",
+                "rationale": "Cannot improve further",
+            }
+            mock_llm._load_current_params.return_value = {}
+            mock_llm._load_recent_action_history.return_value = []
+            mock_llm._compute_available_interventions.return_value = [
+                {"param": "n_epochs", "current": 100, "suggested_min": 50, "suggested_max": 500}
+            ]
+            mock_llm._load_hyperparam_bounds.return_value = {"n_epochs": {"min": 10, "max": 500}}
+            mock_llm_cls.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+        assert len(results) == 1
+
+    def test_llm_missing_param(self, tmp_path):
+        """Lines 697-698: LLM returns 'retry' but missing next_param → break."""
+        loop, ws = self._make_loop(tmp_path)
+        item = self._make_item()
+
+        vr = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.018,
+            ic_delta=-0.002, ic_improved=False, passed=False,
+            convergence={"best_epoch": 50, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", return_value=False), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_cls:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = True
+            mock_llm.analyze_experiment_result.return_value = {
+                "decision": "retry",
+                "rationale": "Try again",
+            }
+            mock_llm._load_current_params.return_value = {}
+            mock_llm._load_recent_action_history.return_value = []
+            mock_llm._compute_available_interventions.return_value = [
+                {"param": "n_epochs", "current": 100, "suggested_min": 50, "suggested_max": 500}
+            ]
+            mock_llm._load_hyperparam_bounds.return_value = {"n_epochs": {"min": 10, "max": 500}}
+            mock_llm_cls.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=MagicMock(), max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+        assert len(results) == 1
+
+    def test_adapter_failure_in_loop_round(self, tmp_path):
+        """Lines 725-727: adapter.apply fails in round 2+ → loop breaks."""
+        loop, ws = self._make_loop(tmp_path)
+        item = self._make_item()
+
+        vr1 = ValidationResult(
+            model="m1", baseline_ic=0.02, playground_ic=0.021,
+            ic_delta=0.001, ic_improved=True, passed=True,
+            convergence={"best_epoch": 20, "actual_epochs": 100},
+            round_idx=1,
+        )
+
+        failing_adapter = MagicMock()
+        failing_adapter.apply.return_value = MagicMock(success=False, changes=[], error="boom")
+
+        with patch.object(loop, "_retrain_and_validate", return_value=vr1), \
+             patch.object(loop, "_get_model_ic", return_value=0.02), \
+             patch.object(loop, "_load_experiment_history", return_value=None), \
+             patch.object(loop, "_save_experiment_round"), \
+             patch.object(loop, "_detect_overfitting", return_value=False), \
+             patch("quantpits.scripts.deep_analysis.llm_interface.LLMInterface") as mock_llm_cls:
+            mock_llm = MagicMock()
+            mock_llm.is_available.return_value = True
+            mock_llm.analyze_experiment_result.return_value = {
+                "decision": "retry",
+                "next_param": "n_epochs", "next_from": 150, "next_to": 200,
+                "rationale": "extend further",
+            }
+            mock_llm._load_current_params.return_value = {}
+            mock_llm._load_recent_action_history.return_value = []
+            mock_llm._compute_available_interventions.return_value = [
+                {"param": "n_epochs", "current": 100, "suggested_min": 50, "suggested_max": 500}
+            ]
+            mock_llm._load_hyperparam_bounds.return_value = {"n_epochs": {"min": 10, "max": 500}}
+            mock_llm_cls.return_value = mock_llm
+
+            results = loop._run_experiment_loop(
+                item=item, playground_root=str(tmp_path / "PG"),
+                training_history={}, adapter=failing_adapter, max_rounds=3,
+                skip_first_train=False, pg_mgr=MagicMock(),
+            )
+        assert len(results) == 1
+
