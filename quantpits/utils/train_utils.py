@@ -220,12 +220,54 @@ def strip_mode_from_keys(models_dict):
 
 
 # ================= 日期计算 =================
+
+def compute_slide_dates(anchor_date, train_windows, valid_window, test_window):
+    """Compute train/valid/test date boundaries for slide mode.
+
+    Goes backward from anchor_date using approximate calendar years.
+    Segments are contiguous: fit_end+1day = valid_start, valid_end+1day = test_start.
+
+    Args:
+        anchor_date: str 'YYYY-MM-DD', the latest date (test_end).
+        train_windows: int or float, number of training windows.
+        valid_window: int or float, number of validation windows.
+        test_window: int or float, number of test windows.
+
+    Returns:
+        dict with keys: start_time, fit_start_time, fit_end_time,
+                        valid_start_time, valid_end_time,
+                        test_start_time, test_end_time.
+    """
+    def _add_year_with_nextday(input_date, n):
+        input_date_obj = datetime.strptime(input_date, "%Y-%m-%d")
+        delta_days = int(n * AVERAGE_CALENDAR_DAYS_PER_YEAR)
+        target_date = input_date_obj + timedelta(days=delta_days)
+        next_day = target_date + timedelta(days=1)
+        return target_date.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d")
+
+    total = train_windows + valid_window + test_window
+    _, start_time = _add_year_with_nextday(anchor_date, -1 * total)
+    fit_start_time = start_time
+    fit_end_time, valid_start_time = _add_year_with_nextday(anchor_date, -1 * (valid_window + test_window))
+    valid_end_time, test_start_time = _add_year_with_nextday(anchor_date, -1 * test_window)
+    test_end_time = anchor_date
+
+    return {
+        "start_time": start_time,
+        "fit_start_time": fit_start_time,
+        "fit_end_time": fit_end_time,
+        "valid_start_time": valid_start_time,
+        "valid_end_time": valid_end_time,
+        "test_start_time": test_start_time,
+        "test_end_time": test_end_time,
+    }
+
+
 def calculate_dates():
     """根据统一配置计算训练日期窗口"""
     from qlib.data import D
     from quantpits.utils.config_loader import load_workspace_config
 
-    # 加载统一配置 (取代对 MODEL_CONFIG_FILE 和 PROD_CONFIG_FILE 的直接读取)
     config = load_workspace_config(ROOT_DIR)
 
     train_date_mode = config.get('train_date_mode', 'last_trade_date')
@@ -235,30 +277,23 @@ def calculate_dates():
     valid_set_window = config.get("valid_set_window", 2)
     train_set_windows = config.get("train_set_windows", 8)
 
-    # 频次配置
     freq = config.get("freq", "week").lower()
-    
-    # 确定锚点日期
+
     if train_date_mode == 'last_trade_date':
         last_trade_date = D.calendar(future=False)[-1:][0]
         anchor_date = last_trade_date.strftime('%Y-%m-%d')
     else:
         anchor_date = config.get('current_date', datetime.now().strftime('%Y-%m-%d'))
 
-    def add_year_with_nextday(input_date, n):
-        input_date_obj = datetime.strptime(input_date, "%Y-%m-%d")
-        # 允许 fractional years
-        delta_days = int(n * AVERAGE_CALENDAR_DAYS_PER_YEAR)
-        target_date = input_date_obj + timedelta(days=delta_days)
-        next_day = target_date + timedelta(days=1)
-        return target_date.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d")
-
     if data_slice_mode == 'slide':
-        _, start_time = add_year_with_nextday(anchor_date, -1 * (train_set_windows + valid_set_window + test_set_window))
-        fit_start_time = start_time
-        fit_end_time, valid_start_time = add_year_with_nextday(anchor_date, -1 * (valid_set_window + test_set_window))
-        valid_end_time, test_start_time = add_year_with_nextday(anchor_date, -1 * test_set_window)
-        test_end_time = anchor_date
+        dates = compute_slide_dates(anchor_date, train_set_windows, valid_set_window, test_set_window)
+        start_time = dates["start_time"]
+        fit_start_time = dates["fit_start_time"]
+        fit_end_time = dates["fit_end_time"]
+        valid_start_time = dates["valid_start_time"]
+        valid_end_time = dates["valid_end_time"]
+        test_start_time = dates["test_start_time"]
+        test_end_time = dates["test_end_time"]
     else:
         start_time = config.get("start_time", "2008-01-01")
         fit_start_time = config.get("fit_start_time", "2008-01-01")

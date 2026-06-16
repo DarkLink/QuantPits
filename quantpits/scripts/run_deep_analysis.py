@@ -1050,6 +1050,7 @@ def main():
 
     # --- 5.4. Training Window Analysis (rule-based, independent) ---
     window_findings = []
+    window_analysis_context = {}
     if getattr(args, 'window_analysis', False):
         print("\n🔍 Running Training Window Analyzer...")
         from quantpits.scripts.deep_analysis.training_window_analyzer import TrainingWindowAnalyzer
@@ -1066,13 +1067,48 @@ def main():
                 market_regime_metrics = getattr(af, 'raw_metrics', {})
                 break
 
+        # Load QLIB benchmark data for data-driven rules
+        benchmark_data = {}
+        try:
+            from quantpits.scripts.deep_analysis.benchmark_data_loader import (
+                load_benchmark_data,
+            )
+            benchmark_data = load_benchmark_data(workspace_root)
+            if benchmark_data.get("error"):
+                print(f"   ⚠️  Benchmark data unavailable: {benchmark_data['error']}")
+            else:
+                bm = benchmark_data
+                print(f"   ✅ {bm['benchmark']} data loaded: "
+                      f"{bm['fetch_range']['start']} → {bm['fetch_range']['end']}")
+                segs = bm.get("current_window", {}).get("segments", {})
+                for seg_name in ["train", "valid", "test"]:
+                    seg = segs.get(seg_name, {})
+                    dr = seg.get("date_range", {})
+                    if dr.get("start"):
+                        rs = seg.get("volatility", {})
+                        print(f"      {seg_name}: {dr['start']} → {dr['end']} "
+                              f"[vol={rs.get('annualized', 0):.1%}, "
+                              f"DDs={seg.get('drawdown_stats', {}).get('major_dd_count', 0)}]")
+                what_if = bm.get("what_if", {})
+                n_candidates = len(what_if.get("top_candidates", []))
+                print(f"      what-if: {n_candidates} top candidates evaluated")
+        except Exception as e:
+            print(f"   ⚠️  Failed to load benchmark data: {e}")
+
         window_findings = window_analyzer.analyze(
             market_regime_metrics=market_regime_metrics,
+            benchmark_data=benchmark_data if not benchmark_data.get("error") else None,
         )
         print(f"   → {len(window_findings)} window analysis findings")
         for f in window_findings:
             print(f"      [{getattr(f, 'severity', '?')}] {getattr(f, 'finding_type', '?')}: "
                   f"{getattr(f, 'context', '')[:120]}")
+
+        # Package findings for downstream
+        window_analysis_context = {
+            "findings": [f.to_dict() if hasattr(f, 'to_dict') else f
+                         for f in window_findings],
+        }
 
     # --- 5.5. Signal Extraction ---
     print("\n📡 Extracting structured signals...")
@@ -1082,6 +1118,7 @@ def main():
         reference_date=data_date,
         workspace_root=workspace_root,
         window_analysis_findings=window_findings,
+        window_analysis_context=window_analysis_context if window_analysis_context else None,
     )
     signals = signal_extractor.extract(all_findings, synthesis_result)
     print(f"   → {len(signals)} signals extracted")
@@ -1126,6 +1163,43 @@ def main():
             base_url=args.base_url,
             trace_logger=_critic_trace_logger,
         )
+
+        # --- Window Critic: LLM diagnosis + recommendation ---
+        if window_analysis_context and benchmark_data and not benchmark_data.get("error"):
+            try:
+                from quantpits.scripts.deep_analysis.window_critic import WindowCritic
+
+                wc = WindowCritic(critic_llm, workspace_root)
+
+                # Task A: Diagnosis
+                window_diagnosis = wc.diagnose(
+                    benchmark_data, window_findings,
+                    model=args.llm_model,
+                    api_key=args.api_key,
+                    base_url=args.base_url,
+                )
+                print(f"   🩺 Window diagnosis: {window_diagnosis.get('root_cause', '?')} "
+                      f"[urgency={window_diagnosis.get('urgency', '?')}]")
+                window_analysis_context["diagnosis"] = window_diagnosis
+
+                # Task B: Recommendation
+                window_recommendation = wc.recommend(
+                    benchmark_data, window_diagnosis,
+                    model=args.llm_model,
+                    api_key=args.api_key,
+                    base_url=args.base_url,
+                )
+                rec = window_recommendation.get("recommended_config", {})
+                print(f"   💡 Window recommendation: train={rec.get('train')}, "
+                      f"valid={rec.get('valid')}, test={rec.get('test')}")
+                print(f"      Rationale: {window_recommendation.get('rationale', '')[:150]}")
+                window_analysis_context["recommendation"] = window_recommendation
+            except Exception as e:
+                print(f"   ⚠️  Window Critic failed: {e}")
+
+        # Update signal_extractor with richer context for triage
+        if window_analysis_context:
+            signal_extractor.set_window_analysis_context(window_analysis_context)
 
         # (layered skills already detected above)
 

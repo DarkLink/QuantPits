@@ -43,7 +43,8 @@ class SignalExtractor:
 
     def __init__(self, reference_date: Optional[str] = None,
                  workspace_root: Optional[str] = None,
-                 window_analysis_findings: Optional[List] = None):
+                 window_analysis_findings: Optional[List] = None,
+                 window_analysis_context: Optional[dict] = None):
         """
         Args:
             reference_date: YYYY-MM-DD string used for staleness checks.
@@ -53,6 +54,8 @@ class SignalExtractor:
                             per-epoch loss analysis (optimizer thrashing).
             window_analysis_findings: Pre-computed findings from
                             TrainingWindowAnalyzer (if available).
+            window_analysis_context: Full context dict including findings,
+                            diagnosis, and recommendation (if available).
         """
         self._ref_date = (
             datetime.strptime(reference_date, "%Y-%m-%d")
@@ -60,6 +63,11 @@ class SignalExtractor:
         )
         self._workspace_root = workspace_root
         self._window_analysis_findings = window_analysis_findings or []
+        self._window_analysis_context = window_analysis_context or {}
+
+    def set_window_analysis_context(self, context: dict) -> None:
+        """Update the window analysis context (e.g., after LLM diagnosis)."""
+        self._window_analysis_context = context
 
     # ------------------------------------------------------------------
     # Public API
@@ -152,10 +160,28 @@ class SignalExtractor:
             "family_stats": family_stats,
             "combo_summary": combo_summary,
             "signal_distribution": signal_dist,
-            "training_window_analysis": [
-                f.to_dict() for f in self._window_analysis_findings
+            "training_window_analysis": self._build_training_window_context(),
+        }
+
+    def _build_training_window_context(self) -> dict:
+        """Build the training_window_analysis payload for the Triage LLM.
+
+        Includes deterministic findings + optional LLM diagnosis and
+        recommendation from the WindowCritic.
+        """
+        result: dict = {
+            "findings": [
+                f.to_dict() if hasattr(f, 'to_dict') else f
+                for f in self._window_analysis_findings
             ] if self._window_analysis_findings else [],
         }
+        ctx = self._window_analysis_context
+        if ctx:
+            if ctx.get("diagnosis"):
+                result["diagnosis"] = ctx["diagnosis"]
+            if ctx.get("recommendation"):
+                result["recommendation"] = ctx["recommendation"]
+        return result
 
     # ------------------------------------------------------------------
     # Triage input builders

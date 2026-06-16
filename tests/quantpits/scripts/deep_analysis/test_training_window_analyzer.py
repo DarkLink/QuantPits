@@ -620,3 +620,250 @@ class TestConstructor:
     def test_explicit_reference_date(self, full_workspace):
         a = TrainingWindowAnalyzer(full_workspace, reference_date="2025-12-31")
         assert a._ref_date == datetime(2025, 12, 31)
+
+
+# ---------------------------------------------------------------------------
+# New data-driven rules (7-13) — synthetic benchmark_data
+# ---------------------------------------------------------------------------
+
+
+def _make_cw(cross_overrides=None, train_overrides=None, test_overrides=None,
+             valid_overrides=None, full_overrides=None):
+    """Build a minimal current_window dict for rule testing."""
+    defaults = {
+        "train": {
+            "date_range": {"start": "2019-06-01", "end": "2024-06-01"},
+            "regimes": [{"label": "Bullish-Normal", "pct": 0.6}, {"label": "Sideways-Normal", "pct": 0.4}],
+            "regime_switch_count": 2,
+            "volatility": {"annualized": 0.15, "label": "NormalVol"},
+            "return_stats": {"mean": 0.0003, "std": 0.012, "skew": -0.2, "kurt": 3.5},
+            "drawdown_stats": {"max_dd": -0.22, "major_dd_count": 1, "major_dds": []},
+            "cum_return": 0.35,
+            "empty": False,
+            "num_observations": 260,
+        },
+        "valid": {
+            "date_range": {"start": "2024-06-02", "end": "2025-06-01"},
+            "regimes": [{"label": "Sideways-Normal", "pct": 0.5}, {"label": "Bullish-Normal", "pct": 0.5}],
+            "regime_switch_count": 1,
+            "volatility": {"annualized": 0.18, "label": "NormalVol"},
+            "return_stats": {"mean": 0.0002, "std": 0.014},
+            "drawdown_stats": {"max_dd": -0.10, "major_dd_count": 0, "major_dds": []},
+            "cum_return": 0.10,
+            "empty": False,
+            "num_observations": 52,
+        },
+        "test": {
+            "date_range": {"start": "2025-06-02", "end": "2026-06-12"},
+            "regimes": [{"label": "Bullish-Normal", "pct": 0.7}, {"label": "Sideways-Normal", "pct": 0.3}],
+            "regime_switch_count": 0,
+            "volatility": {"annualized": 0.14, "label": "NormalVol"},
+            "return_stats": {"mean": 0.0004, "std": 0.011},
+            "drawdown_stats": {"max_dd": -0.05, "major_dd_count": 0, "major_dds": []},
+            "cum_return": 0.15,
+            "empty": False,
+            "num_observations": 52,
+        },
+        "full_history": {
+            "drawdown_stats": {"max_dd": -0.45, "major_dd_count": 4, "major_dds": [
+                {"start": "2008-01-01", "end": "2008-12-01", "depth": -0.45},
+                {"start": "2015-06-01", "end": "2016-02-01", "depth": -0.35},
+            ]},
+            "regimes": [{"label": "Bullish-Normal", "pct": 0.3}, {"label": "Bearish-HighVol", "pct": 0.15},
+                        {"label": "Sideways-Normal", "pct": 0.25}, {"label": "Bullish-HighVol", "pct": 0.2},
+                        {"label": "Sideways-LowVol", "pct": 0.1}],
+            "volatility": {"annualized": 0.19},
+            "empty": False,
+        },
+    }
+    cw = {
+        "config": {"train": 5, "valid": 2, "test": 2, "mode": "slide"},
+        "segments": defaults,
+        "full_history": defaults["full_history"],
+        "cross_segment": {
+            "train_vs_test_vol_ratio": 1.07,
+            "train_vs_test_ks_statistic": 0.05,
+            "train_to_valid_boundary": {"last_before": "Bullish-Normal", "first_after": "Sideways-Normal", "changed": True},
+            "valid_to_test_boundary": {"last_before": "Sideways-Normal", "first_after": "Bullish-Normal", "changed": True},
+            "regime_coverage_pct": 0.40,
+            "missing_regimes": ["Bearish-HighVol", "Bullish-HighVol", "Sideways-LowVol"],
+        },
+    }
+    if cross_overrides:
+        cw["cross_segment"].update(cross_overrides)
+    if train_overrides:
+        cw["segments"]["train"].update(train_overrides)
+    if test_overrides:
+        cw["segments"]["test"].update(test_overrides)
+    if valid_overrides:
+        cw["segments"]["valid"].update(valid_overrides)
+    return cw
+
+
+def _make_sd(overrides=None):
+    """Build a minimal sliding_dynamics dict."""
+    sd = {
+        "num_weeks": 52,
+        "coverage_over_time": [],
+        "cliff_edges": [],
+        "stability_score": 0.85,
+        "trend": "stable",
+    }
+    if overrides:
+        sd.update(overrides)
+    return sd
+
+
+class TestRegimeCoverage:
+    def test_low_coverage(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw(cross_overrides={"regime_coverage_pct": 0.30, "missing_regimes": ["Bearish-HighVol", "Bullish-HighVol"]})
+        findings = a._check_regime_coverage({"train_set_windows": 5}, cw)
+        assert len(findings) >= 1
+        assert any(f.finding_type == "regime_coverage_gap" for f in findings)
+
+    def test_adequate_coverage(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw(cross_overrides={"regime_coverage_pct": 0.60, "missing_regimes": []})
+        findings = a._check_regime_coverage({"train_set_windows": 5}, cw)
+        # No coverage gap, but might emit missing_risk_regime if applicable
+        coverage_gaps = [f for f in findings if f.finding_type == "regime_coverage_gap"]
+        assert len(coverage_gaps) == 0
+
+
+class TestVolatilityShift:
+    def test_high_vol_ratio(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw(cross_overrides={"train_vs_test_vol_ratio": 2.0})
+        cw["segments"]["train"]["volatility"]["annualized"] = 0.10
+        cw["segments"]["test"]["volatility"]["annualized"] = 0.20
+        findings = a._check_volatility_regime_shift({}, cw)
+        assert any(f.finding_type == "volatility_regime_shift" for f in findings)
+
+    def test_low_vol_ratio(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw(cross_overrides={"train_vs_test_vol_ratio": 0.3})
+        cw["segments"]["train"]["volatility"]["annualized"] = 0.30
+        cw["segments"]["test"]["volatility"]["annualized"] = 0.09
+        findings = a._check_volatility_regime_shift({}, cw)
+        assert any(f.finding_type == "volatility_regime_shift" for f in findings)
+
+    def test_normal_ratio(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw(cross_overrides={"train_vs_test_vol_ratio": 1.07})
+        findings = a._check_volatility_regime_shift({}, cw)
+        assert len(findings) == 0
+
+
+class TestDistributionShift:
+    def test_high_ks(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw(cross_overrides={"train_vs_test_ks_statistic": 0.25})
+        findings = a._check_return_distribution_shift({}, cw)
+        assert any(f.finding_type == "return_distribution_shift" for f in findings)
+
+    def test_low_ks(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw(cross_overrides={"train_vs_test_ks_statistic": 0.05})
+        findings = a._check_return_distribution_shift({}, cw)
+        assert len(findings) == 0
+
+
+class TestDrawdownCoverage:
+    def test_missing_major_drawdowns(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw()
+        # Default: train has 0 major DDs (need to override from default)
+        cw["segments"]["train"]["drawdown_stats"]["major_dd_count"] = 0
+        findings = a._check_drawdown_coverage({}, cw)
+        # Full has 4 major DDs, train has 0 → should warn
+        assert any(f.finding_type == "insufficient_drawdown_coverage" for f in findings)
+
+    def test_sufficient_drawdowns(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw()
+        # Train has 1 major DD (default), full has 4 → shouldn't trigger
+        findings = a._check_drawdown_coverage({}, cw)
+        assert len(findings) == 0
+
+
+class TestBoundaryRegime:
+    def test_boundary_change(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw()
+        findings = a._check_boundary_regime({}, cw)
+        # Both boundaries changed in the default fixture
+        assert len(findings) >= 1
+        assert all(f.finding_type == "boundary_regime_mismatch" for f in findings)
+
+
+class TestCliffEdge:
+    def test_impending_loss(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        sd = _make_sd({"cliff_edges": [
+            {"anchor": "2026-06-05", "lost_regime": "Bearish-HighVol", "weeks_until": 2},
+        ]})
+        findings = a._check_cliff_edge({}, sd)
+        assert any(f.finding_type == "impending_regime_loss" for f in findings)
+
+    def test_no_cliff(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        sd = _make_sd({"cliff_edges": []})
+        findings = a._check_cliff_edge({}, sd)
+        assert len(findings) == 0
+
+    def test_old_cliff_ignored(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        sd = _make_sd({"cliff_edges": [
+            {"anchor": "2025-01-01", "lost_regime": "Old-Regime", "weeks_until": 50},
+        ]})
+        findings = a._check_cliff_edge({}, sd)
+        assert len(findings) == 0
+
+
+class TestCoverageStability:
+    def test_unstable(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        sd = _make_sd({"stability_score": 0.75, "trend": "degrading"})
+        findings = a._check_coverage_stability({}, sd)
+        assert any(f.finding_type == "coverage_instability" for f in findings)
+
+    def test_stable(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        sd = _make_sd({"stability_score": 0.95, "trend": "stable"})
+        findings = a._check_coverage_stability({}, sd)
+        assert len(findings) == 0
+
+
+class TestAnalyzeWithBenchmarkData:
+    def test_new_rules_called(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        cw = _make_cw()
+        sd = _make_sd()
+        benchmark_data = {"error": None, "current_window": cw, "sliding_dynamics": sd}
+        findings = a.analyze(benchmark_data=benchmark_data)
+        new_types = {"regime_coverage_gap", "volatility_regime_shift",
+                     "return_distribution_shift", "insufficient_drawdown_coverage",
+                     "boundary_regime_mismatch", "coverage_instability"}
+        found_new = {f.finding_type for f in findings} & new_types
+        assert len(found_new) >= 1  # At least some new rules fired
+
+    def test_benchmark_data_none_skips_new_rules(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        findings = a.analyze(benchmark_data=None)
+        new_types = {"regime_coverage_gap", "volatility_regime_shift",
+                     "return_distribution_shift", "insufficient_drawdown_coverage",
+                     "boundary_regime_mismatch", "impending_regime_loss",
+                     "coverage_instability"}
+        found_new = {f.finding_type for f in findings} & new_types
+        assert len(found_new) == 0  # No new rules when benchmark_data is None
+
+    def test_benchmark_data_error_skips_new_rules(self, full_workspace):
+        a = TrainingWindowAnalyzer(full_workspace)
+        findings = a.analyze(benchmark_data={"error": "QLIB failed"})
+        new_types = {"regime_coverage_gap", "volatility_regime_shift",
+                     "return_distribution_shift", "insufficient_drawdown_coverage",
+                     "boundary_regime_mismatch", "impending_regime_loss",
+                     "coverage_instability"}
+        found_new = {f.finding_type for f in findings} & new_types
+        assert len(found_new) == 0

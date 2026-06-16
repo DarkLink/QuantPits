@@ -65,6 +65,19 @@ class TrainingWindowAnalyzer:
     MAX_TRAIN_END_GAP_YEARS = 4.0       # train_end >4yr from anchor → warning
     CRITICAL_TRAIN_END_GAP_YEARS = 5.0   # train_end >5yr from anchor → critical
 
+    # New market-data-driven thresholds (Rules 7-13)
+    MIN_REGIME_COVERAGE_PCT = 0.4
+    MAX_VOL_RATIO_TRAIN_VS_TEST = 1.5
+    MIN_VOL_RATIO_TRAIN_VS_TEST = 0.5
+    MAX_KS_STATISTIC = 0.20
+    MAX_MEAN_SHIFT_STD = 1.0
+    MAX_STD_SHIFT_RATIO = 2.0
+    MAX_SKEW_DIFF = 1.5
+    MAJOR_DD_THRESHOLD = -0.15
+    MIN_TRAIN_MAJOR_DD_COUNT = 1
+    CLIFF_EDGE_WARN_WEEKS = 4
+    MAX_COVERAGE_STD = 0.10
+
     def __init__(
         self,
         workspace_root: str,
@@ -85,12 +98,15 @@ class TrainingWindowAnalyzer:
     def analyze(
         self,
         market_regime_metrics: Optional[Dict[str, Any]] = None,
+        benchmark_data: Optional[Dict[str, Any]] = None,
     ) -> List[WindowAnalysisFinding]:
         """Run all window analysis rules.
 
         Args:
             market_regime_metrics: Raw metrics from MarketRegimeAgent.
                 Should contain volatility label, regime_switches, etc.
+            benchmark_data: Pre-computed benchmark analytics from
+                BenchmarkDataLoader. Enables data-driven rules (7-13).
 
         Returns:
             List of WindowAnalysisFinding objects.
@@ -103,6 +119,7 @@ class TrainingWindowAnalyzer:
 
         anchor_info = self._load_anchor_info()
 
+        # Existing static rules (1-6)
         findings.extend(self._check_window_bounds(config))
         findings.extend(self._check_validation_ratio(config))
         findings.extend(self._check_train_end_gap(config, market_regime_metrics))
@@ -114,6 +131,23 @@ class TrainingWindowAnalyzer:
             )
 
         findings.extend(self._check_freq_compatibility(config))
+
+        # New data-driven rules (7-13) — only if benchmark data available
+        if benchmark_data and not benchmark_data.get("error"):
+            cw = benchmark_data.get("current_window", {})
+            sd = benchmark_data.get("sliding_dynamics", {})
+            wi = benchmark_data.get("what_if", {})
+
+            if cw:
+                findings.extend(self._check_regime_coverage(config, cw))
+                findings.extend(self._check_volatility_regime_shift(config, cw))
+                findings.extend(self._check_return_distribution_shift(config, cw))
+                findings.extend(self._check_drawdown_coverage(config, cw))
+                findings.extend(self._check_boundary_regime(config, cw))
+
+            if sd:
+                findings.extend(self._check_cliff_edge(config, sd))
+                findings.extend(self._check_coverage_stability(config, sd))
 
         return findings
 
@@ -188,6 +222,55 @@ class TrainingWindowAnalyzer:
                     recommendations["test_set_window"] = {
                         "from": ts, "to": new_test,
                     }
+
+            elif finding.finding_type == "regime_coverage_gap":
+                tw = current.get("train_set_windows")
+                if tw is not None and tw > 0:
+                    new_val = min(tw + 2, bounds.get("train_set_windows", {}).get("max", 20))
+                    if new_val != tw:
+                        recommendations["train_set_windows"] = {
+                            "from": tw, "to": new_val,
+                        }
+
+            elif finding.finding_type == "boundary_regime_mismatch":
+                # Reduce valid window to keep validation within same regime
+                vw = current.get("valid_set_window", 2)
+                new_val = max(1.0, vw - 0.5)
+                if new_val < vw:
+                    recommendations["valid_set_window"] = {
+                        "from": vw, "to": new_val,
+                    }
+
+            elif finding.finding_type == "volatility_regime_shift":
+                # Either increase train (capture more vol regimes) or reduce test
+                tw = current.get("train_set_windows")
+                if tw is not None and tw > 0:
+                    vol_ratio = finding.metrics.get("ratio", 1.0)
+                    if vol_ratio > 1.0:
+                        # Test is more volatile — more training data needed
+                        new_val = min(tw + 2, bounds.get("train_set_windows", {}).get("max", 20))
+                        if new_val != tw:
+                            recommendations["train_set_windows"] = {
+                                "from": tw, "to": new_val,
+                            }
+
+            elif finding.finding_type == "insufficient_drawdown_coverage":
+                tw = current.get("train_set_windows")
+                if tw is not None and tw > 0:
+                    new_val = min(tw + 3, bounds.get("train_set_windows", {}).get("max", 20))
+                    if new_val != tw:
+                        recommendations["train_set_windows"] = {
+                            "from": tw, "to": new_val,
+                        }
+
+            elif finding.finding_type == "impending_regime_loss":
+                tw = current.get("train_set_windows")
+                if tw is not None and tw > 0:
+                    new_val = min(tw + 1, bounds.get("train_set_windows", {}).get("max", 20))
+                    if new_val != tw:
+                        recommendations["train_set_windows"] = {
+                            "from": tw, "to": new_val,
+                        }
 
         return recommendations
 
@@ -538,6 +621,369 @@ class TrainingWindowAnalyzer:
                 context=(
                     f"Daily freq with {config.get('train_set_windows')} "
                     f"windows may produce very large datasets."
+                ),
+            ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Rule 7: Regime coverage (market-data-driven)
+    # ------------------------------------------------------------------
+
+    def _check_regime_coverage(
+        self, config: dict, cw: dict,
+    ) -> List[WindowAnalysisFinding]:
+        """Check if training window covers enough market regime types."""
+        findings: List[WindowAnalysisFinding] = []
+        cross = cw.get("cross_segment", {})
+        coverage_pct = cross.get("regime_coverage_pct", 0.0)
+        missing = cross.get("missing_regimes", [])
+        tw = config.get("train_set_windows", 8)
+
+        if coverage_pct < self.MIN_REGIME_COVERAGE_PCT:
+            # Check if missing includes a critical risk regime
+            risk_regimes = [r for r in missing if "Bearish" in r and "HighVol" in r]
+            severity = "warning" if risk_regimes else "warning"
+
+            findings.append(WindowAnalysisFinding(
+                finding_type="regime_coverage_gap",
+                severity=severity,
+                target="global",
+                metrics={
+                    "current_coverage_pct": round(coverage_pct, 3),
+                    "min_recommended_pct": self.MIN_REGIME_COVERAGE_PCT,
+                    "train_windows": tw,
+                    "missing_regimes": missing[:10],
+                },
+                recommendation=(
+                    f"Training covers {coverage_pct*100:.0f}% of regime types "
+                    f"(missing: {', '.join(missing[:5])}). "
+                    f"Increase train_set_windows to capture more regimes."
+                ),
+                context=(
+                    f"Training window ({tw}) covers only {coverage_pct*100:.0f}% "
+                    f"of {len(missing) + int(coverage_pct * 100)} observed market "
+                    f"regime types from 2005-present."
+                ),
+            ))
+
+        # Separate finding for missing risk regimes (always emit if risk regimes missing)
+        risk_regimes = [r for r in missing if "Bearish" in r and "HighVol" in r]
+        if risk_regimes and coverage_pct >= self.MIN_REGIME_COVERAGE_PCT:
+            findings.append(WindowAnalysisFinding(
+                finding_type="missing_risk_regime",
+                severity="warning",
+                target="global",
+                metrics={
+                    "missing_risk_regimes": risk_regimes,
+                    "train_windows": tw,
+                },
+                recommendation=(
+                    f"Training window lacks Bearish-HighVol regimes: "
+                    f"{', '.join(risk_regimes)}. Model untested on market stress."
+                ),
+                context=(
+                    f"Bearish-HighVol regimes ({', '.join(risk_regimes)}) are "
+                    f"absent from the training window. Model may fail during "
+                    f"market crashes."
+                ),
+            ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Rule 8: Volatility regime shift
+    # ------------------------------------------------------------------
+
+    def _check_volatility_regime_shift(
+        self, config: dict, cw: dict,
+    ) -> List[WindowAnalysisFinding]:
+        """Check if test-period volatility is drastically different from training."""
+        findings: List[WindowAnalysisFinding] = []
+        cross = cw.get("cross_segment", {})
+        vol_ratio = cross.get("train_vs_test_vol_ratio", 1.0)
+        segs = cw.get("segments", {})
+        train_vol = segs.get("train", {}).get("volatility", {}).get("annualized", 0)
+        test_vol = segs.get("test", {}).get("volatility", {}).get("annualized", 0)
+
+        if vol_ratio > self.MAX_VOL_RATIO_TRAIN_VS_TEST:
+            findings.append(WindowAnalysisFinding(
+                finding_type="volatility_regime_shift",
+                severity="warning",
+                target="global",
+                metrics={
+                    "train_volatility": round(train_vol, 4),
+                    "test_volatility": round(test_vol, 4),
+                    "ratio": round(vol_ratio, 3),
+                    "threshold": self.MAX_VOL_RATIO_TRAIN_VS_TEST,
+                },
+                recommendation=(
+                    f"Test volatility ({test_vol*100:.1f}%) is "
+                    f"{vol_ratio:.1f}x training volatility ({train_vol*100:.1f}%). "
+                    f"Increase train_set_windows to capture higher-vol periods, "
+                    f"or reduce test_set_window to limit exposure."
+                ),
+                context=(
+                    f"Test period volatility ({test_vol*100:.1f}% ann) is "
+                    f"{vol_ratio:.1f}x the training period ({train_vol*100:.1f}% ann). "
+                    f"Model evaluated in conditions it was not optimized for."
+                ),
+            ))
+        elif vol_ratio < self.MIN_VOL_RATIO_TRAIN_VS_TEST:
+            findings.append(WindowAnalysisFinding(
+                finding_type="volatility_regime_shift",
+                severity="info",
+                target="global",
+                metrics={
+                    "train_volatility": round(train_vol, 4),
+                    "test_volatility": round(test_vol, 4),
+                    "ratio": round(vol_ratio, 3),
+                },
+                recommendation=(
+                    f"Test volatility ({test_vol*100:.1f}%) is much lower than "
+                    f"training ({train_vol*100:.1f}%). Model may be overfit to "
+                    f"noisy training conditions."
+                ),
+                context=(
+                    f"Test period is unusually calm ({test_vol*100:.1f}% ann) "
+                    f"relative to training ({train_vol*100:.1f}% ann). "
+                    f"Performance may not hold when volatility returns."
+                ),
+            ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Rule 9: Return distribution shift
+    # ------------------------------------------------------------------
+
+    def _check_return_distribution_shift(
+        self, config: dict, cw: dict,
+    ) -> List[WindowAnalysisFinding]:
+        """Check if return distribution differs significantly between train and test."""
+        findings: List[WindowAnalysisFinding] = []
+        cross = cw.get("cross_segment", {})
+        ks_stat = cross.get("train_vs_test_ks_statistic", 0.0)
+        segs = cw.get("segments", {})
+        train_stats = segs.get("train", {}).get("return_stats", {})
+        test_stats = segs.get("test", {}).get("return_stats", {})
+
+        if ks_stat > self.MAX_KS_STATISTIC:
+            findings.append(WindowAnalysisFinding(
+                finding_type="return_distribution_shift",
+                severity="warning",
+                target="global",
+                metrics={
+                    "ks_statistic": round(ks_stat, 4),
+                    "threshold": self.MAX_KS_STATISTIC,
+                    "train_mean": train_stats.get("mean", 0),
+                    "test_mean": test_stats.get("mean", 0),
+                    "train_std": train_stats.get("std", 0),
+                    "test_std": test_stats.get("std", 0),
+                },
+                recommendation=(
+                    "Return distribution differs significantly between training "
+                    "and test. Consider reducing train_set_windows to focus on "
+                    "more recent, distributionally similar data."
+                ),
+                context=(
+                    f"KS statistic ({ks_stat:.3f}) exceeds threshold "
+                    f"({self.MAX_KS_STATISTIC}). Training and test return "
+                    f"distributions are statistically different — model may "
+                    f"learn patterns that don't apply to the test regime."
+                ),
+            ))
+
+        # Also check mean shift in standard deviation units
+        t_std = train_stats.get("std", 0)
+        if t_std > 0:
+            mean_shift = abs(train_stats.get("mean", 0) - test_stats.get("mean", 0)) / t_std
+            if mean_shift > self.MAX_MEAN_SHIFT_STD:
+                findings.append(WindowAnalysisFinding(
+                    finding_type="return_distribution_shift",
+                    severity="info",
+                    target="global",
+                    metrics={
+                        "mean_shift_std_units": round(mean_shift, 3),
+                        "train_skew": train_stats.get("skew", 0),
+                        "test_skew": test_stats.get("skew", 0),
+                    },
+                    recommendation=(
+                        f"Mean return shifted by {mean_shift:.1f}σ from training "
+                        f"to test. Model's expected return assumptions may be wrong."
+                    ),
+                    context=(
+                        f"Mean return shift of {mean_shift:.1f} standard "
+                        f"deviations suggests a regime change between training "
+                        f"and test periods."
+                    ),
+                ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Rule 10: Drawdown coverage
+    # ------------------------------------------------------------------
+
+    def _check_drawdown_coverage(
+        self, config: dict, cw: dict,
+    ) -> List[WindowAnalysisFinding]:
+        """Check if training window contains major drawdowns for robustness."""
+        findings: List[WindowAnalysisFinding] = []
+        segs = cw.get("segments", {})
+        full_hist = cw.get("full_history", {})
+        train_dd = segs.get("train", {}).get("drawdown_stats", {})
+        full_dd = full_hist.get("drawdown_stats", {})
+
+        train_major = train_dd.get("major_dd_count", 0)
+        full_major = full_dd.get("major_dd_count", 0)
+
+        if train_major < self.MIN_TRAIN_MAJOR_DD_COUNT and full_major >= self.MIN_TRAIN_MAJOR_DD_COUNT:
+            full_major_dds = full_dd.get("major_dds", [])
+            dd_descriptions = [
+                f"{dd.get('start', '?')}: {dd.get('depth', 0)*100:.0f}%"
+                for dd in full_major_dds[:5]
+            ]
+            findings.append(WindowAnalysisFinding(
+                finding_type="insufficient_drawdown_coverage",
+                severity="warning",
+                target="global",
+                metrics={
+                    "train_major_dd_count": train_major,
+                    "full_history_major_dd_count": full_major,
+                    "train_max_dd": train_dd.get("max_dd", 0),
+                    "full_max_dd": full_dd.get("max_dd", 0),
+                    "missed_drawdowns": dd_descriptions,
+                },
+                recommendation=(
+                    f"Training window has {train_major} major drawdowns, but "
+                    f"full history contains {full_major}. Expand train_set_windows "
+                    f"to include historical stress events for robustness."
+                ),
+                context=(
+                    f"Training captured {train_major} major drawdown(s) "
+                    f"(>15%), while the full 2005-present history contains "
+                    f"{full_major}: {', '.join(dd_descriptions[:3])}. "
+                    f"Model has not trained on significant market stress."
+                ),
+            ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Rule 11: Boundary regime mismatch
+    # ------------------------------------------------------------------
+
+    def _check_boundary_regime(
+        self, config: dict, cw: dict,
+    ) -> List[WindowAnalysisFinding]:
+        """Check if market regime changed at train/valid boundary."""
+        findings: List[WindowAnalysisFinding] = []
+        cross = cw.get("cross_segment", {})
+
+        for boundary_key, boundary_label in [
+            ("train_to_valid_boundary", "train→valid"),
+            ("valid_to_test_boundary", "valid→test"),
+        ]:
+            boundary = cross.get(boundary_key, {})
+            if boundary.get("changed"):
+                findings.append(WindowAnalysisFinding(
+                    finding_type="boundary_regime_mismatch",
+                    severity="warning",
+                    target="global",
+                    metrics={
+                        "boundary": boundary_label,
+                        "last_before": boundary.get("last_before", ""),
+                        "first_after": boundary.get("first_after", ""),
+                    },
+                    recommendation=(
+                        f"Regime changed at {boundary_label} boundary "
+                        f"({boundary.get('last_before', '?')} → "
+                        f"{boundary.get('first_after', '?')}). "
+                        f"Validation/evaluation results may reflect regime "
+                        f"change rather than model quality. Adjust window "
+                        f"sizes to align boundaries with regime transitions."
+                    ),
+                    context=(
+                        f"At the {boundary_label} boundary, market regime "
+                        f"shifted from '{boundary.get('last_before', '?')}' "
+                        f"to '{boundary.get('first_after', '?')}'. "
+                        f"Cross-regime evaluation is unreliable."
+                    ),
+                ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Rule 12: Impending regime loss (cliff edge)
+    # ------------------------------------------------------------------
+
+    def _check_cliff_edge(
+        self, config: dict, sd: dict,
+    ) -> List[WindowAnalysisFinding]:
+        """Warn if a regime will drop from training within N weeks."""
+        findings: List[WindowAnalysisFinding] = []
+        cliff_edges = sd.get("cliff_edges", [])
+
+        for edge in cliff_edges:
+            weeks_until = edge.get("weeks_until", 999)
+            if weeks_until is not None and weeks_until <= self.CLIFF_EDGE_WARN_WEEKS:
+                lost = edge.get("lost_regime", "?")
+                anchor = edge.get("anchor", "?")
+                severity = "warning" if weeks_until <= 2 else "info"
+                findings.append(WindowAnalysisFinding(
+                    finding_type="impending_regime_loss",
+                    severity=severity,
+                    target="global",
+                    metrics={
+                        "lost_regime": lost,
+                        "anchor_of_loss": anchor,
+                        "weeks_until": weeks_until if weeks_until is not None else 0,
+                    },
+                    recommendation=(
+                        f"Regime '{lost}' will drop from training in "
+                        f"~{weeks_until} weeks. Consider increasing "
+                        f"train_set_windows to retain this regime."
+                    ),
+                    context=(
+                        f"Regime '{lost}' dropped from the training window "
+                        f"at anchor {anchor} ({weeks_until} weeks ago). "
+                    ),
+                ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Rule 13: Coverage stability over sliding windows
+    # ------------------------------------------------------------------
+
+    def _check_coverage_stability(
+        self, config: dict, sd: dict,
+    ) -> List[WindowAnalysisFinding]:
+        """Check if regime coverage is stable across sliding windows."""
+        findings: List[WindowAnalysisFinding] = []
+        stability = sd.get("stability_score", 1.0)
+        trend = sd.get("trend", "stable")
+
+        if stability < (1.0 - self.MAX_COVERAGE_STD):
+            findings.append(WindowAnalysisFinding(
+                finding_type="coverage_instability",
+                severity="info",
+                target="global",
+                metrics={
+                    "stability_score": stability,
+                    "trend": trend,
+                },
+                recommendation=(
+                    f"Regime coverage fluctuates across weekly slides "
+                    f"(stability={stability:.2f}). Retraining frequency may "
+                    f"interact poorly with window sizing. Consider fixed mode "
+                    f"or larger windows for stability."
+                ),
+                context=(
+                    f"Regime coverage stability is {stability:.2f} (1.0 = "
+                    f"identical every week). Trend: {trend}. Each weekly "
+                    f"retrain sees different market conditions in training."
                 ),
             ))
 
