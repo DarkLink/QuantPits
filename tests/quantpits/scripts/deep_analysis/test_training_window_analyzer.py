@@ -867,3 +867,243 @@ class TestAnalyzeWithBenchmarkData:
                      "coverage_instability"}
         found_new = {f.finding_type for f in findings} & new_types
         assert len(found_new) == 0
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests — recommendation handlers
+# ---------------------------------------------------------------------------
+
+
+class TestRecommendationHandlers:
+    """Tests for the 5 uncovered recommendation finding types (lines 226-271)."""
+
+    def test_regime_coverage_gap_recommendation(self, analyzer):
+        """regime_coverage_gap → increases train_set_windows by 2 (line 226-233)."""
+        f = WindowAnalysisFinding(
+            finding_type="regime_coverage_gap",
+            severity="warning",
+            target="global",
+            metrics={},
+        )
+        recs = analyzer.generate_recommendations([f])
+        assert "train_set_windows" in recs
+        assert recs["train_set_windows"]["from"] == 8
+        assert recs["train_set_windows"]["to"] == 10
+
+    def test_regime_coverage_gap_capped_at_max(self, analyzer):
+        """regime_coverage_gap capped at max (20)."""
+        import pathlib
+        ws = pathlib.Path(analyzer._workspace_root)
+        _write_model_config(ws / "config", overrides={"train_set_windows": 19})
+        a2 = TrainingWindowAnalyzer(str(ws), reference_date="2026-06-13")
+        f = WindowAnalysisFinding(
+            finding_type="regime_coverage_gap",
+            severity="warning",
+            target="global",
+            metrics={},
+        )
+        recs = a2.generate_recommendations([f])
+        assert recs["train_set_windows"]["to"] == 20
+
+    def test_boundary_regime_mismatch_recommendation(self, analyzer):
+        """boundary_regime_mismatch → reduces valid_set_window by 0.5 (line 235-242)."""
+        f = WindowAnalysisFinding(
+            finding_type="boundary_regime_mismatch",
+            severity="warning",
+            target="global",
+            metrics={},
+        )
+        recs = analyzer.generate_recommendations([f])
+        assert "valid_set_window" in recs
+        assert recs["valid_set_window"]["from"] == 2
+        assert recs["valid_set_window"]["to"] == 1.5
+
+    def test_boundary_regime_mismatch_minimum_guard(self, analyzer):
+        """boundary_regime_mismatch won't go below 1.0 (line 238)."""
+        import pathlib
+        ws = pathlib.Path(analyzer._workspace_root)
+        _write_model_config(ws / "config", overrides={"valid_set_window": 1.0})
+        a2 = TrainingWindowAnalyzer(str(ws), reference_date="2026-06-13")
+        f = WindowAnalysisFinding(
+            finding_type="boundary_regime_mismatch",
+            severity="warning",
+            target="global",
+            metrics={},
+        )
+        recs = a2.generate_recommendations([f])
+        # No change because new_val (max(1.0, 1.0-0.5)) == current (1.0)
+        assert "valid_set_window" not in recs
+
+    def test_volatility_regime_shift_recommendation(self, analyzer):
+        """volatility_regime_shift with ratio > 1 → increases train_set_windows (lines 244-255)."""
+        f = WindowAnalysisFinding(
+            finding_type="volatility_regime_shift",
+            severity="warning",
+            target="global",
+            metrics={"ratio": 1.5},
+        )
+        recs = analyzer.generate_recommendations([f])
+        assert "train_set_windows" in recs
+        assert recs["train_set_windows"]["from"] == 8
+        assert recs["train_set_windows"]["to"] == 10
+
+    def test_volatility_regime_shift_low_ratio_no_change(self, analyzer):
+        """volatility_regime_shift with ratio ≤ 1.0 → no recommendation (line 249)."""
+        f = WindowAnalysisFinding(
+            finding_type="volatility_regime_shift",
+            severity="warning",
+            target="global",
+            metrics={"ratio": 0.8},
+        )
+        recs = analyzer.generate_recommendations([f])
+        assert "train_set_windows" not in recs
+
+    def test_insufficient_drawdown_coverage_recommendation(self, analyzer):
+        """insufficient_drawdown_coverage → increases train_set_windows by 3 (lines 257-264)."""
+        f = WindowAnalysisFinding(
+            finding_type="insufficient_drawdown_coverage",
+            severity="warning",
+            target="global",
+            metrics={},
+        )
+        recs = analyzer.generate_recommendations([f])
+        assert "train_set_windows" in recs
+        assert recs["train_set_windows"]["from"] == 8
+        assert recs["train_set_windows"]["to"] == 11
+
+    def test_impending_regime_loss_recommendation(self, analyzer):
+        """impending_regime_loss → increases train_set_windows by 1 (lines 266-273)."""
+        f = WindowAnalysisFinding(
+            finding_type="impending_regime_loss",
+            severity="warning",
+            target="global",
+            metrics={},
+        )
+        recs = analyzer.generate_recommendations([f])
+        assert "train_set_windows" in recs
+        assert recs["train_set_windows"]["from"] == 8
+        assert recs["train_set_windows"]["to"] == 9
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests — return distribution mean-shift check
+# ---------------------------------------------------------------------------
+
+
+class TestDistributionShiftMeanCheck:
+    """Tests for the mean-shift check in _check_return_distribution_shift (line 802)."""
+
+    def test_mean_shift_within_ks_threshold(self, full_workspace):
+        """KS within threshold but large mean shift → 'info' finding (line 802)."""
+        a = TrainingWindowAnalyzer(full_workspace)
+        # Set thresholds so KS check passes but mean shift triggers
+        a.MAX_KS_STATISTIC = 0.99  # very high, won't trigger
+        a.MAX_MEAN_SHIFT_STD = 0.1  # very low, will trigger easily
+
+        cw = _make_cw(
+            cross_overrides={"train_vs_test_ks_statistic": 0.10},  # below threshold
+            train_overrides={
+                "return_stats": {"mean": 0.002, "std": 0.01, "skew": 0.1},
+            },
+            test_overrides={
+                "return_stats": {"mean": -0.002, "std": 0.02, "skew": 0.1},
+            },
+        )
+
+        findings = a._check_return_distribution_shift(
+            {"train_set_windows": 8}, cw,
+        )
+        # Should get the mean-shift-based 'info' finding
+        types = {f.finding_type for f in findings}
+        severities = {f.severity for f in findings}
+        assert "return_distribution_shift" in types
+        assert "info" in severities
+
+    def test_mean_shift_both_below_threshold(self, full_workspace):
+        """Both KS and mean shift below threshold → no findings."""
+        a = TrainingWindowAnalyzer(full_workspace)
+        a.MAX_KS_STATISTIC = 0.99
+        a.MAX_MEAN_SHIFT_STD = 99.0  # very high, won't trigger
+
+        cw = _make_cw(
+            cross_overrides={"train_vs_test_ks_statistic": 0.10},
+            train_overrides={
+                "return_stats": {"mean": 0.002, "std": 0.01, "skew": 0.1},
+            },
+            test_overrides={
+                "return_stats": {"mean": 0.001, "std": 0.02, "skew": 0.1},
+            },
+        )
+
+        findings = a._check_return_distribution_shift(
+            {"train_set_windows": 8}, cw,
+        )
+        assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests — _load_anchor_info edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestLoadAnchorInfoEdgeCases:
+    """Tests for _load_anchor_info() edge cases (lines 1036, 1050-1051)."""
+
+    def test_blank_lines_skipped(self, full_workspace):
+        """Blank lines in training_history.jsonl → skipped (line 1036)."""
+        import pathlib
+        ws = pathlib.Path(full_workspace)
+        data_dir = ws / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        history_path = data_dir / "training_history.jsonl"
+        with open(history_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "model_name": "m1",
+                "anchor_date": "2026-06-01",
+                "trained_at": "2026-06-02",
+            }) + "\n")
+            f.write("\n")  # blank line
+            f.write(json.dumps({
+                "model_name": "m2",
+                "anchor_date": "2026-06-08",
+                "trained_at": "2026-06-09",
+            }) + "\n")
+
+        a = TrainingWindowAnalyzer(str(ws), reference_date="2026-06-13")
+        info = a._load_anchor_info()
+        assert info["total_anchors"] == 2
+        assert info["latest_anchor_date"] == "2026-06-08"
+
+    def test_mid_read_exception_caught(self, full_workspace):
+        """Exception during file read → caught and logged (lines 1050-1051)."""
+        import pathlib
+        ws = pathlib.Path(full_workspace)
+        data_dir = ws / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        history_path = data_dir / "training_history.jsonl"
+        # Create a valid file first so os.path.exists() returns True
+        with open(history_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "model_name": "m1",
+                "anchor_date": "2026-06-01",
+                "trained_at": "2026-06-02",
+            }) + "\n")
+
+        a = TrainingWindowAnalyzer(str(ws), reference_date="2026-06-13")
+        # Mock open to raise after exists check passes
+        import builtins
+        from unittest.mock import patch
+        orig_open = builtins.open
+        called = [0]
+
+        def _mock_open(path, *args, **kwargs):
+            if "training_history.jsonl" in str(path) and called[0] == 0:
+                called[0] += 1
+                raise PermissionError("Access denied")
+            return orig_open(path, *args, **kwargs)
+
+        with patch("builtins.open", _mock_open):
+            info = a._load_anchor_info()
+        # Should return empty dict gracefully
+        assert "latest_anchor_date" in info
+        assert info["total_anchors"] == 0

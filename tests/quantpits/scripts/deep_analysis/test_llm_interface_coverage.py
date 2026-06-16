@@ -2097,3 +2097,127 @@ class TestBuildPromptCriticPipeline:
         prompt = interface._build_prompt(synthesis_result)
         # Should not include critic pipeline section
         assert "Critic Pipeline" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap — _log_experiment (lines 2433-2452)
+# ---------------------------------------------------------------------------
+
+
+class TestLogExperiment:
+    """Tests for LLMInterface._log_experiment() static method."""
+
+    def test_log_creates_dir_and_file(self, tmp_path):
+        """Append record to empty dir — creates dir + file."""
+        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
+        interface = LLMInterface()
+        interface._log_experiment(
+            pg_root=str(tmp_path),
+            model_name="test_model",
+            param_tried="lr",
+            from_val=0.01,
+            to_val=0.02,
+            baseline_ic=0.05,
+            playground_ic=0.08,
+            convergence={"best_epoch": 5},
+            llm_suggestion={"decision": "increase", "next_param": "lr",
+                            "rationale": "IC improved"},
+        )
+        log_path = tmp_path / "data" / "experiment_history.jsonl"
+        assert log_path.exists()
+        records = [json.loads(line) for line in log_path.read_text().strip().split("\n")]
+        assert len(records) == 1
+        assert records[0]["model"] == "test_model"
+        assert records[0]["baseline_ic"] == 0.05
+        assert records[0]["ic_delta"] == 0.03
+
+    def test_log_append_to_existing(self, tmp_path):
+        """Append to existing file."""
+        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        log_path = data_dir / "experiment_history.jsonl"
+        log_path.write_text(json.dumps({"existing": True}) + "\n")
+
+        interface = LLMInterface()
+        interface._log_experiment(
+            pg_root=str(tmp_path),
+            model_name="m2", param_tried="bs", from_val=32, to_val=64,
+            baseline_ic=0.03, playground_ic=0.04, convergence={},
+            llm_suggestion=None,
+        )
+        records = [json.loads(line) for line in log_path.read_text().strip().split("\n")]
+        assert len(records) == 2
+
+    def test_log_none_llm_suggestion(self, tmp_path):
+        """llm_suggestion=None → None entries in record."""
+        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
+        interface = LLMInterface()
+        interface._log_experiment(
+            pg_root=str(tmp_path),
+            model_name="m", param_tried="p", from_val=1, to_val=2,
+            baseline_ic=0.0, playground_ic=0.0, convergence=None,
+            llm_suggestion=None,
+        )
+        log_path = tmp_path / "data" / "experiment_history.jsonl"
+        record = json.loads(log_path.read_text().strip())
+        assert record["llm_decision"] is None
+        assert record["llm_next_param"] is None
+        assert record["convergence"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap — _load_training_split_info (lines 620-636)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadTrainingSplitInfo:
+    """Tests for LLMInterface._load_training_split_info()."""
+
+    def test_loads_valid_config(self, tmp_path):
+        """Valid model_config.json → returns filtered dict with relevant keys."""
+        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "model_config.json").write_text(json.dumps({
+            "market": "csi300",
+            "train_set_windows": 8,
+            "valid_set_window": 2,
+            "test_set_window": 2,
+            "data_slice_mode": "slide",
+            "train_date_mode": "rolling",
+            "freq": "week",
+            "start_time": "2015-01-01",
+            "fit_start_time": "2015-01-01",
+            "fit_end_time": "2025-12-31",
+            "valid_start_time": "2026-01-01",
+            "valid_end_time": "2026-03-31",
+            "test_start_time": "2026-04-01",
+            "test_end_time": "2026-06-15",
+            "current_date": "2026-06-15",
+            "extra_irrelevant": "should be filtered out",
+        }))
+
+        interface = LLMInterface()
+        result = interface._load_training_split_info(str(tmp_path))
+        assert result["train_set_windows"] == 8
+        assert result["data_slice_mode"] == "slide"
+        assert "extra_irrelevant" not in result
+
+    def test_corrupt_json_returns_empty(self, tmp_path):
+        """Corrupt JSON → returns empty dict."""
+        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "model_config.json").write_text("not json")
+
+        interface = LLMInterface()
+        result = interface._load_training_split_info(str(tmp_path))
+        assert result == {}
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        """No model_config.json → returns empty dict."""
+        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
+        interface = LLMInterface()
+        result = interface._load_training_split_info(str(tmp_path))
+        assert result == {}

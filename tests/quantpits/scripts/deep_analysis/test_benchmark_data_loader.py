@@ -24,6 +24,12 @@ from quantpits.scripts.deep_analysis.benchmark_data_loader import (
     _get_regimes_in_range,
     _check_boundary_regime,
     _compute_drawdown_stats,
+    _slice_returns,
+    _compute_ks,
+    _compute_boundary_quality,
+    _read_fixed_dates,
+    _regime_distribution_similarity,
+    _approximate_stability,
     load_benchmark_data,
 )
 
@@ -490,3 +496,208 @@ class TestCheckBoundaryRegime:
             # May or may not change depending on merge logic
             assert "changed" in result
             assert "last_before" in result
+
+    def test_empty_date_returns_empty(self):
+        """Empty date key → _find_regime_at returns '' (line 628)."""
+        result = _check_boundary_regime(
+            {"fit_end_time": "", "valid_start_time": "2020-01-01"},
+            "fit_end_time", "valid_start_time",
+            [],
+        )
+        assert result["last_before"] == ""
+
+    def test_date_outside_regime_range(self):
+        """Date outside all regime segments → returns '' (line 633)."""
+        regime_map = [{"start": "2020-06-01", "end": "2020-12-31", "composite": "Bull"}]
+        result = _check_boundary_regime(
+            {"fit_end_time": "2019-01-01", "valid_start_time": "2021-06-01"},
+            "fit_end_time", "valid_start_time",
+            regime_map,
+        )
+        assert result["last_before"] == ""
+        assert result["first_after"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests — guard branches and error paths
+# ---------------------------------------------------------------------------
+
+
+class TestCoverageGaps:
+    """Tests targeting specific uncovered lines in benchmark_data_loader."""
+
+    # -- _compute_drawdown_stats ------------------------------------------
+
+    def test_drawdown_too_few_samples(self):
+        """Returns zeros when len(returns) < 5 (line 508)."""
+        rets = pd.Series([0.01, 0.02, -0.01])
+        result = _compute_drawdown_stats(rets)
+        assert result["max_dd"] == 0.0
+        assert result["major_dd_count"] == 0
+
+    # -- _slice_returns ---------------------------------------------------
+
+    def test_slice_returns_empty_dates(self):
+        """Empty start/end keys → empty Series (line 600)."""
+        rets = pd.Series([0.01, 0.02],
+                         index=pd.date_range("2020-01-01", periods=2, freq="B"))
+        result = _slice_returns(rets, {}, "start", "end")
+        assert len(result) == 0
+
+    # -- _compute_ks ------------------------------------------------------
+
+    def test_ks_too_few_samples(self):
+        """Fewer than 10 samples → 0.0 (line 612)."""
+        a = pd.Series([0.01, 0.02, 0.03])
+        b = pd.Series([0.01, 0.02, 0.03])
+        assert _compute_ks(a, b) == 0.0
+
+    # -- _get_regimes_in_range --------------------------------------------
+
+    def test_regimes_in_range_empty_args(self):
+        """Empty start/end → empty dict (line 741)."""
+        result = _get_regimes_in_range("", "", [])
+        assert result == {}
+
+    # -- _build_what_if ---------------------------------------------------
+
+    def test_what_if_non_slide_mode(self):
+        """Non-slide mode → empty candidates (line 767)."""
+        result = _build_what_if("2026-01-01", 5, 2, 2, "fixed", [], pd.Series(), {})
+        assert result["top_candidates"] == []
+        assert result["pareto_frontier"] == []
+
+    # -- _moment_similarity -----------------------------------------------
+
+    def test_moment_similarity_zero_std(self):
+        """Zero test std → 0.5 (line 908)."""
+        train = pd.Series([0.01, 0.02, 0.01, 0.03, -0.01] * 5)
+        test = pd.Series([0.0] * 20)  # zero std
+        assert _moment_similarity(train, test) == 0.5
+
+    # -- _compute_boundary_quality ----------------------------------------
+
+    def test_boundary_quality_missing_date(self):
+        """Missing boundary date → +0.5 penalty (lines 941-942)."""
+        dates = {"fit_end_time": "2026-01-01", "valid_start_time": ""}
+        regime_map = [{"start": "2026-01-01", "end": "2026-06-01", "composite": "Bull"}]
+        score = _compute_boundary_quality(dates, regime_map)
+        assert score < 1.0  # penalised
+
+    def test_boundary_quality_unparseable_date(self):
+        """Unparseable date → +0.5 penalty (lines 945-947)."""
+        dates = {"fit_end_time": "2026-01-01", "valid_start_time": "garbage_date"}
+        regime_map = [{"start": "2026-01-01", "end": "2026-06-01", "composite": "Bull"}]
+        score = _compute_boundary_quality(dates, regime_map)
+        assert score < 1.0  # penalised
+
+    # -- _regime_distribution_similarity ----------------------------------
+
+    def test_regime_distribution_empty_args(self):
+        """Empty train or test regimes → 0.5 (line 1028)."""
+        assert _regime_distribution_similarity({}, {"Bull": 0.5}) == 0.5
+        assert _regime_distribution_similarity({"Bull": 0.5}, {}) == 0.5
+
+    def test_regime_distribution_single_label(self):
+        """Single regime label across both → 1.0 (line 1032)."""
+        assert _regime_distribution_similarity({"Bull": 1.0}, {"Bull": 1.0}) == 1.0
+
+    # -- _approximate_stability -------------------------------------------
+
+    def test_stability_too_few_samples(self):
+        """Fewer than 2 regime sets → 1.0 (line 991)."""
+        close = _make_close_series(days=5000)
+        weekly = _make_weekly_close(close)
+        regime_map = _build_regime_map(weekly)
+        result = _approximate_stability(
+            "2026-01-01", 5, 2, 2, regime_map, 5, num_samples=1,
+        )
+        assert result == 1.0
+
+    # -- _build_regime_map ------------------------------------------------
+
+    def test_build_regime_map_too_few_days(self):
+        """When close < REGIME_WINDOW_DAYS → empty list (line 319-320)."""
+        close = pd.Series([100.0] * 30,  # only 30 days, < 60 minimum
+                          index=pd.date_range("2020-01-01", periods=30, freq="B"))
+        result = _build_regime_map(close)
+        assert result == []
+
+    # -- _build_sliding_dynamics ------------------------------------------
+
+    def test_sliding_dynamics_stable_trend(self):
+        """When SLIDING_WEEKS < 8 → trend = 'stable' (line 723)."""
+        from quantpits.scripts.deep_analysis import benchmark_data_loader as bdl
+        close = _make_close_series(days=5000)
+        weekly = _make_weekly_close(close)
+        regime_map = _build_regime_map(weekly)
+        with patch.object(bdl, "SLIDING_WEEKS", 4):
+            result = _build_sliding_dynamics(
+                "2026-01-01", 5, 2, 2, "slide", regime_map,
+            )
+        assert result["trend"] == "stable"
+
+    # -- _read_fixed_dates ------------------------------------------------
+
+    def test_read_fixed_dates_returns_all_keys(self):
+        """_read_fixed_dates returns all 7 date keys (line 224)."""
+        result = _read_fixed_dates({})
+        assert "start_time" in result
+        assert "fit_start_time" in result
+        assert "fit_end_time" in result
+        assert "valid_start_time" in result
+        assert "valid_end_time" in result
+        assert "test_start_time" in result
+        assert "test_end_time" in result
+
+    # -- load_benchmark_data error paths ----------------------------------
+
+    def test_load_benchmark_anchor_date_failure(self, tmp_path):
+        """_get_anchor_date raises → error dict (lines 93-94)."""
+        from quantpits.scripts.deep_analysis.benchmark_data_loader import load_benchmark_data
+        config_path = tmp_path / "config"
+        config_path.mkdir()
+        (config_path / "model_config.json").write_text(json.dumps({
+            "benchmark": "SH000300", "freq": "week",
+        }))
+        with patch("quantpits.scripts.deep_analysis.benchmark_data_loader._get_anchor_date",
+                   side_effect=ValueError("bad date")):
+            result = load_benchmark_data(str(tmp_path))
+        assert result.get("error") is not None
+        assert "bad date" in result["error"]
+
+    def test_load_benchmark_insufficient_data(self, tmp_path):
+        """QLIB returns too little data → error dict (line 121)."""
+        from quantpits.scripts.deep_analysis.benchmark_data_loader import load_benchmark_data
+        config_path = tmp_path / "config"
+        config_path.mkdir()
+        (config_path / "model_config.json").write_text(json.dumps({
+            "benchmark": "SH000300", "freq": "week",
+        }))
+        with patch("quantpits.scripts.deep_analysis.benchmark_data_loader._get_anchor_date",
+                   return_value="2026-01-01"):
+            with patch("quantpits.scripts.deep_analysis.benchmark_data_loader._fetch_benchmark_qlib",
+                       return_value=(pd.Series(), pd.Series())):
+                result = load_benchmark_data(str(tmp_path))
+        assert result.get("error") is not None
+        assert "Insufficient" in result["error"]
+
+    # -- _get_anchor_date -------------------------------------------------
+
+    def test_get_anchor_date_non_trade_date_mode(self):
+        """Non-last_trade_date mode → returns config current_date (line 195)."""
+        from quantpits.scripts.deep_analysis.benchmark_data_loader import _get_anchor_date
+        result = _get_anchor_date({
+            "train_date_mode": "fixed_date",
+            "current_date": "2026-01-01",
+        })
+        assert result == "2026-01-01"
+
+    def test_get_anchor_date_missing_current_date(self):
+        """Mode is not last_trade_date and no current_date → returns today."""
+        from quantpits.scripts.deep_analysis.benchmark_data_loader import _get_anchor_date
+        result = _get_anchor_date({"train_date_mode": "fixed_date"})
+        # Returns today's date
+        from datetime import datetime
+        expected = datetime.now().strftime("%Y-%m-%d")
+        assert result == expected

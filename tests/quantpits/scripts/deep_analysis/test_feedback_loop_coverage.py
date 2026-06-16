@@ -1769,3 +1769,117 @@ class TestExperimentLoopErrorPaths:
             )
         assert len(results) == 1
 
+
+# ---------------------------------------------------------------------------
+# Coverage gap — _run_promote (lines 863-881)
+# ---------------------------------------------------------------------------
+
+
+class TestRunPromote:
+    """Tests for FeedbackLoop._run_promote()."""
+
+    def test_no_playground_returns_early(self, tmp_path):
+        """No playground found → early return (lines 839-843)."""
+        from quantpits.scripts.deep_analysis.feedback_loop import FeedbackLoop, FeedbackReport
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "model_registry.yaml").write_text("models: {}\n")
+
+        loop = FeedbackLoop(str(ws))
+        report = FeedbackReport(mode="promote")
+
+        with patch.object(loop, "_save_report"):
+            result = loop._run_promote(
+                action_items_path=str(tmp_path / "action_items.json"),
+                items=[],
+                report=report,
+            )
+        assert result is report
+        assert "No Playground found" in report.summary
+
+    def test_no_passed_validations_early_return(self, tmp_path):
+        """No items passed validation → early return (lines 858-861)."""
+        from unittest.mock import patch
+        from quantpits.scripts.deep_analysis.feedback_loop import FeedbackLoop, FeedbackReport
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "model_registry.yaml").write_text("models: {}\n")
+        # Create playground dir at {workspace}_Playground
+        pg_dir = tmp_path / "ws_Playground"
+        pg_dir.mkdir(exist_ok=True)
+
+        loop = FeedbackLoop(str(ws))
+        report = FeedbackReport(mode="promote")
+
+        # Mock _load_latest_feedback_report to return no passed validations
+        with patch.object(loop, "_load_latest_feedback_report",
+                          return_value={"validation_results": [
+                              {"model": "m1", "passed": False},
+                          ]}):
+            with patch.object(loop, "_save_report"):
+                result = loop._run_promote(
+                    action_items_path=str(tmp_path / "action_items.json"),
+                    items=[],
+                    report=report,
+                )
+        assert "No ActionItems passed" in report.summary
+
+    def test_calls_config_promoter(self, tmp_path):
+        """Passed validations → calls ConfigPromoter.promote()."""
+        from unittest.mock import patch, MagicMock
+        from quantpits.scripts.deep_analysis.feedback_loop import FeedbackLoop, FeedbackReport
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "config").mkdir()
+        (ws / "model_registry.yaml").write_text("models: {}\n")
+        # Create playground dir
+        pg_dir = tmp_path / "ws_Playground"
+        pg_dir.mkdir(exist_ok=True)
+
+        loop = FeedbackLoop(str(ws))
+        report = FeedbackReport(mode="promote")
+
+        mock_promoter = MagicMock()
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.promoted_files = ["model_config.json"]
+        mock_result.error = None
+        mock_promoter.promote.return_value = mock_result
+
+        # No validation results → promote all items
+        with patch.object(loop, "_load_latest_feedback_report", return_value={}):
+            with patch.object(loop, "_save_report"):
+                with patch("quantpits.scripts.deep_analysis.feedback_loop.ConfigPromoter",
+                           return_value=mock_promoter):
+                    result = loop._run_promote(
+                        action_items_path=str(tmp_path / "action_items.json"),
+                        items=[],
+                        report=report,
+                    )
+
+        assert result.promote_result["success"] is True
+        mock_promoter.promote.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap — error paths (lines 150-151)
+# ---------------------------------------------------------------------------
+
+
+class TestErrorPathsCoverage:
+    """Tests for uncovered error/edge paths in feedback_loop."""
+
+    def test_training_duration_exception_returns_empty(self, tmp_path):
+        """Exception in reading operator log → returns {} (lines 150-151)."""
+        from quantpits.scripts.deep_analysis.feedback_loop import _load_training_duration_history
+
+        # Mock os.listdir to raise an exception
+        with patch("os.listdir", side_effect=OSError("Permission denied")):
+            result = _load_training_duration_history(str(tmp_path))
+        assert result == {}
+
