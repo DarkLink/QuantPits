@@ -16,6 +16,8 @@ class ADD(_Base):
     def fit(self, dataset, evals_result=None, save_path=None):
         if getattr(self, "metric", "mse") == "ir":
             return self._fit_ir(dataset, evals_result, save_path)
+        if evals_result is None:
+            evals_result = {}
         return super().fit(dataset, evals_result=evals_result,
                           save_path=save_path)
 

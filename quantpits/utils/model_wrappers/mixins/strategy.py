@@ -94,6 +94,8 @@ class StrategyMetricMixin:
     def fit(self, dataset, evals_result=None, save_path=None):
         if self.metric not in self._NEEDS_BACKTEST:
             # 'ic', 'rank_ic', 'loss', 'mse' — delegate to parent fit()
+            if evals_result is None:
+                evals_result = {}
             return super().fit(dataset, evals_result=evals_result,
                               save_path=save_path)
 
