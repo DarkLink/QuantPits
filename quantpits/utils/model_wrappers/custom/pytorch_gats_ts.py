@@ -55,7 +55,8 @@ class GATs(StrategyMetricMixin, _Base):
 
     def _train_one_epoch(self, train_data):
         self.train_epoch(train_data)
-        # Detect NaN in parameters after training epoch and raise early.
+        if not hasattr(self, "GAT_model"):
+            return
         for name, param in self.GAT_model.named_parameters():
             if not torch.isfinite(param).all():
                 raise RuntimeError(
