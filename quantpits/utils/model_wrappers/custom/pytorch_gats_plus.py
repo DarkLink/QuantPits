@@ -539,6 +539,7 @@ class GATModel(nn.Module):
         self.a_t = torch.t(self.a)
         attention_out = self.a_t.mm(torch.t(attention_in)).view(sample_num, sample_num)
         attention_out = self.leaky_relu(attention_out)
+        attention_out = attention_out - attention_out.max(dim=-1, keepdim=True)[0]
         att_weight = self.softmax(attention_out)
         return att_weight
 

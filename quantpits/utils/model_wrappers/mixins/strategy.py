@@ -58,12 +58,15 @@ class StrategyMetricMixin:
     # ------------------------------------------------------------------
 
     def metric_fn(self, pred, label):
+        mask = torch.isfinite(pred) & torch.isfinite(label)
+        p = pred[mask]
+        l = label[mask]
         if self.metric == "ir":
-            return self._batch_pearson_ic(pred, label)
+            return self._batch_pearson_ic(p, l)
         elif self.metric == "ic":
-            return self._batch_pearson_ic(pred, label)
+            return self._batch_pearson_ic(p, l)
         elif self.metric == "rank_ic":
-            return self._batch_rank_ic(pred, label)
+            return self._batch_rank_ic(p, l)
         elif self.metric in ("", "loss", "mse"):
             mask = torch.isfinite(label)
             return -self.loss_fn(pred[mask], label[mask])
