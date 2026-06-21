@@ -30,6 +30,11 @@ class TRAModelIC(StrategyMetricMixin, _Base):
         self.loss = loss
         super().__init__(*args, **kwargs)
 
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if not hasattr(self, '_writer'):
+            self._writer = None
+
     def fit(self, dataset, evals_result=None, save_path=None):
         """Always use TRAModel.fit(); StrategyMetricMixin hooks are not compatible.
 
