@@ -225,16 +225,101 @@ python quantpits/scripts/static_train.py --list --tag tree
 
 ---
 
+## CPCV 模式：Purged Cross-Validation
+
+CPCV (Combinatorial Purged Cross-Validation) 基于 Marcos Lopez de Prado《Advances in Financial Machine Learning》，通过将验证期从训练时间线中"挖出"并施加 Purge/Embargo 间隙，让模型同时从验证期之前和之后的数据中学习，从而保持对近期市场模式的适应性。
+
+### 为什么要用 CPCV？
+
+传统的 `slide` 模式（5年训练/2年验证/2年测试）产生的训练数据距今 4-9 年，模型完全接触不到近期市场状态。CPCV 将时间线划分为 N 个等长分组，在每个 Fold 中用 1-2 段非连续的训练数据（分居验证期两侧），使训练数据跨越到验证期之后，大幅缩短"训练→预测"的时间距离。
+
+### 配置
+
+在 `config/model_config.json` 中设置 `data_slice_mode` 为 `purged_cv` 并添加 `purged_cv` 配置块：
+
+```jsonc
+{
+    "data_slice_mode": "purged_cv",
+    "purged_cv": {
+        "n_groups": 10,            // 将 [start_time, anchor_date] 划分为 N 个等步长分组
+        "n_test_groups": 2,        // 末尾的 N 个分组固定为测试集（不参与 CV）
+        "n_val_groups": 1,         // 每个 Fold 使用 N 个连续分组作为验证集
+        "purge_steps": 5,          // 对称 Purge：验证集两侧各移除 N 个步长（periods）
+        "embargo_steps": 10        // 非对称 Embargo：验证集之后额外延迟 N 步才恢复训练
+    },
+    "start_time": "2015-01-01",   // 总时间范围起点
+    "freq": "week"                 // 步长单位：day 或 week
+}
+```
+
+**参数语义**：
+
+| 参数 | 含义 | 示例 (freq=week) |
+|------|------|-----------------|
+| `n_groups` | 总分组数 | 10 组 |
+| `n_test_groups` | 末尾 N 组固定为测试集 | 2 组 ≈ 2.3 年 |
+| `n_val_groups` | 每 Fold 的验证组数 | 1 组 ≈ 1.15 年 |
+| `purge_steps` | 对称移除训练数据（验证两侧各 N 步） | 5 步 = 5 周 |
+| `embargo_steps` | 非对称延迟（仅验证之后） | 10 步 = 10 周 |
+
+Fold 数量：**K = n_groups - n_test_groups - n_val_groups + 1**
+
+### 运行
+
+```bash
+cd QuantPits
+
+# CPCV 全量训练（所有 enabled 模型）
+python quantpits/scripts/cv_train.py --full
+
+# CPCV 增量训练指定模型
+python quantpits/scripts/cv_train.py --models lightgbm_Alpha158,gru_Alpha158
+
+# CPCV 按标签训练
+python quantpits/scripts/cv_train.py --tag tree
+
+# Dry-run（预览 Fold 划分计划）
+python quantpits/scripts/cv_train.py --all-enabled --dry-run
+
+# 仅预测（使用已有 CPCV 模型对新数据预测）
+python quantpits/scripts/cv_train.py --predict-only --all-enabled
+```
+
+### 下游兼容性
+
+CPCV 训练的模型以 `model_name@cpcv` 键存储在 `latest_train_records.json` 中，与 `@static` 和 `@rolling` 模型共存。下游脚本通过 `--training-mode cpcv` 过滤：
+
+```bash
+python quantpits/scripts/ensemble_fusion.py --from-config --training-mode cpcv
+```
+
+每个 CPCV 模型在 Recorder 中存储了 K 个 Fold 模型 (`model_fold_0.pkl` … `model_fold_K-1.pkl`) 和一份 K 折平均后的最终预测 (`pred.pkl`)，下游融合流程无需感知 K 折细节。
+
+### 模型类型兼容性
+
+| 模型类型 | 数据集类 | 实现方式 |
+|---------|---------|---------|
+| 树模型 (LightGBM, XGBoost, CatBoost) | `PurgedDatasetH` | `pd.concat` 非连续时间片段（安全，点预测无序列窗口） |
+| 线性模型 (Linear) | `PurgedDatasetH` | 同上 |
+| 深度学习 (LSTM, GRU, ALSTM, Transformer, TCN, GATs) | `PurgedTSDatasetH` | `ConcatTSDataSampler` 逻辑级联（滑动窗口不跨越 Purge Gap） |
+
+### 预处理注意事项
+
+- **推荐截面归一化**：`CSZScoreNorm`、`CSRankNorm`（按日/按个股独立计算，天然免疫时序泄露）
+- **避免时域归一化**：`ZScoreNorm`、`MinMaxNorm`、`RobustZScoreNorm` 在全局时间范围上 Fit 会导致验证/测试集统计量泄露到训练集。CPCV 训练启动时如果检测到这些算子会发出 `UserWarning`。
+
+---
+
 ## 历史备份
 
 所有重要文件在修改前会自动备份到 `data/history/`：
 
 ```
 data/history/
-├── train_records_2026-02-11_165306.json      # latest_train_records.json 的历史
-├── train_records_2026-02-18_120000.json
-├── model_performance_2026-02-06_165306.json   # 性能数据的历史
-└── run_state_2026-02-12_150000.json           # 运行状态的历史
+├── train_records_YYYY-MM-DD_HHMMSS.json       # latest_train_records.json 的历史
+├── train_records_YYYY-MM-DD_HHMMSS.json
+├── model_performance_YYYY-MM-DD_HHMMSS.json   # 性能数据的历史
+└── run_state_YYYY-MM-DD_HHMMSS.json           # 运行状态的历史
 ```
 
 无需手动操作，系统会自动管理备份。

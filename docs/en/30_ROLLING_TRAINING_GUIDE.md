@@ -278,9 +278,9 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ```json
 {
-    "started_at": "2025-03-14 10:00:00",
+    "started_at": "YYYY-MM-DD HH:MM:SS",
     "rolling_config": {"test_step": "3M", ...},
-    "anchor_date": "2025-03-14",
+    "anchor_date": "YYYY-MM-DD",
     "total_windows": 4,
     "completed_windows": {
         "0": {"linear_Alpha158": "rec_001", "gru_Alpha158": "rec_002"},
@@ -323,3 +323,6 @@ test_step: "3M"               # Z: Test step size
 
 > [!CAUTION]
 > `train_years` and `valid_years` must be **integer years**. `test_step` must be `nM` (integer months) or `nY` (integer years). Fractional values are not supported.
+
+> [!NOTE]
+> **Purge Gap Compatibility**: Rolling training currently uses contiguous time windows (no gap between train/valid/test). For Purged Cross-Validation, use the standalone CPCV training mode (`cv_train.py`). See [01_TRAINING_GUIDE.md](01_TRAINING_GUIDE.md#cpcv-mode-purged-cross-validation). Purge/embargo gaps may be integrated into rolling training in a future release.

@@ -49,7 +49,7 @@ LEGACY_ROLLING_RECORD_FILE = os.path.join(ROOT_DIR, "latest_rolling_records.json
 PRETRAINED_DIR = os.path.join(ROOT_DIR, "data", "pretrained")
 
 # Unified training mode system
-KNOWN_TRAINING_MODES = ['static', 'rolling']
+KNOWN_TRAINING_MODES = ['static', 'rolling', 'cpcv']
 DEFAULT_TRAINING_MODE = 'static'
 MODE_SEPARATOR = '@'
 
@@ -263,6 +263,174 @@ def compute_slide_dates(anchor_date, train_windows, valid_window, test_window):
     }
 
 
+def compute_cpcv_folds(anchor_date, config, freq="day"):
+    """Generate K CPCV fold boundaries with purging and embargo.
+
+    Uses Qlib's trading calendar to partition [start_time, anchor_date]
+    into n_groups equal-period buckets. The last n_test_groups form the
+    fixed test set. The remaining groups produce K = n_groups - n_test_groups
+    - n_val_groups + 1 folds with purged, potentially discontiguous training.
+
+    Frequency-agnostic: all step counts (purge_steps, embargo_steps) are in
+    units of the calendar frequency -- trading days for daily, trading weeks
+    for weekly.
+
+    Args:
+        anchor_date: str 'YYYY-MM-DD', the latest trading date.
+        config: dict from load_workspace_config, must contain purged_cv block.
+        freq: str, 'day' or 'week', passed to D.calendar().
+
+    Returns:
+        dict with keys:
+            test_start_time, test_end_time: fixed test set boundaries.
+            folds: list of dicts, each with:
+                fold_idx: int
+                train_segments: list of [start, end] pairs (1 or 2 elements)
+                valid_start_time, valid_end_time: str dates
+    """
+    from qlib.data import D
+
+    cv_cfg = config.get("purged_cv", {})
+    n_groups = int(cv_cfg.get("n_groups", 10))
+    n_test_groups = int(cv_cfg.get("n_test_groups", 2))
+    n_val_groups = int(cv_cfg.get("n_val_groups", 1))
+    purge_steps = int(cv_cfg.get("purge_steps", 5))
+    embargo_steps = int(cv_cfg.get("embargo_steps", 0))
+
+    start_time = config.get("start_time", "2015-01-01")
+
+    # Validate configuration
+    if n_test_groups >= n_groups:
+        raise ValueError(
+            f"n_test_groups ({n_test_groups}) must be less than "
+            f"n_groups ({n_groups}). No groups left for CV."
+        )
+    if n_val_groups > (n_groups - n_test_groups):
+        raise ValueError(
+            f"n_val_groups ({n_val_groups}) exceeds available CV groups "
+            f"({n_groups - n_test_groups})."
+        )
+
+    # Fetch the trading calendar for the total span
+    cal = D.calendar(freq=freq, start_time=start_time, end_time=anchor_date)
+    if len(cal) == 0:
+        raise ValueError(
+            f"No trading periods found in [{start_time}, {anchor_date}] "
+            f"with freq={freq}"
+        )
+    cal_list = sorted(cal)
+
+    total_periods = len(cal_list)
+    if total_periods < n_groups:
+        raise ValueError(
+            f"Total periods ({total_periods}) is less than n_groups "
+            f"({n_groups}). Reduce n_groups or extend start_time."
+        )
+
+    # Split into n_groups equal-sized buckets (by period count, not calendar span)
+    group_size = total_periods // n_groups
+    remainder = total_periods % n_groups
+    group_boundaries = []  # list of (start_cal_idx, end_cal_idx) inclusive
+    cursor = 0
+    for g in range(n_groups):
+        size = group_size + (1 if g < remainder else 0)
+        end = cursor + size - 1
+        group_boundaries.append((cursor, end))
+        cursor = end + 1
+
+    # Fixed test set: last n_test_groups
+    test_start_idx = group_boundaries[n_groups - n_test_groups][0]
+    test_end_idx = group_boundaries[-1][1]
+    test_start_time = cal_list[test_start_idx].strftime("%Y-%m-%d")
+    test_end_time = cal_list[test_end_idx].strftime("%Y-%m-%d")
+
+    # CV groups: groups [0, n_groups - n_test_groups - 1]
+    n_cv_groups = n_groups - n_test_groups
+    n_folds = n_cv_groups - n_val_groups + 1
+
+    if n_folds < 1:
+        raise ValueError(
+            f"Configuration yields {n_folds} folds. "
+            f"Need n_groups - n_test_groups - n_val_groups + 1 >= 1. "
+            f"Current: {n_groups} - {n_test_groups} - {n_val_groups} + 1 = {n_folds}"
+        )
+
+    # Validate purge won't destroy all training data
+    min_group_size = min(
+        group_boundaries[g][1] - group_boundaries[g][0] + 1
+        for g in range(n_cv_groups)
+    )
+    if purge_steps >= min_group_size:
+        raise ValueError(
+            f"purge_steps ({purge_steps}) >= smallest CV group size "
+            f"({min_group_size} periods). Reduce purge_steps or increase "
+            f"n_groups to make groups larger."
+        )
+
+    folds = []
+    for f in range(n_folds):
+        val_g0 = f
+        val_g1 = f + n_val_groups - 1
+        val_start_idx = group_boundaries[val_g0][0]
+        val_end_idx = group_boundaries[val_g1][1]
+
+        # Training BEFORE validation (groups [0, val_g0 - 1], if any)
+        train_segments = []
+        if val_g0 > 0:
+            train_left_start_idx = group_boundaries[0][0]
+            train_left_end_idx = val_start_idx - purge_steps - 1
+            if train_left_end_idx >= train_left_start_idx:
+                train_segments.append([
+                    cal_list[train_left_start_idx].strftime("%Y-%m-%d"),
+                    cal_list[train_left_end_idx].strftime("%Y-%m-%d"),
+                ])
+
+        # Training AFTER validation (groups [val_g1 + 1, n_cv_groups - 1], if any)
+        # Embargo only applies here -- extra delay before training resumes
+        if val_g1 < n_cv_groups - 1:
+            train_right_start_idx = val_end_idx + purge_steps + embargo_steps + 1
+            train_right_end_idx = group_boundaries[n_cv_groups - 1][1]
+            # Guard clause: if purge+embargo consumes all remaining groups,
+            # skip the right segment entirely
+            if train_right_start_idx <= train_right_end_idx:
+                train_segments.append([
+                    cal_list[train_right_start_idx].strftime("%Y-%m-%d"),
+                    cal_list[train_right_end_idx].strftime("%Y-%m-%d"),
+                ])
+
+        if not train_segments:
+            raise ValueError(
+                f"Fold {f}: no training data remains after purge/embargo. "
+                f"Reduce purge_steps ({purge_steps}) or embargo_steps "
+                f"({embargo_steps}), or increase n_groups ({n_groups})."
+            )
+
+        folds.append({
+            "fold_idx": f,
+            "train_segments": train_segments,
+            "valid_start_time": cal_list[val_start_idx].strftime("%Y-%m-%d"),
+            "valid_end_time": cal_list[val_end_idx].strftime("%Y-%m-%d"),
+        })
+
+    # Apply embargo between last training chunk and test set
+    last_cv_end_idx = group_boundaries[n_cv_groups - 1][1]
+    embargoed_test_start_idx = last_cv_end_idx + embargo_steps + 1
+    if embargoed_test_start_idx > test_start_idx:
+        test_start_idx = embargoed_test_start_idx
+        if test_start_idx > test_end_idx:
+            raise ValueError(
+                f"Embargo pushes test_start past test_end. "
+                f"Reduce embargo_steps ({embargo_steps})."
+            )
+        test_start_time = cal_list[test_start_idx].strftime("%Y-%m-%d")
+
+    return {
+        "test_start_time": test_start_time,
+        "test_end_time": test_end_time,
+        "folds": folds,
+    }
+
+
 def calculate_dates():
     """根据统一配置计算训练日期窗口"""
     from qlib.data import D
@@ -285,7 +453,27 @@ def calculate_dates():
     else:
         anchor_date = config.get('current_date', datetime.now().strftime('%Y-%m-%d'))
 
-    if data_slice_mode == 'slide':
+    cpcv_result = None  # populated only when data_slice_mode == 'purged_cv'
+
+    if data_slice_mode == 'purged_cv':
+        # CPCV mode: use fold-based purged cross-validation
+        cpcv_result = compute_cpcv_folds(anchor_date, config, freq=freq)
+        # Dates from config (not slide mode) for display and handler defaults
+        start_time = config.get("start_time", "2015-01-01")
+        # Derive fit range from CPCV folds
+        all_fold_starts = []
+        all_fold_ends = []
+        for f in cpcv_result["folds"]:
+            for seg in f["train_segments"]:
+                all_fold_starts.append(seg[0])
+                all_fold_ends.append(seg[1])
+        fit_start_time = min(all_fold_starts) if all_fold_starts else start_time
+        fit_end_time = max(all_fold_ends) if all_fold_ends else start_time
+        valid_start_time = cpcv_result["folds"][0]["valid_start_time"]
+        valid_end_time = cpcv_result["folds"][-1]["valid_end_time"]
+        test_start_time = cpcv_result["test_start_time"]
+        test_end_time = cpcv_result["test_end_time"]
+    elif data_slice_mode == 'slide':
         dates = compute_slide_dates(anchor_date, train_set_windows, valid_set_window, test_set_window)
         start_time = dates["start_time"]
         fit_start_time = dates["fit_start_time"]
@@ -324,6 +512,11 @@ def calculate_dates():
         "anchor_date": anchor_date,
         "freq": freq
     }
+
+    # Attach CPCV fold data when in purged_cv mode
+    if cpcv_result is not None:
+        date_params["cpcv_folds"] = cpcv_result["folds"]
+        date_params["data_slice_mode"] = "purged_cv"
 
     print("\n=== Config Loaded via config_loader ===")
     for k, v in date_params.items():
@@ -601,6 +794,207 @@ def inject_config(yaml_path, params, model_name=None, no_pretrain=False):
                         del model_kwargs['model_path']
 
     return config
+
+
+def inject_config_for_fold(yaml_path, params, fold, model_name=None,
+                            no_pretrain=False):
+    """Inject fold-specific CPCV dates into a YAML config copy.
+
+    Same base injection as inject_config() (strategy, data_handler, label,
+    port_analysis, pretrain) but writes multi-segment train boundaries and
+    swaps the dataset class to PurgedDatasetH / PurgedTSDatasetH.
+
+    Also emits a UserWarning if temporally-dependent normalizers are detected
+    in the YAML's learn_processors, since they cause information leakage in CPCV.
+
+    Args:
+        yaml_path: path to the Qlib workflow YAML.
+        params: date_params from calculate_dates().
+        fold: single fold dict from params['cpcv_folds'].
+        model_name: model name for pretrain resolution.
+        no_pretrain: force random-weight init.
+
+    Returns:
+        dict: injected YAML config (does NOT write to disk).
+    """
+    import warnings
+    from quantpits.utils.constants import TRADING_DAYS_PER_YEAR, TRADING_WEEKS_PER_YEAR
+
+    with open(yaml_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    freq = params.get('freq', 'week').lower()
+
+    config['market'] = params['market']
+    config['benchmark'] = params['benchmark']
+
+    # Inject strategy params
+    if 'strategy' in config and 'params' in config['strategy']:
+        config['strategy']['params']['topk'] = params.get('topk', 20)
+        config['strategy']['params']['n_drop'] = params.get('n_drop', 3)
+        config['strategy']['params']['buy_suggestion_factor'] = \
+            params.get('buy_suggestion_factor', 2)
+
+    dh = config['data_handler_config']
+
+    # Align handler time boundaries to the fold's actual range.
+    # start_time must cover BOTH train and validation periods, otherwise
+    # GBDT's _prepare_data which fetches valid segment with DK_L gets empty
+    # data (the handler only loads data from [start_time, end_time]).
+    all_train_starts = [seg[0] for seg in fold['train_segments']]
+    all_train_ends = [seg[1] for seg in fold['train_segments']]
+    fold_train_start = min(all_train_starts)
+    fold_train_end = max(all_train_ends)
+    fold_data_start = min(fold_train_start, fold['valid_start_time'])
+    fold_data_end = max(fold_train_end, params['test_end_time'],
+                         fold['valid_end_time'])
+
+    dh['start_time'] = fold_data_start
+    dh['end_time'] = fold_data_end
+    dh['fit_start_time'] = fold_train_start
+    dh['fit_end_time'] = fold_train_end
+    dh['instruments'] = params['market']
+
+    # Label injection (same logic as inject_config)
+    if 'label_formula' in params:
+        dh['label'] = [params['label_formula']]
+    elif isinstance(dh.get('label'), list) and len(dh['label']) > 1:
+        pass  # preserve multi-label configs (e.g., TCTS)
+    elif freq == 'week':
+        dh['label'] = ["Ref($close, -6) / Ref($close, -1) - 1"]
+    else:
+        dh['label'] = ["Ref($close, -2) / Ref($close, -1) - 1"]
+
+    # ---- Key difference: multi-segment train + PurgedDataset class ----
+    if 'task' in config and 'dataset' in config['task']:
+        ds_cfg = config['task']['dataset']
+        segs = ds_cfg['kwargs']['segments']
+
+        # Detect original dataset class to choose the right Purged variant
+        orig_class = ds_cfg.get('class', 'DatasetH')
+
+        segs['train'] = fold['train_segments']
+        segs['valid'] = [fold['valid_start_time'], fold['valid_end_time']]
+        segs['test'] = [params['test_start_time'], params['test_end_time']]
+
+        # Swap to Purged variant based on original dataset type
+        if orig_class == 'TSDatasetH':
+            ds_cfg['class'] = 'PurgedTSDatasetH'
+        elif orig_class == 'MTSDatasetH':
+            ds_cfg['class'] = 'PurgedMTSDatasetH'
+        else:
+            ds_cfg['class'] = 'PurgedDatasetH'
+        ds_cfg['module_path'] = 'quantpits.data.cpcv_dataset'
+
+        # Patch pretrain/pretrain_validation if present
+        if 'pretrain' in segs:
+            segs['pretrain'] = fold['train_segments']
+        if 'pretrain_validation' in segs:
+            segs['pretrain_validation'] = [
+                fold['valid_start_time'], fold['valid_end_time']
+            ]
+
+    # Temporal normalizer warning (Correction 5)
+    _warn_temporal_processors(config, yaml_path)
+
+    # Port analysis config
+    if 'port_analysis_config' in config:
+        from quantpits.utils import strategy
+        pa = strategy.generate_port_analysis_config(freq=freq)
+        pa['backtest']['start_time'] = params['test_start_time']
+        pa['backtest']['end_time'] = params['test_end_time']
+        pa['backtest']['account'] = params.get('account',
+                                                pa['backtest']['account'])
+        pa['backtest']['benchmark'] = params['benchmark']
+        config['port_analysis_config'] = pa
+
+        if 'task' in config and 'record' in config['task']:
+            for r_cfg in config['task']['record']:
+                if r_cfg.get('class') == 'PortAnaRecord':
+                    if 'kwargs' in r_cfg and 'config' in r_cfg['kwargs']:
+                        r_cfg['kwargs']['config'] = pa
+
+    # SigAnaRecord ann_scaler
+    if 'task' in config and 'record' in config['task']:
+        for r_cfg in config['task']['record']:
+            if r_cfg.get('class') == 'SigAnaRecord':
+                if 'kwargs' not in r_cfg:
+                    r_cfg['kwargs'] = {}
+                r_cfg['kwargs']['ann_scaler'] = (
+                    TRADING_WEEKS_PER_YEAR if freq == 'week'
+                    else TRADING_DAYS_PER_YEAR
+                )
+
+    # Pretrain model_path injection
+    if 'task' in config and 'model' in config['task']:
+        model_kwargs = config['task']['model'].get('kwargs', {})
+        if 'base_model' in model_kwargs:
+            if no_pretrain:
+                if 'model_path' in model_kwargs:
+                    del model_kwargs['model_path']
+                print(f"  ⏭️  --no-pretrain: using random weights for basemodel")
+            elif model_name:
+                pretrain_path = resolve_pretrained_path(model_name)
+                if pretrain_path:
+                    upper_d_feat = model_kwargs.get('d_feat')
+                    if upper_d_feat is not None:
+                        validate_pretrain_compatibility(
+                            model_name, pretrain_path, upper_d_feat
+                        )
+                    model_kwargs['model_path'] = pretrain_path
+                    print(f"  🧠 injected pretrained model: {pretrain_path}")
+                else:
+                    if 'model_path' in model_kwargs:
+                        del model_kwargs['model_path']
+
+    return config
+
+
+def _warn_temporal_processors(config, yaml_path):
+    """Emit UserWarning if YAML contains temporally-dependent normalizers.
+
+    Cross-sectional normalizers (CSZScoreNorm, CSRankNorm) are safe for CPCV
+    because they fit per-day per-instrument -- no temporal leakage.
+
+    Temporal normalizers (ZScoreNorm, MinMaxNorm, RobustZScoreNorm) fit on a
+    time range and will leak validation/test statistics into training in CPCV
+    mode unless the handler is re-fit per fold.
+    """
+    import warnings
+
+    TEMPORAL_PROCESSORS = {
+        'ZScoreNorm', 'MinMaxNorm', 'RobustZScoreNorm', 'CSZScoreNorm',
+        'CSRankNorm', 'CSZFillna',
+    }
+    # Actually, we only want to warn about TEMPORAL (non-cross-sectional) ones
+    CROSS_SECTIONAL = {'CSZScoreNorm', 'CSRankNorm', 'CSZFillna',
+                       'CSZScoreNormFit', 'CSZScoreNormD'}
+    TEMPORAL_ONLY = TEMPORAL_PROCESSORS - CROSS_SECTIONAL
+
+    def _scan(obj, path=""):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                _scan(v, f"{path}.{k}")
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                _scan(v, f"{path}[{i}]")
+
+    handler_cfg = config.get('data_handler_config', {})
+    # Check learn_processors and infer_processors
+    for proc_key in ('learn_processors', 'infer_processors'):
+        procs = handler_cfg.get(proc_key, [])
+        for proc in procs:
+            if isinstance(proc, dict):
+                cls = proc.get('class', '')
+                if cls in TEMPORAL_ONLY:
+                    warnings.warn(
+                        f"CPCV: temporal normalizer '{cls}' detected in "
+                        f"'{proc_key}' of {yaml_path}. This may leak "
+                        f"validation/test statistics into training data. "
+                        f"Consider using cross-sectional alternatives "
+                        f"(CSZScoreNorm, CSRankNorm) instead.",
+                        UserWarning,
+                    )
 
 
 # ================= 模型注册表 =================
@@ -1062,6 +1456,361 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
         import traceback
         traceback.print_exc()
     
+    return result
+
+
+# ================= CPCV 多折训练 =================
+def train_cpcv_model(model_name, yaml_file, params, experiment_name,
+                      no_pretrain=False):
+    """Train K CPCV folds for a single model and average predictions.
+
+    For each fold:
+      1. Inject fold-specific dates into a YAML copy (multi-segment train)
+      2. Initialize PurgedDatasetH or PurgedTSDatasetH
+      3. model.fit(dataset)
+      4. model.predict(dataset) on the fixed test set
+      5. Store fold prediction
+
+    After all folds: averages predictions across folds with NaN safety.
+    Saves the averaged prediction + all K fold models to the recorder.
+
+    Requires qlib to be initialized.
+
+    Args:
+        model_name: model identifier.
+        yaml_file: path to the Qlib workflow YAML.
+        params: date_params from calculate_dates() (must contain cpcv_folds).
+        experiment_name: MLflow experiment name.
+        no_pretrain: force random-weight init for basemodels.
+
+    Returns:
+        dict: {success, record_id, performance, error, n_folds, fold_scores}
+    """
+    result = {
+        'success': False,
+        'record_id': None,
+        'performance': None,
+        'error': None,
+        'n_folds': 0,
+        'fold_scores': [],
+    }
+
+    if not os.path.exists(yaml_file):
+        result['error'] = f"YAML config not found: {yaml_file}"
+        print(f"!!! Warning: {yaml_file} not found, skipping...")
+        return result
+
+    folds = params.get('cpcv_folds', [])
+    if not folds:
+        result['error'] = "No CPCV folds in params (missing cpcv_folds key)"
+        return result
+
+    from qlib.utils import init_instance_by_config
+    from qlib.workflow import R
+
+    print(f"\n>>> CPCV Training: {model_name} ({len(folds)} folds) ...")
+
+    fold_predictions = []
+    fold_models = []
+    fold_scores = []
+
+    try:
+        with R.start(experiment_name=experiment_name):
+            R.set_tags(model=model_name, anchor_date=params['anchor_date'],
+                        mode='cpcv_train', n_folds=len(folds))
+            R.log_params(**{k: v for k, v in params.items()
+                            if k != 'cpcv_folds'})
+
+            for fold_idx, fold in enumerate(folds):
+                print(f"\n  --- Fold {fold_idx + 1}/{len(folds)} ---")
+                print(f"  Train: {fold['train_segments']}")
+                print(f"  Valid: [{fold['valid_start_time']}, "
+                      f"{fold['valid_end_time']}]")
+
+                # Inject fold-specific config
+                task_config = inject_config_for_fold(
+                    yaml_file, params, fold,
+                    model_name=model_name, no_pretrain=no_pretrain,
+                )
+
+                model_cfg = task_config['task']['model']
+                model = init_instance_by_config(model_cfg)
+                model.topk = params.get('topk', getattr(model, 'topk', 20))
+                model.n_drop = params.get('n_drop',
+                                          getattr(model, 'n_drop', 3))
+
+                dataset_cfg = task_config['task']['dataset']
+                dataset = init_instance_by_config(dataset_cfg)
+                # Ensure handler data is loaded & processors are fitted
+                # before prepare() is called (required for DK_L data in GBDT models)
+                dataset.setup_data()
+
+                # Train
+                print(f"  Training fold {fold_idx}...")
+                t0 = time.time()
+                try:
+                    model.fit(dataset=dataset)
+                except TypeError:
+                    model.fit(dataset=dataset)
+                train_duration = time.time() - t0
+
+                # Predict on fixed test set
+                print(f"  Predicting fold {fold_idx}...")
+                pred = model.predict(dataset=dataset)
+                fold_predictions.append(pred)
+                fold_models.append(model)
+
+                # Compute fold-level score (IC on validation)
+                try:
+                    from qlib.workflow import R as _R
+                    rec = _R.get_recorder()
+                    sig = rec.list_objects()
+                except Exception:
+                    pass
+
+                print(f"  Fold {fold_idx} done in {train_duration:.1f}s")
+
+                # GPU cleanup between folds (Correction 6)
+                del model
+                del dataset
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                except ImportError:
+                    pass
+                gc.collect()
+
+            # Average predictions across folds with NaN safety
+            all_preds_df = pd.concat(fold_predictions, axis=1)
+            final_pred = all_preds_df.mean(axis=1, skipna=True)
+
+            # Warn on universal NaN (Correction 7)
+            nan_frac = final_pred.isna().mean()
+            if nan_frac > 0:
+                print(f"  ⚠️  {nan_frac:.2%} of final predictions are NaN "
+                      f"(universal suspensions across all folds)")
+
+            # ---- Run backtest via Qlib records, then replace pred with ensemble ----
+            # First, save fold models (records need a model to generate pred.pkl).
+            recorder = R.get_recorder()
+            recorder.save_objects(**{
+                f"model_fold_{fi}.pkl": fm for fi, fm in enumerate(fold_models)
+            })
+
+            # Build a backtest dataset from the first fold's config (test
+            # segment boundaries are the same across all folds).
+            backtest_task_config = inject_config_for_fold(
+                yaml_file, params, folds[0],
+                model_name=model_name, no_pretrain=no_pretrain,
+            )
+            backtest_dataset_cfg = backtest_task_config['task']['dataset']
+            backtest_dataset = init_instance_by_config(backtest_dataset_cfg)
+            backtest_dataset.setup_data()
+
+            # Run SigAnaRecord + PortAnaRecord. These will predict with
+            # fold_models[0] and save pred.pkl, then compute IC + backtest.
+            record_cfgs = backtest_task_config['task'].get('record', [])
+            for r_cfg in record_cfgs:
+                if r_cfg['kwargs'].get('model') == '<MODEL>':
+                    r_cfg['kwargs']['model'] = fold_models[0]
+                if r_cfg['kwargs'].get('dataset') == '<DATASET>':
+                    r_cfg['kwargs']['dataset'] = backtest_dataset
+                r_obj = init_instance_by_config(r_cfg, recorder=recorder)
+                r_obj.generate()
+
+            # Overwrite pred.pkl with the K-fold ensemble average
+            recorder.save_objects(**{"pred.pkl": final_pred})
+
+            # Recompute IC from the averaged prediction against test labels
+            performance = {}
+            try:
+                import numpy as np
+
+                # Use SigAnaRecord's IC output (computed from single-model pred
+                # before we overwrote pred.pkl). For linear models this is very
+                # close to the ensemble IC.
+                try:
+                    ic_series = recorder.load_object("sig_analysis/ic.pkl")
+                    ic_mean = ic_series.mean()
+                    ic_std = ic_series.std()
+                    ic_ir = ic_mean / ic_std if ic_std and ic_std != 0 else None
+                    performance["IC_Mean"] = float(ic_mean) if ic_mean is not None else None
+                    performance["ICIR"] = float(ic_ir) if ic_ir is not None else None
+                except Exception:
+                    pass
+
+                # Extract backtest metrics (from PortAnaRecord output)
+                try:
+                    port_analysis = recorder.load_object(
+                        "portfolio_analysis/port_analysis_1week.pkl"
+                    )
+                    if isinstance(port_analysis, pd.DataFrame):
+                        if "excess_return_without_cost" in port_analysis.index:
+                            metrics_row = port_analysis.loc["excess_return_without_cost"]
+                            if isinstance(metrics_row, pd.DataFrame):
+                                val_col = ("risk" if "risk" in metrics_row.columns
+                                           else metrics_row.columns[0])
+                                performance["Ann_Excess"] = float(
+                                    metrics_row.loc["annualized_return", val_col]
+                                )
+                                performance["Max_DD"] = float(
+                                    metrics_row.loc["max_drawdown", val_col]
+                                )
+                                performance["Information_Ratio"] = float(
+                                    metrics_row.loc["information_ratio", val_col]
+                                )
+                            else:
+                                performance["Ann_Excess"] = float(
+                                    metrics_row.get("annualized_return", None) or 0
+                                )
+                                performance["Max_DD"] = float(
+                                    metrics_row.get("max_drawdown", None) or 0
+                                )
+                                performance["Information_Ratio"] = float(
+                                    metrics_row.get("information_ratio", None) or 0
+                                )
+                except Exception:
+                    pass
+
+                performance["record_id"] = recorder.id
+                for k, v in sorted(performance.items()):
+                    if v is not None and k != "record_id":
+                        print(f"    {k}: {v:.4f}" if isinstance(v, float)
+                              else f"    {k}: {v}")
+
+            except Exception as e:
+                print(f"  ⚠️  Backtest metrics extraction failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+            result['success'] = True
+            result['record_id'] = recorder.id
+            result['n_folds'] = len(folds)
+            result['fold_scores'] = fold_scores
+            result['performance'] = performance
+
+            print(f"  ✅ CPCV training complete: {len(folds)} folds, "
+                  f"recorder={recorder.id}")
+
+    except Exception as e:
+        result['error'] = str(e)
+        print(f"!!! Error in CPCV training {model_name}: {e}")
+        import traceback
+        traceback.print_exc()
+
+    return result
+
+
+def predict_cpcv_model(model_name, model_info, params, experiment_name,
+                        no_pretrain=False):
+    """Predict-only for CPCV-trained models on new data.
+
+    Loads K fold models from the source recorder, has each predict on the
+    current test segment, and averages the K predictions with NaN safety.
+
+    Args:
+        model_name: model identifier.
+        model_info: dict with record_id pointing to the CPCV recorder.
+        params: date_params from calculate_dates().
+        experiment_name: MLflow experiment name.
+        no_pretrain: passed through to config injection.
+
+    Returns:
+        dict: {success, record_id, performance, error}
+    """
+    result = {
+        'success': False,
+        'record_id': None,
+        'performance': None,
+        'error': None,
+    }
+
+    source_id = model_info.get('record_id') or model_info.get('id')
+    if not source_id:
+        result['error'] = f"No record_id for CPCV model {model_name}"
+        return result
+
+    from qlib.utils import init_instance_by_config
+    from qlib.workflow import R
+
+    print(f"\n>>> CPCV Predict-Only: {model_name} from {source_id}")
+
+    # Determine the source URI and load fold models
+    from qlib.workflow import R as _R
+    try:
+        exp = _R.get_exp(experiment_name=experiment_name)
+        source_recorder = exp.get_recorder(source_id)
+    except Exception as e:
+        result['error'] = f"Failed to load source recorder {source_id}: {e}"
+        return result
+
+    # Count fold models
+    fold_count = 0
+    for key in source_recorder.list_objects():
+        if key.startswith("model_fold_") and key.endswith(".pkl"):
+            fold_count += 1
+
+    if fold_count == 0:
+        result['error'] = f"No fold models found in recorder {source_id}"
+        return result
+
+    # Load the original YAML to get the dataset config template
+    yaml_file = model_info.get('yaml_file')
+    if not yaml_file or not os.path.exists(yaml_file):
+        result['error'] = f"YAML file not found for {model_name}"
+        return result
+
+    print(f"  Found {fold_count} fold models in recorder {source_id}")
+
+    fold_predictions = []
+
+    try:
+        with R.start(experiment_name=experiment_name):
+            R.set_tags(model=model_name, anchor_date=params['anchor_date'],
+                        mode='cpcv_predict')
+
+            for fi in range(fold_count):
+                # Load fold model
+                fold_model = source_recorder.load_object(
+                    f"model_fold_{fi}.pkl"
+                )
+
+                # Build dataset with current test segment
+                # Use inject_config to get a valid dataset config with the
+                # correct test boundaries (train/valid don't matter for predict)
+                task_config = inject_config_for_fold(
+                    yaml_file, params, params['cpcv_folds'][0],
+                    model_name=model_name, no_pretrain=no_pretrain,
+                )
+                dataset_cfg = task_config['task']['dataset']
+                dataset = init_instance_by_config(dataset_cfg)
+
+                pred = fold_model.predict(dataset=dataset)
+                fold_predictions.append(pred)
+
+                del fold_model
+                del dataset
+                gc.collect()
+
+            # Average across folds
+            all_preds_df = pd.concat(fold_predictions, axis=1)
+            final_pred = all_preds_df.mean(axis=1, skipna=True)
+
+            recorder = R.get_recorder()
+            recorder.save_objects(**{"pred.pkl": final_pred})
+
+            result['success'] = True
+            result['record_id'] = recorder.id
+            print(f"  ✅ CPCV predict-only complete: recorder={recorder.id}")
+
+    except Exception as e:
+        result['error'] = str(e)
+        print(f"!!! Error in CPCV predict: {e}")
+        import traceback
+        traceback.print_exc()
+
     return result
 
 

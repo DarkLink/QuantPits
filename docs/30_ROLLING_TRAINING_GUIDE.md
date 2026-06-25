@@ -275,9 +275,9 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ```json
 {
-    "started_at": "2025-03-14 10:00:00",
+    "started_at": "YYYY-MM-DD HH:MM:SS",
     "rolling_config": {"test_step": "3M", ...},
-    "anchor_date": "2025-03-14",
+    "anchor_date": "YYYY-MM-DD",
     "total_windows": 4,
     "completed_windows": {
         "0": {"linear_Alpha158": "rec_001", "gru_Alpha158": "rec_002"},
@@ -321,3 +321,6 @@ test_step: "3M"               # Z: 测试步长
 
 > [!CAUTION]
 > `train_years` 和 `valid_years` 必须为**整数年**。`test_step` 必须为 `nM`（整数月）或 `nY`（整数年），不支持小数。
+
+> [!NOTE]
+> **Purge Gap 兼容性**：当前滚动训练使用连续时间窗口（训练/验证/测试无间隔）。如需 Purged Cross-Validation，请使用独立的 CPCV 训练模式 (`cv_train.py`)，详见 [01_TRAINING_GUIDE.md](01_TRAINING_GUIDE.md#cpcv-模式purged-cross-validation)。未来版本可能将 Purge/Embargo 间隙集成到滚动训练中。

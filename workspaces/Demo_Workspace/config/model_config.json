@@ -1,4 +1,5 @@
 {
+    "_comment": "Set data_slice_mode to 'purged_cv' to enable Purged Cross-Validation. See docs/01_TRAINING_GUIDE.md.",
     "train_date_mode": "last_trade_date",
     "data_slice_mode": "slide",
     "train_set_windows": 8,
@@ -16,5 +17,12 @@
     "backtest_start_time": "2023-01-01",
     "backtest_end_time": "2023-12-31",
     "experiment_name_prefix": "demo_multi_model",
-    "freq": "week"
+    "freq": "week",
+    "purged_cv": {
+        "n_groups": 10,
+        "n_test_groups": 2,
+        "n_val_groups": 1,
+        "purge_steps": 5,
+        "embargo_steps": 10
+    }
 }

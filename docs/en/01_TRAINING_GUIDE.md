@@ -225,16 +225,97 @@ Training dates and frequency are controlled by `config/model_config.json`:
 
 ---
 
+## CPCV Mode: Purged Cross-Validation
+
+CPCV (Combinatorial Purged Cross-Validation) follows Marcos Lopez de Prado's *Advances in Financial Machine Learning*. Validation periods are "punched out" from the training timeline with purge/embargo gaps, allowing training data from BOTH before AND after the validation period. This keeps models trained on recent market data while preventing information leakage.
+
+### Why Use CPCV?
+
+The traditional `slide` mode (e.g., 8-year train / 2-year valid / 3-year test) produces training data that is years old at prediction time — the model never sees recent market patterns. CPCV partitions the timeline into N equal groups, reserves the most recent groups as a fixed test set, and generates K cross-validation folds. Each fold uses discontiguous training chunks (before and after the validation group with purge gaps).
+
+### Configuration
+
+Set `data_slice_mode` to `"purged_cv"` and add the `purged_cv` block in `config/model_config.json`:
+
+```jsonc
+{
+    "data_slice_mode": "purged_cv",
+    "purged_cv": {
+        "n_groups": 10,
+        "n_test_groups": 2,
+        "n_val_groups": 1,
+        "purge_steps": 5,
+        "embargo_steps": 10
+    },
+    "start_time": "2015-01-01",
+    "freq": "week"
+}
+```
+
+**Parameters**:
+
+| Parameter | Meaning |
+|-----------|---------|
+| `n_groups` | Total groups partitioning `[start_time, anchor_date]` by equal calendar steps |
+| `n_test_groups` | Trailing groups reserved as fixed test set (never used in CV) |
+| `n_val_groups` | Consecutive groups used as validation per fold |
+| `purge_steps` | Steps removed from BOTH sides of validation (frequency-agnostic: 1 step = 1 period of `freq`) |
+| `embargo_steps` | Additional steps removed AFTER validation only |
+
+Number of folds: **K = n_groups - n_test_groups - n_val_groups + 1**
+
+### Running CPCV
+
+```bash
+# Full CPCV training on all enabled models
+python quantpits/scripts/cv_train.py --full
+
+# Incremental CPCV on specific models
+python quantpits/scripts/cv_train.py --models lightgbm_Alpha158,gru_Alpha158
+
+# Preview fold plan
+python quantpits/scripts/cv_train.py --all-enabled --dry-run
+
+# Predict only with existing CPCV models
+python quantpits/scripts/cv_train.py --predict-only --all-enabled
+```
+
+### Downstream Compatibility
+
+CPCV-trained models are stored as `model_name@cpcv` keys in `latest_train_records.json`, coexisting with `@static` and `@rolling` models. Downstream scripts use `--training-mode cpcv`:
+
+```bash
+python quantpits/scripts/ensemble_fusion.py --from-config --training-mode cpcv
+```
+
+Each CPCV model stores K fold models (`model_fold_0.pkl` … `model_fold_K-1.pkl`) and the K-fold averaged prediction (`pred.pkl`) in the recorder. Downstream fusion loads `pred.pkl` directly — no K-fold awareness needed.
+
+### Model Type Compatibility
+
+| Model Type | Dataset Class | Method |
+|-----------|--------------|--------|
+| Tree/GBDT (LightGBM, XGBoost, CatBoost) | `PurgedDatasetH` | `pd.concat` of discontiguous time chunks (safe: point-in-time rows) |
+| Linear (Linear) | `PurgedDatasetH` | Same |
+| Deep Learning (LSTM, GRU, ALSTM, Transformer, TCN, GATs) | `PurgedTSDatasetH` | `ConcatTSDataSampler` logical concatenation (sliding windows never cross purge gaps) |
+| TRA (Temporal Routing) | `PurgedMTSDatasetH` | Union mask on pre-computed slice indices |
+
+### Preprocessing Notes
+
+- **Prefer cross-sectional normalizers**: `CSZScoreNorm`, `CSRankNorm` (per-day, per-instrument — immune to temporal leakage)
+- **Avoid temporal normalizers**: `ZScoreNorm`, `MinMaxNorm`, `RobustZScoreNorm` fit across time and will leak validation/test statistics. CPCV training emits a `UserWarning` when these are detected.
+
+---
+
 ## History Backups
 
 All vital files are auto-backed up to `data/history/` prior to modification:
 
 ```text
 data/history/
-├── train_records_2026-02-11_165306.json      # History of latest_train_records.json
-├── train_records_2026-02-18_120000.json
-├── model_performance_2026-02-06_165306.json  # History of performance metrics
-└── run_state_2026-02-12_150000.json          # History of run states
+├── train_records_YYYY-MM-DD_HHMMSS.json       # History of latest_train_records.json
+├── train_records_YYYY-MM-DD_HHMMSS.json
+├── model_performance_YYYY-MM-DD_HHMMSS.json   # History of performance metrics
+└── run_state_YYYY-MM-DD_HHMMSS.json           # History of run states
 ```
 
 This runs automatically without manual orchestration.
