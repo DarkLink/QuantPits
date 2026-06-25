@@ -1101,19 +1101,21 @@ class BestScoreCaptureHandler(logging.Handler):
 
 
 # ================= 单模型训练 =================
-def train_single_model(model_name, yaml_file, params, experiment_name, no_pretrain=False):
+def train_single_model(model_name, yaml_file, params, experiment_name,
+                       no_pretrain=False, cache_mgr=None):
     """
     训练单个模型的完整流程：训练 → 预测 → Signal Record → IC 计算
-    
+
     需要 qlib 已初始化。
-    
+
     Args:
         model_name: 模型名称
         yaml_file: YAML 配置文件路径
         params: 日期参数（来自 calculate_dates）
         experiment_name: MLflow 实验名称
         no_pretrain: 强制不加载预训练模型
-    
+        cache_mgr: HandlerCacheManager 实例或 None（None=不使用缓存）
+
     Returns:
         dict: {
             'success': bool,
@@ -1155,8 +1157,11 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
             model.n_drop = params.get('n_drop', getattr(model, 'n_drop', 3))
             
             dataset_cfg = task_config['task']['dataset']
-            dataset = init_instance_by_config(dataset_cfg)
-            
+            if cache_mgr is not None:
+                dataset = cache_mgr.create_dataset(dataset_cfg)
+            else:
+                dataset = init_instance_by_config(dataset_cfg)
+
             # 训练
             # 捕获收敛信息
             evals_result = {}
@@ -1446,7 +1451,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name, no_pretra
 
 # ================= CPCV 多折训练 =================
 def train_cpcv_model(model_name, yaml_file, params, experiment_name,
-                      no_pretrain=False):
+                      no_pretrain=False, cache_mgr=None):
     """Train K CPCV folds for a single model and average predictions.
 
     For each fold:
@@ -1467,6 +1472,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
         params: date_params from calculate_dates() (must contain cpcv_folds).
         experiment_name: MLflow experiment name.
         no_pretrain: force random-weight init for basemodels.
+        cache_mgr: HandlerCacheManager instance or None (None = legacy path).
 
     Returns:
         dict: {success, record_id, performance, error, n_folds, fold_scores}
@@ -1525,7 +1531,22 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                                           getattr(model, 'n_drop', 3))
 
                 dataset_cfg = task_config['task']['dataset']
-                dataset = init_instance_by_config(dataset_cfg)
+                if cache_mgr is not None:
+                    # Detect temporal normalizers: if present, isolate folds
+                    # via validation boundaries; if cross-sectional only,
+                    # folds with same fit range share handlers.
+                    from quantpits.utils.handler_cache import \
+                        _has_temporal_processors
+                    handler_cfg = dataset_cfg['kwargs']['handler']
+                    if _has_temporal_processors(handler_cfg):
+                        valid_seg = dataset_cfg['kwargs']['segments']['valid']
+                        extra_ctx = {'valid': valid_seg}
+                    else:
+                        extra_ctx = None
+                    dataset = cache_mgr.create_dataset(
+                        dataset_cfg, extra_context=extra_ctx)
+                else:
+                    dataset = init_instance_by_config(dataset_cfg)
                 # Ensure handler data is loaded & processors are fitted
                 # before prepare() is called (required for DK_L data in GBDT models)
                 dataset.setup_data()
@@ -1705,7 +1726,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
 
 
 def predict_cpcv_model(model_name, model_info, params, experiment_name,
-                        no_pretrain=False):
+                        no_pretrain=False, cache_mgr=None):
     """Predict-only for CPCV-trained models on new data.
 
     Loads K fold models from the source recorder, has each predict on the
@@ -1717,6 +1738,7 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
         params: date_params from calculate_dates().
         experiment_name: MLflow experiment name.
         no_pretrain: passed through to config injection.
+        cache_mgr: HandlerCacheManager instance or None (None = legacy path).
 
     Returns:
         dict: {success, record_id, performance, error}
@@ -1779,7 +1801,10 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
                 model_name=model_name, no_pretrain=no_pretrain,
             )
             dataset_cfg = task_config['task']['dataset']
-            dataset = init_instance_by_config(dataset_cfg)
+            if cache_mgr is not None:
+                dataset = cache_mgr.create_dataset(dataset_cfg)
+            else:
+                dataset = init_instance_by_config(dataset_cfg)
 
             for fi in range(fold_count):
                 # Load fold model
@@ -2173,7 +2198,7 @@ def show_model_list(args, source_records_file=None):
 
 
 def predict_single_model(model_name, model_info, params, experiment_name,
-                         source_records, no_pretrain=False):
+                         source_records, no_pretrain=False, cache_mgr=None):
     """
     使用已有模型对新数据进行预测（不训练）— 共享逻辑
 
@@ -2192,6 +2217,7 @@ def predict_single_model(model_name, model_info, params, experiment_name,
         experiment_name: 新 MLflow 实验名称
         source_records: 源训练记录 dict
         no_pretrain: 是否跳过预训练权重
+        cache_mgr: HandlerCacheManager 实例或 None（None=不使用缓存）
 
     Returns:
         dict: {success, record_id, performance, error}
@@ -2263,7 +2289,10 @@ def predict_single_model(model_name, model_info, params, experiment_name,
                                     no_pretrain=no_pretrain)
 
         dataset_cfg = task_config['task']['dataset']
-        dataset = init_instance_by_config(dataset_cfg)
+        if cache_mgr is not None:
+            dataset = cache_mgr.create_dataset(dataset_cfg)
+        else:
+            dataset = init_instance_by_config(dataset_cfg)
 
         # 3. 在新实验下创建 Recorder 并预测
         with R.start(experiment_name=experiment_name):

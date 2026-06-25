@@ -95,6 +95,9 @@ Examples:
     ctrl.add_argument('--source-records', type=str,
                       default='latest_train_records.json',
                       help='Source records file for predict-only')
+    ctrl.add_argument('--cache-size', type=int, default=None, metavar='MB',
+                      help='Handler cache max memory (MB). Default: auto-detect '
+                           '(50%% free RAM). Set 0 to disable.')
 
     info = parser.add_argument_group('Information')
     info.add_argument('--list', action='store_true',
@@ -183,6 +186,19 @@ def run_full_train_cpcv(args):
         print("\n  Dry-run mode: above models would be trained with CPCV")
         return
 
+    # Initialize handler cache (unless --cache-size 0)
+    cache_mgr = None
+    if args.cache_size != 0:
+        from quantpits.utils.handler_cache import (
+            HandlerCacheManager, enumerate_tasks_cpcv, pre_analyze,
+        )
+        cache_mgr = HandlerCacheManager(
+            max_size_mb=args.cache_size if args.cache_size else None)
+        yaml_paths = {m: info['yaml_file'] for m, info in enabled_models.items()}
+        tasks = enumerate_tasks_cpcv(
+            list(enabled_models.keys()), yaml_paths, params)
+        pre_analyze(tasks, cache_mgr)
+
     experiment_name = args.experiment_name or f"Prod_Train_CPCV_{params.get('freq', 'week').upper()}"
 
     current_records = {
@@ -203,6 +219,7 @@ def run_full_train_cpcv(args):
         result = train_cpcv_model(
             model_name, yaml_file, params, experiment_name,
             no_pretrain=args.no_pretrain,
+            cache_mgr=cache_mgr,
         )
 
         if result['success']:
@@ -223,6 +240,9 @@ def run_full_train_cpcv(args):
     backup_file_with_date(perf_file)
     with open(perf_file, 'w') as f:
         json.dump(model_performances, f, indent=4)
+
+    if cache_mgr is not None:
+        print(f"\n  Handler Cache: {cache_mgr}")
 
     print(f"\n{'='*50}")
     print(f"CPCV Full training complete. Experiment: {experiment_name}")
@@ -295,6 +315,19 @@ def run_incremental_train_cpcv(args, targets):
         print("Error: data_slice_mode must be 'purged_cv' in model_config.json")
         sys.exit(1)
 
+    # Initialize handler cache (unless --cache-size 0)
+    cache_mgr = None
+    if args.cache_size != 0:
+        from quantpits.utils.handler_cache import (
+            HandlerCacheManager, enumerate_tasks_cpcv, pre_analyze,
+        )
+        cache_mgr = HandlerCacheManager(
+            max_size_mb=args.cache_size if args.cache_size else None)
+        yaml_paths = {m: info['yaml_file'] for m, info in targets.items()}
+        tasks = enumerate_tasks_cpcv(
+            list(targets.keys()), yaml_paths, params)
+        pre_analyze(tasks, cache_mgr)
+
     freq = params.get('freq', 'week').upper()
     experiment_name = args.experiment_name or f"Prod_Train_CPCV_{freq}"
 
@@ -330,6 +363,7 @@ def run_incremental_train_cpcv(args, targets):
         result = train_cpcv_model(
             model_name, yaml_file, params, experiment_name,
             no_pretrain=args.no_pretrain,
+            cache_mgr=cache_mgr,
         )
 
         if result['success']:
@@ -366,6 +400,8 @@ def run_incremental_train_cpcv(args, targets):
         print(f"  FAILED: {len(failed)} models")
         for name, err in failed.items():
             print(f"    {name}: {err[:80]}")
+    if cache_mgr is not None:
+        print(f"\n  Handler Cache: {cache_mgr}")
     print(f"{'='*60}\n")
 
 

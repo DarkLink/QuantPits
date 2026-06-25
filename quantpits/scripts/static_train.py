@@ -110,6 +110,9 @@ def parse_args():
     ctrl.add_argument('--source-records', type=str,
                       default='latest_train_records.json',
                       help='predict-only 的源训练记录文件 (默认: latest_train_records.json)')
+    ctrl.add_argument('--cache-size', type=int, default=None, metavar='MB',
+                      help='Handler 缓存最大内存 (MB)，默认自动检测 (50%% 空闲 RAM)。'
+                           '设为 0 禁用缓存。')
 
     info = parser.add_argument_group('信息查看')
     info.add_argument('--list', action='store_true',
@@ -156,6 +159,20 @@ def run_full_train(args):
         print("🔍 Dry-run 模式: 以上模型将被训练，但本次不会实际执行")
         return
 
+    # Initialize handler cache (unless --cache-size 0)
+    cache_mgr = None
+    if args.cache_size != 0:
+        from quantpits.utils.handler_cache import (
+            HandlerCacheManager, enumerate_tasks_static, pre_analyze,
+        )
+        cache_mgr = HandlerCacheManager(
+            max_size_mb=args.cache_size if args.cache_size else None)
+        # Pre-analyze: discover unique handler configs across all models
+        yaml_paths = {m: info['yaml_file'] for m, info in enabled_models.items()}
+        tasks = enumerate_tasks_static(
+            list(enabled_models.keys()), yaml_paths, params)
+        pre_analyze(tasks, cache_mgr)
+
     experiment_name = args.experiment_name or f"Prod_Train_{params.get('freq', 'week').upper()}"
 
     current_records = {
@@ -175,8 +192,10 @@ def run_full_train(args):
         print(f"{'─'*60}")
 
         yaml_file = model_info['yaml_file']
-        result = train_single_model(model_name, yaml_file, params, experiment_name,
-                                    no_pretrain=args.no_pretrain)
+        result = train_single_model(model_name, yaml_file, params,
+                                    experiment_name,
+                                    no_pretrain=args.no_pretrain,
+                                    cache_mgr=cache_mgr)
 
         if result['success']:
             model_key = make_model_key(model_name, 'static')
@@ -194,6 +213,9 @@ def run_full_train(args):
     backup_file_with_date(perf_file, prefix=f"model_performance_{params['anchor_date']}")
     with open(perf_file, 'w') as f:
         json.dump(model_performances, f, indent=4)
+
+    if cache_mgr is not None:
+        print(f"\n  Handler Cache: {cache_mgr}")
 
     print(f"\n{'='*50}")
     print(f"All tasks finished. Experiment: {experiment_name}")
@@ -263,6 +285,19 @@ def run_incremental_train(args, targets):
     params = calculate_dates()
     freq = params.get('freq', 'week').upper()
 
+    # Initialize handler cache (unless --cache-size 0)
+    cache_mgr = None
+    if args.cache_size != 0:
+        from quantpits.utils.handler_cache import (
+            HandlerCacheManager, enumerate_tasks_static, pre_analyze,
+        )
+        cache_mgr = HandlerCacheManager(
+            max_size_mb=args.cache_size if args.cache_size else None)
+        yaml_paths = {m: info['yaml_file'] for m, info in targets.items()}
+        tasks = enumerate_tasks_static(
+            list(targets.keys()), yaml_paths, params)
+        pre_analyze(tasks, cache_mgr)
+
     experiment_name = args.experiment_name or f"Prod_Train_{freq}"
 
     # 初始化运行状态
@@ -299,7 +334,8 @@ def run_incremental_train(args, targets):
 
         result = train_single_model(
             model_name, yaml_file, params, experiment_name,
-            no_pretrain=args.no_pretrain
+            no_pretrain=args.no_pretrain,
+            cache_mgr=cache_mgr,
         )
 
         if result['success']:
@@ -351,6 +387,9 @@ def run_incremental_train(args, targets):
         for name, err in failed.items():
             print(f"    {name}: {err[:80]}")
         print(f"\n  💡 提示: 使用 --resume 参数可跳过已成功的模型，重新训练失败的模型")
+
+    if cache_mgr is not None:
+        print(f"\n  Handler Cache: {cache_mgr}")
 
     print(f"{'='*60}\n")
 
@@ -423,6 +462,19 @@ def run_predict_only(args, targets):
     params = calculate_dates()
     freq = params.get('freq', 'week').upper()
 
+    # Initialize handler cache (unless --cache-size 0)
+    cache_mgr = None
+    if args.cache_size != 0:
+        from quantpits.utils.handler_cache import (
+            HandlerCacheManager, enumerate_tasks_static, pre_analyze,
+        )
+        cache_mgr = HandlerCacheManager(
+            max_size_mb=args.cache_size if args.cache_size else None)
+        yaml_paths = {m: info['yaml_file'] for m, info in available.items()}
+        tasks = enumerate_tasks_static(
+            list(available.keys()), yaml_paths, params)
+        pre_analyze(tasks, cache_mgr)
+
     experiment_name = args.experiment_name
     if experiment_name is None:
         experiment_name = f"{DEFAULT_PREDICT_EXPERIMENT}_{freq}"
@@ -447,7 +499,8 @@ def run_predict_only(args, targets):
         result = predict_single_model(
             model_name, model_info, params,
             experiment_name, source_records,
-            no_pretrain=args.no_pretrain
+            no_pretrain=args.no_pretrain,
+            cache_mgr=cache_mgr,
         )
 
         if result['success']:
@@ -496,6 +549,9 @@ def run_predict_only(args, targets):
         print(f"  ⏭️  跳过（不在源记录中）: {len(missing)} 个模型")
         for name in missing:
             print(f"    {name}")
+
+    if cache_mgr is not None:
+        print(f"\n  Handler Cache: {cache_mgr}")
 
     print(f"\n  📂 实验名: {experiment_name}")
     print(f"  📋 记录已合并到: latest_train_records.json")
