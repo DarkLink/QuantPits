@@ -380,6 +380,7 @@ def run_predict_only_cpcv(args):
         merge_train_records,
         print_model_table,
         make_model_key,
+        parse_model_key,
         RECORD_OUTPUT_FILE,
     )
 
@@ -444,7 +445,6 @@ def run_predict_only_cpcv(args):
         print(f"{'─'*60}")
 
         # Get model info from registry
-        registry = load_model_registry()
         model_info = registry.get(model_name, {})
         model_info['record_id'] = record_id
         model_info['yaml_file'] = model_info.get('yaml_file')

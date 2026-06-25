@@ -962,22 +962,7 @@ def _warn_temporal_processors(config, yaml_path):
     """
     import warnings
 
-    TEMPORAL_PROCESSORS = {
-        'ZScoreNorm', 'MinMaxNorm', 'RobustZScoreNorm', 'CSZScoreNorm',
-        'CSRankNorm', 'CSZFillna',
-    }
-    # Actually, we only want to warn about TEMPORAL (non-cross-sectional) ones
-    CROSS_SECTIONAL = {'CSZScoreNorm', 'CSRankNorm', 'CSZFillna',
-                       'CSZScoreNormFit', 'CSZScoreNormD'}
-    TEMPORAL_ONLY = TEMPORAL_PROCESSORS - CROSS_SECTIONAL
-
-    def _scan(obj, path=""):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                _scan(v, f"{path}.{k}")
-        elif isinstance(obj, list):
-            for i, v in enumerate(obj):
-                _scan(v, f"{path}[{i}]")
+    TEMPORAL_ONLY = {'ZScoreNorm', 'MinMaxNorm', 'RobustZScoreNorm'}
 
     handler_cfg = config.get('data_handler_config', {})
     # Check learn_processors and infer_processors
@@ -1548,10 +1533,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                 # Train
                 print(f"  Training fold {fold_idx}...")
                 t0 = time.time()
-                try:
-                    model.fit(dataset=dataset)
-                except TypeError:
-                    model.fit(dataset=dataset)
+                model.fit(dataset=dataset)
                 train_duration = time.time() - t0
 
                 # Predict on fixed test set
@@ -1562,11 +1544,30 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
 
                 # Compute fold-level score (IC on validation)
                 try:
-                    from qlib.workflow import R as _R
-                    rec = _R.get_recorder()
-                    sig = rec.list_objects()
-                except Exception:
-                    pass
+                    orig_test_seg = dataset.segments['test']
+                    dataset.segments['test'] = dataset.segments['valid']
+                    val_pred = model.predict(dataset=dataset)
+                    val_label = dataset.prepare("test", col_set="label")
+                    dataset.segments['test'] = orig_test_seg
+
+                    if isinstance(val_label, pd.DataFrame):
+                        val_label = val_label.iloc[:, 0]
+
+                    df = pd.DataFrame({"pred": val_pred, "label": val_label})
+                    df = df.dropna()
+                    if not df.empty:
+                        grp_key = "datetime" if "datetime" in df.index.names else df.index.names[0]
+                        ic = df.groupby(level=grp_key).apply(
+                            lambda x: x["pred"].corr(x["label"], method="pearson")
+                        )
+                        mean_ic = float(ic.mean())
+                        fold_scores.append(mean_ic)
+                        print(f"  Fold {fold_idx} Validation IC: {mean_ic:.4f}")
+                    else:
+                        fold_scores.append(None)
+                except Exception as e:
+                    print(f"  ⚠️  Failed to compute validation IC for fold {fold_idx}: {e}")
+                    fold_scores.append(None)
 
                 print(f"  Fold {fold_idx} done in {train_duration:.1f}s")
 
@@ -1738,9 +1739,8 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
     print(f"\n>>> CPCV Predict-Only: {model_name} from {source_id}")
 
     # Determine the source URI and load fold models
-    from qlib.workflow import R as _R
     try:
-        exp = _R.get_exp(experiment_name=experiment_name)
+        exp = R.get_exp(experiment_name=experiment_name)
         source_recorder = exp.get_recorder(source_id)
     except Exception as e:
         result['error'] = f"Failed to load source recorder {source_id}: {e}"
@@ -1771,28 +1771,30 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
             R.set_tags(model=model_name, anchor_date=params['anchor_date'],
                         mode='cpcv_predict')
 
+            # Build dataset with current test segment
+            # Use inject_config to get a valid dataset config with the
+            # correct test boundaries (train/valid don't matter for predict)
+            task_config = inject_config_for_fold(
+                yaml_file, params, params['cpcv_folds'][0],
+                model_name=model_name, no_pretrain=no_pretrain,
+            )
+            dataset_cfg = task_config['task']['dataset']
+            dataset = init_instance_by_config(dataset_cfg)
+
             for fi in range(fold_count):
                 # Load fold model
                 fold_model = source_recorder.load_object(
                     f"model_fold_{fi}.pkl"
                 )
 
-                # Build dataset with current test segment
-                # Use inject_config to get a valid dataset config with the
-                # correct test boundaries (train/valid don't matter for predict)
-                task_config = inject_config_for_fold(
-                    yaml_file, params, params['cpcv_folds'][0],
-                    model_name=model_name, no_pretrain=no_pretrain,
-                )
-                dataset_cfg = task_config['task']['dataset']
-                dataset = init_instance_by_config(dataset_cfg)
-
                 pred = fold_model.predict(dataset=dataset)
                 fold_predictions.append(pred)
 
                 del fold_model
-                del dataset
                 gc.collect()
+
+            del dataset
+            gc.collect()
 
             # Average across folds
             all_preds_df = pd.concat(fold_predictions, axis=1)
