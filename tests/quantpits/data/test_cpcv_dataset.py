@@ -562,6 +562,15 @@ class TestConcatTSDataSamplerExtra:
 # PurgedMTSDatasetH
 # ============================================================================
 
+# Try to import PurgedMTSDatasetH; it's None when qlib.contrib is unavailable.
+try:
+    from quantpits.data.cpcv_dataset import PurgedMTSDatasetH as _PMH
+    _MTS_AVAILABLE = _PMH is not None
+except ImportError:
+    _MTS_AVAILABLE = False
+
+
+@pytest.mark.skipif(not _MTS_AVAILABLE, reason="qlib.contrib MTSDatasetH not available")
 class TestPurgedMTSDatasetH:
     """Tests for PurgedMTSDatasetH._prepare_seg multi-segment support."""
 
