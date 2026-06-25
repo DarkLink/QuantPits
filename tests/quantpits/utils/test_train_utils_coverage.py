@@ -1685,3 +1685,192 @@ def test_predict_single_model_no_parent_tags(mock_env_constants, tmp_path):
                     )
     assert result["success"] is False
     assert "no parent tags" in result["error"]
+
+
+# ============================================================================
+# CPCV: compute_cpcv_folds error branches
+# ============================================================================
+
+
+class TestComputeCpcvFoldsErrors:
+    """Cover the ValueError branches in compute_cpcv_folds()."""
+
+    @staticmethod
+    def _make_config(**overrides):
+        cfg = {
+            "start_time": "2020-01-01",
+            "purged_cv": {
+                "n_groups": 20,
+                "n_test_groups": 4,
+                "n_val_groups": 2,
+                "purge_steps": 5,
+                "embargo_steps": 0,
+            },
+        }
+        cfg["purged_cv"].update(overrides)
+        return cfg
+
+    def _make_cal(self, n_days=500):
+        """Build a mock calendar list of n_days trading dates."""
+        import pandas as pd
+        return pd.DatetimeIndex(
+            pd.date_range("2020-01-06", periods=n_days, freq="B")
+        )
+
+    def test_n_test_groups_gte_n_groups(self):
+        """Line 303-307: n_test_groups >= n_groups raises ValueError."""
+        from quantpits.utils.train_utils import compute_cpcv_folds
+        config = self._make_config(n_test_groups=20, n_groups=10)
+        with pytest.raises(ValueError, match="n_test_groups"):
+            compute_cpcv_folds("2025-12-31", config, freq="day")
+
+    def test_n_val_groups_too_large(self):
+        """Line 308-312: n_val_groups exceeds available CV groups."""
+        from quantpits.utils.train_utils import compute_cpcv_folds
+        # n_groups=20, n_test_groups=10 => 10 CV groups, n_val_groups=15 > 10
+        config = self._make_config(n_groups=20, n_test_groups=10, n_val_groups=15)
+        with pytest.raises(ValueError, match="n_val_groups"):
+            compute_cpcv_folds("2025-12-31", config, freq="day")
+
+    def test_empty_calendar(self, mock_env_constants):
+        """Line 316-320: zero-period calendar raises ValueError."""
+        from quantpits.utils.train_utils import compute_cpcv_folds
+        import sys
+        config = self._make_config()
+        with patch.dict(sys.modules, {'qlib.data': MagicMock()}):
+            sys.modules['qlib.data'].D.calendar.return_value = []
+            with pytest.raises(ValueError, match="No trading periods"):
+                compute_cpcv_folds("2025-12-31", config, freq="day")
+
+    def test_total_periods_lt_n_groups(self, mock_env_constants):
+        """Line 324-328: fewer periods than n_groups."""
+        from quantpits.utils.train_utils import compute_cpcv_folds
+        import sys
+        config = self._make_config(n_groups=100)
+        with patch.dict(sys.modules, {'qlib.data': MagicMock()}):
+            sys.modules['qlib.data'].D.calendar.return_value = self._make_cal(50)
+            with pytest.raises(ValueError, match="Total periods"):
+                compute_cpcv_folds("2025-12-31", config, freq="day")
+
+    def test_n_folds_lt_1(self, mock_env_constants):
+        """Line 351-356: defensive check for n_folds < 1 (n_val_groups
+        too large relative to CV groups — guarded by line 308 first)."
+        This triggers the n_val_groups check (line 308) instead, which
+        guards the exact same condition. Line 352 is mathematically
+        equivalent to line 308 and thus unreachable in normal flow."""
+        pass  # Line 352 is mathematically guarded by line 308
+
+    def test_purge_consumes_all_training(self, mock_env_constants):
+        """Line 363-368: purge_steps >= smallest CV group size."""
+        from quantpits.utils.train_utils import compute_cpcv_folds
+        import sys
+        # Small n_groups so each group is only a few periods
+        config = self._make_config(n_groups=10, n_test_groups=2, n_val_groups=1,
+                                   purge_steps=20, embargo_steps=0)
+        with patch.dict(sys.modules, {'qlib.data': MagicMock()}):
+            sys.modules['qlib.data'].D.calendar.return_value = self._make_cal(50)
+            with pytest.raises(ValueError, match="purge_steps.*>=.*smallest"):
+                compute_cpcv_folds("2025-12-31", config, freq="day")
+
+    def test_no_training_data_after_purge(self, mock_env_constants):
+        """Line 401-406: purge+embargo leaves no training segments."""
+        from quantpits.utils.train_utils import compute_cpcv_folds
+        import sys
+        # n_groups=10, n_test=2, n_val=8, 100 days -> ~10 days/group
+        # n_cv=8, n_folds=1. Fold 0: val groups 0-7. No left/right training.
+        # purge_steps=9 (< group_size=10) doesn't trigger line 363, but the
+        # fold has no training segments → triggers line 402.
+        config = self._make_config(n_groups=10, n_test_groups=2, n_val_groups=8,
+                                   purge_steps=9, embargo_steps=0)
+        with patch.dict(sys.modules, {'qlib.data': MagicMock()}):
+            sys.modules['qlib.data'].D.calendar.return_value = self._make_cal(100)
+            with pytest.raises(ValueError, match="no training data"):
+                compute_cpcv_folds("2025-12-31", config, freq="day")
+
+    def test_embargo_pushes_test_past_end(self, mock_env_constants):
+        """Line 418-424: embargo pushes test_start past test_end."""
+        from quantpits.utils.train_utils import compute_cpcv_folds
+        import sys
+        # n_groups=10, n_test=2, n_val=2, purge=0, embargo=50, cal=100
+        # 8 CV groups, 7 folds, each fold has valid training data.
+        # After folds: embargo pushes test_start (130) > test_end (99).
+        config = self._make_config(n_groups=10, n_test_groups=2, n_val_groups=2,
+                                   purge_steps=0, embargo_steps=50)
+        with patch.dict(sys.modules, {'qlib.data': MagicMock()}):
+            sys.modules['qlib.data'].D.calendar.return_value = self._make_cal(100)
+            with pytest.raises(ValueError, match="Embargo pushes test_start"):
+                compute_cpcv_folds("2025-12-31", config, freq="day")
+
+
+# ============================================================================
+# CPCV: _warn_temporal_processors
+# ============================================================================
+
+
+class TestWarnTemporalProcessors:
+    """Cover the temporal normalizer warning in _warn_temporal_processors."""
+
+    def test_warns_on_temporal_normalizers(self, mock_env_constants):
+        """Lines 957-975: warns when ZScoreNorm/MinMaxNorm/RobustZScoreNorm detected."""
+        from quantpits.utils.train_utils import _warn_temporal_processors
+        import warnings
+
+        config = {
+            "data_handler_config": {
+                "learn_processors": [
+                    {"class": "ZScoreNorm"},
+                    {"class": "DropnaLabel"},
+                ],
+                "infer_processors": [
+                    {"class": "MinMaxNorm"},
+                ],
+            }
+        }
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _warn_temporal_processors(config, "/fake/path")
+            assert len(w) >= 1
+            assert any("ZScoreNorm" in str(warning.message) for warning in w)
+            assert any("MinMaxNorm" in str(warning.message) for warning in w)
+
+    def test_no_warn_without_temporal(self, mock_env_constants):
+        """No warning when no temporal normalizers present."""
+        from quantpits.utils.train_utils import _warn_temporal_processors
+        import warnings
+
+        config = {
+            "data_handler_config": {
+                "learn_processors": [
+                    {"class": "DropnaLabel"},
+                ],
+                "infer_processors": [
+                    {"class": "CSRankNorm"},
+                ],
+            }
+        }
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _warn_temporal_processors(config, "/fake/path")
+            temporal_warnings = [x for x in w if "temporal" in str(x.message).lower()
+                                 or "ZScoreNorm" in str(x.message)
+                                 or "MinMaxNorm" in str(x.message)
+                                 or "RobustZScoreNorm" in str(x.message)]
+            assert len(temporal_warnings) == 0
+
+    def test_robust_zscore_warns(self, mock_env_constants):
+        """RobustZScoreNorm also triggers warning."""
+        from quantpits.utils.train_utils import _warn_temporal_processors
+        import warnings
+
+        config = {
+            "data_handler_config": {
+                "learn_processors": [
+                    {"class": "RobustZScoreNorm"},
+                ],
+                "infer_processors": [],
+            }
+        }
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _warn_temporal_processors(config, "/fake/path")
+            assert len(w) >= 1

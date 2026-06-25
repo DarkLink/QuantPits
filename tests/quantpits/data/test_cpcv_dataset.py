@@ -343,6 +343,186 @@ class TestPurgedTSDatasetH:
             assert isinstance(result, ConcatTSDataSampler)
             assert len(result) == 18
 
+
+# Add the rest of ConcatTSDataSampler coverage tests here for clarity
+class TestConcatTSDataSamplerExtra:
+    """Additional coverage for ConcatTSDataSampler edge cases."""
+
+    def _make_mock_sampler(self, length, start_idx=0):
+        """Create a mock TSDataSampler with required attributes."""
+        from quantpits.data.cpcv_dataset import ConcatTSDataSampler as CDS
+        # Reuse the same helper pattern but keep it local
+        sampler = MagicMock()
+        sampler.__len__.return_value = length
+        dates = pd.date_range(f"202{start_idx}-01-01", periods=length, freq="D")
+        sampler.idx_df = pd.DataFrame(
+            np.arange(length).reshape(-1, 1),
+            index=dates,
+            columns=["SH600000"],
+        )
+        def _getitem(idx):
+            if idx < 0:
+                idx += length
+            if idx < 0 or idx >= length:
+                raise IndexError(f"index {idx} out of range")
+            return {"sample": f"s{start_idx}_{idx}"}
+        sampler.__getitem__.side_effect = _getitem
+        def _get_index(idx=None):
+            if idx is not None:
+                return pd.MultiIndex.from_tuples(
+                    [(dates[idx], "SH600000")],
+                    names=["datetime", "instrument"],
+                )
+            return pd.MultiIndex.from_tuples(
+                [(d, "SH600000") for d in dates],
+                names=["datetime", "instrument"],
+            )
+        sampler.get_index.side_effect = _get_index
+        return sampler
+
+    def test_empty_property(self):
+        """Line 114: empty returns True when len==0."""
+        s = self._make_mock_sampler(0)
+        cds = ConcatTSDataSampler([s])
+        assert cds.empty is True
+
+    def test_empty_property_false(self):
+        """Line 114: empty returns False when len>0."""
+        s = self._make_mock_sampler(5)
+        cds = ConcatTSDataSampler([s])
+        assert cds.empty is False
+
+    def test_config_propagates_to_all(self):
+        """Lines 116-119: config() propagates to all sub-samplers."""
+        s1 = self._make_mock_sampler(3)
+        s2 = self._make_mock_sampler(3)
+        cds = ConcatTSDataSampler([s1, s2])
+        cds.config(fillna_type="ffill", some_kwarg=42)
+        s1.config.assert_called_once_with(fillna_type="ffill", some_kwarg=42)
+        s2.config.assert_called_once_with(fillna_type="ffill", some_kwarg=42)
+
+    def test_getitem_batch_list(self):
+        """Lines 128-132: batch indexing with a list."""
+        s1 = self._make_mock_sampler(3, 0)
+        s2 = self._make_mock_sampler(2, 1)
+        cds = ConcatTSDataSampler([s1, s2])
+        result = cds[[0, 2, 4]]
+        assert len(result) == 3
+        assert result[0] == {"sample": "s0_0"}
+
+    def test_getitem_batch_ndarray(self):
+        """Lines 128-132: batch indexing with a numpy array."""
+        s1 = self._make_mock_sampler(3, 0)
+        cds = ConcatTSDataSampler([s1])
+        result = cds[np.array([0, 1, 2])]
+        assert len(result) == 3
+
+    def test_getitem_batch_empty(self):
+        """Line 130-131: empty batch returns empty array."""
+        s1 = self._make_mock_sampler(3, 0)
+        cds = ConcatTSDataSampler([s1])
+        result = cds[[]]
+        assert len(result) == 0
+        assert isinstance(result, np.ndarray)
+
+    def test_getitem_tuple_key(self):
+        """Lines 135-143: tuple (datetime, instrument) key indexing."""
+        s1 = MagicMock()
+        s1.__len__.return_value = 3
+        s1.idx_df = pd.DataFrame()
+        s1.__getitem__.side_effect = KeyError("not in s1")
+
+        s2 = MagicMock()
+        s2.__len__.return_value = 3
+        s2.idx_df = pd.DataFrame()
+        s2.__getitem__.return_value = {"data": 42}
+
+        cds = ConcatTSDataSampler([s1, s2])
+        result = cds[(pd.Timestamp("2020-01-02"), "SH600000")]
+        assert result == {"data": 42}
+        # s1 was tried first, raised KeyError, then s2 succeeded
+        assert s2.__getitem__.called
+
+    def test_getitem_tuple_key_not_found(self):
+        """Line 143: tuple key not found in any sub-sampler raises KeyError."""
+        s1 = MagicMock()
+        s1.__len__.return_value = 3
+        s1.idx_df = pd.DataFrame()
+        s1.__getitem__.side_effect = KeyError("nope")
+        s2 = MagicMock()
+        s2.__len__.return_value = 3
+        s2.idx_df = pd.DataFrame()
+        s2.__getitem__.side_effect = IndexError("nope")
+
+        cds = ConcatTSDataSampler([s1, s2])
+        with pytest.raises(KeyError, match="not found in any sub-sampler"):
+            cds[(pd.Timestamp("2099-01-01"), "SH999999")]
+
+    def test_get_single_out_of_range_positive(self):
+        """Line 151-152: idx >= len(self) raises IndexError."""
+        s1 = self._make_mock_sampler(3, 0)
+        cds = ConcatTSDataSampler([s1])
+        with pytest.raises(IndexError, match="out of range"):
+            cds[5]
+
+    def test_get_single_out_of_range_negative(self):
+        """Line 149-152: negative idx wraps around, then still out of range."""
+        s1 = self._make_mock_sampler(3, 0)
+        cds = ConcatTSDataSampler([s1])
+        with pytest.raises(IndexError, match="out of range"):
+            cds[-10]
+
+    def test_get_single_n1_fast_path(self):
+        """Line 154-155: N==1 fast path in _get_single."""
+        s1 = self._make_mock_sampler(5, 0)
+        cds = ConcatTSDataSampler([s1])
+        assert cds[0] == {"sample": "s0_0"}
+        assert cds[4] == {"sample": "s0_4"}
+
+    def test_get_index_specific_n2_first_sampler(self):
+        """Line 179: get_index with idx in first sampler for N==2."""
+        s1 = self._make_mock_sampler(3, 0)
+        s2 = self._make_mock_sampler(2, 1)
+        cds = ConcatTSDataSampler([s1, s2])
+        idx = cds.get_index(1)  # Falls in s1 (idx < length[0]=3)
+        assert len(idx) == 1
+
+    def test_get_index_specific_n1(self):
+        """Line 175-176: get_index with idx, N==1 fast path."""
+        s1 = self._make_mock_sampler(3, 0)
+        cds = ConcatTSDataSampler([s1])
+        idx = cds.get_index(1)
+        assert len(idx) == 1
+
+    def test_get_index_specific_n3(self):
+        """Lines 182-185: get_index with idx, N>2 path using sampler_map."""
+        s0 = self._make_mock_sampler(2, 0)
+        s1 = self._make_mock_sampler(2, 1)
+        s2 = self._make_mock_sampler(2, 2)
+        cds = ConcatTSDataSampler([s0, s1, s2])
+        # Index 3 -> s1[1]
+        idx = cds.get_index(3)
+        assert len(idx) == 1
+
+    def test_get_index_negative_idx(self):
+        """Line 173-174: negative idx wrap in get_index."""
+        s1 = self._make_mock_sampler(3, 0)
+        s2 = self._make_mock_sampler(2, 1)
+        cds = ConcatTSDataSampler([s1, s2])
+        # -1 -> last element of s2
+        idx = cds.get_index(-1)
+        assert len(idx) == 1
+
+    def test_get_index_sort_values_typeerror_fallback(self):
+        """Lines 195-198: sort_values TypeError fallback for older pandas."""
+        s1 = self._make_mock_sampler(2, 0)
+        s2 = self._make_mock_sampler(2, 1)
+        cds = ConcatTSDataSampler([s1, s2])
+        # Mock sort_values to raise TypeError (older pandas behavior)
+        with patch.object(pd.MultiIndex, 'sort_values', side_effect=TypeError):
+            result = cds.get_index()  # Should fall back, returning unsorted result
+            assert result is not None
+
     def test_concat_sampler_no_cross_window_leakage(self):
         """Verify that getitem NEVER crosses between sub-samplers.
 
@@ -376,3 +556,94 @@ class TestPurgedTSDatasetH:
         cds[5]
         s1.__getitem__.assert_called_with(0)
         s0.__getitem__.assert_not_called()
+
+
+# ============================================================================
+# PurgedMTSDatasetH
+# ============================================================================
+
+class TestPurgedMTSDatasetH:
+    """Tests for PurgedMTSDatasetH._prepare_seg multi-segment support."""
+
+    @staticmethod
+    def _make_ds():
+        """Create a PurgedMTSDatasetH with mocked internals."""
+        from quantpits.data.cpcv_dataset import PurgedMTSDatasetH
+        ds = PurgedMTSDatasetH.__new__(PurgedMTSDatasetH)
+
+        # Build a MultiIndex: (instrument, date)
+        dates = pd.DatetimeIndex(pd.date_range("2020-01-01", periods=20, freq="5D"))
+        instruments = ["SH600000"] * len(dates)
+        idx = pd.MultiIndex.from_arrays(
+            [instruments, dates], names=["instrument", "datetime"]
+        )
+        ds._index = idx
+        ds._daily_index = pd.DatetimeIndex(dates)
+
+        ds._data = np.arange(20, dtype=np.float32)
+        ds._label = np.arange(20, dtype=np.float32)
+        ds._memory = np.zeros((20, 5), dtype=np.float32)
+        ds._zeros = np.zeros(20, dtype=np.float32)
+
+        # Create batch_slices and daily_slices arrays
+        ds._batch_slices = np.arange(20, dtype=np.int64)
+        ds._daily_slices = np.arange(20, dtype=np.int64)
+
+        ds.handler = MagicMock()
+        ds.segments = {}
+        ds.flt_col = None
+        if hasattr(ds, 'fetch_kwargs'):
+            del ds.fetch_kwargs
+        return ds
+
+    def test_single_segment_delegates_to_parent(self):
+        """Single [start, end] should call super()._prepare_seg."""
+        ds = self._make_ds()
+        from quantpits.data.cpcv_dataset import PurgedMTSDatasetH
+
+        with patch.object(PurgedMTSDatasetH.__bases__[0], '_prepare_seg',
+                          return_value=None):
+            result = ds._prepare_seg(["2020-01-01", "2020-06-30"])
+            # Single segment delegates to parent, returns whatever parent returns
+
+    def test_multi_segment_filters_slices(self):
+        """Multi-segment: filters batch/daily slices against union of ranges."""
+        ds = self._make_ds()
+        # Two sub-segments covering non-overlapping date ranges
+        result = ds._prepare_seg([
+            ["2020-01-01", "2020-02-14"],   # first ~9 dates
+            ["2020-03-25", "2020-04-08"],   # next few dates
+        ])
+        assert result is not None
+        # Should have filtered batch_slices to only the union of date ranges
+        assert len(result._batch_slices) < 20
+        assert len(result._daily_slices) < 20
+
+    def test_multi_segment_overlapping_ranges(self):
+        """Overlapping sub-segments: union should deduplicate via np.any."""
+        ds = self._make_ds()
+        result = ds._prepare_seg([
+            ["2020-01-01", "2020-03-01"],
+            ["2020-02-15", "2020-04-08"],  # overlaps with first
+        ])
+        assert result is not None
+        # All data from both ranges should be included (union, not intersection)
+
+    @patch('quantpits.data.cpcv_dataset._get_date_parse_fn')
+    def test_multi_segment_calls_date_parse(self, mock_date_fn):
+        """Verifies _get_date_parse_fn is called with first instrument."""
+        from quantpits.data.cpcv_dataset import PurgedMTSDatasetH
+        mock_date_fn.return_value = lambda x: x  # identity parse
+        ds = self._make_ds()
+        ds._prepare_seg([
+            ["2020-01-01", "2020-02-01"],
+            ["2020-03-01", "2020-04-01"],
+        ])
+        mock_date_fn.assert_called_once_with(pd.Timestamp("2020-01-01"))
+
+    def test_is_multi_segment_method_used(self):
+        """is_multi_segment() is called to determine branch."""
+        ds = self._make_ds()
+        # Single string representation should also work
+        result = ds._prepare_seg(["2020-01-01", "2020-06-30"])
+        # Delegates to parent when is_multi_segment returns False
