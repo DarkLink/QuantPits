@@ -453,7 +453,7 @@ def calculate_dates():
     else:
         anchor_date = config.get('current_date', datetime.now().strftime('%Y-%m-%d'))
 
-    cpcv_result = None  # populated only when data_slice_mode == 'purged_cv'
+    cpcv_result = None  # populated when purged_cv config block is present
 
     if data_slice_mode == 'purged_cv':
         # CPCV mode: use fold-based purged cross-validation
@@ -491,6 +491,14 @@ def calculate_dates():
         test_start_time = config.get("test_start_time", "")
         test_end_time = config.get("test_end_time", "")
 
+    # Independently compute CPCV folds when purged_cv block is configured
+    # but data_slice_mode is not 'purged_cv' (which already computed above)
+    if cpcv_result is None and config.get('purged_cv'):
+        try:
+            cpcv_result = compute_cpcv_folds(anchor_date, config, freq=freq)
+        except ValueError as e:
+            print(f"Note: CPCV fold computation skipped: {e}")
+
     # 获取当前资金信息 (从统一配置中的 current_full_cash 获取)
     account = config.get("current_full_cash", 100000.0)
     
@@ -513,10 +521,11 @@ def calculate_dates():
         "freq": freq
     }
 
-    # Attach CPCV fold data when in purged_cv mode
+    # Attach CPCV fold data when available
     if cpcv_result is not None:
         date_params["cpcv_folds"] = cpcv_result["folds"]
-        date_params["data_slice_mode"] = "purged_cv"
+        if data_slice_mode == 'purged_cv':
+            date_params["data_slice_mode"] = "purged_cv"
 
     print("\n=== Config Loaded via config_loader ===")
     for k, v in date_params.items():
@@ -1530,6 +1539,14 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                 model.n_drop = params.get('n_drop',
                                           getattr(model, 'n_drop', 3))
 
+                # CPCV: disable multiprocessing DataLoader.
+                # Fork+copy-on-write remaps numpy data_arr pages to
+                # physical addresses that may not satisfy 16-byte
+                # alignment, causing CUDA misaligned-address errors
+                # in downstream kernels.
+                if hasattr(model, 'n_jobs'):
+                    model.n_jobs = 0
+
                 dataset_cfg = task_config['task']['dataset']
                 if cache_mgr is not None:
                     # Detect temporal normalizers: if present, isolate folds
@@ -1571,8 +1588,25 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                     val_label = dataset.prepare("test", col_set="label")
                     dataset.segments['test'] = orig_test_seg
 
-                    if isinstance(val_label, pd.DataFrame):
+                    if isinstance(val_pred, pd.DataFrame) and 'label' in val_pred.columns:
+                        # TRA / MTSDatasetH: predict() returns multi-column
+                        # DataFrame with 'score' and 'label' columns.
+                        # dataset.prepare() returns the MTSDatasetH object
+                        # itself (col_set is ignored), so extract from pred.
+                        val_label = val_pred['label']
+                        val_pred = val_pred['score']
+                    elif isinstance(val_label, pd.DataFrame):
                         val_label = val_label.iloc[:, 0]
+                    elif hasattr(val_label, 'get_index') and hasattr(val_label, '__len__'):
+                        # TSDataSampler / ConcatTSDataSampler: extract the
+                        # label value at the final timestep of each sample window.
+                        import numpy as np
+                        idx = val_label.get_index()
+                        vals = [val_label[i] for i in range(len(val_label))]
+                        # Each sample is shape (step_len,) or (step_len, 1).
+                        # Take the last step as the label for this prediction point.
+                        arr = np.array([float(v.flat[-1]) for v in vals])
+                        val_label = pd.Series(arr, index=idx)
 
                     df = pd.DataFrame({"pred": val_pred, "label": val_label})
                     df = df.dropna()

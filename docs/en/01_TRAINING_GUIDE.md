@@ -235,22 +235,30 @@ The traditional `slide` mode (e.g., 8-year train / 2-year valid / 3-year test) p
 
 ### Configuration
 
-Set `data_slice_mode` to `"purged_cv"` and add the `purged_cv` block in `config/model_config.json`:
+CPCV is independently enabled via the `purged_cv` config block in `config/model_config.json` —
+**`data_slice_mode` does NOT affect CPCV.** `data_slice_mode` (`slide` / `fixed`) only controls
+static training windowing and is orthogonal to CPCV:
 
 ```jsonc
 {
-    "data_slice_mode": "purged_cv",
+    "data_slice_mode": "slide",    // Controls static training (slide/fixed); does NOT affect CPCV
     "purged_cv": {
-        "n_groups": 10,
-        "n_test_groups": 2,
-        "n_val_groups": 1,
-        "purge_steps": 5,
-        "embargo_steps": 10
+        "n_groups": 10,            // Partition [start_time, anchor_date] into N equal-step groups
+        "n_test_groups": 2,        // Last N groups are reserved as fixed test set (excluded from CV)
+        "n_val_groups": 1,         // Each fold uses N consecutive groups as validation
+        "purge_steps": 5,          // Symmetric purge: remove N steps from BOTH sides of validation
+        "embargo_steps": 10        // Asymmetric embargo: additional N steps AFTER validation only
     },
-    "start_time": "2015-01-01",
-    "freq": "week"
+    "start_time": "2015-01-01",   // Time range start (shared by CPCV and slide mode)
+    "freq": "week"                 // Step unit: day or week
 }
 ```
+
+> [!NOTE]
+> **Backward compatibility**: Existing configs with `data_slice_mode: "purged_cv"` continue to work.
+> When both `data_slice_mode: "slide"` and the `purged_cv` block are configured, CPCV and static
+> training can coexist in the same workspace — run `cv_train.py` and `static_train.py`
+> independently without modifying the config file.
 
 **Parameters**:
 
@@ -272,6 +280,9 @@ python quantpits/scripts/cv_train.py --full
 
 # Incremental CPCV on specific models
 python quantpits/scripts/cv_train.py --models lightgbm_Alpha158,gru_Alpha158
+
+# CPCV by tag
+python quantpits/scripts/cv_train.py --tag tree
 
 # Preview fold plan
 python quantpits/scripts/cv_train.py --all-enabled --dry-run

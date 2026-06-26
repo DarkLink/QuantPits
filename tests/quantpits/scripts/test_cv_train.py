@@ -126,6 +126,18 @@ def _make_cpcv_params(**overrides):
         "freq": "week",
         "anchor_date": "2026-03-01",
         "data_slice_mode": "purged_cv",
+        "market": "csi300",
+        "benchmark": "SH000300",
+        "topk": 20,
+        "n_drop": 3,
+        "start_time": "2019-01-01",
+        "end_time": "2025-12-31",
+        "fit_start_time": "2019-01-01",
+        "fit_end_time": "2024-12-31",
+        "valid_start_time": "2025-01-06",
+        "valid_end_time": "2025-06-30",
+        "test_start_time": "2025-07-07",
+        "test_end_time": "2025-12-29",
         "cpcv_folds": [
             {"train_segments": [["2020-01-06", "2022-01-03"]],
              "valid_start_time": "2022-01-10", "valid_end_time": "2022-06-27",
@@ -134,8 +146,6 @@ def _make_cpcv_params(**overrides):
              "valid_start_time": "2020-01-06", "valid_end_time": "2020-06-29",
              "test_start_time": "2025-01-06", "test_end_time": "2025-06-30"},
         ],
-        "test_start_time": "2025-07-07",
-        "test_end_time": "2025-12-29",
     }
     p.update(overrides)
     return p
@@ -454,6 +464,7 @@ class TestRunFullTrainCpcv:
         }
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -489,8 +500,8 @@ class TestRunFullTrainCpcv:
 
     @patch('quantpits.utils.env.init_qlib')
     @patch('quantpits.utils.train_utils.calculate_dates')
-    def test_not_purged_cv_mode_exits(self, mock_dates, mock_init, mock_env):
-        """Line 155-157: data_slice_mode is not purged_cv -> sys.exit(1)."""
+    def test_no_cpcv_folds_in_params_exits(self, mock_dates, mock_init, mock_env):
+        """cpcv_folds missing from params -> sys.exit(1)."""
         ct, _ = mock_env
         mock_dates.return_value = {"freq": "week", "data_slice_mode": "slide"}
 
@@ -499,6 +510,26 @@ class TestRunFullTrainCpcv:
             with pytest.raises(SystemExit):
                 ct.run_full_train_cpcv(args)
             mock_exit.assert_called_once_with(1)
+
+    @patch('quantpits.utils.env.init_qlib')
+    @patch('quantpits.utils.train_utils.calculate_dates')
+    def test_coexistence_slide_with_cpcv_folds(self, mock_dates, mock_init, mock_env):
+        """data_slice_mode=slide with cpcv_folds present -> should NOT exit.
+
+        Verifies CPCV works independently of data_slice_mode after decoupling.
+        """
+        ct, _ = mock_env
+        mock_dates.return_value = _make_cpcv_params(
+            data_slice_mode="slide",
+            cpcv_folds=[{"train_segments": [["2020-01-06", "2022-01-03"]],
+                          "valid_start_time": "2022-01-10",
+                          "valid_end_time": "2022-06-27"}],
+        )
+
+        args = MagicMock()
+        args.dry_run = True
+        # Should not raise SystemExit — folds are present even with slide mode
+        ct.run_full_train_cpcv(args)
 
     @patch('quantpits.utils.env.init_qlib')
     @patch('quantpits.utils.train_utils.calculate_dates')
@@ -557,6 +588,7 @@ class TestRunFullTrainCpcv:
         ]
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -587,6 +619,7 @@ class TestRunFullTrainCpcv:
         mock_train.return_value = {"success": True, "record_id": "rid1", "performance": {}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = "CustomCPCV"
         args.no_pretrain = False
@@ -617,6 +650,7 @@ class TestRunFullTrainCpcv:
         mock_train.return_value = {"success": True, "record_id": "rid1", "performance": {}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = True
@@ -649,6 +683,7 @@ class TestRunFullTrainCpcv:
                                     "performance": {"IC_Mean": 0.1, "ICIR": 0.6}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -686,6 +721,7 @@ class TestRunFullTrainCpcv:
         ]
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -717,6 +753,7 @@ class TestRunFullTrainCpcv:
         mock_train.return_value = {"success": True, "record_id": "rid1", "performance": {}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -748,6 +785,7 @@ class TestRunFullTrainCpcv:
                                     "performance": None}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -777,6 +815,7 @@ class TestRunFullTrainCpcv:
                                     "performance": None}  # falsy, won't be recorded
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -830,6 +869,7 @@ class TestRunFullTrainCpcv:
         mock_train.return_value = {"success": True, "record_id": "rid1", "performance": {}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -862,6 +902,7 @@ class TestRunIncrementalTrainCpcv:
                                     "performance": {"ICIR": 0.3}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.resume = False
         args.dry_run = False
         args.experiment_name = None
@@ -901,6 +942,7 @@ class TestRunIncrementalTrainCpcv:
         mock_train.return_value = {"success": False, "error": "GPU OOM"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.resume = False
         args.dry_run = False
         args.experiment_name = None
@@ -1005,14 +1047,15 @@ class TestRunIncrementalTrainCpcv:
     @patch('quantpits.utils.env.init_qlib')
     @patch('quantpits.utils.train_utils.calculate_dates')
     @patch('quantpits.utils.train_utils.print_model_table')
-    def test_incremental_not_purged_cv_exits(self, mock_table, mock_dates,
+    def test_incremental_no_cpcv_folds_exits(self, mock_table, mock_dates,
                                               mock_init, mock_env):
-        """Lines 294-296: data_slice_mode is not purged_cv -> sys.exit(1)."""
+        """cpcv_folds missing from params -> sys.exit(1)."""
         ct, _ = mock_env
         mock_dates.return_value = {"anchor_date": "2026-01-01", "freq": "week",
                                    "data_slice_mode": "slide"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.resume = False
         args.dry_run = False
         args.experiment_name = None
@@ -1043,6 +1086,7 @@ class TestRunIncrementalTrainCpcv:
         ]
 
         args = MagicMock()
+        args.cache_size = 0
         args.resume = False
         args.dry_run = False
         args.experiment_name = None
@@ -1071,6 +1115,7 @@ class TestRunIncrementalTrainCpcv:
         mock_train.return_value = {"success": False, "error": "All failed"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.resume = False
         args.dry_run = False
         args.experiment_name = None
@@ -1102,6 +1147,7 @@ class TestRunIncrementalTrainCpcv:
                                     "performance": {"ICIR": 0.3}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.resume = True
         args.dry_run = False
         args.experiment_name = None
@@ -1135,6 +1181,7 @@ class TestRunIncrementalTrainCpcv:
         ]
 
         args = MagicMock()
+        args.cache_size = 0
         args.resume = False
         args.dry_run = False
         args.experiment_name = None
@@ -1172,6 +1219,7 @@ class TestRunPredictOnlyCpcv:
         mock_predict.return_value = {"success": True, "record_id": "new_rid"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.experiment_name = None
@@ -1240,6 +1288,7 @@ class TestRunPredictOnlyCpcv:
         mock_filter.return_value = {}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.models = None
@@ -1271,6 +1320,7 @@ class TestRunPredictOnlyCpcv:
         mock_predict.return_value = {"success": True, "record_id": "new_rid"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.experiment_name = None
@@ -1305,6 +1355,7 @@ class TestRunPredictOnlyCpcv:
         mock_predict.return_value = {"success": True, "record_id": "new_rid"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.experiment_name = None
@@ -1332,6 +1383,7 @@ class TestRunPredictOnlyCpcv:
         mock_filter.return_value = {"gru_Alpha158@cpcv": "rid1"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.experiment_name = None
@@ -1365,6 +1417,7 @@ class TestRunPredictOnlyCpcv:
         ]
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.experiment_name = None
@@ -1395,6 +1448,7 @@ class TestRunPredictOnlyCpcv:
         mock_predict.return_value = {"success": True, "record_id": "new_rid"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(custom_file)
         args.experiment_name = None
@@ -1422,6 +1476,7 @@ class TestRunPredictOnlyCpcv:
         mock_filter.return_value = {}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.models = None

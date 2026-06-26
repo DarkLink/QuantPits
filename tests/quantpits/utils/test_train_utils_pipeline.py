@@ -41,6 +41,39 @@ def test_calculate_dates_fixed(mock_env_constants):
         assert params["anchor_date"] == "2026-01-01"
         assert params["fit_end_time"] == "2015-01-01"
 
+
+def test_calculate_dates_slide_with_purged_cv_block(mock_env_constants):
+    """Coexistence: data_slice_mode=slide with purged_cv block -> cpcv_folds in output."""
+    train_utils, _ = mock_env_constants
+    config_dict = {
+        "market": "csi300", "benchmark": "SH000300",
+        "train_date_mode": "last_trade_date",
+        "data_slice_mode": "slide", "test_set_window": 1, "valid_set_window": 1,
+        "train_set_windows": 3, "freq": "day", "current_full_cash": 100000.0,
+        "purged_cv": {
+            "n_groups": 10, "n_test_groups": 2, "n_val_groups": 1,
+            "purge_steps": 5, "embargo_steps": 10,
+        },
+        "start_time": "2015-01-01",
+    }
+    with patch('quantpits.utils.config_loader.load_workspace_config',
+               return_value=config_dict):
+        with patch('qlib.data.D') as mock_d:
+            # Generate 500 valid trading dates across multiple years
+            dates = pd.date_range('2015-01-05', periods=500, freq='W-MON')
+            mock_d.calendar.return_value = list(dates)
+            params = train_utils.calculate_dates()
+            # Slide dates are present (freq=day means anchor is last calendar date)
+            assert params["anchor_date"] is not None
+            assert params["fit_start_time"] is not None
+            assert params["test_end_time"] is not None
+            # cpcv_folds are present (coexistence)
+            assert "cpcv_folds" in params
+            assert len(params["cpcv_folds"]) > 0
+            # data_slice_mode is NOT 'purged_cv' in params
+            assert params.get("data_slice_mode") != "purged_cv"
+
+
 def test_inject_config(mock_env_constants):
     train_utils, _ = mock_env_constants
     mock_yaml = {

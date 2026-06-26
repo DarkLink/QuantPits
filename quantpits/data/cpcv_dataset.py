@@ -129,7 +129,7 @@ class ConcatTSDataSampler:
             results = [self._get_single(int(i)) for i in idx]
             if len(results) == 0:
                 return np.array([])
-            return np.stack(results, axis=0)
+            return np.ascontiguousarray(np.stack(results, axis=0))
 
         # Handle (datetime, instrument) tuple key (like TSDataSampler)
         if isinstance(idx, tuple) and len(idx) == 2:
@@ -145,23 +145,28 @@ class ConcatTSDataSampler:
         return self._get_single(int(idx))
 
     def _get_single(self, idx: int):
-        """Get a single sample by integer index."""
+        """Get a single sample by integer index.
+
+        Returns a contiguous numpy array to ensure downstream
+        PyTorch tensors have proper memory alignment for CUDA.
+        """
         if idx < 0:
             idx += len(self)
         if idx < 0 or idx >= len(self):
             raise IndexError(f"index {idx} out of range")
         # Fast path for N <= 2
         if len(self.samplers) == 1:
-            return self.samplers[0][idx]
+            result = self.samplers[0][idx]
         elif len(self.samplers) == 2:
             if idx < self._lengths[0]:
-                return self.samplers[0][idx]
+                result = self.samplers[0][idx]
             else:
-                return self.samplers[1][idx - self._lengths[0]]
+                result = self.samplers[1][idx - self._lengths[0]]
         else:
             s_idx = self._sampler_map[idx]
             local_idx = idx - int(self._offsets[s_idx])
-            return self.samplers[s_idx][local_idx]
+            result = self.samplers[s_idx][local_idx]
+        return np.ascontiguousarray(result)
 
     def get_index(self, idx=None):
         """Return concatenated MultiIndex; models call this for alignment.

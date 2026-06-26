@@ -235,11 +235,13 @@ CPCV (Combinatorial Purged Cross-Validation) 基于 Marcos Lopez de Prado《Adva
 
 ### 配置
 
-在 `config/model_config.json` 中设置 `data_slice_mode` 为 `purged_cv` 并添加 `purged_cv` 配置块：
+CPCV 通过 `config/model_config.json` 中的 `purged_cv` 配置块独立启用，
+**不受 `data_slice_mode` 影响** — `data_slice_mode`（`slide` / `fixed`）仅控制
+静态训练的日期窗口划分方式，与 CPCV 正交：
 
 ```jsonc
 {
-    "data_slice_mode": "purged_cv",
+    "data_slice_mode": "slide",    // 控制静态训练（slide/fixed），不影响 CPCV
     "purged_cv": {
         "n_groups": 10,            // 将 [start_time, anchor_date] 划分为 N 个等步长分组
         "n_test_groups": 2,        // 末尾的 N 个分组固定为测试集（不参与 CV）
@@ -247,10 +249,15 @@ CPCV (Combinatorial Purged Cross-Validation) 基于 Marcos Lopez de Prado《Adva
         "purge_steps": 5,          // 对称 Purge：验证集两侧各移除 N 个步长（periods）
         "embargo_steps": 10        // 非对称 Embargo：验证集之后额外延迟 N 步才恢复训练
     },
-    "start_time": "2015-01-01",   // 总时间范围起点
+    "start_time": "2015-01-01",   // 总时间范围起点（CPCV 和 slide 模式共用）
     "freq": "week"                 // 步长单位：day 或 week
 }
 ```
+
+> [!NOTE]
+> **向后兼容**：原有设置 `data_slice_mode: "purged_cv"` 的配置文件仍然正常工作。
+> 如果同时设置了 `data_slice_mode: "slide"` 和 `purged_cv` 块，则 CPCV 和静态训练可共存于同一工作区，
+> 分别通过 `cv_train.py` 和 `static_train.py` 独立运行，无需修改配置文件。
 
 **参数语义**：
 

@@ -181,6 +181,7 @@ class TestRunFullTrain:
         }
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -226,6 +227,7 @@ class TestRunFullTrain:
         ]
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.experiment_name = None
         args.no_pretrain = False
@@ -257,6 +259,7 @@ class TestRunIncrementalTrain:
         mock_train.return_value = {"success": True, "record_id": "rid1", "performance": {"ICIR": 0.1}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.models = "m1"
         args.resume = False
         args.dry_run = False
@@ -293,6 +296,7 @@ class TestRunIncrementalTrain:
         mock_train.return_value = {"success": False, "error": "Disk full"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.resume = False
         args.dry_run = False
         args.experiment_name = None
@@ -341,6 +345,7 @@ class TestRunPredictOnly:
         mock_predict.return_value = {"success": True, "record_id": "new_rid", "performance": {"IC_Mean": 0.05}}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.experiment_name = None
@@ -388,6 +393,7 @@ class TestRunPredictOnly:
             json.dump({"models": {"m1": "rid1"}, "experiment_name": "train"}, f)
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.experiment_name = None
@@ -689,6 +695,7 @@ class TestPredictOnlyFailedModel:
         mock_predict.return_value = {"success": False, "error": "GPU OOM"}
 
         args = MagicMock()
+        args.cache_size = 0
         args.dry_run = False
         args.source_records = str(source_file)
         args.experiment_name = None

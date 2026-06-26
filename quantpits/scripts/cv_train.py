@@ -21,8 +21,9 @@ Modes:
   --resume:         Resume from last interruption
 
 Configuration:
-  Set "data_slice_mode": "purged_cv" in config/model_config.json and add
-  the "purged_cv" config block. See docs/01_TRAINING_GUIDE.md for details.
+  Add the "purged_cv" config block in config/model_config.json.
+  CPCV operates independently of data_slice_mode.
+  See docs/01_TRAINING_GUIDE.md for details.
 """
 
 import os
@@ -114,14 +115,9 @@ Examples:
 def _resolve_targets(args, registry):
     """Determine which models to train based on CLI args.
 
-    Delegates to the shared resolve_target_models() in train_utils,
-    but additionally validates that data_slice_mode is 'purged_cv'.
+    Delegates to the shared resolve_target_models() in train_utils.
     """
     from quantpits.utils.train_utils import resolve_target_models
-    from quantpits.utils.config_loader import load_workspace_config
-
-    config = load_workspace_config(ROOT_DIR)
-    data_slice_mode = config.get('data_slice_mode', 'slide')
 
     targets = resolve_target_models(args, registry)
     if targets is None or not targets:
@@ -155,13 +151,11 @@ def run_full_train_cpcv(args):
     env.init_qlib()
     params = calculate_dates()
 
-    if params.get('data_slice_mode') != 'purged_cv':
-        print("Error: data_slice_mode must be 'purged_cv' in model_config.json")
-        sys.exit(1)
-
     folds = params.get('cpcv_folds', [])
     if not folds:
-        print("Error: No CPCV folds generated. Check purged_cv config.")
+        print("Error: No CPCV folds generated. "
+              "Ensure 'purged_cv' config block is properly configured "
+              "in model_config.json")
         sys.exit(1)
 
     os.makedirs(PREDICTION_OUTPUT_DIR, exist_ok=True)
@@ -311,8 +305,10 @@ def run_incremental_train_cpcv(args, targets):
     env.init_qlib()
     params = calculate_dates()
 
-    if params.get('data_slice_mode') != 'purged_cv':
-        print("Error: data_slice_mode must be 'purged_cv' in model_config.json")
+    if not params.get('cpcv_folds'):
+        print("Error: No CPCV folds generated. "
+              "Ensure 'purged_cv' config block is properly configured "
+              "in model_config.json")
         sys.exit(1)
 
     # Initialize handler cache (unless --cache-size 0)
