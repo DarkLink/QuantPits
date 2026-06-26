@@ -169,7 +169,10 @@ class TestComputeRollingSharpeWeights:
             {"label_col": np.random.randn(10)},
             index=idx
         )
-        with patch("qlib.data.D.features", return_value=mock_label_df):
+        from qlib.data import D
+        if not hasattr(D, "features"):
+            D.features = lambda *a, **k: None
+        with patch.object(D, "features", return_value=mock_label_df):
             res = search_utils.compute_rolling_sharpe_weights(
                 norm_df, top_k=1, window=3, min_periods=1, label_field=["label_col"]
             )

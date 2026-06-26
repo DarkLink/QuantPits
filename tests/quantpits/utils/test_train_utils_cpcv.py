@@ -335,3 +335,109 @@ def test_predict_cpcv_model_errors(mock_env_constants, monkeypatch):
     )
     assert res['success'] is False
     assert "Failed to load source recorder" in res['error']
+
+
+def test_train_cpcv_model_labels_float_indices(mock_env_constants, monkeypatch):
+    train_utils, workspace = mock_env_constants
+    
+    yaml_file = os.path.join(workspace, "cpcv_task.yaml")
+    dummy_yaml = {
+        'market': 'csi300',
+        'benchmark': 'SH000300',
+        'data_handler_config': {
+            'class': 'Alpha158',
+            'kwargs': {'start_time': '2015-01-01', 'end_time': '2020-01-01'}
+        },
+        'task': {
+            'dataset': {
+                'class': 'DatasetH',
+                'kwargs': {
+                    'handler': {'class': 'Alpha158'},
+                    'segments': {'train': [], 'valid': [], 'test': []}
+                }
+            },
+            'model': {
+                'class': 'LGBModel',
+                'kwargs': {'d_feat': 158}
+            },
+            'record': []
+        }
+    }
+    with open(yaml_file, 'w') as f:
+        yaml.dump(dummy_yaml, f)
+        
+    params = {
+        'market': 'csi300',
+        'benchmark': 'SH000300',
+        'test_start_time': '2020-01-01',
+        'test_end_time': '2020-06-01',
+        'anchor_date': '2020-06-01',
+        'cpcv_folds': [
+            {
+                'fold_idx': 0,
+                'train_segments': [['2015-01-01', '2018-12-31']],
+                'valid_start_time': '2019-01-01',
+                'valid_end_time': '2019-12-31',
+            }
+        ]
+    }
+    
+    mock_model = MagicMock()
+    mock_pred = pd.Series([0.1, 0.2], index=pd.MultiIndex.from_tuples(
+        [('2020-01-02', '600000.SH'), ('2020-01-02', '600001.SH')],
+        names=['datetime', 'instrument']
+    ))
+    mock_model.predict.return_value = mock_pred
+    
+    class MockTSDataSampler:
+        def __init__(self):
+            self.idx_map = np.array([[0, 0], [1, 0]], dtype=float)
+            self.idx_arr = np.array([[1.0], [0.0]], dtype=float) # float values
+            self.data_arr = np.array([[100.0], [200.0], [300.0]], dtype=float)
+            self.nan_idx = 2
+            
+        def get_index(self):
+            return mock_pred.index
+            
+        def __len__(self):
+            return len(self.idx_map)
+            
+    mock_dataset = MagicMock()
+    mock_dataset.segments = {
+        'train': [['2015-01-01', '2018-12-31']],
+        'valid': ['2019-01-01', '2019-12-31'],
+        'test': ['2020-01-01', '2020-06-01'],
+    }
+    mock_dataset.prepare.return_value = MockTSDataSampler()
+
+    def mock_init_instance(config, recorder=None):
+        if 'LGBModel' in str(config):
+            return mock_model
+        return mock_dataset
+            
+    monkeypatch.setattr('qlib.utils.init_instance_by_config', mock_init_instance)
+    
+    # Mock MLflow R
+    mock_recorder = MagicMock()
+    mock_recorder.id = "mock_cpcv_run_123"
+    mock_recorder.list_objects.return_value = []
+    
+    class MockR:
+        def start(self, experiment_name=None):
+            class MockContext:
+                def __enter__(self): return self
+                def __exit__(self, exc_type, exc_val, exc_tb): pass
+            return MockContext()
+        def set_tags(self, **kwargs): pass
+        def log_params(self, **kwargs): pass
+        def get_recorder(self): return mock_recorder
+        
+    monkeypatch.setattr('qlib.workflow.R', MockR())
+    
+    res = train_utils.train_cpcv_model(
+        model_name="lgb",
+        params=params,
+        yaml_file=yaml_file,
+        experiment_name="test_cpcv_float_indexing",
+    )
+    assert res['success'] is True

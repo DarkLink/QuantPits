@@ -1,5 +1,5 @@
 {
-    "_comment": "Set data_slice_mode to 'purged_cv' to enable Purged Cross-Validation. See docs/01_TRAINING_GUIDE.md.",
+    "_comment": "data_slice_mode controls static training (slide/fixed). CPCV is independently enabled via purged_cv block below. Both can coexist.",
     "train_date_mode": "last_trade_date",
     "data_slice_mode": "slide",
     "train_set_windows": 8,

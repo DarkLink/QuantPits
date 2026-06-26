@@ -137,6 +137,13 @@ class TestICLoss:
         assert pred.grad is not None
         assert not torch.isnan(pred.grad).any(), "grad must not be NaN"
 
+    def test_batch_size_1_does_not_error(self):
+        pred = torch.tensor([[1.0]], requires_grad=True)
+        label = torch.tensor([1.0])
+        loss = self.criterion(pred, label)
+        assert loss.item() == 0.0
+        loss.backward()
+
 
 # ===========================================================================
 # ICMetricMixin._batch_pearson_ic

@@ -1603,6 +1603,14 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                         import numpy as np
                         idx = val_label.get_index()
 
+                        # Ensure all sampler idx_maps have integer type to prevent float indexing error in fallback/getitem paths
+                        if hasattr(val_label, 'samplers'):
+                            for s in val_label.samplers:
+                                if hasattr(s, 'idx_map') and isinstance(s.idx_map, np.ndarray):
+                                    s.idx_map = s.idx_map.astype(int)
+                        elif hasattr(val_label, 'idx_map') and isinstance(val_label.idx_map, np.ndarray):
+                            val_label.idx_map = val_label.idx_map.astype(int)
+
                         # Vectorized extraction if data_arr/idx_map/idx_arr are available
                         if hasattr(val_label, 'samplers'):
                             # ConcatTSDataSampler
@@ -1612,6 +1620,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                                     rows = s.idx_map[:, 0]
                                     cols = s.idx_map[:, 1]
                                     last_indices = s.idx_arr[rows, cols]
+                                    last_indices = np.nan_to_num(last_indices.astype(np.float64), nan=s.nan_idx).astype(int)
                                     if s.data_arr.ndim == 2:
                                         labels_list.append(s.data_arr[last_indices, -1])
                                     else:
@@ -1626,6 +1635,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                             rows = val_label.idx_map[:, 0]
                             cols = val_label.idx_map[:, 1]
                             last_indices = val_label.idx_arr[rows, cols]
+                            last_indices = np.nan_to_num(last_indices.astype(np.float64), nan=val_label.nan_idx).astype(int)
                             if val_label.data_arr.ndim == 2:
                                 arr = val_label.data_arr[last_indices, -1]
                             else:
