@@ -1940,6 +1940,35 @@ def backup_file_with_date(file_path, history_dir=None, prefix=None):
 
 
 # ================= 训练记录管理 =================
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+from contextlib import contextmanager
+
+@contextmanager
+def file_lock(filepath):
+    """Context manager for acquiring an exclusive lock on a file path using fcntl.
+    
+    Creates a helper lock file at `filepath.lock` to avoid truncating or modifying
+    the target file itself before locking.
+    """
+    if fcntl is None:
+        yield
+        return
+        
+    lock_file_path = filepath + ".lock"
+    os.makedirs(os.path.dirname(os.path.abspath(lock_file_path)), exist_ok=True)
+    
+    with open(lock_file_path, "a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
 def merge_train_records(new_records, record_file=None):
     """
     增量合并训练记录到 latest_train_records.json
@@ -1959,56 +1988,57 @@ def merge_train_records(new_records, record_file=None):
     if record_file is None:
         record_file = RECORD_OUTPUT_FILE
     
-    # 先备份现有文件
-    backup_file_with_date(record_file, prefix="train_records")
-    
-    # 加载现有记录
-    existing = {}
-    if os.path.exists(record_file):
-        with open(record_file, 'r') as f:
-            existing = json.load(f)
-    
-    # 合并：保留既有模型，覆盖/新增训练过的模型
-    merged_models = existing.get('models', {}).copy()
-    new_models = new_records.get('models', {})
-    
-    added = []
-    updated = []
-    for model_name, rid in new_models.items():
-        if model_name in merged_models:
-            if merged_models[model_name] != rid:
-                updated.append(model_name)
-        else:
-            added.append(model_name)
-        merged_models[model_name] = rid
-    
-    # 构建合并后的记录
-    merged = {
-        "experiment_name": new_records.get('experiment_name', existing.get('experiment_name', '')),
-        "static_experiment_name": new_records.get('static_experiment_name', existing.get('static_experiment_name', '')),
-        "rolling_experiment_name": new_records.get('rolling_experiment_name', existing.get('rolling_experiment_name', '')),
-        "anchor_date": new_records.get('anchor_date', existing.get('anchor_date', '')),
-        "timestamp": new_records.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-        "last_incremental_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "models": merged_models
-    }
-    
-    # 保存
-    with open(record_file, 'w') as f:
-        json.dump(merged, f, indent=4)
-    
-    # 打印合并摘要
-    preserved = [m for m in merged_models if m not in new_models]
-    print(f"\n📋 训练记录合并完成:")
-    if updated:
-        print(f"  🔄 更新 ({len(updated)}): {', '.join(updated)}")
-    if added:
-        print(f"  ➕ 新增 ({len(added)}): {', '.join(added)}")
-    if preserved:
-        print(f"  📌 保留 ({len(preserved)}): {', '.join(preserved)}")
-    print(f"  📁 文件: {record_file}")
-    
-    return merged
+    with file_lock(record_file):
+        # 先备份现有文件
+        backup_file_with_date(record_file, prefix="train_records")
+        
+        # 加载现有记录
+        existing = {}
+        if os.path.exists(record_file):
+            with open(record_file, 'r') as f:
+                existing = json.load(f)
+        
+        # 合并：保留既有模型，覆盖/新增训练过的模型
+        merged_models = existing.get('models', {}).copy()
+        new_models = new_records.get('models', {})
+        
+        added = []
+        updated = []
+        for model_name, rid in new_models.items():
+            if model_name in merged_models:
+                if merged_models[model_name] != rid:
+                    updated.append(model_name)
+            else:
+                added.append(model_name)
+            merged_models[model_name] = rid
+        
+        # 构建合并后的记录
+        merged = {
+            "experiment_name": new_records.get('experiment_name', existing.get('experiment_name', '')),
+            "static_experiment_name": new_records.get('static_experiment_name', existing.get('static_experiment_name', '')),
+            "rolling_experiment_name": new_records.get('rolling_experiment_name', existing.get('rolling_experiment_name', '')),
+            "anchor_date": new_records.get('anchor_date', existing.get('anchor_date', '')),
+            "timestamp": new_records.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            "last_incremental_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "models": merged_models
+        }
+        
+        # 保存
+        with open(record_file, 'w') as f:
+            json.dump(merged, f, indent=4)
+        
+        # 打印合并摘要
+        preserved = [m for m in merged_models if m not in new_models]
+        print(f"\n📋 训练记录合并完成:")
+        if updated:
+            print(f"  🔄 更新 ({len(updated)}): {', '.join(updated)}")
+        if added:
+            print(f"  ➕ 新增 ({len(added)}): {', '.join(added)}")
+        if preserved:
+            print(f"  📌 保留 ({len(preserved)}): {', '.join(preserved)}")
+        print(f"  📁 文件: {record_file}")
+        
+        return merged
 
 
 def overwrite_train_records(records, record_file=None):
@@ -2023,14 +2053,15 @@ def overwrite_train_records(records, record_file=None):
     if record_file is None:
         record_file = RECORD_OUTPUT_FILE
     
-    # 备份现有文件
-    backup_file_with_date(record_file, prefix="train_records")
-    
-    # 全量覆写
-    with open(record_file, 'w') as f:
-        json.dump(records, f, indent=4)
-    
-    print(f"📋 训练记录已全量覆写: {record_file}")
+    with file_lock(record_file):
+        # 备份现有文件
+        backup_file_with_date(record_file, prefix="train_records")
+        
+        # 全量覆写
+        with open(record_file, 'w') as f:
+            json.dump(records, f, indent=4)
+        
+        print(f"📋 训练记录已全量覆写: {record_file}")
 
 
 def merge_performance_file(new_performances, anchor_date, output_dir=None):
@@ -2093,10 +2124,10 @@ def save_run_state(state, state_file=None):
     if state_file is None:
         state_file = RUN_STATE_FILE
     
-    os.makedirs(os.path.dirname(state_file), exist_ok=True)
-    
-    with open(state_file, 'w') as f:
-        json.dump(state, f, indent=4)
+    with file_lock(state_file):
+        os.makedirs(os.path.dirname(state_file), exist_ok=True)
+        with open(state_file, 'w') as f:
+            json.dump(state, f, indent=4)
 
 
 def load_run_state(state_file=None):
@@ -2109,10 +2140,11 @@ def load_run_state(state_file=None):
     if state_file is None:
         state_file = RUN_STATE_FILE
     
-    if os.path.exists(state_file):
-        with open(state_file, 'r') as f:
-            return json.load(f)
-    return None
+    with file_lock(state_file):
+        if os.path.exists(state_file):
+            with open(state_file, 'r') as f:
+                return json.load(f)
+        return None
 
 
 def clear_run_state(state_file=None):
@@ -2120,11 +2152,12 @@ def clear_run_state(state_file=None):
     if state_file is None:
         state_file = RUN_STATE_FILE
     
-    if os.path.exists(state_file):
-        # 备份到历史
-        backup_file_with_date(state_file, prefix="run_state")
-        os.remove(state_file)
-        print("🗑️  运行状态已清除")
+    with file_lock(state_file):
+        if os.path.exists(state_file):
+            # 备份到历史
+            backup_file_with_date(state_file, prefix="run_state")
+            os.remove(state_file)
+            print("🗑️  运行状态已清除")
 
 
 # ================= 工具函数 =================

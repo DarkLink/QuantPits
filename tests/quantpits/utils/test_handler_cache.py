@@ -158,6 +158,80 @@ class TestHandlerCacheManager:
         assert 'HandlerCacheManager' in r
         assert 'hits=0' in r
 
+    def test_get_or_build_forces_drop_raw_false(self, monkeypatch):
+        mgr = HandlerCacheManager(max_size_mb=1024)
+        cfg = {'class': 'Alpha158', 'module_path': 'm', 'kwargs': {'drop_raw': True}}
+
+        built_cfg = None
+
+        def mock_init(c, *args, **kwargs):
+            nonlocal built_cfg
+            built_cfg = c
+            return DummyHandler()
+
+        monkeypatch.setattr("qlib.utils.init_instance_by_config", mock_init)
+
+        h, was_cached = mgr.get_or_build(cfg)
+        assert was_cached is False
+        assert built_cfg is not None
+        assert built_cfg['kwargs']['drop_raw'] is False
+
+    def test_get_or_build_parallel(self, monkeypatch):
+        import threading
+        import time
+
+        mgr = HandlerCacheManager(max_size_mb=1024)
+        cfg = {'class': 'Alpha158', 'module_path': 'm', 'kwargs': {}}
+
+        build_count = 0
+        build_started = threading.Event()
+        build_resume = threading.Event()
+
+        def mock_init(c, *args, **kwargs):
+            nonlocal build_count
+            build_count += 1
+            build_started.set()
+            build_resume.wait(timeout=5.0)
+            return DummyHandler()
+
+        monkeypatch.setattr("qlib.utils.init_instance_by_config", mock_init)
+
+        results = []
+        threads = []
+
+        def worker():
+            h, was_cached = mgr.get_or_build(cfg)
+            results.append((h, was_cached))
+
+        # Thread 1 starts build
+        t1 = threading.Thread(target=worker)
+        t1.start()
+
+        # Wait for thread 1 to enter mock_init
+        assert build_started.wait(timeout=2.0)
+        assert build_count == 1
+
+        # Thread 2 starts build (should block on Event because Thread 1 is building)
+        t2 = threading.Thread(target=worker)
+        t2.start()
+
+        # Give Thread 2 a moment to block
+        time.sleep(0.1)
+        assert len(results) == 0  # neither finished yet
+        assert build_count == 1   # no second build started
+
+        # Let Thread 1 finish
+        build_resume.set()
+        t1.join()
+        t2.join()
+
+        assert len(results) == 2
+        caches = [r[1] for r in results]
+        assert False in caches
+        assert True in caches
+        assert results[0][0] is results[1][0]  # they got the exact same handler instance
+        assert build_count == 1  # exactly one build happened!
+
 
 class TestEnumerateTasksStatic:
     """Test enumerate_tasks_static with mocked inject_config."""
@@ -408,3 +482,106 @@ class TestPreAnalyze:
         mgr = HandlerCacheManager(max_size_mb=1024)
         groups = pre_analyze([], mgr)
         assert len(groups) == 0
+
+
+class DummyProcessor:
+    def __init__(self, val=0):
+        self.val = val
+        self._readonly = False
+    def fit(self, df):
+        self.val = len(df)
+    def __call__(self, df):
+        return df
+    def is_for_infer(self):
+        return True
+    def readonly(self):
+        return self._readonly
+
+
+class DummyHandler:
+    def __init__(self):
+        import pandas as pd
+        self.data_loader = "dummy_loader"
+        self.instruments = "dummy_instruments"
+        self.start_time = "2020-01-01"
+        self.end_time = "2020-12-31"
+        self.fetch_orig = True
+        self._data = pd.DataFrame({'col1': [1, 2, 3]})
+        self.infer_processors = [DummyProcessor(10)]
+        self.learn_processors = [DummyProcessor(20)]
+        self.shared_processors = [DummyProcessor(30)]
+        self.process_type = "append"
+        self._infer = pd.DataFrame({'infer': [10]})
+        self._learn = pd.DataFrame({'learn': [20]})
+
+
+class TestHandlerProxy:
+    def test_proxy_initialization_and_isolation(self):
+        from quantpits.utils.handler_cache import HandlerProxy
+        import pandas as pd
+
+        source = DummyHandler()
+        proxy = HandlerProxy(source)
+
+        # Check metadata attributes
+        assert proxy.data_loader == "dummy_loader"
+        assert proxy.instruments == "dummy_instruments"
+        assert proxy.start_time == "2020-01-01"
+        assert proxy.end_time == "2020-12-31"
+        assert proxy.fetch_orig is True
+        assert proxy.process_type == "append"
+        assert proxy.drop_raw is False
+
+        # Check raw data sharing
+        assert proxy._data is source._data
+
+        # _infer/_learn must be independent (NOT shared references)
+        # after process_data() runs during __init__. Since DummyProcessor
+        # is a no-op (__call__ returns df as-is), _infer and _learn should
+        # be copies derived from _data, not None.
+        assert proxy._infer is not source._infer
+        assert proxy._learn is not source._learn
+
+        # Check processor deep copy
+        assert len(proxy.infer_processors) == 1
+        assert proxy.infer_processors[0] is not source.infer_processors[0]
+        assert proxy.infer_processors[0].val == source.infer_processors[0].val
+
+        # Verify processor modification isolation
+        proxy.infer_processors[0].val = 999
+        assert source.infer_processors[0].val == 10
+
+    def test_setup_data_calls_process_data(self, monkeypatch):
+        from quantpits.utils.handler_cache import HandlerProxy
+        import pandas as pd
+
+        called = []
+
+        class MockedHandlerProxy(HandlerProxy):
+            def fit(self):
+                called.append("fit")
+            def process_data(self, with_fit=False):
+                called.append(f"process_data_with_fit_{with_fit}")
+            def fit_process_data(self):
+                called.append("fit_process_data")
+
+        source = DummyHandler()
+        proxy = MockedHandlerProxy(source)
+
+        # __init__ calls process_data() once; clear that initial call
+        assert "process_data_with_fit_False" in called
+        called.clear()
+
+        proxy.setup_data(init_type="fit_seq")
+        assert "fit_process_data" in called
+
+        called.clear()
+        proxy.setup_data(init_type="fit_ind")
+        assert "fit" in called
+        assert "process_data_with_fit_False" in called
+
+        called.clear()
+        proxy.setup_data(init_type="load_state")
+        assert "process_data_with_fit_False" in called
+
+

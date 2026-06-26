@@ -18,7 +18,7 @@ class RollingState:
         self.state_file = state_file or ROLLING_STATE_FILE
         self._state = self._load()
 
-    def _load(self):
+    def _load_without_lock(self):
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, 'r') as f:
@@ -28,6 +28,11 @@ class RollingState:
             except (json.JSONDecodeError, IOError):
                 pass
         return self._empty()
+
+    def _load(self):
+        from quantpits.utils.train_utils import file_lock
+        with file_lock(self.state_file):
+            return self._load_without_lock()
 
     def _empty(self):
         return {
@@ -40,18 +45,25 @@ class RollingState:
             'total_windows': 0,
         }
 
-    def save(self):
+    def _save_without_lock(self):
         os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
         with open(self.state_file, 'w') as f:
             json.dump(self._state, f, indent=4)
 
+    def save(self):
+        from quantpits.utils.train_utils import file_lock
+        with file_lock(self.state_file):
+            self._save_without_lock()
+
     def init_run(self, rolling_config, anchor_date, total_windows):
-        self._state = self._empty()
-        self._state['started_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._state['rolling_config'] = rolling_config
-        self._state['anchor_date'] = anchor_date
-        self._state['total_windows'] = total_windows
-        self.save()
+        from quantpits.utils.train_utils import file_lock
+        with file_lock(self.state_file):
+            self._state = self._empty()
+            self._state['started_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._state['rolling_config'] = rolling_config
+            self._state['anchor_date'] = anchor_date
+            self._state['total_windows'] = total_windows
+            self._save_without_lock()
 
     def is_window_model_done(self, window_idx, model_name):
         key = str(window_idx)
@@ -59,13 +71,17 @@ class RollingState:
                model_name in self._state['completed_windows'][key]
 
     def mark_window_model_done(self, window_idx, model_name, record_id):
-        key = str(window_idx)
-        if key not in self._state['completed_windows']:
-            self._state['completed_windows'][key] = {}
-        self._state['completed_windows'][key][model_name] = record_id
-        self._state['current_window_idx'] = window_idx
-        self._state['current_model'] = model_name
-        self.save()
+        from quantpits.utils.train_utils import file_lock
+        with file_lock(self.state_file):
+            # Reload to merge with any concurrent window updates
+            self._state = self._load_without_lock()
+            key = str(window_idx)
+            if key not in self._state['completed_windows']:
+                self._state['completed_windows'][key] = {}
+            self._state['completed_windows'][key][model_name] = record_id
+            self._state['current_window_idx'] = window_idx
+            self._state['current_model'] = model_name
+            self._save_without_lock()
 
     def get_completed_record_ids(self, model_name):
         """获取某模型在所有已完成 windows 的 record_ids (按 window_idx 排序)"""
@@ -95,34 +111,41 @@ class RollingState:
 
     def remove_model(self, model_name):
         """删除指定模型在所有 window 中的训练记录（供 --retrain-models 使用）"""
-        count = 0
-        for key in list(self._state['completed_windows'].keys()):
-            if model_name in self._state['completed_windows'][key]:
-                del self._state['completed_windows'][key][model_name]
-                count += 1
-        # 清理空 window
-        empty = [k for k, v in self._state['completed_windows'].items() if not v]
-        for k in empty:
-            del self._state['completed_windows'][k]
-        if count > 0:
-            self.save()
-        return count
+        from quantpits.utils.train_utils import file_lock
+        with file_lock(self.state_file):
+            self._state = self._load_without_lock()
+            count = 0
+            for key in list(self._state['completed_windows'].keys()):
+                if model_name in self._state['completed_windows'][key]:
+                    del self._state['completed_windows'][key][model_name]
+                    count += 1
+            # 清理空 window
+            empty = [k for k, v in self._state['completed_windows'].items() if not v]
+            for k in empty:
+                del self._state['completed_windows'][k]
+            if count > 0:
+                self._save_without_lock()
+            return count
 
     def remove_window(self, window_idx):
         """删除指定 window 的所有训练记录（供 --retrain-last 使用）"""
-        key = str(window_idx)
-        if key in self._state['completed_windows']:
-            del self._state['completed_windows'][key]
-            self.save()
-            return True
-        return False
+        from quantpits.utils.train_utils import file_lock
+        with file_lock(self.state_file):
+            self._state = self._load_without_lock()
+            key = str(window_idx)
+            if key in self._state['completed_windows']:
+                del self._state['completed_windows'][key]
+                self._save_without_lock()
+                return True
+            return False
 
     def clear(self):
-        if os.path.exists(self.state_file):
-            from quantpits.utils.train_utils import backup_file_with_date
-            backup_file_with_date(self.state_file, prefix="rolling_state")
-            os.remove(self.state_file)
-            print("🗑️  Rolling 状态已清除")
+        from quantpits.utils.train_utils import file_lock, backup_file_with_date
+        with file_lock(self.state_file):
+            if os.path.exists(self.state_file):
+                backup_file_with_date(self.state_file, prefix="rolling_state")
+                os.remove(self.state_file)
+                print("🗑️  Rolling 状态已清除")
 
     def show(self):
         if not self._state.get('started_at'):

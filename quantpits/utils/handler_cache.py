@@ -30,11 +30,15 @@ import copy
 import hashlib
 import json
 import os
+import threading
 import time
 from collections import OrderedDict, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
+from qlib.data.dataset.handler import DataHandlerLP
+from qlib.utils.serial import Serializable
+
 
 
 # ============================================================================
@@ -179,8 +183,69 @@ def _auto_detect_memory() -> int:
 
 
 # ============================================================================
+# HandlerProxy (for thread-safe cached handler parallelization)
+# ============================================================================
+
+class HandlerProxy(DataHandlerLP):
+    """Lightweight proxy that shares raw data but owns processed views.
+
+    This class subclasses DataHandlerLP to bypass type checks in Qlib's
+    DatasetH, but completely avoids re-loading the raw data DataFrame. It
+    re-uses the cached handler's `_data` read-only DataFrame while deep-copying
+    the processors to prevent mutable state pollution during parallel training.
+    """
+
+    def __init__(self, source_handler: DataHandlerLP):
+        # Bypass DataHandlerLP.__init__ (which triggers load & fit)
+        # by calling Serializable.__init__ directly.
+        Serializable.__init__(self)
+
+        self.data_loader = source_handler.data_loader
+        self.instruments = source_handler.instruments
+        self.start_time = source_handler.start_time
+        self.end_time = source_handler.end_time
+        self.fetch_orig = source_handler.fetch_orig
+
+        # Share raw data (read-only reference)
+        self._data = source_handler._data
+
+        # Deep copy processors as they may contain fitted parameters (e.g. mean, std)
+        self.infer_processors = copy.deepcopy(source_handler.infer_processors)
+        self.learn_processors = copy.deepcopy(source_handler.learn_processors)
+        self.shared_processors = copy.deepcopy(source_handler.shared_processors)
+        self.process_type = source_handler.process_type
+
+        # We must keep drop_raw=False so we don't delete the shared raw data
+        self.drop_raw = False
+
+        # Generate independent _infer/_learn immediately by running processors
+        # on the shared _data. This ensures each proxy owns its own processed
+        # views from the start, critical for parallel safety — even if
+        # DatasetH.setup_data() is never explicitly called downstream.
+        self._infer = None
+        self._learn = None
+        self.process_data()
+
+    def setup_data(self, init_type: str = DataHandlerLP.IT_FIT_SEQ, **kwargs):
+        # Bypasses DataHandlerLP.setup_data()'s call to super().setup_data() (which re-loads raw data).
+        # Directly calls the processing logic based on the init_type.
+        from qlib.log import TimeInspector
+        with TimeInspector.logt("fit & process data via HandlerProxy"):
+            if init_type == DataHandlerLP.IT_FIT_IND:
+                self.fit()
+                self.process_data()
+            elif init_type == DataHandlerLP.IT_LS:
+                self.process_data()
+            elif init_type == DataHandlerLP.IT_FIT_SEQ:
+                self.fit_process_data()
+            else:
+                raise NotImplementedError(f"This type of input: {init_type} is not supported")
+
+
+# ============================================================================
 # HandlerCacheManager
 # ============================================================================
+
 
 class HandlerCacheManager:
     """Caches fitted DataHandler instances, keyed by their full config hash.
@@ -201,6 +266,7 @@ class HandlerCacheManager:
     """
 
     def __init__(self, max_size_mb: Optional[int] = None):
+        self._lock = threading.Lock()
         self._cache: OrderedDict = OrderedDict()   # key -> DataHandler
         self._configs: dict = {}                    # key -> (handler_cfg, extra_ctx)
         self._memory: dict = {}                     # key -> estimated bytes
@@ -212,6 +278,7 @@ class HandlerCacheManager:
         self._hits: int = 0
         self._misses: int = 0
         self._build_times: dict = {}                # key -> seconds
+        self._pending_builds: dict = {}             # key -> threading.Event
 
     # -- Registration (pre-analysis phase) --
 
@@ -236,37 +303,62 @@ class HandlerCacheManager:
     ) -> Tuple[Any, bool]:
         """Get cached handler or build + cache it.
 
-        Returns (handler, was_cached). Evicts LRU entries BEFORE building
-        to prevent memory spikes (current cache + new handler peak
-        simultaneously could trigger OOM kill).
+        Thread-safe: uses a lock for cache access with double-check pattern
+        and threading.Event to prevent duplicate parallel builds. Returns
+        (handler, was_cached). Evicts LRU entries BEFORE building to prevent
+        memory spikes.
         """
         key = build_cache_key(handler_cfg, extra_context)
 
-        # Cache hit
-        if key in self._cache:
-            self._cache.move_to_end(key)
-            self._hits += 1
-            return self._cache[key], True
+        while True:
+            with self._lock:
+                if key in self._cache:
+                    self._cache.move_to_end(key)
+                    self._hits += 1
+                    return self._cache[key], True
 
-        self._misses += 1
+                if key in self._pending_builds:
+                    event = self._pending_builds[key]
+                else:
+                    event = threading.Event()
+                    self._pending_builds[key] = event
+                    break
 
-        # Evict BEFORE building — prevent memory spike
-        est = estimate_handler_memory(handler_cfg)
-        while self._cache and (self._total_memory + est > self._max_memory):
-            evict_key, _ = self._cache.popitem(last=False)
-            self._total_memory -= self._memory.get(evict_key, 0)
+            # Wait for another thread to finish building
+            event.wait()
 
-        # Build handler (qlib init must already be done)
-        from qlib.utils import init_instance_by_config
+        # Build the handler outside cache lock to avoid blocking other keys
+        try:
+            est = estimate_handler_memory(handler_cfg)
 
-        t0 = time.time()
-        handler = init_instance_by_config(handler_cfg)
-        self._build_times[key] = time.time() - t0
+            from qlib.utils import init_instance_by_config
+            t0 = time.time()
+            # Ensure we don't drop raw data in the cached handler
+            local_cfg = copy.deepcopy(handler_cfg)
+            if "kwargs" in local_cfg:
+                local_cfg["kwargs"]["drop_raw"] = False
+            else:
+                local_cfg["kwargs"] = {"drop_raw": False}
+            handler = init_instance_by_config(local_cfg)
+            build_time = time.time() - t0
 
-        # Store in cache
-        self._cache[key] = handler
-        self._total_memory += est
-        return handler, False
+            with self._lock:
+                self._misses += 1
+
+                # Evict BEFORE storing — prevent memory spike
+                while self._cache and (self._total_memory + est > self._max_memory):
+                    evict_key, _ = self._cache.popitem(last=False)
+                    self._total_memory -= self._memory.get(evict_key, 0)
+
+                self._cache[key] = handler
+                self._build_times[key] = build_time
+                self._total_memory += est
+                return handler, False
+        finally:
+            with self._lock:
+                event = self._pending_builds.pop(key, None)
+                if event:
+                    event.set()
 
     # -- Dataset creation --
 
@@ -281,8 +373,10 @@ class HandlerCacheManager:
         via accept_types=DataHandler, so we simply swap the handler config
         dict for the cached instance.
 
-        WARNING: Cached handler instances are shared across multiple datasets.
-        MUST be used in serial training loop; handler state is shared across datasets.
+        Each dataset receives a lightweight HandlerProxy that shares the
+        cached handler's raw data but owns independent processed views
+        (_infer, _learn) and processor instances. This is thread-safe for
+        parallel training.
 
         Parameters
         ----------
@@ -297,9 +391,9 @@ class HandlerCacheManager:
         handler_cfg = dataset_cfg['kwargs']['handler']
         handler, _ = self.get_or_build(handler_cfg, extra_context)
 
-        # Clone config and inject cached handler instance
+        # Clone config and inject a lightweight thread-safe HandlerProxy instance
         ds_cfg = copy.deepcopy(dataset_cfg)
-        ds_cfg['kwargs']['handler'] = handler  # instance, not config dict
+        ds_cfg['kwargs']['handler'] = HandlerProxy(handler)
 
         return init_instance_by_config(ds_cfg)
 
