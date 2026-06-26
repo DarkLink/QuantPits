@@ -585,3 +585,121 @@ class TestHandlerProxy:
         assert "process_data_with_fit_False" in called
 
 
+class TestMemoryEstimationAndRollingTasks:
+    def test_get_handler_feature_count(self):
+        from quantpits.utils.handler_cache import _get_handler_feature_count
+        assert _get_handler_feature_count({'class': 'Alpha158', 'kwargs': {'infer_processors': [{'class': 'FilterCol'}]}}) == 138
+        assert _get_handler_feature_count({'class': 'Alpha158', 'kwargs': {'infer_processors': []}}) == 158
+        assert _get_handler_feature_count({'class': 'Alpha360'}) == 6
+        assert _get_handler_feature_count({'class': 'Alpha360_plus'}) == 10
+        assert _get_handler_feature_count({'class': 'Alpha158_plus'}) == 158
+        assert _get_handler_feature_count({'class': 'CustomUnknown'}) == 100
+
+    def test_estimate_handler_memory_missing_dates(self):
+        from quantpits.utils.handler_cache import estimate_handler_memory
+        # missing start/end time
+        assert estimate_handler_memory({'kwargs': {}}) == 0
+
+    def test_estimate_handler_memory_import_error(self, monkeypatch):
+        from quantpits.utils.handler_cache import estimate_handler_memory
+        # simulate qlib import error
+        import sys
+        real_modules = sys.modules.copy()
+        try:
+            sys.modules['qlib.data'] = None
+            assert estimate_handler_memory({'kwargs': {'start_time': '2020-01-01', 'end_time': '2020-12-31'}}) == 0
+        finally:
+            sys.modules.update(real_modules)
+
+    def test_estimate_handler_memory_exception_in_qlib(self, monkeypatch):
+        import qlib.data
+        from unittest.mock import MagicMock
+        from quantpits.utils.handler_cache import estimate_handler_memory
+        mock_D = MagicMock()
+        mock_D.instruments.side_effect = Exception("qlib failed")
+        
+        monkeypatch.setattr(qlib.data, 'D', mock_D)
+        
+        cfg = {'class': 'Alpha158', 'kwargs': {'start_time': '2020-01-01', 'end_time': '2020-12-31'}}
+        assert estimate_handler_memory(cfg) == 0
+
+    def test_estimate_handler_memory_valid(self, monkeypatch):
+        import qlib.data
+        from unittest.mock import MagicMock
+        from quantpits.utils.handler_cache import estimate_handler_memory
+        mock_D = MagicMock()
+        mock_D.instruments.return_value = ['stock1', 'stock2']
+        mock_D.calendar.return_value = ['day1', 'day2', 'day3']
+        
+        monkeypatch.setattr(qlib.data, 'D', mock_D)
+
+        cfg = {
+            'class': 'Alpha360',
+            'kwargs': {
+                'start_time': '2020-01-01',
+                'end_time': '2020-12-31',
+                'instruments': 'csi300'
+            }
+        }
+        # n_days = 3, n_stocks = 2, n_features = 6
+        # expected: int(3 * 2 * 6 * 8 * 1.2 * 2.5) = int(863.9999...) = 863
+        assert estimate_handler_memory(cfg) in (863, 864)
+
+    def test_auto_detect_memory(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from quantpits.utils.handler_cache import _auto_detect_memory
+        mock_mem = MagicMock(available=1000000)
+        monkeypatch.setattr('psutil.virtual_memory', lambda: mock_mem)
+        assert _auto_detect_memory() == 500000
+
+    def test_extract_rolling_tasks(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from quantpits.utils.handler_cache import enumerate_tasks_rolling
+        
+        # mock windows generator
+        mock_windows = [
+            {'window_idx': 0, 'train_start': '2015', 'train_end': '2016', 'valid_start': '2016', 'valid_end': '2017', 'test_start': '2017', 'test_end': '2018'}
+        ]
+        monkeypatch.setattr('quantpits.scripts.rolling.windows.generate_rolling_windows', lambda *a, **k: mock_windows)
+        
+        # mock inject_config
+        mock_task_config = {
+            'task': {
+                'dataset': {
+                    'class': 'DatasetH',
+                    'kwargs': {
+                        'handler': {'class': 'Alpha158'}
+                    }
+                }
+            }
+        }
+        monkeypatch.setattr('quantpits.utils.train_utils.inject_config', lambda y, p, model_name: mock_task_config)
+
+        params = {'rolling_start': '2015-01-01'}
+        yaml_paths = {'model_a': 'path/to/model_a.yaml'}
+        
+        # 1. Cold start
+        tasks = enumerate_tasks_rolling(['model_a'], yaml_paths, params, rolling_state=None)
+        assert len(tasks) == 1
+        assert tasks[0][0] == 'model_a'
+        assert tasks[0][1] == 0
+        assert tasks[0][2] == {'class': 'Alpha158'}
+
+        # 2. Resume (already done)
+        mock_state = MagicMock()
+        mock_state.is_window_model_done.return_value = True
+        tasks = enumerate_tasks_rolling(['model_a'], yaml_paths, params, rolling_state=mock_state)
+        assert len(tasks) == 0
+
+        # 3. Resume (state check throws exception -> proceed)
+        mock_state.is_window_model_done.side_effect = Exception("failed")
+        tasks = enumerate_tasks_rolling(['model_a'], yaml_paths, params, rolling_state=mock_state)
+        assert len(tasks) == 1
+
+        # 4. No windows generated
+        monkeypatch.setattr('quantpits.scripts.rolling.windows.generate_rolling_windows', lambda *a, **k: [])
+        tasks = enumerate_tasks_rolling(['model_a'], yaml_paths, params, rolling_state=None)
+        assert tasks == []
+
+
+
