@@ -76,19 +76,22 @@ def _canonicalize(obj: Any) -> Any:
 # Temporal processor detection (for CPCV cross-fold optimization)
 # ============================================================================
 
-TEMPORAL_PROCESSOR_CLASSES = frozenset({
-    'ZScoreNorm',
-    'RobustZScoreNorm',
-    'MinMaxNorm',
+CROSSSECTIONAL_PROCESSOR_CLASSES = frozenset({
+    'CSZScoreNorm',
+    'CSRankNorm',
+    'CSZFillna',
+    'DropnaLabel',
+    'Fillna',
+    'FilterCol',
+    'DropCol',
 })
 
 
 def _has_temporal_processors(handler_cfg: dict) -> bool:
     """Check if handler config contains any time-dependent normalizer.
 
-    Temporal processors (ZScoreNorm, RobustZScoreNorm, MinMaxNorm) fit
-    mean/std/min/max across the entire time range, so validation data
-    inside the fit range would contaminate normalization statistics.
+    Uses a whitelist strategy: any processor NOT in CROSSSECTIONAL_PROCESSOR_CLASSES
+    is assumed to be temporal (time-dependent) to be safe against data leakage.
 
     Cross-sectional processors (CSZScoreNorm, CSRankNorm, CSZFillna,
     DropnaLabel, Fillna, FilterCol, DropCol) operate per-day or on
@@ -97,7 +100,10 @@ def _has_temporal_processors(handler_cfg: dict) -> bool:
     kwargs = handler_cfg.get('kwargs', {})
     for proc_list_key in ('infer_processors', 'learn_processors'):
         for proc in kwargs.get(proc_list_key, []):
-            if proc.get('class') in TEMPORAL_PROCESSOR_CLASSES:
+            # Normalize: qlib allows both "ClassName" (str) and
+            # {"class": "ClassName", "kwargs": {...}} (dict) forms.
+            cls_name = proc if isinstance(proc, str) else proc.get('class', '')
+            if cls_name not in CROSSSECTIONAL_PROCESSOR_CLASSES:
                 return True
     return False
 
@@ -200,7 +206,7 @@ class HandlerCacheManager:
         self._memory: dict = {}                     # key -> estimated bytes
         self._total_memory: int = 0
         self._max_memory: int = (
-            max_size_mb * 1024 * 1024 if max_size_mb
+            max_size_mb * 1024 * 1024 if max_size_mb is not None
             else _auto_detect_memory()
         )
         self._hits: int = 0
@@ -274,6 +280,9 @@ class HandlerCacheManager:
         Qlib's DatasetH.__init__ accepts DataHandler instances natively
         via accept_types=DataHandler, so we simply swap the handler config
         dict for the cached instance.
+
+        WARNING: Cached handler instances are shared across multiple datasets.
+        MUST be used in serial training loop; handler state is shared across datasets.
 
         Parameters
         ----------

@@ -189,11 +189,15 @@ class ConcatTSDataSampler:
                 local_idx = idx - int(self._offsets[s_idx])
                 return self.samplers[s_idx].get_index(local_idx)
 
-        # pd.concat does NOT accept plain Index/MultiIndex objects.
-        # Use Index.append() to merge, then sort.
-        result = self.samplers[0].get_index()
-        for s in self.samplers[1:]:
-            result = result.append(s.get_index())
+        # pd.concat accepts Index/MultiIndex objects in Pandas >= 2.0.
+        # For older Pandas, fallback to Index.append() to avoid TypeError.
+        all_indices = [s.get_index() for s in self.samplers]
+        try:
+            result = pd.concat(all_indices)
+        except TypeError:
+            result = all_indices[0]
+            for idx in all_indices[1:]:
+                result = result.append(idx)
         # .sort_values() works on both Index and MultiIndex
         # (MultiIndex has no .sort_index() method)
         try:

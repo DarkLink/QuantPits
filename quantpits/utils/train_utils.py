@@ -1602,10 +1602,38 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                         # label value at the final timestep of each sample window.
                         import numpy as np
                         idx = val_label.get_index()
-                        vals = [val_label[i] for i in range(len(val_label))]
-                        # Each sample is shape (step_len,) or (step_len, 1).
-                        # Take the last step as the label for this prediction point.
-                        arr = np.array([float(v.flat[-1]) for v in vals])
+
+                        # Vectorized extraction if data_arr/idx_map/idx_arr are available
+                        if hasattr(val_label, 'samplers'):
+                            # ConcatTSDataSampler
+                            labels_list = []
+                            for s in val_label.samplers:
+                                if hasattr(s, 'idx_map') and hasattr(s, 'idx_arr') and hasattr(s, 'data_arr'):
+                                    rows = s.idx_map[:, 0]
+                                    cols = s.idx_map[:, 1]
+                                    last_indices = s.idx_arr[rows, cols]
+                                    if s.data_arr.ndim == 2:
+                                        labels_list.append(s.data_arr[last_indices, -1])
+                                    else:
+                                        labels_list.append(s.data_arr[last_indices])
+                            if len(labels_list) == len(val_label.samplers):
+                                arr = np.concatenate(labels_list)
+                            else:
+                                vals = [val_label[i] for i in range(len(val_label))]
+                                arr = np.array([float(v.flat[-1]) for v in vals])
+                        elif hasattr(val_label, 'idx_map') and hasattr(val_label, 'idx_arr') and hasattr(val_label, 'data_arr'):
+                            # TSDataSampler
+                            rows = val_label.idx_map[:, 0]
+                            cols = val_label.idx_map[:, 1]
+                            last_indices = val_label.idx_arr[rows, cols]
+                            if val_label.data_arr.ndim == 2:
+                                arr = val_label.data_arr[last_indices, -1]
+                            else:
+                                arr = val_label.data_arr[last_indices]
+                        else:
+                            vals = [val_label[i] for i in range(len(val_label))]
+                            arr = np.array([float(v.flat[-1]) for v in vals])
+
                         val_label = pd.Series(arr, index=idx)
 
                     df = pd.DataFrame({"pred": val_pred, "label": val_label})

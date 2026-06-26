@@ -459,6 +459,20 @@ def run_predict_only_cpcv(args):
         print("\n  Dry-run: above models would be predicted")
         return
 
+    # Initialize handler cache (unless --cache-size 0)
+    cache_mgr = None
+    if args.cache_size != 0:
+        from quantpits.utils.handler_cache import (
+            HandlerCacheManager, enumerate_tasks_cpcv, pre_analyze,
+        )
+        cache_mgr = HandlerCacheManager(
+            max_size_mb=args.cache_size if args.cache_size else None)
+        selected_model_names = list(set(parse_model_key(k)[0] for k in cpcv_models.keys()))
+        yaml_paths = {m: registry[m]['yaml_file'] for m in selected_model_names if m in registry}
+        tasks = enumerate_tasks_cpcv(
+            selected_model_names, yaml_paths, params)
+        pre_analyze(tasks, cache_mgr)
+
     freq = params.get('freq', 'week').upper()
     experiment_name = args.experiment_name or f"Prod_Predict_CPCV_{freq}"
 
@@ -484,6 +498,7 @@ def run_predict_only_cpcv(args):
         result = predict_cpcv_model(
             model_name, model_info, params, experiment_name,
             no_pretrain=args.no_pretrain,
+            cache_mgr=cache_mgr,
         )
 
         if result['success']:
@@ -493,6 +508,9 @@ def run_predict_only_cpcv(args):
 
     if new_records['models']:
         merge_train_records(new_records)
+
+    if cache_mgr is not None:
+        print(f"\n  Handler Cache: {cache_mgr}")
 
     print(f"\nCPCV Predict-Only complete. Experiment: {experiment_name}\n")
 
