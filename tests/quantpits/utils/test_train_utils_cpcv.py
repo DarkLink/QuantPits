@@ -176,17 +176,35 @@ def test_train_cpcv_model_and_predict(mock_env_constants, monkeypatch):
         'valid': ['2019-01-01', '2019-12-31'],
         'test': ['2020-01-01', '2020-06-01'],
     }
+    mock_dataset.setup_data.return_value = None
     
     # Mock dataset.prepare() to return a series for validation IC calculation
     mock_val_label = pd.Series([0.05, 0.15, -0.02], index=mock_pred.index)
     mock_dataset.prepare.return_value = mock_val_label
 
+    # Mock IC series (for sig_analysis/ic.pkl)
+    mock_ic_series = pd.Series([0.05, 0.03, -0.01, 0.02, 0.04])
+
+    # Mock backtest output (portfolio_analysis/port_analysis_1week.pkl)
+    mock_port_analysis = pd.DataFrame(
+        {"risk": [0.15, -0.10, 0.8]},
+        index=pd.MultiIndex.from_tuples(
+            [("excess_return_without_cost", "annualized_return"),
+             ("excess_return_without_cost", "max_drawdown"),
+             ("excess_return_without_cost", "information_ratio")],
+        ),
+    )
+
     def mock_init_instance(config, recorder=None):
         if 'LGBModel' in str(config):
             return mock_model
         elif 'Record' in str(config.get('class', '')):
-            # Mock the record object
             rec_obj = MagicMock()
+            # SigAnaRecord + PortAnaRecord generate these artifacts
+            def mock_record_generate():
+                stored_objects["sig_analysis/ic.pkl"] = mock_ic_series
+                stored_objects["portfolio_analysis/port_analysis_1week.pkl"] = mock_port_analysis
+            rec_obj.generate.side_effect = mock_record_generate
             return rec_obj
         else:
             return mock_dataset
@@ -202,7 +220,7 @@ def test_train_cpcv_model_and_predict(mock_env_constants, monkeypatch):
     def mock_save_objects(**kwargs):
         stored_objects.update(kwargs)
     mock_recorder.save_objects.side_effect = mock_save_objects
-    mock_recorder.list_objects.return_value = ["model_fold_0.pkl"]
+    mock_recorder.list_artifacts.return_value = ["model_fold_0.pkl"]
     mock_recorder.load_object.side_effect = lambda key: stored_objects[key]
     
     mock_exp = MagicMock()
@@ -220,7 +238,8 @@ def test_train_cpcv_model_and_predict(mock_env_constants, monkeypatch):
             pass
         def log_params(self, **kwargs):
             pass
-        def get_recorder(self):
+        def get_recorder(self, recorder_id=None, recorder_name=None,
+                         experiment_id=None, experiment_name=None):
             return mock_recorder
         def get_exp(self, experiment_name=None):
             return mock_exp
@@ -257,6 +276,174 @@ def test_train_cpcv_model_and_predict(mock_env_constants, monkeypatch):
     
     assert res_pred['success'] is True
     assert res_pred['record_id'] == "mock_cpcv_run_123"
+    # Verify backtest metrics are populated
+    assert res_pred['performance'] is not None
+    perf = res_pred['performance']
+    assert perf.get('IC_Mean') is not None
+    assert perf.get('ICIR') is not None
+    # Verify fold models are saved in predict recorder (consecutive predict-only fix)
+    assert "model_fold_0.pkl" in stored_objects, \
+        "Fold models must be saved in predict recorder for next cycle"
+
+
+def test_predict_cpcv_model_fallback(mock_env_constants, monkeypatch):
+    """Test that the fallback chain traces source_record_id tags
+    when the immediate recorder lacks fold models."""
+    train_utils, workspace = mock_env_constants
+
+    # Use same YAML structure as test_train_cpcv_model_and_predict
+    yaml_file = os.path.join(workspace, "test_fallback.yaml")
+    dummy_yaml = {
+        'market': 'csi300',
+        'benchmark': 'SH000300',
+        'data_handler_config': {
+            'class': 'Alpha158',
+            'kwargs': {'start_time': '2015-01-01', 'end_time': '2020-01-01'}
+        },
+        'task': {
+            'dataset': {
+                'class': 'DatasetH',
+                'kwargs': {
+                    'handler': {'class': 'Alpha158'},
+                    'segments': {'train': [], 'valid': [], 'test': []}
+                }
+            },
+            'model': {
+                'class': 'LGBModel',
+                'kwargs': {'d_feat': 158}
+            },
+            'record': [
+                {'class': 'SigAnaRecord',
+                 'kwargs': {'model': '<MODEL>', 'dataset': '<DATASET>'}},
+                {'class': 'PortAnaRecord',
+                 'kwargs': {'model': '<MODEL>', 'dataset': '<DATASET>',
+                            'config': {}}},
+            ]
+        },
+        'port_analysis_config': {
+            'backtest': {
+                'start_time': '2020-01-01',
+                'end_time': '2020-06-01',
+                'account': 10000000,
+                'benchmark': 'SH000300'
+            }
+        }
+    }
+    with open(yaml_file, 'w') as f:
+        yaml.dump(dummy_yaml, f)
+
+    params = {
+        'market': 'csi300',
+        'benchmark': 'SH000300',
+        'test_start_time': '2020-01-01',
+        'test_end_time': '2020-06-01',
+        'anchor_date': '2020-06-01',
+        'cpcv_folds': [
+            {
+                'fold_idx': 0,
+                'train_segments': [['2015-01-01', '2018-12-31']],
+                'valid_start_time': '2019-01-01',
+                'valid_end_time': '2019-12-31',
+            }
+        ]
+    }
+
+    # Mock model prediction output
+    mock_model = MagicMock()
+    mock_pred = pd.Series(
+        [0.1, 0.2, 0.3],
+        index=pd.MultiIndex.from_tuples(
+            [('2020-01-02', '600000.SH'),
+             ('2020-01-02', '600001.SH'),
+             ('2020-01-02', '600002.SH')],
+            names=['datetime', 'instrument']
+        )
+    )
+    mock_model.predict.return_value = mock_pred
+
+    mock_dataset = MagicMock()
+    mock_dataset.setup_data.return_value = None
+    mock_dataset.segments = {
+        'train': [['2015-01-01', '2018-12-31']],
+        'valid': ['2019-01-01', '2019-12-31'],
+        'test': ['2020-01-01', '2020-06-01'],
+    }
+
+    def selective_init(config, recorder=None):
+        cfg_str = str(config)
+        if 'LGBModel' in cfg_str:
+            return mock_model
+        elif 'Record' in cfg_str:
+            return MagicMock()
+        else:
+            return mock_dataset
+
+    monkeypatch.setattr('qlib.utils.init_instance_by_config', selective_init)
+
+    # Parent recorder (has fold models)
+    stored_objects = {}
+    mock_parent_recorder = MagicMock()
+    mock_parent_recorder.id = "parent_run_456"
+    mock_parent_recorder.list_artifacts.return_value = ["model_fold_0.pkl"]
+    mock_parent_recorder.load_object.side_effect = lambda k: stored_objects.get(
+        k, mock_model)
+    mock_parent_recorder.save_objects.side_effect = lambda **kw: stored_objects.update(kw)
+
+    # Child recorder (no fold models, but has tags pointing to parent)
+    mock_child_recorder = MagicMock()
+    mock_child_recorder.id = "child_run_123"
+    mock_child_recorder.list_artifacts.return_value = ["pred.pkl"]  # no model_fold_*
+    mock_child_recorder.list_tags.return_value = {
+        'source_record_id': 'parent_run_456',
+        'source_experiment': 'Prod_Train_CPCV_WEEK',
+    }
+
+    # MockR: child on first get_recorder, parent on second
+    get_recorder_calls = []
+
+    class MockRFallback:
+        def start(self, experiment_name=None):
+            class Ctx:
+                def __enter__(s): return s
+                def __exit__(s, *a): pass
+            return Ctx()
+        def set_tags(self, **kwargs): pass
+        def log_params(self, **kwargs): pass
+        def get_recorder(self, recorder_id=None, recorder_name=None,
+                         experiment_id=None, experiment_name=None):
+            get_recorder_calls.append(recorder_id)
+            # First call returns child (no fold models), subsequent
+            # calls return parent (has fold models — the fallback)
+            if len(get_recorder_calls) <= 1:
+                return mock_child_recorder
+            else:
+                return mock_parent_recorder
+        def get_exp(self, experiment_name=None):
+            return MagicMock()
+
+    monkeypatch.setattr('qlib.workflow.R', MockRFallback())
+
+    model_info = {
+        'record_id': 'child_run_123',
+        'yaml_file': yaml_file,
+    }
+
+    res = train_utils.predict_cpcv_model(
+        model_name="test_model",
+        model_info=model_info,
+        params=params,
+        experiment_name="test_fallback_predict",
+        source_experiment_name="Prod_Predict_CPCV_WEEK",
+    )
+
+    assert res['success'] is True, f"Expected success but got: {res.get('error')}"
+    assert res['record_id'] is not None
+    assert len(get_recorder_calls) >= 2, (
+        f"Fallback should have called get_recorder at least twice "
+        f"(child + parent), got {len(get_recorder_calls)}"
+    )
+    assert get_recorder_calls[0] == 'child_run_123'
+    assert get_recorder_calls[1] == 'parent_run_456'
 
 
 def test_train_cpcv_model_errors(mock_env_constants):
@@ -300,15 +487,14 @@ def test_predict_cpcv_model_errors(mock_env_constants, monkeypatch):
     assert res['success'] is False
     assert "No record_id" in res['error']
     
-    # Mock R for successful experiment manager/recorder fetch, but missing YAML or other errors
+    # Mock R for successful recorder fetch, but missing YAML or other errors
     mock_recorder = MagicMock()
-    mock_recorder.list_objects.return_value = ["model_fold_0.pkl"]
+    mock_recorder.list_artifacts.return_value = ["model_fold_0.pkl"]
     
-    mock_exp = MagicMock()
-    mock_exp.get_recorder.return_value = mock_recorder
     class MockR:
-        def get_exp(self, experiment_name=None):
-            return mock_exp
+        def get_recorder(self, recorder_id=None, recorder_name=None,
+                         experiment_id=None, experiment_name=None):
+            return mock_recorder
     monkeypatch.setattr('qlib.workflow.R', MockR())
     
     # 2. Missing yaml_file
@@ -323,7 +509,8 @@ def test_predict_cpcv_model_errors(mock_env_constants, monkeypatch):
     
     # 3. Source recorder loading fails
     class MockRFail:
-        def get_exp(self, experiment_name=None):
+        def get_recorder(self, recorder_id=None, recorder_name=None,
+                         experiment_id=None, experiment_name=None):
             raise Exception("MLflow load failed")
     monkeypatch.setattr('qlib.workflow.R', MockRFail())
     
@@ -334,7 +521,7 @@ def test_predict_cpcv_model_errors(mock_env_constants, monkeypatch):
         experiment_name="test_cpcv",
     )
     assert res['success'] is False
-    assert "Failed to load source recorder" in res['error']
+    assert "No fold models found in recorder chain" in res['error']
 
 
 def test_train_cpcv_model_labels_float_indices(mock_env_constants, monkeypatch):
@@ -420,7 +607,7 @@ def test_train_cpcv_model_labels_float_indices(mock_env_constants, monkeypatch):
     # Mock MLflow R
     mock_recorder = MagicMock()
     mock_recorder.id = "mock_cpcv_run_123"
-    mock_recorder.list_objects.return_value = []
+    mock_recorder.list_artifacts.return_value = []
     
     class MockR:
         def start(self, experiment_name=None):

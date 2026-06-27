@@ -88,6 +88,21 @@ def parse_model_key(key):
     return key, DEFAULT_TRAINING_MODE
 
 
+def _flatten_rnn_params(model):
+    """Call flatten_parameters() on all RNN modules in a PyTorch model.
+
+    After pickle deserialization, LSTM/GRU weights become fragmented in
+    GPU memory, triggering CuDNN warnings and slowing inference. This
+    walks the model's submodules and compacts any RNN weights found.
+    """
+    try:
+        for m in model.modules():
+            if hasattr(m, 'flatten_parameters'):
+                m.flatten_parameters()
+    except Exception:
+        pass  # Non-critical GPU optimization
+
+
 def get_experiment_name_for_model(records_dict, model_key):
     """
     根据模型 key 的 mode 获取对应的 experiment_name。
@@ -1798,7 +1813,8 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
 
 
 def predict_cpcv_model(model_name, model_info, params, experiment_name,
-                        no_pretrain=False, cache_mgr=None):
+                        no_pretrain=False, cache_mgr=None,
+                        source_experiment_name=None):
     """Predict-only for CPCV-trained models on new data.
 
     Loads K fold models from the source recorder, has each predict on the
@@ -1808,9 +1824,11 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
         model_name: model identifier.
         model_info: dict with record_id pointing to the CPCV recorder.
         params: date_params from calculate_dates().
-        experiment_name: MLflow experiment name.
+        experiment_name: MLflow experiment name for the new predict run.
         no_pretrain: passed through to config injection.
         cache_mgr: HandlerCacheManager instance or None (None = legacy path).
+        source_experiment_name: MLflow experiment name of the source
+            training run. When None, falls back to experiment_name.
 
     Returns:
         dict: {success, record_id, performance, error}
@@ -1832,38 +1850,71 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
 
     print(f"\n>>> CPCV Predict-Only: {model_name} from {source_id}")
 
-    # Determine the source URI and load fold models
-    try:
-        exp = R.get_exp(experiment_name=experiment_name)
-        source_recorder = exp.get_recorder(source_id)
-    except Exception as e:
-        result['error'] = f"Failed to load source recorder {source_id}: {e}"
-        return result
+    # Resolve source experiment for fallback chain
+    source_exp = source_experiment_name or experiment_name
 
-    # Count fold models
+    # Load fold models with fallback chain — trace source_record_id tags
+    # if the immediate recorder doesn't contain model_fold_*.pkl
+    # (same pattern as predict_single_model lines 2474-2497)
+    current_id = source_id
+    current_exp = source_exp
+    fold_models = []
+    fold_predictions = []
     fold_count = 0
-    for key in source_recorder.list_objects():
-        if key.startswith("model_fold_") and key.endswith(".pkl"):
-            fold_count += 1
+
+    for _ in range(10):
+        try:
+            source_recorder = R.get_recorder(
+                recorder_id=current_id,
+                experiment_name=current_exp,
+            )
+        except Exception:
+            break
+
+        # Count fold models in this recorder
+        fold_count = 0
+        for key in source_recorder.list_artifacts():
+            if key.startswith("model_fold_") and key.endswith(".pkl"):
+                fold_count += 1
+
+        if fold_count > 0:
+            print(f"  Found {fold_count} fold models in recorder {current_id}")
+            for fi in range(fold_count):
+                fm = source_recorder.load_object(
+                    f"model_fold_{fi}.pkl"
+                )
+                _flatten_rnn_params(fm)
+                fold_models.append(fm)
+            break
+
+        # Not found in this recorder, try parent via tags
+        try:
+            tags = source_recorder.list_tags()
+            if 'source_record_id' in tags and 'source_experiment' in tags:
+                print(f"    [Fallback] fold models not in {current_id}, "
+                      f"tracing to {tags['source_record_id']}...")
+                current_id = tags['source_record_id']
+                current_exp = tags['source_experiment']
+            else:
+                break
+        except Exception:
+            break
 
     if fold_count == 0:
-        result['error'] = f"No fold models found in recorder {source_id}"
+        result['error'] = (f"No fold models found in recorder chain "
+                           f"from {source_id}")
         return result
-
-    # Load the original YAML to get the dataset config template
     yaml_file = model_info.get('yaml_file')
     if not yaml_file or not os.path.exists(yaml_file):
         result['error'] = f"YAML file not found for {model_name}"
         return result
 
-    print(f"  Found {fold_count} fold models in recorder {source_id}")
-
-    fold_predictions = []
-
     try:
         with R.start(experiment_name=experiment_name):
             R.set_tags(model=model_name, anchor_date=params['anchor_date'],
-                        mode='cpcv_predict')
+                        mode='cpcv_predict',
+                        source_experiment=source_exp,
+                        source_record_id=source_id)
 
             # Build dataset with current test segment
             # Use inject_config to get a valid dataset config with the
@@ -1877,31 +1928,117 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
                 dataset = cache_mgr.create_dataset(dataset_cfg)
             else:
                 dataset = init_instance_by_config(dataset_cfg)
+            dataset.setup_data()
 
-            for fi in range(fold_count):
-                # Load fold model
-                fold_model = source_recorder.load_object(
-                    f"model_fold_{fi}.pkl"
-                )
-
-                pred = fold_model.predict(dataset=dataset)
+            # Predict with each pre-loaded fold model
+            fold_predictions = []
+            for fm in fold_models:
+                pred = fm.predict(dataset=dataset)
                 fold_predictions.append(pred)
 
-                del fold_model
-                gc.collect()
-
-            del dataset
-            gc.collect()
-
-            # Average across folds
+            # Average across folds with NaN safety
             all_preds_df = pd.concat(fold_predictions, axis=1)
             final_pred = all_preds_df.mean(axis=1, skipna=True)
 
+            # Warn on universal NaN
+            nan_frac = final_pred.isna().mean()
+            if nan_frac > 0:
+                print(f"  ⚠️  {nan_frac:.2%} of final predictions are NaN "
+                      f"(universal suspensions across all folds)")
+
+            # ---- Run backtest via Qlib records, then replace pred ----
             recorder = R.get_recorder()
+
+            # Run SigAnaRecord + PortAnaRecord with fold_models[0]
+            # (these generate pred.pkl + sig_analysis/ic.pkl +
+            #  portfolio_analysis/port_analysis_1week.pkl)
+            record_cfgs = task_config['task'].get('record', [])
+            for r_cfg in record_cfgs:
+                if r_cfg['kwargs'].get('model') == '<MODEL>':
+                    r_cfg['kwargs']['model'] = fold_models[0]
+                if r_cfg['kwargs'].get('dataset') == '<DATASET>':
+                    r_cfg['kwargs']['dataset'] = dataset
+                r_obj = init_instance_by_config(r_cfg, recorder=recorder)
+                r_obj.generate()
+
+            # Overwrite pred.pkl with the K-fold ensemble average
             recorder.save_objects(**{"pred.pkl": final_pred})
+
+            # Save fold models so next predict-only cycle can find them
+            # (same pattern as predict_single_model saving model.pkl)
+            recorder.save_objects(**{
+                f"model_fold_{fi}.pkl": fm
+                for fi, fm in enumerate(fold_models)
+            })
+
+            # ---- Extract metrics ----
+            performance = {}
+            try:
+                import numpy as np
+
+                # IC metrics from SigAnaRecord output (computed from
+                # fold_models[0] before we overwrote pred.pkl)
+                try:
+                    ic_series = recorder.load_object("sig_analysis/ic.pkl")
+                    ic_mean = ic_series.mean()
+                    ic_std = ic_series.std()
+                    ic_ir = ic_mean / ic_std if ic_std and ic_std != 0 else None
+                    performance["IC_Mean"] = float(ic_mean) if ic_mean is not None else None
+                    performance["ICIR"] = float(ic_ir) if ic_ir is not None else None
+                except Exception:
+                    pass
+
+                # Backtest metrics from PortAnaRecord output
+                try:
+                    port_analysis = recorder.load_object(
+                        "portfolio_analysis/port_analysis_1week.pkl"
+                    )
+                    if isinstance(port_analysis, pd.DataFrame):
+                        if "excess_return_without_cost" in port_analysis.index:
+                            metrics_row = port_analysis.loc["excess_return_without_cost"]
+                            if isinstance(metrics_row, pd.DataFrame):
+                                val_col = ("risk" if "risk" in metrics_row.columns
+                                           else metrics_row.columns[0])
+                                performance["Ann_Excess"] = float(
+                                    metrics_row.loc["annualized_return", val_col]
+                                )
+                                performance["Max_DD"] = float(
+                                    metrics_row.loc["max_drawdown", val_col]
+                                )
+                                performance["Information_Ratio"] = float(
+                                    metrics_row.loc["information_ratio", val_col]
+                                )
+                            else:
+                                performance["Ann_Excess"] = float(
+                                    metrics_row.get("annualized_return", None) or 0
+                                )
+                                performance["Max_DD"] = float(
+                                    metrics_row.get("max_drawdown", None) or 0
+                                )
+                                performance["Information_Ratio"] = float(
+                                    metrics_row.get("information_ratio", None) or 0
+                                )
+                except Exception:
+                    pass
+
+                performance["record_id"] = recorder.id
+                for k, v in sorted(performance.items()):
+                    if v is not None and k != "record_id":
+                        print(f"    {k}: {v:.4f}" if isinstance(v, float)
+                              else f"    {k}: {v}")
+
+            except Exception as e:
+                print(f"  ⚠️  Backtest metrics extraction failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Cleanup
+            del fold_models, fold_predictions, dataset
+            gc.collect()
 
             result['success'] = True
             result['record_id'] = recorder.id
+            result['performance'] = performance
             print(f"  ✅ CPCV predict-only complete: recorder={recorder.id}")
 
     except Exception as e:
@@ -2027,6 +2164,7 @@ def merge_train_records(new_records, record_file=None):
             "experiment_name": new_records.get('experiment_name', existing.get('experiment_name', '')),
             "static_experiment_name": new_records.get('static_experiment_name', existing.get('static_experiment_name', '')),
             "rolling_experiment_name": new_records.get('rolling_experiment_name', existing.get('rolling_experiment_name', '')),
+            "cpcv_experiment_name": new_records.get('cpcv_experiment_name', existing.get('cpcv_experiment_name', '')),
             "anchor_date": new_records.get('anchor_date', existing.get('anchor_date', '')),
             "timestamp": new_records.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             "last_incremental_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2374,6 +2512,7 @@ def predict_single_model(model_name, model_info, params, experiment_name,
             )
             try:
                 model = source_recorder.load_object("model.pkl")
+                _flatten_rnn_params(model)
                 break
             except Exception:
                 tags = source_recorder.list_tags()

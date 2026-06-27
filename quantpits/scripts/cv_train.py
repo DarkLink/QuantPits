@@ -197,6 +197,7 @@ def run_full_train_cpcv(args):
 
     current_records = {
         "experiment_name": experiment_name,
+        "cpcv_experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "models": {}
@@ -343,6 +344,7 @@ def run_incremental_train_cpcv(args, targets):
 
     new_records = {
         "experiment_name": experiment_name,
+        "cpcv_experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "models": {}
@@ -475,9 +477,11 @@ def run_predict_only_cpcv(args):
 
     freq = params.get('freq', 'week').upper()
     experiment_name = args.experiment_name or f"Prod_Predict_CPCV_{freq}"
+    source_experiment = source_records.get('cpcv_experiment_name') or source_records.get('experiment_name', '')
 
     new_records = {
         "experiment_name": experiment_name,
+        "cpcv_experiment_name": source_experiment,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "models": {}
@@ -499,6 +503,7 @@ def run_predict_only_cpcv(args):
             model_name, model_info, params, experiment_name,
             no_pretrain=args.no_pretrain,
             cache_mgr=cache_mgr,
+            source_experiment_name=source_experiment,
         )
 
         if result['success']:
