@@ -137,29 +137,31 @@ class TestRepairAndPredict:
         mock_rec = MagicMock()
         mock_rec.load_object.side_effect = lambda x: mock_pred if x == "pred.pkl" else MagicMock()
         
-        with patch("qlib.workflow.R.get_recorder", return_value=mock_rec):
+        with patch("qlib.workflow.R") as mock_R:
+            mock_R.get_recorder.return_value = mock_rec
             pred, rep = _repair_truncated_prediction(model_name, model_info, comp, window_map, rolling_exp_name, params_base)
             assert rep is False
-            
+
         # 3. Test when prediction is truncated and repaired
         idx_trunc = pd.MultiIndex.from_product([[pd.Timestamp("2020-01-17")], ["A"]], names=["datetime", "instrument"])
         mock_pred_trunc = pd.DataFrame({"score": [1.0]}, index=idx_trunc)
-        
+
         mock_model = MagicMock()
         mock_model.predict.return_value = pd.Series([1.5], index=idx)
-        
+
         def mock_load(x):
             if x == "pred.pkl":
                 return mock_pred_trunc
             elif x == "model.pkl":
                 return mock_model
             raise ValueError()
-            
+
         mock_rec.load_object.side_effect = mock_load
-        
-        with patch("qlib.workflow.R.get_recorder", return_value=mock_rec), \
+
+        with patch("qlib.workflow.R") as mock_R, \
              patch("quantpits.utils.train_utils.inject_config", return_value={"task": {"dataset": {}}}), \
              patch("qlib.utils.init_instance_by_config", return_value=MagicMock()):
+            mock_R.get_recorder.return_value = mock_rec
             pred, rep = _repair_truncated_prediction(model_name, model_info, comp, window_map, rolling_exp_name, params_base)
             assert rep is True
             assert isinstance(pred, pd.DataFrame)
@@ -201,10 +203,12 @@ class TestRepairAndPredict:
         mock_model.predict.return_value = pd.Series([1.0], name="score")
         mock_rec.load_object.return_value = mock_model
         
-        with patch("qlib.workflow.R.get_recorder", return_value=mock_rec), \
+        with patch("qlib.workflow.R") as mock_R, \
              patch("quantpits.utils.train_utils.inject_config", return_value={"task": {"dataset": {}}}), \
              patch("qlib.utils.init_instance_by_config", return_value=MagicMock()):
-            pred = predict_with_latest_model("lstm", {"yaml_file": "fake.yaml"}, mock_state, "exp", {}, "2020-01-01", windows)
+            mock_R.get_recorder.return_value = mock_rec
+            # anchor_date after test_end creates a date-based gap
+            pred = predict_with_latest_model("lstm", {"yaml_file": "fake.yaml"}, mock_state, "exp", {}, "2020-02-01", windows)
             assert isinstance(pred, pd.DataFrame)
             assert "score" in pred.columns
 

@@ -685,12 +685,14 @@ class TestFunctionalLogic:
             mock_inject.return_value = {'task': {'dataset': {}}}
             mock_model.predict.return_value = pd.DataFrame({'score': [0.5]})
             
-            windows = [{'window_idx': 0, 'train_start': '2020-01-01', 'train_end': '2022-12-31', 
-                        'valid_start': '2023-01-01', 'valid_end': '2023-12-31', 
+            # Gap scenario: anchor_date past last window's test_end
+            windows = [{'window_idx': 0, 'train_start': '2020-01-01', 'train_end': '2022-12-31',
+                        'valid_start': '2023-01-01', 'valid_end': '2023-12-31',
                         'test_start': '2024-01-01', 'test_end': '2024-03-31'}]
-            res = rt.predict_with_latest_model('m1', {'yaml_file': 'm1.yaml'}, state, 'exp', 
-                                              {'market': 'csi300', 'benchmark': 'csi300'}, '2024-01-01', 
-                                              windows=windows)
+            res = rt.predict_with_latest_model('m1', {'yaml_file': 'm1.yaml'}, state, 'exp',
+                                              {'market': 'csi300', 'benchmark': 'csi300'}, '2024-06-30',
+                                              windows=windows,
+                                              allow_stale_predict=True)
             assert res is not None
             assert len(res) == 1
 

@@ -7,6 +7,98 @@ Rolling 回测模块
 import pandas as pd
 
 
+def _print_portfolio_metrics(raw_portfolio_metrics, model_name, freq):
+    """Print detailed portfolio analysis tables matching qlib PortAnaRecord format.
+
+    SimulatorExecutor returns time-series DataFrames. We compute summary
+    statistics (mean, std, annualized_return, information_ratio, max_drawdown)
+    for benchmark return, excess return without cost, and excess return with cost.
+    """
+    import numpy as np
+
+    if not isinstance(raw_portfolio_metrics, dict):
+        return
+    for freq_key, metrics_tuple in raw_portfolio_metrics.items():
+        if isinstance(metrics_tuple, tuple) and len(metrics_tuple) >= 1:
+            ts_df = metrics_tuple[0]
+        else:
+            continue
+        if ts_df is None or ts_df.empty or 'return' not in ts_df.columns:
+            continue
+
+        periods_per_year = 52 if freq == 'week' else 252
+
+        def _compute_summary(series):
+            s = series.dropna()
+            if len(s) < 2:
+                return None
+            mu = s.mean()
+            sigma = s.std()
+            ann_ret = mu * periods_per_year
+            ir = ann_ret / (sigma * np.sqrt(periods_per_year)) if sigma > 0 else 0.0
+            # max drawdown
+            cumulative = (1 + s).cumprod()
+            running_max = cumulative.cummax()
+            dd = (cumulative - running_max) / running_max
+            max_dd = dd.min()
+            return pd.Series({
+                'mean': mu, 'std': sigma,
+                'annualized_return': ann_ret,
+                'information_ratio': ir,
+                'max_drawdown': max_dd,
+            }, name='risk')
+
+        sections = [
+            ('benchmark return', ts_df['bench']),
+            ('excess return without cost',
+             ts_df['return'] - ts_df['bench']),
+            ('excess return with cost',
+             ts_df['return'] - ts_df['bench'] - ts_df['cost'].fillna(0)),
+        ]
+        for label, series in sections:
+            summary = _compute_summary(series)
+            if summary is not None:
+                print(f"\n  [{model_name}] The following are analysis results of "
+                      f"{label}({freq_key}).")
+                print(summary.to_string())
+
+        # Return aggregate metrics from excess-without-cost for summary line
+        excess_series = ts_df['return'] - ts_df['bench']
+        exc = _compute_summary(excess_series)
+        if exc is not None:
+            return (exc['annualized_return'], exc['max_drawdown'],
+                    exc['annualized_return'], exc['information_ratio'])
+    return None, None, None, None
+
+
+def _print_indicators(raw_indicators, model_name, freq):
+    """Print indicator aggregates in qlib SigAnaRecord format (ffr/pa/pos only)."""
+    if raw_indicators is None:
+        return
+    # raw_indicators from qlib.backtest.backtest() is a time-series DataFrame
+    # indexed by date with columns: ffr, pa, pos, deal_amount, value, count.
+    # qlib's SigAnaRecord prints only the aggregate ffr/pa/pos.
+    if isinstance(raw_indicators, pd.DataFrame) and not raw_indicators.empty:
+        ind_df = raw_indicators
+    elif isinstance(raw_indicators, dict):
+        val = list(raw_indicators.values())[0]
+        ind_df = val[0] if isinstance(val, tuple) else val
+    else:
+        return
+    if ind_df is None or ind_df.empty:
+        return
+
+    # Extract aggregate indicators: use mean of ffr/pa/pos columns
+    agg_cols = ['ffr', 'pa', 'pos']
+    available = [c for c in agg_cols if c in ind_df.columns]
+    if not available:
+        return
+    agg = ind_df[available].mean().to_frame('value')
+    print(f"\n  [{model_name}] The following are analysis results of "
+          f"indicators({freq}).")
+    print(agg.to_string())
+
+
 def run_combined_backtest(model_names, combined_records, combined_exp_name, params_base):
     """
     对合并后的预测执行回测，并将回测结果的 port_analysis 等指标保存追加回相应的记录。
@@ -68,66 +160,22 @@ def run_combined_backtest(model_names, combined_records, combined_exp_name, para
                     exchange_kwargs=bt_config['exchange_kwargs']
                 )
 
-            # Use PortfolioAnalyzer to get traditional metrics
-            from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
-            from qlib.data import D
+            # ---- Print detailed backtest metrics (same format as training-time PortAnaRecord) ----
+            ann_ret, max_dd, excess, ir = _print_portfolio_metrics(
+                raw_portfolio_metrics, model_name, params_base['freq'])
+            _print_indicators(raw_indicators, model_name, params_base['freq'])
 
-            def extract_report_df(metrics):
-                if isinstance(metrics, dict):
-                    val = list(metrics.values())[0]
-                    return val[0] if isinstance(val, tuple) else val
-                elif isinstance(metrics, tuple):
-                    first = metrics[0]
-                    if isinstance(first, pd.DataFrame):
-                        return first
-                    elif isinstance(first, tuple) and len(first) >= 1:
-                        return first[0]
-                    return metrics
-                return metrics
-
-            report_df = extract_report_df(raw_portfolio_metrics)
-            if report_df is None or report_df.empty:
-                 print(f"  [{model_name}] 提取回测结果失败。")
-                 continue
-
-            # Format report DataFrame
-            da_df = pd.DataFrame(index=report_df.index)
-            da_df['收盘价值'] = report_df['account']
-            da_df[params_base['benchmark']] = (1 + report_df['bench']).cumprod()
-            if not isinstance(da_df.index, pd.DatetimeIndex):
-                da_df.index = pd.to_datetime(da_df.index)
-
-            bt_start_dt = da_df.index.min()
-            bt_end_dt = da_df.index.max()
-            daily_dates = D.calendar(start_time=bt_start_dt, end_time=bt_end_dt, freq='day')
-            da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
-            da_df = da_df.reset_index().rename(columns={'index': '成交日期', 'datetime': '成交日期'})
-
-            pa = PortfolioAnalyzer(
-                daily_amount_df=da_df,
-                trade_log_df=pd.DataFrame(),
-                holding_log_df=pd.DataFrame(),
-                benchmark_col=params_base['benchmark'],
-                freq=params_base['freq']
-            )
-            metrics = pa.calculate_traditional_metrics()
-
-            ann_ret = metrics.get('CAGR', 0)
-            max_dd = metrics.get('Max_Drawdown', 0)
-            excess = metrics.get('Excess_Return_CAGR', 0)
-            ir = metrics.get('Information_Ratio', 0)
-            calmar = metrics.get('Calmar', 0)
-
-            print(f"  [{model_name}] 回测完成! Ann_Ret: {ann_ret:.2%}, Excess: {excess:.2%}, Max_DD: {max_dd:.2%}, IR: {ir:.3f}")
+            if ann_ret is not None:
+                print(f"  [{model_name}] 回测完成! Ann_Ret: {ann_ret:.2%}, "
+                      f"Excess: {excess:.2%}, Max_DD: {max_dd:.2%}, IR: {ir:.3f}")
 
             # Save objects back to the same recorder
             try:
                 rec.log_metrics(
-                    Ann_Ret=ann_ret,
-                    Max_DD=max_dd,
-                    Excess_Return=excess,
-                    Information_Ratio=ir,
-                    Calmar=calmar
+                    Ann_Ret=ann_ret or 0,
+                    Max_DD=max_dd or 0,
+                    Excess_Return=excess or 0,
+                    Information_Ratio=ir or 0,
                 )
 
                 # 严格按照 Qlib PortAnaRecord 的保存格式，把报告分离并保存到 portfolio_analysis 子目录下
@@ -156,8 +204,15 @@ def run_combined_backtest(model_names, combined_records, combined_exp_name, para
             traceback.print_exc()
 
 
-def run_backtest_only(args, targets, params_base=None):
-    """仅回测模式：读取统一训练记录中的 rolling 模型并运行回测"""
+def run_backtest_only(args, targets, params_base=None, mode='rolling'):
+    """仅回测模式：读取统一训练记录中的 rolling 模型并运行回测。
+
+    Args:
+        args: CLI args namespace.
+        targets: {model_name: model_info} dict.
+        params_base: Base params dict (auto-detected if None).
+        mode: Key suffix to filter — 'rolling' (slide) or 'cpcv_rolling' (CPCV).
+    """
     import os
     import json
     from quantpits.utils.train_utils import (
@@ -183,10 +238,10 @@ def run_backtest_only(args, targets, params_base=None):
         print("❌ 找不到有效的 latest_train_records.json 或内容为空。")
         return
 
-    # 从统一文件中过滤出 rolling 模式的模型
-    rolling_models = filter_models_by_mode(records.get('models', {}), 'rolling')
+    # 从统一文件中过滤出指定模式的模型
+    rolling_models = filter_models_by_mode(records.get('models', {}), mode)
     if not rolling_models:
-        print("❌ 统一训练记录中没有 @rolling 模式的模型记录。")
+        print(f"❌ 统一训练记录中没有 @{mode} 模式的模型记录。")
         return
 
     # 构建一个 rolling-only 的 records dict 供下游使用
@@ -194,15 +249,19 @@ def run_backtest_only(args, targets, params_base=None):
     records['models'] = rolling_models
 
     combined_exp_name = records.get("experiment_name")
-    # 优先使用 rolling_experiment_name（迁移后可能存在）
-    if records.get('rolling_experiment_name'):
-        combined_exp_name = records['rolling_experiment_name']
+    # 优先使用对应模式的 experiment_name
+    if mode == 'cpcv_rolling':
+        if records.get('cpcv_rolling_experiment_name'):
+            combined_exp_name = records['cpcv_rolling_experiment_name']
+    else:
+        if records.get('rolling_experiment_name'):
+            combined_exp_name = records['rolling_experiment_name']
     if not combined_exp_name:
         freq = params_base['freq'].upper()
         combined_exp_name = f"Rolling_Combined_{freq}"
 
     combined_records = records["models"]
-    # rolling_models 的 key 是 model@rolling 格式，targets 是裸名
+    # records 的 key 是 model@mode 格式，targets 是裸名
     # 构建 base_name -> full_key 的映射
     base_to_key = {}
     for key in combined_records:

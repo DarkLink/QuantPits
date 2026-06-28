@@ -44,12 +44,13 @@ ROLLING_PREDICTION_DIR = os.path.join(ROOT_DIR, "output", "predictions", "rollin
 HISTORY_DIR = os.path.join(ROOT_DIR, "data", "history")
 RUN_STATE_FILE = os.path.join(ROOT_DIR, "data", "run_state.json")
 ROLLING_STATE_FILE = os.path.join(ROOT_DIR, "data", "rolling_state.json")
+ROLLING_STATE_FILE_CPCV = os.path.join(ROOT_DIR, "data", "rolling_state_cpcv.json")
 # Legacy: kept only for migration from old dual-file format
 LEGACY_ROLLING_RECORD_FILE = os.path.join(ROOT_DIR, "latest_rolling_records.json")
 PRETRAINED_DIR = os.path.join(ROOT_DIR, "data", "pretrained")
 
 # Unified training mode system
-KNOWN_TRAINING_MODES = ['static', 'rolling', 'cpcv']
+KNOWN_TRAINING_MODES = ['static', 'rolling', 'cpcv', 'cpcv_rolling']
 DEFAULT_TRAINING_MODE = 'static'
 MODE_SEPARATOR = '@'
 
@@ -353,11 +354,17 @@ def compute_cpcv_folds(anchor_date, config, freq="day"):
         group_boundaries.append((cursor, end))
         cursor = end + 1
 
-    # Fixed test set: last n_test_groups
-    test_start_idx = group_boundaries[n_groups - n_test_groups][0]
-    test_end_idx = group_boundaries[-1][1]
-    test_start_time = cal_list[test_start_idx].strftime("%Y-%m-%d")
-    test_end_time = cal_list[test_end_idx].strftime("%Y-%m-%d")
+    # Fixed test set: last n_test_groups (only when n_test_groups > 0).
+    # When n_test_groups=0 (e.g. CPCV rolling), test boundaries are defined
+    # externally by the caller — CPCV operates purely on the training domain.
+    if n_test_groups > 0:
+        test_start_idx = group_boundaries[n_groups - n_test_groups][0]
+        test_end_idx = group_boundaries[-1][1]
+        test_start_time = cal_list[test_start_idx].strftime("%Y-%m-%d")
+        test_end_time = cal_list[test_end_idx].strftime("%Y-%m-%d")
+    else:
+        test_start_time = None
+        test_end_time = None
 
     # CV groups: groups [0, n_groups - n_test_groups - 1]
     n_cv_groups = n_groups - n_test_groups
@@ -427,17 +434,20 @@ def compute_cpcv_folds(anchor_date, config, freq="day"):
             "valid_end_time": cal_list[val_end_idx].strftime("%Y-%m-%d"),
         })
 
-    # Apply embargo between last training chunk and test set
-    last_cv_end_idx = group_boundaries[n_cv_groups - 1][1]
-    embargoed_test_start_idx = last_cv_end_idx + embargo_steps + 1
-    if embargoed_test_start_idx > test_start_idx:
-        test_start_idx = embargoed_test_start_idx
-        if test_start_idx > test_end_idx:
-            raise ValueError(
-                f"Embargo pushes test_start past test_end. "
-                f"Reduce embargo_steps ({embargo_steps})."
-            )
-        test_start_time = cal_list[test_start_idx].strftime("%Y-%m-%d")
+    # Apply embargo between last training chunk and test set.
+    # Only applicable when n_test_groups > 0 (internal test set exists).
+    # When n_test_groups=0, test boundaries are defined externally.
+    if n_test_groups > 0:
+        last_cv_end_idx = group_boundaries[n_cv_groups - 1][1]
+        embargoed_test_start_idx = last_cv_end_idx + embargo_steps + 1
+        if embargoed_test_start_idx > test_start_idx:
+            test_start_idx = embargoed_test_start_idx
+            if test_start_idx > test_end_idx:
+                raise ValueError(
+                    f"Embargo pushes test_start past test_end. "
+                    f"Reduce embargo_steps ({embargo_steps})."
+                )
+            test_start_time = cal_list[test_start_idx].strftime("%Y-%m-%d")
 
     return {
         "test_start_time": test_start_time,

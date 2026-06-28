@@ -39,6 +39,7 @@ class RollingState:
             'started_at': None,
             'rolling_config': {},
             'anchor_date': None,
+            'training_method': 'slide',  # 'slide' or 'cpcv'
             'completed_windows': {},  # {window_idx_str: {model_name: record_id}}
             'current_window_idx': None,
             'current_model': None,
@@ -55,15 +56,19 @@ class RollingState:
         with file_lock(self.state_file):
             self._save_without_lock()
 
-    def init_run(self, rolling_config, anchor_date, total_windows):
+    def init_run(self, rolling_config, anchor_date, total_windows, training_method='slide'):
         from quantpits.utils.train_utils import file_lock
         with file_lock(self.state_file):
+            old_method = self._state.get('training_method')
             self._state = self._empty()
             self._state['started_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._state['rolling_config'] = rolling_config
             self._state['anchor_date'] = anchor_date
             self._state['total_windows'] = total_windows
+            self._state['training_method'] = training_method
             self._save_without_lock()
+            if old_method and old_method != training_method:
+                print(f"  ℹ️  Training method changed: {old_method} → {training_method}")
 
     def is_window_model_done(self, window_idx, model_name):
         key = str(window_idx)

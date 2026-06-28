@@ -1,38 +1,40 @@
 #!/usr/bin/env python
 """
 Rolling Training Script (滚动训练)
-独立于静态训练的滚动训练逻辑，支持冷启动、日常滚动、断点恢复。
 
-运行方式：cd QuantPits && python quantpits/scripts/rolling_train.py [options]
+Independent rolling training logic supporting multiple per-window training
+strategies: slide (classic train/valid/test) and CPCV (purged K-fold).
 
-模式说明：
-  冷启动：从 rolling_start(T) 生成所有 windows，全部训练+预测+拼接
-  日常模式：检测距上次 rolling 是否超过 step，是则滚动训练新 window，否则仅预测
+Usage:
+  cd QuantPits && python quantpits/scripts/rolling_train.py [options]
 
-示例：
-  # 冷启动（首次运行必须）
+Modes:
+  --cold-start:     Full rebuild — clear all state, train all windows.
+  --merge:          Detect & train only missing windows (daily maintenance).
+  --retrain-models: Clear specified models' records, then rebuild.
+  --retrain-last:   Clear & retrain only the last window.
+  --predict-only:   Predict using latest window's model, no training.
+  --resume:         Resume from interrupted run.
+  --backtest-only:  Run backtest on existing rolling predictions.
+
+Examples:
+  # Slide-mode cold start (default)
   python quantpits/scripts/rolling_train.py --cold-start --all-enabled
 
-  # 冷启动指定模型
-  python quantpits/scripts/rolling_train.py --cold-start --models linear_Alpha158
+  # CPCV-mode cold start (set training_method: cpcv in rolling_config.yaml)
+  python quantpits/scripts/rolling_train.py --cold-start --all-enabled
 
-  # 日常模式（自动判断训练/预测）
-  python quantpits/scripts/rolling_train.py --all-enabled
+  # Daily update
+  python quantpits/scripts/rolling_train.py --merge --all-enabled
 
-  # 强制仅预测
+  # Predict only
   python quantpits/scripts/rolling_train.py --predict-only --all-enabled
 
-  # Dry-run（仅显示 windows 划分）
-  python quantpits/scripts/rolling_train.py --cold-start --dry-run --models linear_Alpha158
-
-  # 查看状态
+  # Show state
   python quantpits/scripts/rolling_train.py --show-state
 
-  # 断点恢复
+  # Resume
   python quantpits/scripts/rolling_train.py --resume
-
-  # 重训最后一个 window
-  python quantpits/scripts/rolling_train.py --retrain-last --all-enabled
 """
 
 import os
@@ -47,128 +49,137 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
 sys.path.append(SCRIPT_DIR)
 
-# Sub-modules
-from quantpits.scripts.rolling.windows import (
-    generate_rolling_windows,
-    parse_step_to_relativedelta,
-)
-from quantpits.scripts.rolling.state import RollingState
-from quantpits.scripts.rolling.training import (
-    run_model_windows,
-    train_window_model,
-    train_window_model_isolated,
-)
-from quantpits.scripts.rolling.prediction import (
-    concatenate_rolling_predictions,
-    save_rolling_records,
-    predict_with_latest_model,
-    _filter_pred_to_test_segment,
-)
-from quantpits.scripts.rolling.backtest import (
-    run_combined_backtest,
-    run_backtest_only,
-)
-from quantpits.scripts.rolling.memory import (
-    deep_cleanup_after_model,
-    log_memory,
-)
+
+# ==========================================================================
+# Strategy dispatch
+# ==========================================================================
+
+def _get_strategy(training_method):
+    """Resolve strategy module, key suffix, and state file path.
+
+    Args:
+        training_method: 'slide' or 'cpcv'.
+
+    Returns:
+        (strategy_module, mode_suffix, state_file_path)
+    """
+    from quantpits.utils.train_utils import ROLLING_STATE_FILE, ROLLING_STATE_FILE_CPCV
+
+    if training_method == 'cpcv':
+        from quantpits.scripts.rolling import strategy_cpcv as st
+        return st, 'cpcv_rolling', ROLLING_STATE_FILE_CPCV
+    else:
+        from quantpits.scripts.rolling import strategy_slide as st
+        return st, 'rolling', ROLLING_STATE_FILE
 
 
-# ================= CLI =================
+# ==========================================================================
+# CLI
+# ==========================================================================
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Rolling 训练：滚动时间窗口训练 + 预测拼接',
+        description='Rolling Training: sliding time-window training + prediction stitching',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例:
-  # 首次使用：全量冷启动
+Examples:
+  # First time: full cold start
   %(prog)s --cold-start --all-enabled
 
-  # 数据更新后：补训新出现的窗口 (如月末进入下月)
+  # After qlib data update: train only new windows
   %(prog)s --merge --all-enabled
 
-  # 调整了某个模型的超参：重建该模型全部窗口
+  # Rebuild a model after hyperparameter change
   %(prog)s --retrain-models alstm_Alpha158
 
-  # 重训最后一个窗口 (如数据修正)
+  # Retrain last window only
   %(prog)s --retrain-last --all-enabled
 
-  # 仅预测，不训练
+  # Predict only, no training
   %(prog)s --predict-only --all-enabled
 
-  # 追加新模型到已有状态
-  %(prog)s --merge --models new_model_A,new_model_B
-
-  # 查看状态 / 断点恢复
+  # View state / resume
   %(prog)s --show-state
   %(prog)s --resume
         """
     )
 
-    mode = parser.add_argument_group('运行模式')
+    mode = parser.add_argument_group('Run Mode')
     mode.add_argument('--cold-start', action='store_true',
-                      help='全量冷启动：清空所有模型的全部训练记录，从头训练全部窗口。'
-                           '⚠️  不可逆，其他模型的历史全部丢失')
+                      help='Full cold start: clear ALL training records, '
+                           'retrain all windows from scratch.')
     mode.add_argument('--merge', action='store_true',
-                      help='补训模式：自动检测并训练每个模型的缺失窗口，已有记录不重训。'
-                           '适用场景：(1) qlib 数据更新后补训新窗口 '
-                           '(2) 追加新模型到已有状态。不影响其他模型')
+                      help='Merge mode: detect & train only missing windows. '
+                           'Use for: (1) new windows after qlib data update '
+                           '(2) appending new models to existing state.')
     mode.add_argument('--retrain-models', type=str,
-                      help='重建指定模型：清除该模型全部窗口记录后从头训练，'
-                           '不影响其他模型。逗号分隔。'
-                           '适用场景：模型超参或代码变更后需要全量重建')
+                      help='Rebuild specified models: clear their records '
+                           'then retrain all windows. Comma-separated.')
     mode.add_argument('--retrain-last', action='store_true',
-                      help='重训最后一个窗口：清除最后窗口的训练记录后补训，'
-                           '适用于数据修正等场景。搭配 --models 可限定模型范围')
+                      help='Retrain last window only. '
+                           'Use --models to limit scope.')
     mode.add_argument('--predict-only', action='store_true',
-                      help='仅预测，不训练：用最新窗口权重预测当前数据')
+                      help='Predict only: use latest window weights for '
+                           'current data. No training.')
     mode.add_argument('--resume', action='store_true',
-                      help='从断点恢复训练')
+                      help='Resume from interrupted run.')
     mode.add_argument('--backtest', action='store_true',
-                      help='训练拼接完成后，对产出的合成预测进行全量回测')
+                      help='Run full backtest on stitched predictions '
+                           'after training completes.')
     mode.add_argument('--backtest-only', action='store_true',
-                      help='仅对 latest_train_records.json 中的模型进行回测 (跳过训练预测)')
+                      help='Backtest only: skip training & prediction.')
     mode.add_argument('--allow-stale-predict', action='store_true',
-                      help='允许 predict-only 在存在未训练窗口时，用旧权重预测新数据。'
-                           '默认关闭，gap 时仅预测已训练窗口范围')
+                      help='Allow predict-only to use old weights on new '
+                           'data when untrained windows exist.')
 
-    select = parser.add_argument_group('模型选择')
+    select = parser.add_argument_group('Model Selection')
     select.add_argument('--models', type=str,
-                        help='指定模型名，逗号分隔')
+                        help='Model names, comma-separated')
     select.add_argument('--algorithm', type=str,
-                        help='按算法筛选')
+                        help='Filter by algorithm')
     select.add_argument('--dataset', type=str,
-                        help='按数据集筛选')
+                        help='Filter by dataset')
     select.add_argument('--tag', type=str,
-                        help='按标签筛选')
+                        help='Filter by tag')
     select.add_argument('--all-enabled', action='store_true',
-                        help='所有 enabled 模型')
+                        help='All enabled models')
     select.add_argument('--skip', type=str,
-                        help='跳过指定模型，逗号分隔')
+                        help='Skip models, comma-separated')
 
-    ctrl = parser.add_argument_group('运行控制')
+    ctrl = parser.add_argument_group('Run Control')
     ctrl.add_argument('--dry-run', action='store_true',
-                      help='仅显示 windows 划分，不训练')
+                      help='Preview plan only, do not train')
+    ctrl.add_argument('--show-folds', action='store_true',
+                      help='Show CPCV fold details (train segments, validation) '
+                           'during dry-run. Ignored for slide mode.')
     ctrl.add_argument('--no-pretrain', action='store_true',
-                      help='不加载预训练模型')
+                      help='Skip pretrained model loading')
+    ctrl.add_argument('--cache-size', type=int, default=None, metavar='MB',
+                      help='Handler cache max memory (MB). Default: auto-detect '
+                           '(50%% free RAM). Set 0 to disable. '
+                           'CPCV mode: K folds within each window share the cache.')
+    ctrl.add_argument('--training-method', type=str, default=None,
+                      choices=['slide', 'cpcv'],
+                      help='Override training_method from rolling_config.yaml. '
+                           'Use to switch modes without editing config.')
 
-    info = parser.add_argument_group('信息查看')
+    info = parser.add_argument_group('Information')
     info.add_argument('--show-state', action='store_true',
-                      help='显示 rolling 状态')
+                      help='Show rolling state')
     info.add_argument('--clear-state', action='store_true',
-                      help='清除 rolling 状态')
+                      help='Clear rolling state')
 
     return parser.parse_args()
 
 
 def resolve_target_models(args):
-    """解析目标模型列表（委托给 train_utils 共享实现）"""
+    """Resolve target models (delegates to shared train_utils implementation)."""
     from quantpits.utils.train_utils import resolve_target_models as _resolve
     return _resolve(args)
 
 
 def get_base_params():
-    """获取 workspace 基础参数 (market, benchmark 等)"""
+    """Get workspace base params (market, benchmark, etc.)."""
     from quantpits.utils.config_loader import load_workspace_config
     config = load_workspace_config(ROOT_DIR)
 
@@ -177,7 +188,9 @@ def get_base_params():
         last_trade_date = D.calendar(future=False)[-1:][0]
         anchor_date = last_trade_date.strftime('%Y-%m-%d')
     except Exception as e:
-        print(f"⚠️ 警告：无法从 qlib 获取交易日历（可能由于环境为空或未初始化），使用默认锚点 '2024-12-31'。错误: {e}")
+        print(f"⚠️  Warning: cannot get trading calendar from qlib "
+              f"(env may be empty or uninitialized), using default '2024-12-31'. "
+              f"Error: {e}")
         anchor_date = '2024-12-31'
 
     return {
@@ -192,74 +205,113 @@ def get_base_params():
     }
 
 
-# ================= 主流程 =================
-def run_cold_start(args, targets, rolling_cfg):
-    """
-    冷启动：Model-First 循环 + 子进程隔离。
+def _print_fold_details(folds, indent=6):
+    """Print CPCV fold train/valid segments for inspection."""
+    prefix = " " * indent
+    for fi, fold in enumerate(folds):
+        n_seg = len(fold['train_segments'])
+        seg_desc = " | ".join(f"[{s[0]}, {s[1]}]" for s in fold['train_segments'])
+        print(f"{prefix}Fold {fi}: valid=[{fold['valid_start_time']}, "
+              f"{fold['valid_end_time']}] train=({n_seg}) {seg_desc}")
 
-    外循环遍历模型，内循环遍历 windows，每个 task 在独立子进程中执行。
-    每个模型完成后立即拼接预测并深度清理内存。
+
+# ==========================================================================
+# Flow functions
+# ==========================================================================
+
+def run_cold_start(args, targets, rolling_cfg):
+    """Cold start / merge / resume: Model-First loop with subprocess isolation.
+
+    Supports both slide and CPCV strategies via training_method config.
     """
     from quantpits.utils.train_utils import print_model_table
+    # NOTE: orchestration/backtest/state functions are referenced via
+    # module-level names (re-exported at bottom of file) so that
+    # mock.patch('rolling_train.<func>') can intercept calls.
+    from quantpits.scripts.rolling.memory import deep_cleanup_after_model
     from qlib.config import C
 
     env.init_qlib()
     params_base = get_base_params()
     anchor_date = params_base['anchor_date']
     freq = params_base['freq'].upper()
-    qlib_config = C  # 捕获当前 qlib 配置，传给子进程
+    qlib_config = C
 
-    # 生成 windows
-    windows = generate_rolling_windows(
+    training_method = rolling_cfg.get('training_method', 'slide')
+    st, mode_suffix, state_file = _get_strategy(training_method)
+
+    # Generate windows: module-level name for slide (allows mock.patch),
+    # strategy function for CPCV.
+    window_kwargs = dict(
         rolling_start=rolling_cfg['rolling_start'],
         train_years=rolling_cfg['train_years'],
-        valid_years=rolling_cfg['valid_years'],
         test_step=rolling_cfg['test_step'],
         anchor_date=anchor_date,
     )
+    if training_method == 'cpcv':
+        window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
+        window_kwargs['freq'] = params_base['freq']
+        windows = st.generate_windows(**window_kwargs)
+    else:
+        window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
+        windows = generate_rolling_windows(**window_kwargs)
 
     if not windows:
-        print("❌ 无法生成任何 rolling window — 请检查 rolling_config.yaml")
-        print(f"   rolling_start + train_years + valid_years 是否晚于 anchor_date ({anchor_date})?")
+        print("❌ No rolling windows could be generated — "
+              "check rolling_config.yaml")
+        print(f"   rolling_start + train_years may exceed anchor_date "
+              f"({anchor_date})?")
         return
 
-    # 打印 windows
+    # Print windows
+    show_folds = getattr(args, 'show_folds', False)
     print(f"\n{'='*70}")
-    print(f"📅 Rolling Windows ({len(windows)} 个)")
+    print(f"📅 Rolling Windows ({len(windows)} total, method={training_method})")
     print(f"{'='*70}")
     for w in windows:
-        print(f"  Window {w['window_idx']:2d}: "
-              f"Train[{w['train_start']}, {w['train_end']}] "
-              f"Valid[{w['valid_start']}, {w['valid_end']}] "
-              f"Test[{w['test_start']}, {w['test_end']}]")
+        if training_method == 'cpcv':
+            n_folds = len(w.get('cpcv_folds', []))
+            print(f"  Window {w['window_idx']:2d}: "
+                  f"Train[{w.get('train_start', '?')}, {w.get('train_end', '?')}] "
+                  f"Test[{w['test_start']}, {w['test_end']}] "
+                  f"({n_folds} folds)")
+            if show_folds:
+                _print_fold_details(w.get('cpcv_folds', []), indent=6)
+        else:
+            print(f"  Window {w['window_idx']:2d}: "
+                  f"Train[{w['train_start']}, {w['train_end']}] "
+                  f"Valid[{w['valid_start']}, {w['valid_end']}] "
+                  f"Test[{w['test_start']}, {w['test_end']}]")
     print(f"{'='*70}")
 
-    print_model_table(targets, title="Rolling 训练模型")
+    print_model_table(targets, title=f"Rolling Training Models ({training_method})")
 
     if args.dry_run:
-        print("🔍 Dry-run 模式：以上为 windows 划分，不实际训练")
+        print("🔍 Dry-run mode: windows shown above, no training")
         return
 
-    # 初始化状态
-    state = RollingState()
+    # Initialize state
+    state = RollingState(state_file=state_file)
     if not args.resume and not args.merge:
-        state.init_run(rolling_cfg, anchor_date, len(windows))
+        state.init_run(rolling_cfg, anchor_date, len(windows),
+                       training_method=training_method)
     else:
         if not state.anchor_date:
-            print("❌ 无 rolling 状态可恢复，将新建状态")
-            state.init_run(rolling_cfg, anchor_date, len(windows))
+            print("❌ No rolling state — creating new state")
+            state.init_run(rolling_cfg, anchor_date, len(windows),
+                           training_method=training_method)
         else:
-            print(f"⏩ {'Merge' if args.merge else 'Resume'} 模式：跳过已完成窗格")
+            print(f"⏩ {'Merge' if args.merge else 'Resume'} mode: "
+                  f"skipping completed windows")
 
     rolling_exp_name = f"Rolling_Windows_{freq}"
     combined_exp_name = f"Rolling_Combined_{freq}"
 
-    # ===== Model-First 循环 =====
+    # ===== Model-First loop =====
     combined_records = {}
     total_trained = 0
 
     for model_name, model_info in targets.items():
-        # 训练该模型的所有 windows (子进程隔离)
         n_trained = run_model_windows(
             model_name=model_name,
             model_info=model_info,
@@ -268,12 +320,14 @@ def run_cold_start(args, targets, rolling_cfg):
             params_base=params_base,
             experiment_name=rolling_exp_name,
             qlib_config=qlib_config,
+            train_fn=st.train_window_isolated,
             no_pretrain=args.no_pretrain,
             dry_run=args.dry_run,
+            cache_size=args.cache_size,
         )
         total_trained += n_trained
 
-        # 该模型所有 windows 完成后，立即拼接
+        # Stitch immediately after all windows for this model are done
         model_combined = concatenate_rolling_predictions(
             state=state,
             model_names=[model_name],
@@ -283,13 +337,13 @@ def run_cold_start(args, targets, rolling_cfg):
             windows=windows,
             targets=targets,
             params_base=params_base,
+            repair_fn=st.repair_truncated,
         )
         combined_records.update(model_combined)
 
-        # 深度清理: qlib MemCache + GPU + GC
         deep_cleanup_after_model(model_name)
 
-    # Merge 模式: 需要拼接之前已训练但不在本次 targets 中的模型
+    # Merge mode: also stitch models not in this run's targets
     if args.merge:
         completed = state.get_all_completed_windows()
         extra_models = set()
@@ -306,39 +360,46 @@ def run_cold_start(args, targets, rolling_cfg):
                 windows=windows,
                 targets=targets,
                 params_base=params_base,
+                repair_fn=st.repair_truncated,
             )
             combined_records.update(extra_combined)
 
-    # 保存记录
+    # Save records
     if combined_records:
-        save_rolling_records(combined_records, combined_exp_name, anchor_date)
+        save_rolling_records(combined_records, combined_exp_name, anchor_date,
+                             mode=mode_suffix)
         if args.backtest:
             run_combined_backtest(
                 list(combined_records.keys()), combined_records,
-                combined_exp_name, params_base
+                combined_exp_name, params_base,
             )
 
-    # 完成
+    # Done
     print(f"\n{'='*60}")
-    print("✅ Rolling 冷启动完成")
+    print(f"✅ Rolling training complete ({training_method})")
     print(f"{'='*60}")
     print(f"  Windows: {len(windows)}")
     print(f"  Models: {len(targets)}")
     print(f"  Trained: {total_trained} tasks")
     print(f"  Combined records: {len(combined_records)}")
-    print(f"\n  💡 后续步骤:")
-    print(f"     穷举: python quantpits/scripts/brute_force_ensemble.py "
-          f"--use-groups --training-mode rolling")
-    print(f"     融合: python quantpits/scripts/ensemble_fusion.py "
-          f"--from-config --training-mode rolling")
+    print(f"  Key suffix: @{mode_suffix}")
+    print(f"\n  💡 Next steps:")
+    print(f"     Brute force: python quantpits/scripts/brute_force_ensemble.py "
+          f"--use-groups --training-mode {mode_suffix}")
+    print(f"     Fusion: python quantpits/scripts/ensemble_fusion.py "
+          f"--from-config --training-mode {mode_suffix}")
     print(f"{'='*60}")
 
 
 def run_daily(args, targets, rolling_cfg):
+    """Daily mode: detect & train new windows. Model-First + subprocess.
+
+    Falls back to predict-only when all windows are up to date.
     """
-    日常模式：检测是否需要新 window 训练。
-    同样使用 Model-First + 子进程隔离。
-    """
+    # NOTE: orchestration/backtest/state functions are referenced via
+    # module-level names (re-exported at bottom of file) so that
+    # mock.patch('rolling_train.<func>') can intercept calls.
+    from quantpits.scripts.rolling.memory import deep_cleanup_after_model
     from qlib.config import C
 
     env.init_qlib()
@@ -347,22 +408,32 @@ def run_daily(args, targets, rolling_cfg):
     freq = params_base['freq'].upper()
     qlib_config = C
 
-    state = RollingState()
+    training_method = rolling_cfg.get('training_method', 'slide')
+    st, mode_suffix, state_file = _get_strategy(training_method)
+
+    state = RollingState(state_file=state_file)
 
     if not state.anchor_date:
-        print("❌ 无 rolling 状态，请先运行 --cold-start")
+        print("❌ No rolling state — run --cold-start first")
         return
 
-    # 生成到当前 anchor 的 windows
-    windows = generate_rolling_windows(
+    # Generate windows: use module-level name for slide (allows mock.patch
+    # interception in tests), strategy function for CPCV.
+    window_kwargs = dict(
         rolling_start=rolling_cfg['rolling_start'],
         train_years=rolling_cfg['train_years'],
-        valid_years=rolling_cfg['valid_years'],
         test_step=rolling_cfg['test_step'],
         anchor_date=anchor_date,
     )
+    if training_method == 'cpcv':
+        window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
+        window_kwargs['freq'] = params_base['freq']
+        windows = st.generate_windows(**window_kwargs)
+    else:
+        window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
+        windows = generate_rolling_windows(**window_kwargs)
 
-    # 检查有无新 window 需要训练
+    # Detect new windows
     completed = state.get_all_completed_windows()
     completed_indices = {int(k) for k in completed.keys()}
     new_windows = [w for w in windows if w['window_idx'] not in completed_indices]
@@ -371,18 +442,24 @@ def run_daily(args, targets, rolling_cfg):
     combined_exp_name = f"Rolling_Combined_{freq}"
 
     if new_windows:
-        print(f"\n🔄 检测到 {len(new_windows)} 个新 window 需要训练")
+        show_folds = getattr(args, 'show_folds', False)
+        print(f"\n🔄 {len(new_windows)} new window(s) need training")
         for w in new_windows:
-            print(f"  Window {w['window_idx']}: Test[{w['test_start']}, {w['test_end']}]")
+            suffix = ""
+            if training_method == 'cpcv':
+                n_folds = len(w.get('cpcv_folds', []))
+                suffix = f" Range[{w.get('time_range_start','?')}, {w.get('time_range_end','?')}] ({n_folds} folds)"
+            print(f"  Window {w['window_idx']}: Test[{w['test_start']}, {w['test_end']}]{suffix}")
+            if show_folds and training_method == 'cpcv':
+                _print_fold_details(w.get('cpcv_folds', []), indent=6)
 
         if args.dry_run:
-            print("🔍 Dry-run 模式：以上为需训练的新 windows")
+            print("🔍 Dry-run mode: new windows shown above")
             return
 
-        # Model-First: 训练新 windows
         combined_records = {}
         for model_name, model_info in targets.items():
-            n_trained = run_model_windows(
+            run_model_windows(
                 model_name=model_name,
                 model_info=model_info,
                 windows=new_windows,
@@ -390,10 +467,10 @@ def run_daily(args, targets, rolling_cfg):
                 params_base=params_base,
                 experiment_name=rolling_exp_name,
                 qlib_config=qlib_config,
+                train_fn=st.train_window_isolated,
                 no_pretrain=args.no_pretrain,
             )
 
-            # 拼接该模型（包含所有已完成的 windows，不仅仅是新的）
             model_combined = concatenate_rolling_predictions(
                 state=state,
                 model_names=[model_name],
@@ -403,30 +480,33 @@ def run_daily(args, targets, rolling_cfg):
                 windows=windows,
                 targets=targets,
                 params_base=params_base,
+                repair_fn=st.repair_truncated,
             )
             combined_records.update(model_combined)
 
             deep_cleanup_after_model(model_name)
 
         if combined_records:
-            save_rolling_records(combined_records, combined_exp_name, anchor_date)
+            save_rolling_records(combined_records, combined_exp_name, anchor_date,
+                                 mode=mode_suffix)
             if args.backtest:
                 run_combined_backtest(
                     list(combined_records.keys()), combined_records,
-                    combined_exp_name, params_base
+                    combined_exp_name, params_base,
                 )
 
-        print(f"\n✅ Rolling 滚动更新完成 (新训练 {len(new_windows)} 个 windows)")
+        print(f"\n✅ Rolling update complete ({len(new_windows)} new windows)")
 
     else:
-        # 所有 window 已训练，使用最新模型对当前 anchor_date 范围预测
-        print(f"\n📊 所有 windows 已训练完毕，执行 predict-only...")
+        # All windows trained — predict-only with latest model
+        print(f"\n📊 All windows up to date — predict-only mode...")
 
         extra_preds = {}
         for model_name, model_info in targets.items():
-            pred = predict_with_latest_model(
+            pred = st.predict_latest(
                 model_name, model_info, state,
-                rolling_exp_name, params_base, anchor_date, windows=windows
+                rolling_exp_name, params_base, anchor_date,
+                windows=windows,
             )
             if pred is not None and not pred.empty:
                 extra_preds[model_name] = pred
@@ -434,45 +514,61 @@ def run_daily(args, targets, rolling_cfg):
         if extra_preds:
             model_names = list(targets.keys())
             combined_records = concatenate_rolling_predictions(
-                state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
-                windows=windows, extra_preds=extra_preds,
+                state, model_names, rolling_exp_name, combined_exp_name,
+                anchor_date, windows=windows, extra_preds=extra_preds,
                 targets=targets, params_base=params_base,
+                repair_fn=st.repair_truncated,
             )
             if combined_records:
-                save_rolling_records(combined_records, combined_exp_name, anchor_date)
+                save_rolling_records(combined_records, combined_exp_name,
+                                     anchor_date, mode=mode_suffix)
                 if args.backtest:
-                    run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
+                    run_combined_backtest(model_names, combined_records,
+                                          combined_exp_name, params_base)
 
 
 def run_predict_only(args, targets, rolling_cfg):
-    """仅预测模式"""
+    """Predict-only mode: use latest window models for current data."""
+    # NOTE: orchestration/backtest/state functions are referenced via
+    # module-level names (re-exported at bottom of file) so that
+    # mock.patch('rolling_train.<func>') can intercept calls.
+
     env.init_qlib()
     params_base = get_base_params()
     anchor_date = params_base['anchor_date']
     freq = params_base['freq'].upper()
     allow_stale = getattr(args, 'allow_stale_predict', False)
 
-    state = RollingState()
+    training_method = rolling_cfg.get('training_method', 'slide')
+    st, mode_suffix, state_file = _get_strategy(training_method)
+
+    state = RollingState(state_file=state_file)
     if not state.anchor_date:
-        print("❌ 无 rolling 状态，请先运行 --cold-start")
+        print("❌ No rolling state — run --cold-start first")
         return
 
-    # 为 predict-only 解析当前日期下的 windows (保证 latest window 的 test_end 达到 anchor_date)
-    windows = generate_rolling_windows(
+    # Generate windows: module-level for slide (mock.patch compat), strategy for CPCV
+    window_kwargs = dict(
         rolling_start=rolling_cfg['rolling_start'],
         train_years=rolling_cfg['train_years'],
-        valid_years=rolling_cfg['valid_years'],
         test_step=rolling_cfg['test_step'],
         anchor_date=anchor_date,
     )
+    if training_method == 'cpcv':
+        window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
+        window_kwargs['freq'] = params_base['freq']
+        windows = st.generate_windows(**window_kwargs)
+    else:
+        window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
+        windows = generate_rolling_windows(**window_kwargs)
 
     rolling_exp_name = f"Rolling_Windows_{freq}"
     extra_preds = {}
-    gap_models = []  # 有未训练窗口的模型
-    gap_skipped = []  # 因未开启 --allow-stale-predict 而跳过 gap 的模型
+    gap_models = []
+    gap_skipped = []
 
     for model_name, model_info in targets.items():
-        # 检测是否存在未训练的窗口
+        # Detect gap
         completions = state.get_completed_record_ids(model_name) if state.anchor_date else []
         if completions and windows:
             try:
@@ -481,17 +577,16 @@ def run_predict_only(args, targets, rolling_cfg):
                 if last_completed < last_available:
                     gap_models.append((model_name, last_completed, last_available))
             except (TypeError, ValueError, KeyError):
-                pass  # 跳过数据不完整的测试 mock
+                pass
 
-        pred = predict_with_latest_model(
+        pred = st.predict_latest(
             model_name, model_info, state,
             rolling_exp_name, params_base, anchor_date,
-            windows=windows, allow_stale_predict=allow_stale
+            windows=windows, allow_stale_predict=allow_stale,
         )
         if pred is not None and not pred.empty:
             extra_preds[model_name] = pred
         elif completions and not allow_stale:
-            # 因未开启 allow_stale_predict，gap 模型被跳过
             for name, comp, avail in gap_models:
                 if name == model_name:
                     gap_skipped.append((name, comp, avail))
@@ -499,76 +594,103 @@ def run_predict_only(args, targets, rolling_cfg):
 
     if gap_skipped:
         print(f"\n{'='*60}")
-        print(f"⛔ 以下模型存在未训练的窗口，已跳过（未开启 --allow-stale-predict）：")
+        print(f"⛔ Models with untrained windows skipped "
+              f"(--allow-stale-predict not set):")
         for name, comp, avail in gap_skipped:
-            print(f"   {name}: 已训练到 W{comp}, 当前数据到 W{avail} "
-                  f"(缺 {avail - comp} 个窗口)")
-        print(f"   选项 1: --retrain-models <模型名>  (推荐，完整训练新窗口)")
-        print(f"   选项 2: --allow-stale-predict       (权宜之计，用旧权重预测)")
+            print(f"   {name}: trained up to W{comp}, data up to W{avail} "
+                  f"({avail - comp} window(s) gap)")
+        print(f"   Option 1: --retrain-models <model>  (recommended)")
+        print(f"   Option 2: --allow-stale-predict       (use old weights)")
         print(f"{'='*60}")
     elif gap_models and allow_stale:
         print(f"\n{'='*60}")
-        print(f"⚠️  以下模型存在未训练的窗口，已用旧权重尽力预测 (--allow-stale-predict)：")
+        print(f"⚠️  Models with untrained windows — stale predict active:")
         for name, comp, avail in gap_models:
-            print(f"   {name}: 已训练到 W{comp}, 当前数据到 W{avail} "
-                  f"(缺 {avail - comp} 个窗口)")
-        print(f"   建议尽快执行: --retrain-models <模型名>")
+            print(f"   {name}: trained up to W{comp}, data up to W{avail}")
+        print(f"   Recommend: --retrain-models <model> soon")
         print(f"{'='*60}")
 
     if extra_preds:
         combined_exp_name = f"Rolling_Combined_{freq}"
         model_names = list(targets.keys())
         combined_records = concatenate_rolling_predictions(
-            state, model_names, rolling_exp_name, combined_exp_name, anchor_date,
-            windows=windows, extra_preds=extra_preds,
+            state, model_names, rolling_exp_name, combined_exp_name,
+            anchor_date, windows=windows, extra_preds=extra_preds,
             targets=targets, params_base=params_base,
+            repair_fn=st.repair_truncated,
         )
         if combined_records:
-            save_rolling_records(combined_records, combined_exp_name, anchor_date)
-            # 允许在 predict-only 后也触发 backtest
+            save_rolling_records(combined_records, combined_exp_name,
+                                 anchor_date, mode=mode_suffix)
             if args.backtest:
-                run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
+                run_combined_backtest(model_names, combined_records,
+                                      combined_exp_name, params_base)
 
+
+# ==========================================================================
+# Main
+# ==========================================================================
 
 def main():
     from quantpits.utils import env as _env
     _env.safeguard("Rolling Train")
     args = parse_args()
 
-    # 信息查看命令
+    # Load rolling config first (needed for training_method-aware state commands)
+    from quantpits.utils.config_loader import load_rolling_config
+    rolling_cfg = load_rolling_config(ROOT_DIR)
+    if rolling_cfg is None and not (args.show_state or args.clear_state):
+        print("❌ config/rolling_config.yaml not found")
+        print("   Create a rolling config file first")
+        return
+
+    # Determine effective training_method (config + CLI override)
+    training_method = (rolling_cfg or {}).get('training_method', 'slide')
+    if args.training_method is not None:
+        training_method = args.training_method
+        if rolling_cfg:
+            if args.training_method != rolling_cfg.get('training_method', 'slide'):
+                print(f"  ℹ️  --training-method={args.training_method} overrides config")
+            rolling_cfg['training_method'] = training_method
+    _, mode_suffix, state_file = _get_strategy(training_method)
+
+    # Info commands (now training-method-aware)
     if args.show_state:
-        RollingState().show()
+        RollingState(state_file=state_file).show()
         return
 
     if args.clear_state:
-        RollingState().clear()
+        RollingState(state_file=state_file).clear()
         return
 
-    # 加载 rolling 配置
-    from quantpits.utils.config_loader import load_rolling_config
-    rolling_cfg = load_rolling_config(ROOT_DIR)
     if rolling_cfg is None:
-        print("❌ 找不到 config/rolling_config.yaml")
-        print("   请先创建 rolling 配置文件")
+        print("❌ config/rolling_config.yaml not found")
         return
 
-    print(f"\n📋 Rolling 配置:")
-    print(f"   起点(T): {rolling_cfg['rolling_start']}")
-    print(f"   训练(X): {rolling_cfg['train_years']} 年")
-    print(f"   验证(Y): {rolling_cfg['valid_years']} 年")
-    print(f"   步长(Z): {rolling_cfg['test_step']} ({rolling_cfg['test_step_months']} 个月)")
+    print(f"\n📋 Rolling Config ({training_method}):")
+    print(f"   Start(T): {rolling_cfg['rolling_start']}")
+    print(f"   Train(X): {rolling_cfg['train_years']} years")
+    if training_method != 'cpcv':
+        print(f"   Valid(Y): {rolling_cfg['valid_years']} years")
+    print(f"   Step(Z):  {rolling_cfg['test_step']} "
+          f"({rolling_cfg['test_step_months']} months)")
+    if training_method == 'cpcv':
+        cpcv = rolling_cfg.get('cpcv', {})
+        print(f"   CPCV:     {cpcv.get('n_groups')} groups, "
+              f"{cpcv.get('n_val_groups')} val, "
+              f"purge={cpcv.get('purge_steps')}, "
+              f"embargo={cpcv.get('embargo_steps')}")
 
-    # --retrain-last: 清除最后一个 window 的训练记录，然后走日常流程
+    # --retrain-last
     if args.retrain_last:
-        state = RollingState()
+        state = RollingState(state_file=state_file)
         if not state.anchor_date:
-            print("❌ 无 rolling 状态，请先 --cold-start")
+            print("❌ No rolling state — run --cold-start first")
             return
         last_idx = state.get_last_completed_window_idx()
         if last_idx is None:
-            print("ℹ️  没有已完成的 window 可以重训")
+            print("ℹ️  No completed windows to retrain")
             return
-        # 如果指定了 --models，只清除指定模型在最后 window 中的记录
         if isinstance(args.models, str) and args.models.strip():
             target_models = [m.strip() for m in args.models.split(',') if m.strip()]
             wkey = str(last_idx)
@@ -580,42 +702,40 @@ def main():
                     removed += 1
             if removed > 0:
                 state.save()
-                print(f"🔄 Window {last_idx}: 已清除 {removed} 个模型的训练记录")
+                print(f"🔄 Window {last_idx}: cleared {removed} model(s)")
             else:
-                print(f"ℹ️  Window {last_idx}: 指定模型均无记录，跳过")
+                print(f"ℹ️  Window {last_idx}: no matching records, skipping")
         else:
             state.remove_window(last_idx)
-            print(f"🔄 已清除 Window {last_idx} 的全部训练记录，将重新训练")
+            print(f"🔄 Window {last_idx}: cleared all records, will retrain")
 
-    # --retrain-models: 清除指定模型的全部 window 记录，然后全量重建
-    # isinstance guard: argparse sends str or None; avoids mock leak in tests
+    # --retrain-models
     if isinstance(args.retrain_models, str) and args.retrain_models.strip():
-        state = RollingState()
+        state = RollingState(state_file=state_file)
         if not state.anchor_date:
-            print("❌ 无 rolling 状态，请先 --cold-start")
+            print("❌ No rolling state — run --cold-start first")
             return
         model_list = [m.strip() for m in args.retrain_models.split(',') if m.strip()]
         if not model_list:
-            print("❌ --retrain-models 需要至少一个模型名")
+            print("❌ --retrain-models requires at least one model name")
             return
         removed_total = 0
         for model_name in model_list:
             removed = state.remove_model(model_name)
             if removed > 0:
-                print(f"🔄 {model_name}: 已清除 {removed} 个 window 记录")
+                print(f"🔄 {model_name}: cleared {removed} window record(s)")
                 removed_total += removed
             else:
-                print(f"ℹ️  {model_name}: state 中无记录，将全量训练")
+                print(f"ℹ️  {model_name}: no records in state, will train from scratch")
         if removed_total > 0:
-            print(f"✅ 共清除 {removed_total} 条记录，其他模型不受影响")
-        # 自动进入 merge 模式，以指定的模型作为训练目标
+            print(f"✅ {removed_total} record(s) cleared, other models unaffected")
         args.models = args.retrain_models
         args.merge = True
 
-    # 解析目标模型
+    # Resolve target models
     has_selection = any([
         args.models, args.algorithm, args.dataset,
-        args.tag, args.all_enabled
+        args.tag, args.all_enabled,
     ])
 
     if args.resume or args.merge or args.backtest_only or args.retrain_last:
@@ -624,34 +744,28 @@ def main():
             has_selection = True
 
     if not has_selection:
-        print("❌ 请指定要训练的模型")
-        print("   使用 --models, --algorithm, --dataset, --tag, 或 --all-enabled")
+        print("❌ Specify models to train")
+        print("   Use --models, --algorithm, --dataset, --tag, or --all-enabled")
         return
 
     if args.resume or args.merge:
-        state = RollingState()
+        state = RollingState(state_file=state_file)
         if not state.anchor_date and args.resume:
-            print("❌ 无 rolling 状态可恢复")
+            print("❌ No rolling state to resume")
             return
 
     targets = resolve_target_models(args)
     if targets is None or not targets:
-        print("⚠️  没有匹配的模型")
+        print("⚠️  No matching models")
         return
 
     from quantpits.utils.operator_log import OperatorLog
     with OperatorLog("rolling_train", args=sys.argv[1:]) as oplog:
-        # 模式分发：
-        #   --cold-start / --resume / --merge / --retrain-models
-        #     → run_cold_start (全窗口训练，merge 时仅补缺)
-        #   --retrain-last / 无参数默认
-        #     → run_daily (仅训练缺失窗口，速度快)
-        #   --predict-only → run_predict_only
-        #   --backtest-only → run_backtest_only
         if args.backtest_only:
             env.init_qlib()
             params_base = get_base_params()
-            run_backtest_only(args, targets, params_base)
+            # Use module-level re-export so mock.patch can intercept
+            run_backtest_only(args, targets, params_base, mode=mode_suffix)
         elif args.predict_only:
             run_predict_only(args, targets, rolling_cfg)
         elif args.cold_start or args.resume or args.merge:
@@ -665,16 +779,43 @@ def main():
             "n_targets": len(targets),
             "cold_start": args.cold_start,
             "resume": args.resume,
-            "predict_only": args.predict_only
+            "predict_only": args.predict_only,
+            "training_method": training_method,
         })
 
-        # Update promote status: promoted_pending_retrain → active
+        # Update promote status
         if not args.predict_only and not args.backtest_only:
             try:
                 from quantpits.scripts.deep_analysis.promote_config import update_promote_status
                 update_promote_status(ROOT_DIR, model_names=list(targets.keys()))
             except Exception:
-                pass  # Non-critical — don't block main training flow
+                pass
+
+
+# ==========================================================================
+# Backward-compatible re-exports (for tests and legacy imports)
+# Must be before __main__ guard so flow functions can resolve bare names.
+# ==========================================================================
+from quantpits.scripts.rolling.strategy_slide import (
+    generate_rolling_windows,
+    parse_step_to_relativedelta,
+    train_window_model,
+    train_window_model_isolated,
+    predict_with_latest_model,
+    _repair_truncated_prediction,
+)
+from quantpits.scripts.rolling.orchestration import (
+    run_model_windows,
+    concatenate_rolling_predictions,
+    save_rolling_records,
+    _filter_pred_to_test_segment,
+)
+from quantpits.scripts.rolling.backtest import (
+    run_combined_backtest,
+    run_backtest_only,
+)
+from quantpits.scripts.rolling.state import RollingState
+from quantpits.utils.train_utils import resolve_target_models
 
 
 if __name__ == "__main__":

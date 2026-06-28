@@ -4,11 +4,29 @@
 rolling_start: "2020-01-01"
 
 # X: 训练集长度(整数年)
+#   slide模式: 训练段的年数
+#   CPCV模式: 每个窗口的Train域长度 (始终等长，不会压缩)
 train_years: 3
 
 # Y: 验证集长度(整数年)
+#   slide模式: 验证段的年数
+#   CPCV模式: 不使用此字段 (validation嵌入CPCV fold)
 valid_years: 1
 
 # Z: 测试/滚动步长
 # 支持整数月(nM)和整数年(nY)，例如: 1M, 3M, 6M, 1Y, 2Y
 test_step: "3M"
+
+# ===== 训练方法选择 =====
+# "slide" (默认): 每个窗口内部使用 train/valid/test 连续三段训练
+# "cpcv":          每个窗口内部对Train域做K-fold Purged Cross-Validation
+#                  n_test_groups强制为0，Test边界由Rolling大循环定义
+training_method: "slide"
+
+# ===== CPCV 参数 (仅 training_method=cpcv 时生效) =====
+# 约束条件: purge_steps + embargo_steps < 80% × (train_years × 52 / n_groups)
+# 对于 train_years=3, n_groups=10: 每组约15周，推荐 purge+embargo ≤ 7
+cpcv_n_groups: 10          # Train域内的分组数
+cpcv_n_val_groups: 1       # 每个Fold的验证组数
+cpcv_purge_steps: 3        # 对称Purge: 验证集两侧各移除N个交易周
+cpcv_embargo_steps: 5      # 非对称Embargo: 验证集之后额外延迟N交易周

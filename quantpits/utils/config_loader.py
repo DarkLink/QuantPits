@@ -64,14 +64,53 @@ def load_workspace_config(workspace_path):
     
     return config
 
+def _validate_cpcv_params(train_years, n_groups, purge_steps, embargo_steps, freq):
+    """Fail-Fast: reject catastrophically bad CPCV params at config load time.
+
+    Even though the train domain is fixed (train_years), bad purge/embargo
+    combinations can still destroy right training segments. E.g.:
+      train_years=5, n_groups=20 → group≈13w, purge=10+embargo=10 → gap=20w > group.
+
+    If purge+embargo >= 80% of estimated group size, training segments will be
+    destroyed in most folds — reject immediately.
+    """
+    periods_per_year = 52 if freq == 'week' else 252
+    estimated_group = (train_years * periods_per_year) / n_groups
+    max_gap = purge_steps + embargo_steps
+
+    if max_gap >= estimated_group * 0.8:
+        raise ValueError(
+            f"CPCV rolling: purge+embargo ({max_gap}) >= 80% of "
+            f"estimated group size ({estimated_group:.0f} {freq}s). "
+            f"Training segments will be destroyed in most folds. "
+            f"Either:\n"
+            f"  - Increase train_years (currently {train_years})\n"
+            f"  - Reduce n_groups (currently {n_groups})\n"
+            f"  - Reduce purge_steps ({purge_steps}) + embargo_steps ({embargo_steps})"
+        )
+
+    if max_gap >= estimated_group * 0.5:
+        import warnings
+        warnings.warn(
+            f"CPCV rolling: purge+embargo ({max_gap}) is "
+            f"{max_gap / estimated_group:.0%} of estimated group size "
+            f"({estimated_group:.0f} {freq}s). "
+            f"Late-fold right training segments may be thin. "
+            f"Consider increasing train_years or reducing purge/embargo."
+        )
+
+
 def load_rolling_config(workspace_path):
     """
     Load rolling training configuration from config/rolling_config.yaml.
 
     Returns:
-        dict with keys: rolling_start (str), train_years (int), valid_years (int),
-                        test_step (str e.g. '3M'), test_step_months (int)
-        None if file doesn't exist
+        dict with keys:
+            rolling_start (str), train_years (int), valid_years (int),
+            test_step (str), test_step_months (int),
+            training_method (str: 'slide' or 'cpcv'),
+            and CPCV params (when training_method='cpcv').
+        None if file doesn't exist.
     """
     from dateutil.relativedelta import relativedelta
 
@@ -103,7 +142,29 @@ def load_rolling_config(workspace_path):
         'valid_years': int(cfg['valid_years']),
         'test_step': step_str,
         'test_step_months': step_months,
+        'training_method': str(cfg.get('training_method', 'slide')).lower(),
     }
+
+    # Parse CPCV params when training_method is 'cpcv'
+    # n_test_groups is forced to 0 by the strategy (Walk-Forward CPCV);
+    # the rolling loop defines test boundaries, CPCV only does CV on train domain.
+    if result['training_method'] == 'cpcv':
+        cpcv = {
+            'n_groups': int(cfg.get('cpcv_n_groups', 10)),
+            'n_val_groups': int(cfg.get('cpcv_n_val_groups', 1)),
+            'purge_steps': int(cfg.get('cpcv_purge_steps', 3)),
+            'embargo_steps': int(cfg.get('cpcv_embargo_steps', 5)),
+        }
+        # Tier 1 Fail-Fast: reject catastrophically bad params immediately
+        _validate_cpcv_params(
+            result['train_years'],
+            cpcv['n_groups'],
+            cpcv['purge_steps'],
+            cpcv['embargo_steps'],
+            freq='week',
+        )
+        result['cpcv'] = cpcv
+
     return result
 
 
