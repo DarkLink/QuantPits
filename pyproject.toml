@@ -52,6 +52,9 @@ omit = [
     # Nearly all tests skip in CI, so omitting avoids inflating the miss count.
     # Run locally with the torch and qlib env to see full coverage.
     "quantpits/utils/model_wrappers/*",
+    # Pure re-export module — no logic to test. Exists for backwards
+    # compatibility so old import paths continue to work.
+    "quantpits/scripts/rolling/training.py",
 ]
 
 [tool.coverage.report]
