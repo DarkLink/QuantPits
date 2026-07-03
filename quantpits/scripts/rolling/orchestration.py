@@ -177,6 +177,8 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
         print(f"\n  [{model_name}] Stitching {len(completions)} windows...")
 
         all_preds = []
+        window_ic_values = []   # Collect per-window IC for aggregated ICIR
+        window_rank_ic_values = []  # Collect per-window Rank IC
         for comp in completions:
             widx = comp['window_idx']
             try:
@@ -215,6 +217,17 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
                 print(f"    Window {widx}: "
                       f"{dates.min().date()} ~ {dates.max().date()}, "
                       f"{len(pred)} rows")
+
+                # Collect per-window IC metrics for aggregated ICIR
+                try:
+                    raw_metrics = rec.list_metrics()
+                    for k, v in raw_metrics.items():
+                        if k == 'IC':
+                            window_ic_values.append(float(v))
+                        elif k == 'Rank IC':
+                            window_rank_ic_values.append(float(v))
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"    Window {widx}: FAILED - {e}")
 
@@ -273,6 +286,28 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
                 n_windows=len(completions),
             )
             R.save_objects(**{"pred.pkl": combined_pred})
+
+            # Save aggregated IC/ICIR metrics from per-window statistics
+            ic_metrics = {}
+            if window_ic_values:
+                ic_arr = [v for v in window_ic_values if v is not None]
+                if ic_arr:
+                    import numpy as np
+                    ic_mean = float(np.mean(ic_arr))
+                    ic_std = float(np.std(ic_arr))
+                    ic_metrics['IC'] = ic_mean
+                    ic_metrics['ICIR'] = ic_mean / ic_std if ic_std > 0 else 0.0
+            if window_rank_ic_values:
+                ric_arr = [v for v in window_rank_ic_values if v is not None]
+                if ric_arr:
+                    import numpy as np
+                    ric_mean = float(np.mean(ric_arr))
+                    ric_std = float(np.std(ric_arr))
+                    ic_metrics['Rank IC'] = ric_mean
+                    ic_metrics['Rank ICIR'] = ric_mean / ric_std if ric_std > 0 else 0.0
+            if ic_metrics:
+                R.log_metrics(**ic_metrics)
+
             combined_rid = R.get_recorder().id
 
         combined_records[model_name] = combined_rid

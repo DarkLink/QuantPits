@@ -1702,7 +1702,17 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                 gc.collect()
 
             # Average predictions across folds with NaN safety
-            all_preds_df = pd.concat(fold_predictions, axis=1)
+            # Extract score-only column: some models (e.g., TRA) return
+            # DataFrames with 'label' and per-state columns alongside 'score'.
+            clean_preds = []
+            for p in fold_predictions:
+                if isinstance(p, pd.DataFrame) and 'score' in p.columns:
+                    clean_preds.append(p['score'])
+                elif isinstance(p, pd.DataFrame):
+                    clean_preds.append(p.iloc[:, 0])
+                else:
+                    clean_preds.append(p)
+            all_preds_df = pd.concat(clean_preds, axis=1)
             final_pred = all_preds_df.mean(axis=1, skipna=True)
 
             # Warn on universal NaN (Correction 7)
@@ -1947,7 +1957,15 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
                 fold_predictions.append(pred)
 
             # Average across folds with NaN safety
-            all_preds_df = pd.concat(fold_predictions, axis=1)
+            clean_preds = []
+            for p in fold_predictions:
+                if isinstance(p, pd.DataFrame) and 'score' in p.columns:
+                    clean_preds.append(p['score'])
+                elif isinstance(p, pd.DataFrame):
+                    clean_preds.append(p.iloc[:, 0])
+                else:
+                    clean_preds.append(p)
+            all_preds_df = pd.concat(clean_preds, axis=1)
             final_pred = all_preds_df.mean(axis=1, skipna=True)
 
             # Warn on universal NaN

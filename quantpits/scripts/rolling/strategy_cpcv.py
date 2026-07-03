@@ -356,7 +356,20 @@ def train_window(model_name, yaml_file, window, params_base,
                 gc.collect()
 
             # ---- Ensemble average across folds ----
-            all_preds_df = pd.concat(fold_predictions, axis=1)
+            # Extract score-only Series from each fold prediction.
+            # Some models (e.g., TRA) return DataFrames that include 'label'
+            # and per-state columns alongside 'score'. We MUST extract only
+            # the score column before ensembling, otherwise the label leaks
+            # into the ensemble prediction.
+            clean_preds = []
+            for p in fold_predictions:
+                if isinstance(p, pd.DataFrame) and 'score' in p.columns:
+                    clean_preds.append(p['score'])
+                elif isinstance(p, pd.DataFrame):
+                    clean_preds.append(p.iloc[:, 0])
+                else:
+                    clean_preds.append(p)
+            all_preds_df = pd.concat(clean_preds, axis=1)
             final_pred = all_preds_df.mean(axis=1, skipna=True)
 
             nan_frac = final_pred.isna().mean()
@@ -654,7 +667,15 @@ def predict_latest(model_name, model_info, state, rolling_exp_name,
         print(f"  [{model_name}] Loaded {len(fold_predictions)} fold models")
 
         # Ensemble average
-        all_preds_df = pd.concat(fold_predictions, axis=1)
+        clean_preds = []
+        for p in fold_predictions:
+            if isinstance(p, pd.DataFrame) and 'score' in p.columns:
+                clean_preds.append(p['score'])
+            elif isinstance(p, pd.DataFrame):
+                clean_preds.append(p.iloc[:, 0])
+            else:
+                clean_preds.append(p)
+        all_preds_df = pd.concat(clean_preds, axis=1)
         final_pred = all_preds_df.mean(axis=1, skipna=True)
 
         if isinstance(final_pred, pd.Series):
@@ -757,7 +778,15 @@ def repair_truncated(model_name, model_info, comp, window_map,
             print(f"    ⚠️  Window {widx}: no fold models loaded, repair failed")
             return pred, False
 
-        all_preds_df = pd.concat(fold_predictions, axis=1)
+        clean_preds = []
+        for p in fold_predictions:
+            if isinstance(p, pd.DataFrame) and 'score' in p.columns:
+                clean_preds.append(p['score'])
+            elif isinstance(p, pd.DataFrame):
+                clean_preds.append(p.iloc[:, 0])
+            else:
+                clean_preds.append(p)
+        all_preds_df = pd.concat(clean_preds, axis=1)
         new_pred = all_preds_df.mean(axis=1, skipna=True)
 
         if isinstance(new_pred, pd.Series):

@@ -433,9 +433,16 @@ def run_daily(args, targets, rolling_cfg):
         window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
         windows = generate_rolling_windows(**window_kwargs)
 
-    # Detect new windows
+    # Detect new windows: only count a window as "completed" when ALL
+    # target models have finished it.  This prevents a new model (with no
+    # records) from being silently skipped because other models are done.
     completed = state.get_all_completed_windows()
-    completed_indices = {int(k) for k in completed.keys()}
+    target_names = set(targets.keys())
+    completed_indices = {
+        int(widx_str)
+        for widx_str, models in completed.items()
+        if target_names.issubset(set(models.keys()))
+    }
     new_windows = [w for w in windows if w['window_idx'] not in completed_indices]
 
     rolling_exp_name = f"Rolling_Windows_{freq}"
@@ -448,7 +455,7 @@ def run_daily(args, targets, rolling_cfg):
             suffix = ""
             if training_method == 'cpcv':
                 n_folds = len(w.get('cpcv_folds', []))
-                suffix = f" Range[{w.get('time_range_start','?')}, {w.get('time_range_end','?')}] ({n_folds} folds)"
+                suffix = f" Train[{w.get('train_start','?')}, {w.get('train_end','?')}] ({n_folds} folds)"
             print(f"  Window {w['window_idx']}: Test[{w['test_start']}, {w['test_end']}]{suffix}")
             if show_folds and training_method == 'cpcv':
                 _print_fold_details(w.get('cpcv_folds', []), indent=6)

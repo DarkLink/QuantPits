@@ -1665,8 +1665,8 @@ class TestMoreMainFlows:
             mock_base.return_value = {'anchor_date': '2024-06-01', 'freq': 'week'}
             mock_state = mock_state_cls.return_value
             mock_state.anchor_date = '2024-01-01'
-            mock_state.get_all_completed_windows.return_value = {'0': {'m1': 'r0'}}
-            mock_state.is_window_model_done.side_effect = [True, False] # First time skip, second time fail
+            mock_state.get_all_completed_windows.return_value = {'0': {'m1': 'r0', 'm2': 'r0'}}
+            mock_state.is_window_model_done.side_effect = [True, False]  # first model skip, second fail
             
             rt.run_daily(args, {'m2': {'yaml_file': 'm2.yaml'}, 'm1': {'yaml_file': 'm1.yaml'}}, cfg)
             # Covers line 796 (continue) and 810 (print error)
