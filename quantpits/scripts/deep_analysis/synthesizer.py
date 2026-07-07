@@ -55,6 +55,8 @@ class Synthesizer:
         cross_findings.extend(self._check_substitution_hit_rate())
         cross_findings.extend(self._check_ensemble_value())
         cross_findings.extend(self._check_alpha_significance())
+        cross_findings.extend(self._check_time_horizon_reversal())
+        cross_findings.extend(self._check_ic_combo_contradiction())
 
         # --- 2. Holistic Change Impact Assessment ---
         change_impact = self._assess_change_impact()
@@ -106,6 +108,79 @@ class Synthesizer:
                 data={'model_declining': True, 'market_volatile': True}
             ))
 
+        return findings
+
+    def _check_time_horizon_reversal(self) -> List[Finding]:
+        """
+        Check: Short-term window (1m/3m) shows positive return/excess,
+        but long-term window (1y) shows negative return/excess.
+        """
+        findings = []
+        ee_runs = self._by_agent.get('Ensemble Evolution', [])
+        if not ee_runs:
+            return findings
+
+        window_best = {}
+        for af in ee_runs:
+            best_combo = af.raw_metrics.get('best_combo')
+            if best_combo:
+                window_best[af.window_label] = best_combo
+
+        # We look for '3m' or '1m' vs '1y'
+        short_window = window_best.get('3m', window_best.get('1m'))
+        long_window = window_best.get('1y', window_best.get('full'))
+
+        if short_window and long_window:
+            short_ret = short_window.get('excess_return', 0.0)
+            long_ret = long_window.get('excess_return', 0.0)
+
+            if short_ret > 0 and long_ret < -0.05:
+                findings.append(Finding(
+                    severity='warning',
+                    category='Cross-Agent',
+                    title='OOS Time Horizon Reversal (多周期倒挂)',
+                    detail=f"策略在短期窗口 ({short_window.get('name', 'short')}, excess={short_ret:.2f}%) 表现占优，但在一阶长期窗口 ({long_window.get('name', 'long')}, excess={long_ret:.2f}%) 却陷入严重亏损。",
+                    data={'short_return': short_ret, 'long_return': long_ret}
+                ))
+        return findings
+
+    def _check_ic_combo_contradiction(self) -> List[Finding]:
+        """
+        Check: Model IC trend is improving or stable, but combo returns are declining.
+
+        FRAGILE: Relies on English keywords in finding detail/title text.
+        TODO: Move to structured raw_metrics-based detection.
+        """
+        findings = []
+        model_runs = self._by_agent.get('Model Health', [])
+        ee_runs = self._by_agent.get('Ensemble Evolution', [])
+        if not model_runs or not ee_runs:
+            return findings
+
+        ic_improving = False
+        for af in model_runs:
+            for f in af.findings:
+                if 'improving' in f.detail.lower() or 'stable' in f.detail.lower():
+                    ic_improving = True
+                    break
+
+        combo_degrading = False
+        degrading_combo_name = ""
+        for af in ee_runs:
+            for f in af.findings:
+                if 'degrading' in f.title.lower():
+                    combo_degrading = True
+                    degrading_combo_name = f.title.split(':')[0]
+                    break
+
+        if ic_improving and combo_degrading:
+            findings.append(Finding(
+                severity='warning',
+                category='Cross-Agent',
+                title='IC-Combo Performance Contradiction (指标背离)',
+                detail=f"背离警示：单模型IC趋势稳定/回升，但融合组合 ({degrading_combo_name}) 表现超额却出现持续恶化。这可能暗示模型间的相关性结构漂移或过度拟合。",
+                data={'ic_improving': ic_improving, 'combo_degrading': combo_degrading}
+            ))
         return findings
 
     def _check_liquidity_drift(self) -> List[Finding]:

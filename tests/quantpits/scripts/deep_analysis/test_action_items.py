@@ -375,6 +375,57 @@ class TestActionItemValidator:
         assert results[1].scope_status == "out_of_scope"
         assert results[2].scope_status == "rejected"
 
+    def test_active_combo_models_check(self, validator_workspace):
+        ens_config = {
+            "combos": {
+                "Defensive_V2": {
+                    "models": ["tra_Alpha360@static", "lstm_Alpha158@static"],
+                    "default": True
+                }
+            }
+        }
+        with open(os.path.join(validator_workspace, "config", "ensemble_config.json"), "w") as f:
+            json.dump(ens_config, f)
+
+        v = self._make_validator(validator_workspace)
+        item1 = ActionItem(action_type="adjust_hyperparam", scope="hyperparams", target="lstm_Alpha158@static", confidence=0.9)
+        item2 = ActionItem(action_type="adjust_hyperparam", scope="hyperparams", target="gru_Alpha360@static", confidence=0.9)
+
+        results = v.validate([item1, item2])
+        assert results[0].execution_context.get("is_active_model") is True
+        assert results[0].confidence == 0.9
+        assert results[1].execution_context.get("is_active_model") is False
+        assert "relevance_warning" in results[1].execution_context
+        assert results[1].confidence <= 0.5
+
+    def test_critic_blind_spots_check(self, validator_workspace):
+        blind_spots = {
+            "window_adjustments": [
+                {"target": "global", "param": "train_set_windows", "to": 8}
+            ]
+        }
+        with open(os.path.join(validator_workspace, "config", "critic_blind_spots.json"), "w") as f:
+            json.dump(blind_spots, f)
+
+        v = self._make_validator(validator_workspace)
+        item1 = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            target="global",
+            params={"train_set_windows": {"from": 5, "to": 8}}
+        )
+        item2 = ActionItem(
+            action_type="adjust_training_window",
+            scope="hyperparams",
+            target="global",
+            params={"train_set_windows": {"from": 5, "to": 10}}
+        )
+
+        results = v.validate([item1, item2])
+        assert results[0].scope_status == "rejected"
+        assert "ineffective" in results[0].rejected_reason
+        assert results[1].scope_status == "in_scope"
+
 
 # ------------------------------------------------------------------
 # Persistence

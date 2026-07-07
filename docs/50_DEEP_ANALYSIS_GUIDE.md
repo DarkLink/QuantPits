@@ -2,9 +2,30 @@
 
 ## 概述
 
-深度分析系统是一个多代理系统 (MAS)，用于执行自动化的、多窗口的盘后分析。七个专业代理分析交易系统的不同方面，综合器 (Synthesizer) 交叉引用发现的结果，生成具有优先级的、可操作的建议。
+深度分析系统是一个多代理系统 (MAS)，用于执行自动化的、多窗口的盘后分析。自最新的重构以来，系统采用了严格的 **7 阶段流水线 (7-Stage Pipeline)** 架构，并支持通过 **Pluggable Agent Registry** 在工作区本地加载自定义插件。
+系统内置多个专业代理，分析交易系统的不同方面，综合器 (Synthesizer) 交叉引用发现的结果，生成具有优先级的、可操作的建议。
 
 自 Phase 3 起，系统集成了 OOM-RL (Out-of-Money Reinforcement Learning) 反馈能力：LLM Critic 将分析结果转化为可执行的 ActionItem，Phase 4 的 Feedback Loop 在 Playground 沙箱中自动执行并验证这些建议。
+
+## 核心架构
+
+### 1. 7-Stage Pipeline
+
+深度分析执行遵循严格的 7 阶段顺序执行管道。可以在命令行中通过 `--stage` 参数指定起始或单独运行的阶段。
+
+1. **`discover`**: 扫描工作区，发现并加载所有相关的快照、模型预测和历史配置数据。
+2. **`agents`**: 实例化并并行执行注册的分析代理 (Agents)，生成结构化的 `AgentFindings`。
+3. **`synthesis`**: 将所有代理的发现传递给 LLM 综合器，生成跨域的洞察和摘要。
+4. **`window_analysis`**: 运行纯规则驱动的 `TrainingWindowAnalyzer`，分析训练时间窗口的合理性。
+5. **`signals`**: 运行 `SignalExtractor`，将代理指标转换为标准化信号 (Signals) 以供 Critic 消费。
+6. **`critic`**: 运行 LLM Critic，将提取的信号转化为可操作的优化建议 (ActionItems)。
+7. **`report`**: 汇总所有阶段的输出并渲染 Markdown 最终报告。
+
+### 2. 可插拔代理注册 (Pluggable Agent Registry)
+
+系统允许在不污染全局环境的情况下，通过工作区本地的插件系统加载自定义代理。
+
+开发者可以在工作区根目录下的配置文件 (如 `config/agent_manifest.json`) 中声明本地代理，系统会自动将工作区路径注入 `sys.path`，实现干净、隔离的动态加载。详细开发流程请参阅 [57 — 代理插件开发指南](57_AGENT_PLUGIN_GUIDE.md)。
 
 ## 快速开始
 
@@ -42,12 +63,20 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 
 # 启用训练窗口分析（规则驱动，独立于 Critic）
 python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
+
+# 指定起始阶段执行 (如跳过 discover，直接从 agents 开始)
+python -m quantpits.scripts.run_deep_analysis --stage agents
+
+# 加载工作区本地自定义代理插件
+python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manifest config/agent_manifest.json
 ```
 
 ## CLI 参数
 
 | 参数 | 默认值 | 描述 |
 |-----------|---------|-------------|
+| `--stage` | `discover` | 起始执行阶段 (`discover`, `agents`, `synthesis`, `window_analysis`, `signals`, `critic`, `report`) |
+| `--manifest` | `None` | Agent 注册清单 (JSON)，路径相对于当前工作区，用于加载本地插件 |
 | `--windows` | `full,weekly_era,1y,6m,3m,1m` | 逗号分隔的时间窗口 |
 | `--freq-change-date` | 来自配置或 `None` | 日频→周频切换的截止日期 |
 | `--output` | `output/deep_analysis_report.md` | 报告输出路径 |
@@ -136,6 +165,15 @@ python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 6. **频率兼容性**: 日频 + 大窗口数 → 数据量过大
 
 分析结果通过 `training_window_mismatch` 信号注入 LLM Critic，同时在所有分层流水线 prompt 中以 `training_window_analysis` 字段提供。
+
+### 9. 训练健康 (`training_health`)
+
+检测训练过程的质量、数据完整性及训练模式（如 predict-only 孤儿模型、回撤水平）。
+
+- **输入**: `training_history.jsonl`，以及 `TrainingContext` 提供的元数据
+- **输出**: CSV 数据列一致性验证（含缺失列守卫）、预测集缺失惩罚、异常损失值拦截
+
+> **训练上下文 (TrainingContext)**: 该代理深度依赖 `training_context.py`。该模块提供当前工作区状态、活动训练模式（Training Mode Awareness）以及数据完整性验证逻辑，供代理评估环境完整性。
 
 ## 数据发现
 
@@ -239,6 +277,7 @@ Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback 
 | [54 — 反馈闭环执行](54_OOMRL_FEEDBACK_LOOP.md) | Playground、Adapter、Orchestrator、Promote、回退 |
 | [55 — OOM-RL 每周操作指南](55_OOMRL_WEEKLY_OPERATIONS.md) | 日常运维、干预检查、特殊情况处理 |
 | [56 — LLM 观测与追踪](56_LLM_OBSERVABILITY_GUIDE.md) | LLM Traces、Reasoning 记录、Langfuse、多模型研讨预留 |
+| [57 — 代理插件开发指南](57_AGENT_PLUGIN_GUIDE.md) | Agent Manifest 规范、Workspace-Local Plugin 的开发与集成 |
 
 ### 快速流程
 

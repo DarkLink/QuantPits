@@ -186,7 +186,27 @@ Default exclusion period controlled by `config/oos_config.json`:
 
 ---
 
-## 5. Phase 2 — Agent Enhancements
+## 5. Training Context — Training Mode Awareness
+
+**File**: `quantpits/scripts/deep_analysis/training_context.py`
+
+Introduced in Phase 2 to provide all analysis agents with context-awareness of the active workspace state and training mode. This prevents misleading alarms during specific operation cycles, such as predict-only cycles.
+
+### Core Capabilities
+
+- **Mode Recognition**: Automatically determines if the current phase runs in a `predict_only` state.
+- **Orphan Model Guard**: Identifies stale or legacy models left in the configuration that are no longer updated during predict-only phases.
+- **File & Schema Verification**: Exposes helper functions for validating schema consistency on prediction CSV columns.
+
+---
+
+## 6. Phase 2 — Agent Enhancements
+
+### Training Health Agent (New)
+
+- **Data Integrity Guard**: Strongly validates CSV output schemas of prediction files (e.g., must contain `datetime`, `instrument`, `score`).
+- **Drawdown & Mode Awareness**: Incorporates `TrainingContext` to identify features expected in predict-only cycles and penalizes missing predictions.
+- **Anomaly Interceptor**: Captures invalid or extremely large loss values during training.
 
 ### Model Health Agent
 

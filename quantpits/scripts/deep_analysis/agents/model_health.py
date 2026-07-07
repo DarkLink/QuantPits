@@ -11,9 +11,8 @@ import glob
 import re
 import yaml
 import numpy as np
-import pandas as pd
 from typing import Dict, List, Optional
-from ..base_agent import BaseAgent, AgentFindings, AnalysisContext, Finding
+from ..base_agent import BaseAgent, AgentFindings, AnalysisContext
 
 
 class ModelHealthAgent(BaseAgent):
@@ -196,8 +195,9 @@ class ModelHealthAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _load_performance_series(self, ctx: AnalysisContext) -> Dict[str, list]:
-        """Load model_performance_*.json files into per-model time series."""
-        result = {}  # model_name -> [{date, IC_Mean, ICIR, record_id}, ...]
+        """Load model_performance_*.json files into per-model-mode time series."""
+        result = {}  # model_name@mode -> [{date, IC_Mean, ICIR, record_id}, ...]
+        tc = ctx.training_context
 
         for path in ctx.model_performance_files:
             date_str = self._extract_date_from_path(path)
@@ -212,15 +212,22 @@ class ModelHealthAgent(BaseAgent):
             for model_name, metrics in data.items():
                 if not isinstance(metrics, dict):
                     continue
+                record_id = metrics.get('record_id')
+                model_mode_key = model_name  # default fallback
+                if tc and record_id:
+                    resolved_key = tc.resolve_model_key(record_id)
+                    if resolved_key and '@' in resolved_key:
+                        model_mode_key = resolved_key
+
                 entry = {'_date': date_str}
                 entry.update(metrics)
-                if model_name not in result:
-                    result[model_name] = []
-                result[model_name].append(entry)
+                if model_mode_key not in result:
+                    result[model_mode_key] = []
+                result[model_mode_key].append(entry)
 
         # Sort each series by date
-        for model_name in result:
-            result[model_name].sort(key=lambda x: x['_date'])
+        for key in result:
+            result[key].sort(key=lambda x: x['_date'])
 
         return result
 

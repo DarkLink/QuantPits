@@ -197,18 +197,17 @@ Models using this: `pytorch_general_nn.py`.
 
 After creating a wrapper:
 
-```bash
 # Import test
 python -c "from quantpits.utils.model_wrappers.custom.pytorch_xxx import XXXModel"
 
 # Dry-run training
 python quantpits/scripts/static_train.py \
-  --workspace workspaces/CSI300_Base_Playground \
+  --workspace workspaces/Demo_Workspace \
   --models <model_name> --dry-run
 
 # Full training in Playground
 python quantpits/scripts/static_train.py \
-  --workspace workspaces/CSI300_Base_Playground \
+  --workspace workspaces/Demo_Workspace \
   --models <model_name>
 ```
 

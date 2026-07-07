@@ -149,6 +149,11 @@ class TrainingWindowAnalyzer:
                 findings.extend(self._check_cliff_edge(config, sd))
                 findings.extend(self._check_coverage_stability(config, sd))
 
+        # CPCV and rolling progress rules (R14-R16)
+        from .training_context import TrainingModeContext
+        tc = TrainingModeContext.from_workspace(self._workspace_root)
+        findings.extend(self._check_cpcv_and_rolling_rules(tc))
+
         return findings
 
     def generate_recommendations(
@@ -1058,3 +1063,55 @@ class TrainingWindowAnalyzer:
             "samples": anchors[-5:],
             "data_slice_mode": config.get("data_slice_mode", "unknown"),
         }
+
+    def _check_cpcv_and_rolling_rules(
+        self,
+        tc: Any,
+    ) -> List[WindowAnalysisFinding]:
+        """Verify CPCV and rolling training configs and parameters."""
+        findings: List[WindowAnalysisFinding] = []
+
+        # R14: CPCV n_groups vs n_test_groups sanity check
+        cpcv = tc.cpcv_config
+        if cpcv:
+            n_groups = cpcv.get("n_groups", 0)
+            n_test = cpcv.get("n_test_groups", 0)
+            n_val = cpcv.get("n_val_groups", 0)
+            purge = cpcv.get("purge_steps", 0)
+            embargo = cpcv.get("embargo_steps", 0)
+
+            if n_groups <= n_test + n_val:
+                findings.append(WindowAnalysisFinding(
+                    finding_type="cpcv_groups_insufficient",
+                    severity="critical",
+                    target="global",
+                    metrics={"n_groups": n_groups, "n_test": n_test, "n_val": n_val},
+                    context=f"CPCV n_groups ({n_groups}) is insufficient for test ({n_test}) + val ({n_val}) groups.",
+                    recommendation="[CPCV 参数调整] 增加 n_groups 或减少 test/val 组数以使交叉验证能够正常构建。"
+                ))
+
+            # R15: CPCV purge/embargo leak threat
+            if purge > 10 or embargo > 20:
+                findings.append(WindowAnalysisFinding(
+                    finding_type="cpcv_leak_threat",
+                    severity="warning",
+                    target="global",
+                    metrics={"purge_steps": purge, "embargo_steps": embargo},
+                    context=f"CPCV purge_steps ({purge}) or embargo_steps ({embargo}) is set extremely high, risk of losing excess data.",
+                    recommendation="[CPCV 参数调整] 适当减小 purge_steps 或 embargo_steps 以保证训练集充分性。"
+                ))
+
+        # R16: Rolling schedule staleness warning
+        for mode, state in tc.rolling_states.items():
+            gap = tc.get_rolling_gap_days(mode)
+            if gap is not None and gap > 90:
+                findings.append(WindowAnalysisFinding(
+                    finding_type="rolling_staleness",
+                    severity="warning",
+                    target="global",
+                    metrics={"mode": mode, "gap_days": gap},
+                    context=f"Rolling mode '{mode}' last update was {gap} days ago, showing staleness.",
+                    recommendation=f"[滚动重训] 建议对模式 '{mode}' 进行Retrain，跟上最新的行情数据分布。"
+                ))
+
+        return findings

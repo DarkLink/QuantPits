@@ -22,7 +22,7 @@ class ActionItem:
     """A concrete action recommendation produced by the LLM Critic."""
 
     action_id: str = ""                        # UUID, auto-generated
-    action_type: str = ""                      # "adjust_hyperparam" | "disable_model" | "trigger_search" | ...
+    action_type: str = ""                      # "adjust_hyperparam" | "disable_model" | "trigger_search" | "promote_mode" | "demote_mode" | ...
     scope: str = ""                            # "hyperparams" | "model_selection" | "combo_search" | "strategy_params"
     target: str = ""                           # Target model/combo name
     params: Dict[str, Any] = field(default_factory=dict)   # e.g. {"n_epochs": {"from": 100, "to": 150}}
@@ -91,6 +91,7 @@ class ActionItemValidator:
             workspace_root, "config", "training_window_bounds.json"
         )
         self._tw_bounds = self._load_bounds(tw_bounds_path)
+        self._active_combo_models = self._load_active_combo_models()
 
     @staticmethod
     def _load_active_scopes(path: str) -> List[str]:
@@ -155,6 +156,36 @@ class ActionItemValidator:
                     item.scope_status = "rejected"
                     item.rejected_reason = rejected
                     continue
+
+            # Step 3.2: Promote/Demote mode check
+            if item.action_type in ("promote_mode", "demote_mode"):
+                if not item.params or "mode" not in item.params:
+                    item.scope_status = "rejected"
+                    item.rejected_reason = f"ActionItem {item.action_id} of type {item.action_type} must specify 'mode' in params."
+                    continue
+
+            # Step 3.5: Critic blind spot self-correction check
+            blind_spot_reason = self._check_blind_spots(item)
+            if blind_spot_reason:
+                item.scope_status = "rejected"
+                item.rejected_reason = blind_spot_reason
+                continue
+
+            # Step 4: Active combo membership check
+            if item.target:
+                clean_target = item.target
+                if "@" in clean_target:
+                    clean_target = clean_target.split("@")[0]
+                if self._active_combo_models and ("Alpha" in clean_target or clean_target in self._active_combo_models):
+                    is_active = False
+                    for m in self._active_combo_models:
+                        if clean_target == m or (m.startswith(clean_target) and "@" in m):
+                            is_active = True
+                            break
+                    item.execution_context["is_active_model"] = is_active
+                    if not is_active:
+                        item.execution_context["relevance_warning"] = "Target model is not in the active default combo."
+                        item.confidence = min(item.confidence, 0.5)
 
             # All checks passed
             item.scope_status = "in_scope"
@@ -270,6 +301,58 @@ class ActionItemValidator:
                     f"not in allowed {allowed}"
                 )
 
+        return None
+
+    def _load_active_combo_models(self) -> List[str]:
+        """Load the list of models belonging to the active default combo."""
+        path = os.path.join(self.workspace_root, "config", "ensemble_config.json")
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            combos = data.get("combos", {})
+            for combo_name, combo_info in combos.items():
+                if combo_info.get("default") is True:
+                    models = combo_info.get("models", [])
+                    clean_models = []
+                    for m in models:
+                        clean_models.append(m)
+                        if "@" in m:
+                            clean_models.append(m.split("@")[0])
+                    return sorted(list(set(clean_models)))
+            return []
+        except Exception as e:
+            logger.warning("Failed to load active combo models: %s", e)
+            return []
+
+    def _load_blind_spots(self) -> Dict[str, Any]:
+        """Load recorded ineffective window adjustments."""
+        path = os.path.join(self.workspace_root, "config", "critic_blind_spots.json")
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _check_blind_spots(self, item: ActionItem) -> Optional[str]:
+        """Verify if the action item matches a known ineffective adjustment."""
+        blind_spots = self._load_blind_spots()
+        if not blind_spots:
+            return None
+
+        if item.action_type == "adjust_training_window":
+            for spot in blind_spots.get("window_adjustments", []):
+                target = spot.get("target", "global")
+                param = spot.get("param")
+                to_val = spot.get("to")
+
+                if item.target == target:
+                    for param_name, change_spec in item.params.items():
+                        if param_name == param and change_spec.get("to") == to_val:
+                            return f"Action blocked: Window adjustment '{param_name} -> {to_val}' is registered in critic_blind_spots.json as ineffective."
         return None
 
 

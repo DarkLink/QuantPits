@@ -199,12 +199,12 @@ python -c "from quantpits.utils.model_wrappers.custom.pytorch_xxx import XXXMode
 
 # Dry-run
 python quantpits/scripts/static_train.py \
-  --workspace workspaces/CSI300_Base_Playground \
+  --workspace workspaces/Demo_Workspace \
   --models <模型名> --dry-run
 
 # Playground 全量训练
 python quantpits/scripts/static_train.py \
-  --workspace workspaces/CSI300_Base_Playground \
+  --workspace workspaces/Demo_Workspace \
   --models <模型名>
 ```
 

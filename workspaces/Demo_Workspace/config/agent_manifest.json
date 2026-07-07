@@ -1,0 +1,9 @@
+{
+  "agents": [
+    {
+      "name": "workspace_local_plugin",
+      "class_path": "custom_agent.WorkspaceLocalAgent",
+      "enabled": true
+    }
+  ]
+}

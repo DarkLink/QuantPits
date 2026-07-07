@@ -188,6 +188,14 @@ def compute_rolling_metrics(windows=[60, 20], sub_window=20, market='csi300'):
         print(f"Successfully wrote {window}-day rolling analysis to {out_file}")
 
 def main():
+    import warnings
+    warnings.warn(
+        "run_rolling_analysis.py is deprecated. Please run 'run_deep_analysis.py --stage agents --agents training_health' "
+        "or use TrainingHealthAgent inside the MAS Deep Analysis pipeline.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    print("⚠️  DEPRECATION WARNING: run_rolling_analysis.py is deprecated. Use the new MAS pipeline instead.\n")
     parser = argparse.ArgumentParser(description="Generate rolling metrics for dashboard visualization.")
     parser.add_argument('--windows', type=int, nargs='+', default=[20, 60], help="List of rolling window sizes (days), e.g., --windows 20 60 120")
     parser.add_argument('--sub-window', type=int, default=20, help="Sub-window size for feature generation, default 20.")

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
-from .base_agent import AgentFindings
+from .base_agent import AgentFindings, Finding
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,13 @@ class SignalExtractor:
 
         # --- Prediction Audit signals ---
         signals.extend(self._extract_prediction_audit(by_agent))
+
+        # --- Training Health signals ---
+        signals.extend(self._extract_training_health(by_agent))
+
+        # --- Synthesizer cross-findings signals ---
+        cross_findings = synthesis_result.get('cross_findings', []) if isinstance(synthesis_result, dict) else []
+        signals.extend(self._extract_synthesis_signals(cross_findings))
 
         # --- Cross-agent convergence ---
         signals.extend(self._extract_cross_agent_convergence(signals))
@@ -729,6 +736,29 @@ class SignalExtractor:
                     except ValueError:
                         pass  # Skip unparseable dates
 
+            # Extract combo_fragility and orphan_model from findings
+            for f in af.findings:
+                if 'lifecycle' in f.title.lower() or 'fragility' in f.title.lower():
+                    signals.append(Signal(
+                        signal_type="combo_fragility",
+                        severity=f.severity,
+                        scope="combo_search",
+                        source_agent="Ensemble Evolution",
+                        target=f.data.get("combo", "ensemble"),
+                        metrics=f.data,
+                        context=f.detail
+                    ))
+                elif 'orphan' in f.title.lower() or '孤立' in f.title.lower():
+                    signals.append(Signal(
+                        signal_type="orphan_model",
+                        severity=f.severity,
+                        scope="model_selection",
+                        source_agent="Ensemble Evolution",
+                        target=f.data.get("model", "global"),
+                        metrics=f.data,
+                        context=f.detail
+                    ))
+
         return signals
 
     # ------------------------------------------------------------------
@@ -988,3 +1018,61 @@ class SignalExtractor:
                 ))
 
         return convergence_signals
+
+    def _extract_training_health(self, by_agent: dict) -> List[Signal]:
+        """Convert TrainingHealthAgent findings into structured Signals."""
+        signals: List[Signal] = []
+        health_runs = by_agent.get('Training Health', [])
+        if not health_runs:
+            return signals
+
+        for af in health_runs:
+            for f in af.findings:
+                # Map Finding to Signal
+                sig_type = "training_mode_gap"
+                scope = "training_config"
+                if "Staleness" in f.title or "staleness" in f.title:
+                    sig_type = "rolling_staleness"
+                elif "摩擦" in f.title or "Slippage" in f.title or "Delay" in f.title:
+                    sig_type = "execution_friction"
+                    scope = "execution"
+                elif "Alpha" in f.title:
+                    sig_type = "alpha_decay"
+                    scope = "model_selection"
+                elif "微盘" in f.title or "Size" in f.title:
+                    sig_type = "style_drift"
+                    scope = "portfolio_construction"
+
+                signals.append(Signal(
+                    signal_type=sig_type,
+                    severity=f.severity,
+                    scope=scope,
+                    source_agent="Training Health",
+                    target=f.data.get("model", f.data.get("mode", "global")),
+                    metrics=f.data,
+                    context=f.detail
+                ))
+
+        return signals
+
+    def _extract_synthesis_signals(self, synthesis_findings: List[Finding]) -> List[Signal]:
+        """Convert Synthesizer cross-agent findings into structured Signals."""
+        signals: List[Signal] = []
+        type_map = {
+            'OOS Time Horizon Reversal': 'time_horizon_reversal',
+            'IC-Combo Performance Contradiction': 'ic_combo_contradiction',
+        }
+        for f in synthesis_findings:
+            for keyword, sig_type in type_map.items():
+                if keyword.lower() in f.title.lower():
+                    signals.append(Signal(
+                        signal_type=sig_type,
+                        severity=f.severity,
+                        scope='model_selection',
+                        source_agent='Synthesizer',
+                        target=f.data.get('target', 'global'),
+                        metrics=f.data,
+                        context=f.detail
+                    ))
+                    break
+        return signals

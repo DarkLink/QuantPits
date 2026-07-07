@@ -14,6 +14,14 @@ os.chdir(env.ROOT_DIR)
 from quantpits.scripts.analysis.portfolio_analyzer import BARRA_LIQD_KEY
 
 def evaluate_health():
+    import warnings
+    warnings.warn(
+        "run_rolling_health_report.py is deprecated. Please run 'run_deep_analysis.py --stage agents --agents training_health' "
+        "or use TrainingHealthAgent inside the MAS Deep Analysis pipeline.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    print("⚠️  DEPRECATION WARNING: run_rolling_health_report.py is deprecated. Use the new MAS pipeline instead.\n")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(env.ROOT_DIR, "output")
     

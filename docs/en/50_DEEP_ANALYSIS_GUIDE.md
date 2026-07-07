@@ -2,15 +2,30 @@
 
 ## Overview
 
-The Deep Analysis System is a Multi-Agent System (MAS) that performs automated, 
-multi-window post-trade analysis. Seven specialist agents analyze different aspects 
-of the trading system and a Synthesizer cross-references findings to produce 
-prioritized, actionable recommendations.
+The Deep Analysis System is a Multi-Agent System (MAS) that performs automated, multi-window post-trade analysis. Following recent updates, the system utilizes a strict **7-Stage Pipeline** architecture and supports loading custom workspace-local plugins via the **Pluggable Agent Registry**.
+Multiple specialist agents analyze different aspects of the trading system, and a Synthesizer cross-references the findings to generate prioritized, actionable recommendations.
 
-Starting from Phase 3, the system integrates OOM-RL (Out-of-Money Reinforcement
-Learning) feedback capabilities: an LLM Critic converts analysis findings into
-executable ActionItems, and the Phase 4 Feedback Loop automatically executes and
-validates these recommendations in a sandboxed Playground workspace.
+Starting from Phase 3, the system integrates OOM-RL (Out-of-Money Reinforcement Learning) feedback capabilities: an LLM Critic converts analysis findings into executable ActionItems, and the Phase 4 Feedback Loop automatically executes and validates these recommendations in a sandboxed Playground workspace.
+
+## Core Architecture
+
+### 1. 7-Stage Pipeline
+
+Deep Analysis execution follows a strict, sequential 7-stage pipeline. The starting stage or individual stages can be run selectively using the `--stage` parameter.
+
+1. **`discover`**: Scans the workspace to discover and load all relevant snapshots, model predictions, and historical configuration data.
+2. **`agents`**: Instantiates and executes registered specialist analysis Agents in parallel, producing structured `AgentFindings`.
+3. **`synthesis`**: Passes all agent findings to the LLM Synthesizer to generate cross-domain insights and summaries.
+4. **`window_analysis`**: Runs the purely rule-driven `TrainingWindowAnalyzer` to assess training time window configurations.
+5. **`signals`**: Runs `SignalExtractor` to convert raw agent metrics into standardized signals for Critic consumption.
+6. **`critic`**: Executes the LLM Critic to transform signals into actionable optimization advice (`ActionItems`).
+7. **`report`**: Synthesizes output from all stages and renders the final Markdown report.
+
+### 2. Pluggable Agent Registry
+
+The system allows loading custom agents via a workspace-local plugin system without polluting the global codebase or environment.
+
+Developers can declare workspace-local agents in a manifest file (e.g., `config/agent_manifest.json`) at their workspace root. The system dynamically injects the workspace path to `sys.path` to enable clean, isolated imports. For detailed development steps, refer to [57 — Agent Plugin Development Guide](57_AGENT_PLUGIN_GUIDE.md).
 
 ## Quick Start
 
@@ -48,12 +63,20 @@ python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 
 # Enable training window analysis (rule-based, independent of Critic)
 python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
+
+# Specify starting pipeline stage (e.g., skip discover and start from agents)
+python -m quantpits.scripts.run_deep_analysis --stage agents
+
+# Load workspace-local custom agent plugin
+python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manifest config/agent_manifest.json
 ```
 
 ## CLI Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `--stage` | `discover` | Starting execution stage (`discover`, `agents`, `synthesis`, `window_analysis`, `signals`, `critic`, `report`) |
+| `--manifest` | `None` | Agent registry manifest path (JSON), relative to current workspace root, for loading local plugins |
 | `--windows` | `full,weekly_era,1y,6m,3m,1m` | Comma-separated time windows |
 | `--freq-change-date` | From config or `None` | Daily→weekly frequency cutoff date |
 | `--output` | `output/deep_analysis_report.md` | Report output path |
@@ -150,6 +173,15 @@ any LLM dependency:
 
 Findings flow into the LLM Critic as `training_window_mismatch` signals and
 appear in all layered pipeline prompts as the `training_window_analysis` field.
+
+### 9. Training Health (`training_health`)
+
+Checks the quality of the training process, data integrity, and identifies anomalies depending on active training modes (e.g., predict-only).
+
+- **Input**: `training_history.jsonl`, plus workspace metadata provided by `TrainingContext`.
+- **Outputs**: CSV schema alignment validation (missing column guards), penalty triggers for missing prediction files, anomaly validation (excessive loss value intercept).
+
+> **Training Context (`TrainingContext`)**: This agent heavily relies on `training_context.py` to acquire active training mode awareness and directory state context, enabling context-aware data integrity checking.
 
 ## Data Discovery
 
@@ -256,6 +288,7 @@ Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback 
 | [54 — Feedback Loop Guide](54_OOMRL_FEEDBACK_LOOP.md) | Playground, Adapter, Orchestrator, Promote, rollback |
 | [55 — OOM-RL Weekly Operations Guide](55_OOMRL_WEEKLY_OPERATIONS.md) | Daily operations, intervention checks, edge cases |
 | [56 — LLM Observability & Tracing](56_LLM_OBSERVABILITY_GUIDE.md) | LLM Traces, Reasoning capture, Langfuse, multi-model prep |
+| [57 — Agent Plugin Guide](57_AGENT_PLUGIN_GUIDE.md) | Agent Manifest structure, development, and execution of workspace-local plugins |
 
 ### Quick Flow
 

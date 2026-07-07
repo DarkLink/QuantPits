@@ -175,7 +175,27 @@ python -m quantpits.scripts.ensemble_fusion --from-config-all --only-last-years 
 
 ---
 
-## 5. Phase 2 — Agent 增强
+## 5. Training Context — 训练模式感知
+
+**文件**: `quantpits/scripts/deep_analysis/training_context.py`
+
+在 Phase 2 中引入，为所有分析代理提供当前工作区状态和训练模式的上下文感知能力，以避免在特定模式下（如 predict-only 模式）产生误导性的报警。
+
+### 核心能力
+
+- **模式识别**: 自动检测当前是否处于 `predict_only` 阶段。
+- **孤儿模型守卫 (Orphan Model Guard)**: 在 predict-only 模式下，系统能够识别出未被更新但在系统中遗留的“孤儿模型”。
+- **文件与特征一致性验证**: 提供辅助方法，供代理验证生成的 CSV 数据列是否与预期结构对齐。
+
+---
+
+## 6. Phase 2 — Agent 增强
+
+### Training Health Agent (新增)
+
+- **数据完整性守卫**: 强校验模型预测输出的 CSV 结构（如必须包含 `datetime`, `instrument`, `score`）。
+- **回撤与模式感知**: 结合 `TrainingContext`，识别 predict-only 模式下预期的特征，并惩罚预测集缺失。
+- **异常拦截**: 检测异常的 loss 值。
 
 ### Model Health Agent
 

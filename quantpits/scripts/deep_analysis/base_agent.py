@@ -83,6 +83,9 @@ class AnalysisContext:
     freq_change_date: Optional[str] = None
     is_pre_cutoff_window: bool = False  # True if window contains mostly pre-cutoff data
 
+    # Phase 2 Training Mode Context
+    training_context: Optional[Any] = None
+
 
 class BaseAgent(ABC):
     """Abstract base class for all specialist agents."""

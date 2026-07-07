@@ -9,13 +9,13 @@ system to a decision-making system.
 ## Architecture
 
 ```
-MAS Agent Findings
+7-Stage Pipeline (Stages 1-4)
       │
       ▼
-Signal Extractor  ──→  List[Signal]   (pure rule layer, no decisions)
+Stage 5: Signal Extractor  ──→  List[Signal]   (pure rule layer, extracts from findings)
       │
       ▼
-LLM Critic        ──→  List[ActionItem]  (LLM holistic decision-making)
+Stage 6: LLM Critic        ──→  List[ActionItem]  (LLM holistic decision-making)
       │
       ▼
 ActionItem Validator  ──→  scope_status annotation (in_scope / out_of_scope / rejected)
@@ -47,7 +47,7 @@ class Signal:
     context: str        # Human-readable one-line description
 ```
 
-### The 13 Signal Types
+### The 16 Signal Types
 
 | Signal Type | Source Agent | Scope | Trigger Condition |
 |-------------|-------------|-------|-------------------|
@@ -64,6 +64,9 @@ class Signal:
 | `combo_stale` | Ensemble Eval | combo_search | Last evaluation > 30 days ago |
 | `training_window_mismatch` | Training Window Analyzer | training_config | Rule-detected window config issue (bounds, ratio, train-end gap, anchor staleness, regime mismatch) |
 | `cross_agent_convergence` | Cross-Agent | (best scope) | Same target flagged by ≥ 2 agents at warning |
+| `time_horizon_reversal` | Cross-Agent | (best scope) | Returns trend direction reverses across OOS horizons |
+| `combo_fragility` | Ensemble Eval / Cross-Agent | combo_search | Combo exhibits excessive dependency on a single model |
+| `orphan_model` | Training Health | model_selection | Legacy/unused model left in config during predict-only phases |
 
 ---
 

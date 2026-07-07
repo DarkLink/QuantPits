@@ -122,3 +122,35 @@ def test_alpha_significance_all_insignificant(tmp_path):
     # Both windows have p > 0.1 → all_insignificant → finding generated
     assert len(cross) == 1
     assert 'statistically significant' in cross[0].title.lower()
+
+
+def test_synthesizer_time_horizon_reversal():
+    af_3m = AgentFindings(
+        agent_name='Ensemble Evolution', window_label='3m',
+        raw_metrics={'best_combo': {'name': 'Defensive_V2', 'excess_return': 0.15}}
+    )
+    af_1y = AgentFindings(
+        agent_name='Ensemble Evolution', window_label='1y',
+        raw_metrics={'best_combo': {'name': 'Defensive_V2', 'excess_return': -0.08}}
+    )
+    synth = Synthesizer([af_3m, af_1y])
+    result = synth.synthesize()
+    
+    cross = [f for f in result['cross_findings'] if 'OOS Time Horizon Reversal' in f.title]
+    assert len(cross) == 1
+    assert cross[0].severity == 'warning'
+
+
+def test_synthesizer_ic_combo_contradiction():
+    f_model = Finding(severity='info', category='Model Health', title='Model IC', detail='IC trend is improving')
+    af_model = AgentFindings(agent_name='Model Health', window_label='1m', findings=[f_model])
+    
+    f_ee = Finding(severity='warning', category='Ensemble Evolution', title='Defensive_V2: Calmar degrading', detail='...')
+    af_ee = AgentFindings(agent_name='Ensemble Evolution', window_label='1m', findings=[f_ee])
+    
+    synth = Synthesizer([af_model, af_ee])
+    result = synth.synthesize()
+    
+    cross = [f for f in result['cross_findings'] if 'IC-Combo Performance Contradiction' in f.title]
+    assert len(cross) == 1
+    assert cross[0].severity == 'warning'

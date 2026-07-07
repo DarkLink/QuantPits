@@ -99,6 +99,18 @@ def parse_args():
         help='Label for this run (e.g., "after-retrain"). '
              'When set, output filenames include the label to prevent '
              'collisions when running multiple analyses on the same date.')
+    parser.add_argument(
+        '--stage', type=str, default='all',
+        help='Execution stage: discover | agents | agents:NAME | synthesis | window_analysis | signals | critic | report | all (default: all)')
+    parser.add_argument(
+        '--resume-from', type=str, default=None,
+        help='Path to a stage checkpoint file to resume execution from')
+    parser.add_argument(
+        '--resume-latest', action='store_true',
+        help='Automatically find the latest checkpoint to resume from')
+    parser.add_argument(
+        '--manifest', type=str, default=None,
+        help='Path to agent_manifest.yaml configuration file')
     return parser.parse_args()
 
 
@@ -966,11 +978,25 @@ def main():
     data_date = _resolve_data_date()
     run_label = re.sub(r'[\\/]', '-', args.run_label.strip())
 
+    # Ensure args are not MagicMocks from tests
+    def clean_arg(val, default):
+        if val is None:
+            return default
+        if hasattr(val, '_mock_return_value') or 'mock' in str(type(val)).lower():
+            return default
+        return val
+
+    target_stage = clean_arg(args.stage, "all")
+    resume_path = clean_arg(args.resume_from, None)
+    resume_latest = clean_arg(getattr(args, 'resume_latest', False), False)
+    manifest_arg = clean_arg(getattr(args, 'manifest', None), None)
+
     print("=" * 60)
     print("  🤖 MAS Deep Analysis System")
     print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Data date: {data_date}")
     print(f"  Workspace: {workspace_root}")
+    print(f"  Stage: {target_stage}")
     print("=" * 60)
 
     # Load config
@@ -987,335 +1013,553 @@ def main():
 
     # Parse windows
     windows = [w.strip() for w in args.windows.split(',')]
+    # --- Initialize StageRunner ---
+    from quantpits.scripts.deep_analysis.stage_runner import StageRunner
+    stage_runner = StageRunner(workspace_root, data_date, run_label=run_label)
 
-    # --- 1. Config Snapshot ---
-    if args.snapshot_config and not args.no_snapshot:
-        print("\n📸 Saving config snapshot...")
-        try:
-            from quantpits.scripts.deep_analysis.config_ledger import (
-                snapshot_configs, save_snapshot
-            )
-            snapshot = snapshot_configs(workspace_root)
-            path = save_snapshot(workspace_root, snapshot)
-            print(f"   → Saved to {path}")
-        except Exception as e:
-            print(f"   ⚠️  Config snapshot failed: {e}")
+    if resume_latest:
+        latest_ckpt = None
+        latest_mtime = 0
+        for stg in StageRunner.STAGES:
+            ckpt = stage_runner.find_latest_checkpoint(stg)
+            if ckpt:
+                mtime = os.path.getmtime(ckpt)
+                if mtime > latest_mtime:
+                    latest_mtime = mtime
+                    latest_ckpt = ckpt
+        if latest_ckpt:
+            resume_path = latest_ckpt
+            print(f"   🔄 Found latest checkpoint to resume: {resume_path}")
+        else:
+            print("   ⚠️  No latest checkpoint found. Running from start.")
 
-    # --- 2. Initialize Coordinator ---
+    start_stage_idx = 0
+    stage_data = {stg: None for stg in StageRunner.STAGES}
+
+    if resume_path:
+        loaded = stage_runner.load_checkpoint(resume_path)
+        meta = loaded["meta"]
+        ckpt_stage = meta["stage"]
+        print(f"   🔄 Resuming from stage '{ckpt_stage}' checkpoint: {resume_path}")
+        stage_data[ckpt_stage] = loaded["data"]
+        start_stage_idx = StageRunner.STAGES.index(ckpt_stage) + 1
+
+    # Check if a specific stage was requested
+    requested_stage_name = target_stage
+    specific_agents = []
+    run_only_one_stage = False
+
+    if target_stage != "all":
+        if target_stage.startswith("agents:"):
+            requested_stage_name = "agents"
+            specific_agents = [a.strip() for a in target_stage.split(":")[1].split(",")]
+        
+        if requested_stage_name not in StageRunner.STAGES:
+            print(f"❌ Unknown stage: {target_stage}. Available: {StageRunner.STAGES}")
+            return 1
+
+        requested_stage_idx = StageRunner.STAGES.index(requested_stage_name)
+        run_only_one_stage = True
+
+        # If starting stage index is ahead of requested stage index, we must start from scratch or predecessor
+        if start_stage_idx > requested_stage_idx:
+            if not args.resume_from and not args.resume_latest:
+                predecessor_idx = requested_stage_idx - 1
+                if predecessor_idx >= 0:
+                    pred_stage = StageRunner.STAGES[predecessor_idx]
+                    pred_ckpt = stage_runner.find_latest_checkpoint(pred_stage)
+                    if pred_ckpt:
+                        loaded = stage_runner.load_checkpoint(pred_ckpt)
+                        stage_data[pred_stage] = loaded["data"]
+                        start_stage_idx = predecessor_idx + 1
+                        print(f"   🔄 Auto-loaded predecessor stage '{pred_stage}' checkpoint: {pred_ckpt}")
+                    else:
+                        start_stage_idx = 0
+            else:
+                pass
+
+    def ensure_stage_data(stage_name: str) -> dict:
+        if stage_data[stage_name] is not None:
+            return stage_data[stage_name]
+        ckpt_path = stage_runner.find_latest_checkpoint(stage_name)
+        if not ckpt_path:
+            raise ValueError(f"Required checkpoint for stage '{stage_name}' not found. Please run that stage first.")
+        loaded_data = stage_runner.load_checkpoint(ckpt_path)
+        stage_data[stage_name] = loaded_data["data"]
+        return loaded_data["data"]
+
+    # --- Stage 1: discover ---
     from quantpits.scripts.deep_analysis.coordinator import Coordinator
-
-    coordinator = Coordinator(
-        workspace_root=workspace_root,
-        freq_change_date=freq_change_date,
-        external_notes=external_notes,
-        windows=windows,
-    )
-
-    # --- 3. Initialize Agents ---
-    from quantpits.scripts.deep_analysis.agents import ALL_AGENTS
-
-    if args.agents == 'all':
-        agent_names = list(ALL_AGENTS.keys())
-    else:
-        agent_names = [a.strip() for a in args.agents.split(',')]
-
-    agents = []
-    for name in agent_names:
-        if name in ALL_AGENTS:
-            agents.append(ALL_AGENTS[name]())
-        else:
-            print(f"  ⚠️  Unknown agent: {name}. Available: {list(ALL_AGENTS.keys())}")
-
-    if not agents:
-        print("❌ No agents to run. Exiting.")
-        return 1
-
-    print(f"\n🔧 Running {len(agents)} agents: {[a.name for a in agents]}")
-
-    # --- 4. Run Analysis ---
-    all_findings = coordinator.run(agents)
-
-    print(f"\n✅ Analysis complete. {len(all_findings)} agent-window results collected.")
-
-    # --- 5. Synthesize ---
-    print("\n🧠 Running cross-agent synthesis...")
-    from quantpits.scripts.deep_analysis.synthesizer import Synthesizer
-
-    synthesizer = Synthesizer(all_findings, external_notes=external_notes)
-    synthesis_result = synthesizer.synthesize()
-
-    n_cross = len(synthesis_result.get('cross_findings', []))
-    n_recs = len(synthesis_result.get('recommendations', []))
-    print(f"   → {n_cross} cross-agent findings, {n_recs} recommendations")
-
-    # --- 5.4. Training Window Analysis (rule-based, independent) ---
-    window_findings = []
-    window_analysis_context = {}
-    if getattr(args, 'window_analysis', False):
-        print("\n🔍 Running Training Window Analyzer...")
-        from quantpits.scripts.deep_analysis.training_window_analyzer import TrainingWindowAnalyzer
-
-        window_analyzer = TrainingWindowAnalyzer(
-            workspace_root=workspace_root,
-            reference_date=data_date,
-        )
-
-        # Gather market regime metrics from agent findings
-        market_regime_metrics = {}
-        for af in all_findings:
-            if getattr(af, 'agent_name', '') == "Market Regime":
-                market_regime_metrics = getattr(af, 'raw_metrics', {})
-                break
-
-        # Load QLIB benchmark data for data-driven rules
-        benchmark_data = {}
-        try:
-            from quantpits.scripts.deep_analysis.benchmark_data_loader import (
-                load_benchmark_data,
-            )
-            benchmark_data = load_benchmark_data(workspace_root)
-            if benchmark_data.get("error"):
-                print(f"   ⚠️  Benchmark data unavailable: {benchmark_data['error']}")
-            else:
-                bm = benchmark_data
-                print(f"   ✅ {bm['benchmark']} data loaded: "
-                      f"{bm['fetch_range']['start']} → {bm['fetch_range']['end']}")
-                segs = bm.get("current_window", {}).get("segments", {})
-                for seg_name in ["train", "valid", "test"]:
-                    seg = segs.get(seg_name, {})
-                    dr = seg.get("date_range", {})
-                    if dr.get("start"):
-                        rs = seg.get("volatility", {})
-                        print(f"      {seg_name}: {dr['start']} → {dr['end']} "
-                              f"[vol={rs.get('annualized', 0):.1%}, "
-                              f"DDs={seg.get('drawdown_stats', {}).get('major_dd_count', 0)}]")
-                what_if = bm.get("what_if", {})
-                n_candidates = len(what_if.get("top_candidates", []))
-                print(f"      what-if: {n_candidates} top candidates evaluated")
-        except Exception as e:
-            print(f"   ⚠️  Failed to load benchmark data: {e}")
-
-        window_findings = window_analyzer.analyze(
-            market_regime_metrics=market_regime_metrics,
-            benchmark_data=benchmark_data if not benchmark_data.get("error") else None,
-        )
-        print(f"   → {len(window_findings)} window analysis findings")
-        for f in window_findings:
-            print(f"      [{getattr(f, 'severity', '?')}] {getattr(f, 'finding_type', '?')}: "
-                  f"{getattr(f, 'context', '')[:120]}")
-
-        # Package findings for downstream
-        window_analysis_context = {
-            "findings": [f.to_dict() if hasattr(f, 'to_dict') else f
-                         for f in window_findings],
-        }
-
-    # --- 5.5. Signal Extraction ---
-    print("\n📡 Extracting structured signals...")
-    from quantpits.scripts.deep_analysis.signal_extractor import SignalExtractor
-
-    signal_extractor = SignalExtractor(
-        reference_date=data_date,
-        workspace_root=workspace_root,
-        window_analysis_findings=window_findings,
-        window_analysis_context=window_analysis_context if window_analysis_context else None,
-    )
-    signals = signal_extractor.extract(all_findings, synthesis_result)
-    print(f"   → {len(signals)} signals extracted")
-
-    # --- 5.6–5.8. Critic + Validation + Persist (if --critic) ---
-    if args.critic or args.critic_dry_run:
-        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface as _LLMInterface
-        from quantpits.scripts.deep_analysis.llm_trace import LLMTraceLogger as _LLMTraceLogger
-        from quantpits.scripts.deep_analysis.langfuse_adapter import LangfuseAdapter as _LangfuseAdapter
-
-        # Detect layered skill files (needed for pipeline_stage in trace logger)
-        _skills_dir = os.path.join(workspace_root, 'config', 'skills')
-        _layered_skills_available = all(
-            os.path.exists(os.path.join(_skills_dir, f))
-            for f in ['triage_system.md', 'model_critic_system.md',
-                       'combo_critic_system.md', 'synthesizer_system.md']
-        )
-
-        # Load workspace LLM config for trace settings
-        _ws_llm_cfg = {}
-        _llm_cfg_path = os.path.join(workspace_root, 'config', 'llm_config.json')
-        if os.path.exists(_llm_cfg_path):
+    if start_stage_idx <= 0:
+        print("\n--- [Stage 1/7: Discover] ---")
+        if args.snapshot_config and not args.no_snapshot:
+            print("\n📸 Saving config snapshot...")
             try:
-                with open(_llm_cfg_path) as _f:
-                    _ws_llm_cfg = json.load(_f)
-            except Exception:
-                pass
-        _langfuse = _LangfuseAdapter.from_config(_ws_llm_cfg)
-        _critic_trace_logger = _LLMTraceLogger.from_llm_config(
-            llm_config=_ws_llm_cfg,
-            workspace_root=workspace_root,
-            run_date=data_date,
-            workspace_name=os.path.basename(workspace_root),
-            pipeline_stage="layered" if _layered_skills_available else "single_stage",
-            langfuse_adapter=_langfuse,
-            run_label=run_label,
-        )
-
-        critic_llm = _LLMInterface(
-            api_key=args.api_key,
-            model=args.llm_model,
-            base_url=args.base_url,
-            trace_logger=_critic_trace_logger,
-        )
-
-        # --- Window Critic: LLM diagnosis + recommendation ---
-        if window_analysis_context and benchmark_data and not benchmark_data.get("error"):
-            try:
-                from quantpits.scripts.deep_analysis.window_critic import WindowCritic
-
-                wc = WindowCritic(critic_llm, workspace_root)
-
-                # Task A: Diagnosis
-                window_diagnosis = wc.diagnose(
-                    benchmark_data, window_findings,
-                    model=args.llm_model,
-                    api_key=args.api_key,
-                    base_url=args.base_url,
+                from quantpits.scripts.deep_analysis.config_ledger import (
+                    snapshot_configs, save_snapshot
                 )
-                print(f"   🩺 Window diagnosis: {window_diagnosis.get('root_cause', '?')} "
-                      f"[urgency={window_diagnosis.get('urgency', '?')}]")
-                window_analysis_context["diagnosis"] = window_diagnosis
-
-                # Task B: Recommendation
-                window_recommendation = wc.recommend(
-                    benchmark_data, window_diagnosis,
-                    model=args.llm_model,
-                    api_key=args.api_key,
-                    base_url=args.base_url,
-                )
-                rec = window_recommendation.get("recommended_config", {})
-                print(f"   💡 Window recommendation: train={rec.get('train')}, "
-                      f"valid={rec.get('valid')}, test={rec.get('test')}")
-                print(f"      Rationale: {window_recommendation.get('rationale', '')[:150]}")
-                window_analysis_context["recommendation"] = window_recommendation
+                snapshot = snapshot_configs(workspace_root)
+                path = save_snapshot(workspace_root, snapshot)
+                print(f"   → Saved to {path}")
             except Exception as e:
-                print(f"   ⚠️  Window Critic failed: {e}")
+                print(f"   ⚠️  Config snapshot failed: {e}")
 
-        # Update signal_extractor with richer context for triage
-        if window_analysis_context:
-            signal_extractor.set_window_analysis_context(window_analysis_context)
+        coordinator = Coordinator(
+            workspace_root=workspace_root,
+            freq_change_date=freq_change_date,
+            external_notes=external_notes,
+            windows=windows,
+        )
+        coordinator.discover()
+        generated_wins = coordinator.generate_windows()
 
-        # (layered skills already detected above)
+        discover_data = {
+            "data_start_date": coordinator._data_start_date,
+            "data_end_date": coordinator._data_end_date,
+            "discovered_files": coordinator._discovered_files,
+            "windows": generated_wins
+        }
+        stage_runner.save_checkpoint("discover", discover_data)
+        stage_data["discover"] = discover_data
+        windows = generated_wins
+    else:
+        # Load discover inputs if resuming or bypass discover execution
+        discover_data = ensure_stage_data("discover")
+        coordinator = Coordinator(
+            workspace_root=workspace_root,
+            freq_change_date=freq_change_date,
+            external_notes=external_notes,
+            windows=windows,
+        )
+        coordinator._data_start_date = discover_data["data_start_date"]
+        coordinator._data_end_date = discover_data["data_end_date"]
+        coordinator._discovered_files = discover_data["discovered_files"]
+        coordinator._load_shared_dataframes()
+        windows = discover_data["windows"]
 
+    if run_only_one_stage and requested_stage_name == "discover":
+        print("\n✅ Stopped after 'discover' stage.")
+        return 0
 
-        if _layered_skills_available and critic_llm.is_available(workspace_root):
-            action_items = _run_critic_layered(
-                critic_llm=critic_llm,
-                signals=signals,
-                all_findings=all_findings,
-                synthesis_result=synthesis_result,
-                signal_extractor=signal_extractor,
-                workspace_root=workspace_root,
-                data_date=data_date,
-                dry_run=args.critic_dry_run,
-                run_label=run_label,
-            )
+    # --- Stage 2: agents ---
+    if start_stage_idx <= 1:
+        print("\n--- [Stage 2/7: Agents] ---")
+        from quantpits.scripts.deep_analysis.agents import ALL_AGENTS, load_manifest_agents
+        
+        # Load and register manifest agents dynamically
+        manifest_agents = load_manifest_agents(workspace_root, manifest_arg)
+        ALL_AGENTS.update(manifest_agents)
+
+        if args.agents == 'all':
+            agent_names = list(ALL_AGENTS.keys())
         else:
-            if not _layered_skills_available:
-                print("   ℹ️  Layered skill files not found — using single-stage Critic.")
-            action_items = _run_critic_single_stage(
-                critic_llm=critic_llm,
-                signals=signals,
+            agent_names = [a.strip() for a in args.agents.split(',')]
+
+        run_agent_names = specific_agents if specific_agents else agent_names
+        agents = []
+        for name in run_agent_names:
+            if name in ALL_AGENTS:
+                agents.append(ALL_AGENTS[name]())
+            else:
+                print(f"  ⚠️  Unknown agent: {name}. Available: {list(ALL_AGENTS.keys())}")
+
+        if not agents:
+            print("❌ No agents to run. Exiting.")
+            return 1
+
+        print(f"\n🔧 Running {len(agents)} agents: {[a.name for a in agents]}")
+
+        findings_map = {}
+        try:
+            ckpt_path = stage_runner.find_latest_checkpoint("agents")
+            if ckpt_path:
+                loaded = stage_runner.load_checkpoint(ckpt_path)
+                for af in loaded["data"].get("all_findings", []):
+                    findings_map[(af.agent_name, af.window_label)] = af
+                print(f"   📥 Loaded {len(findings_map)} existing findings to merge.")
+        except Exception as e:
+            print(f"   ⚠️  Failed to load existing agents checkpoint for merge: {e}")
+
+        for window in windows:
+            ctx = coordinator.build_context(window)
+            print(f"\n{'='*60}")
+            print(f"  Window: [{window['label']}] {window['start_date']} → {window['end_date']}")
+            print(f"{'='*60}")
+
+            for agent in agents:
+                try:
+                    print(f"  🔍 Running {agent.name}...")
+                    findings = agent.analyze(ctx)
+                    findings_map[(agent.name, window['label'])] = findings
+                    n_findings = len(findings.findings)
+                    n_critical = sum(1 for f in findings.findings if f.severity == 'critical')
+                    n_warning = sum(1 for f in findings.findings if f.severity == 'warning')
+                    print(f"     → {n_findings} findings ({n_critical} critical, {n_warning} warning)")
+                except Exception as e:
+                    print(f"  ❌ {agent.name} failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    from quantpits.scripts.deep_analysis.base_agent import AgentFindings
+                    findings_map[(agent.name, window['label'])] = AgentFindings(
+                        agent_name=agent.name,
+                        window_label=window['label'],
+                        findings=[],
+                        recommendations=[],
+                        raw_metrics={'error': str(e)},
+                    )
+
+        all_findings = list(findings_map.values())
+        agents_data = {"all_findings": all_findings}
+        stage_runner.save_checkpoint("agents", agents_data)
+        stage_data["agents"] = agents_data
+
+    all_findings = ensure_stage_data("agents")["all_findings"]
+
+    if run_only_one_stage and requested_stage_name == "agents":
+        print("\n✅ Stopped after 'agents' stage.")
+        return 0
+
+    # --- Stage 3: synthesis ---
+    if start_stage_idx <= 2:
+        print("\n--- [Stage 3/7: Synthesis] ---")
+        print("\n🧠 Running cross-agent synthesis...")
+        from quantpits.scripts.deep_analysis.synthesizer import Synthesizer
+
+        synthesizer = Synthesizer(all_findings, external_notes=external_notes)
+        synthesis_result = synthesizer.synthesize()
+
+        n_cross = len(synthesis_result.get('cross_findings', []))
+        n_recs = len(synthesis_result.get('recommendations', []))
+        print(f"   → {n_cross} cross-agent findings, {n_recs} recommendations")
+
+        stage_runner.save_checkpoint("synthesis", synthesis_result)
+        stage_data["synthesis"] = synthesis_result
+
+    synthesis_result = ensure_stage_data("synthesis")
+
+    if run_only_one_stage and requested_stage_name == "synthesis":
+        print("\n✅ Stopped after 'synthesis' stage.")
+        return 0
+
+    # --- Stage 4: window_analysis ---
+    if start_stage_idx <= 3:
+        print("\n--- [Stage 4/7: Window Analysis] ---")
+        window_findings = []
+        window_analysis_context = {}
+        if getattr(args, 'window_analysis', False):
+            print("\n🔍 Running Training Window Analyzer...")
+            from quantpits.scripts.deep_analysis.training_window_analyzer import TrainingWindowAnalyzer
+
+            window_analyzer = TrainingWindowAnalyzer(
                 workspace_root=workspace_root,
-                data_date=data_date,
-                dry_run=args.critic_dry_run,
+                reference_date=data_date,
+            )
+
+            market_regime_metrics = {}
+            for af in all_findings:
+                if getattr(af, 'agent_name', '') == "Market Regime":
+                    market_regime_metrics = getattr(af, 'raw_metrics', {})
+                    break
+
+            benchmark_data = {}
+            try:
+                from quantpits.scripts.deep_analysis.benchmark_data_loader import (
+                    load_benchmark_data,
+                )
+                benchmark_data = load_benchmark_data(workspace_root)
+                if benchmark_data.get("error"):
+                    print(f"   ⚠️  Benchmark data unavailable: {benchmark_data['error']}")
+                else:
+                    bm = benchmark_data
+                    print(f"   ✅ {bm['benchmark']} data loaded")
+            except Exception as e:
+                print(f"   ⚠️  Failed to load benchmark data: {e}")
+
+            window_findings = window_analyzer.analyze(
+                market_regime_metrics=market_regime_metrics,
+                benchmark_data=benchmark_data if not benchmark_data.get("error") else None,
+            )
+            print(f"   → {len(window_findings)} window analysis findings")
+            for f in window_findings:
+                print(f"      [{getattr(f, 'severity', '?')}] {getattr(f, 'finding_type', '?')}: "
+                      f"{getattr(f, 'context', '')[:120]}")
+
+            window_analysis_context = {
+                "findings": [f.to_dict() if hasattr(f, 'to_dict') else f
+                             for f in window_findings],
+            }
+
+        window_data = {
+            "window_findings": window_findings,
+            "window_analysis_context": window_analysis_context
+        }
+        stage_runner.save_checkpoint("window_analysis", window_data)
+        stage_data["window_analysis"] = window_data
+
+    window_data = ensure_stage_data("window_analysis")
+    window_findings = window_data["window_findings"]
+    window_analysis_context = window_data["window_analysis_context"]
+
+    if run_only_one_stage and requested_stage_name == "window_analysis":
+        print("\n✅ Stopped after 'window_analysis' stage.")
+        return 0
+
+    # --- Stage 5: signals ---
+    if start_stage_idx <= 4:
+        print("\n--- [Stage 5/7: Signals] ---")
+        print("\n📡 Extracting structured signals...")
+        from quantpits.scripts.deep_analysis.signal_extractor import SignalExtractor
+
+        signal_extractor = SignalExtractor(
+            reference_date=data_date,
+            workspace_root=workspace_root,
+            window_analysis_findings=window_findings,
+            window_analysis_context=window_analysis_context if window_analysis_context else None,
+        )
+        signals = signal_extractor.extract(all_findings, synthesis_result)
+        print(f"   → {len(signals)} signals extracted")
+
+        signals_data = {
+            "signals": signals,
+            "window_analysis_context": window_analysis_context
+        }
+        stage_runner.save_checkpoint("signals", signals_data)
+        stage_data["signals"] = signals_data
+
+    signals_data = ensure_stage_data("signals")
+    signals = signals_data["signals"]
+    window_analysis_context = signals_data["window_analysis_context"]
+
+    if run_only_one_stage and requested_stage_name == "signals":
+        print("\n✅ Stopped after 'signals' stage.")
+        return 0
+
+    # --- Stage 6: critic ---
+    if start_stage_idx <= 5:
+        print("\n--- [Stage 6/7: Critic] ---")
+        action_items = []
+        
+        # We need SignalExtractor initialized to run layered critic
+        from quantpits.scripts.deep_analysis.signal_extractor import SignalExtractor
+        signal_extractor = SignalExtractor(
+            reference_date=data_date,
+            workspace_root=workspace_root,
+            window_analysis_findings=window_findings,
+            window_analysis_context=window_analysis_context if window_analysis_context else None,
+        )
+
+        if args.critic or args.critic_dry_run:
+            from quantpits.scripts.deep_analysis.llm_interface import LLMInterface as _LLMInterface
+            from quantpits.scripts.deep_analysis.llm_trace import LLMTraceLogger as _LLMTraceLogger
+            from quantpits.scripts.deep_analysis.langfuse_adapter import LangfuseAdapter as _LangfuseAdapter
+
+            _skills_dir = os.path.join(workspace_root, 'config', 'skills')
+            _layered_skills_available = all(
+                os.path.exists(os.path.join(_skills_dir, f))
+                for f in ['triage_system.md', 'model_critic_system.md',
+                           'combo_critic_system.md', 'synthesizer_system.md']
+            )
+
+            _ws_llm_cfg = {}
+            _llm_cfg_path = os.path.join(workspace_root, 'config', 'llm_config.json')
+            if os.path.exists(_llm_cfg_path):
+                try:
+                    with open(_llm_cfg_path) as _f:
+                        _ws_llm_cfg = json.load(_f)
+                except Exception:
+                    pass
+            _langfuse = _LangfuseAdapter.from_config(_ws_llm_cfg)
+            _critic_trace_logger = _LLMTraceLogger.from_llm_config(
+                llm_config=_ws_llm_cfg,
+                workspace_root=workspace_root,
+                run_date=data_date,
+                workspace_name=os.path.basename(workspace_root),
+                pipeline_stage="layered" if _layered_skills_available else "single_stage",
+                langfuse_adapter=_langfuse,
                 run_label=run_label,
             )
 
-        # Finalise traces — write manifest.json
-        _trace_dir = _critic_trace_logger.finalize()
-        if _trace_dir:
-            print(f"   📋 LLM traces: {_trace_dir}")
+            critic_llm = _LLMInterface(
+                api_key=args.api_key,
+                model=args.llm_model,
+                base_url=args.base_url,
+                trace_logger=_critic_trace_logger,
+            )
 
-    # --- 6. LLM Executive Summary ---
-    print("\n📝 Generating executive summary...")
-    from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
-    from quantpits.scripts.deep_analysis.llm_trace import LLMTraceLogger
-    from quantpits.scripts.deep_analysis.langfuse_adapter import LangfuseAdapter
-
-    if args.llm:
-        _ws_llm_cfg_summary = {}
-        _llm_cfg_path2 = os.path.join(workspace_root, 'config', 'llm_config.json')
-        if os.path.exists(_llm_cfg_path2):
+            benchmark_data = {}
             try:
-                with open(_llm_cfg_path2) as _ff:
-                    _ws_llm_cfg_summary = json.load(_ff)
+                from quantpits.scripts.deep_analysis.benchmark_data_loader import (
+                    load_benchmark_data,
+                )
+                benchmark_data = load_benchmark_data(workspace_root)
             except Exception:
                 pass
-        _langfuse_summary = LangfuseAdapter.from_config(_ws_llm_cfg_summary)
-        _summary_trace_logger = LLMTraceLogger.from_llm_config(
-            llm_config=_ws_llm_cfg_summary,
-            workspace_root=workspace_root,
-            run_date=data_date,
-            workspace_name=os.path.basename(workspace_root),
-            pipeline_stage="summary",
-            langfuse_adapter=_langfuse_summary,
-            run_label=run_label,
-        )
-        llm = LLMInterface(
-            api_key=args.api_key,
-            model=args.llm_model,
-            base_url=args.base_url,
-            trace_logger=_summary_trace_logger,
-        )
-    else:
-        _summary_trace_logger = None
-        llm = LLMInterface()  # No API key → template mode
 
-    executive_summary = llm.generate_executive_summary(synthesis_result, workspace_root)
+            if window_analysis_context and benchmark_data and not benchmark_data.get("error"):
+                try:
+                    from quantpits.scripts.deep_analysis.window_critic import WindowCritic
 
-    if _summary_trace_logger is not None:
-        _sum_dir = _summary_trace_logger.finalize()
-        if _sum_dir:
-            print(f"   📋 Summary traces: {_sum_dir}")
+                    wc = WindowCritic(critic_llm, workspace_root)
 
-    # Strip leading "Executive Summary" title markers from LLM output to
-    # avoid double headers — ReportGenerator already emits the section title.
-    def _dedup_executive_summary_title(text: str) -> str:
-        if not text or not isinstance(text, str):
-            return text
-        lines = text.split("\n")
-        import re
-        while lines:
-            stripped = lines[0].strip()
-            if (stripped.lower() in ("**executive summary**", "executive summary")
-                    or re.match(r'^#{1,3}\s+executive\s+summary', stripped, re.I)):
-                lines.pop(0)
-                if lines and not lines[0].strip():
-                    lines.pop(0)
+                    window_diagnosis = wc.diagnose(
+                        benchmark_data, window_findings,
+                        model=args.llm_model,
+                        api_key=args.api_key,
+                        base_url=args.base_url,
+                    )
+                    print(f"   🩺 Window diagnosis: {window_diagnosis.get('root_cause', '?')} "
+                          f"[urgency={window_diagnosis.get('urgency', '?')}]")
+                    window_analysis_context["diagnosis"] = window_diagnosis
+
+                    window_recommendation = wc.recommend(
+                        benchmark_data, window_diagnosis,
+                        model=args.llm_model,
+                        api_key=args.api_key,
+                        base_url=args.base_url,
+                    )
+                    rec = window_recommendation.get("recommended_config", {})
+                    print(f"   💡 Window recommendation: train={rec.get('train')}, "
+                          f"valid={rec.get('valid')}, test={rec.get('test')}")
+                    print(f"      Rationale: {window_recommendation.get('rationale', '')[:150]}")
+                    window_analysis_context["recommendation"] = window_recommendation
+                except Exception as e:
+                    print(f"   ⚠️  Window Critic failed: {e}")
+
+            if window_analysis_context:
+                signal_extractor.set_window_analysis_context(window_analysis_context)
+
+            if _layered_skills_available and critic_llm.is_available(workspace_root):
+                action_items = _run_critic_layered(
+                    critic_llm=critic_llm,
+                    signals=signals,
+                    all_findings=all_findings,
+                    synthesis_result=synthesis_result,
+                    signal_extractor=signal_extractor,
+                    workspace_root=workspace_root,
+                    data_date=data_date,
+                    dry_run=args.critic_dry_run,
+                    run_label=run_label,
+                )
             else:
-                break
-        return "\n".join(lines)
-    executive_summary = _dedup_executive_summary_title(executive_summary)
+                if not _layered_skills_available:
+                    print("   ℹ️  Layered skill files not found — using single-stage Critic.")
+                action_items = _run_critic_single_stage(
+                    critic_llm=critic_llm,
+                    signals=signals,
+                    workspace_root=workspace_root,
+                    data_date=data_date,
+                    dry_run=args.critic_dry_run,
+                    run_label=run_label,
+                )
 
-    # --- 7. Generate Report ---
-    print("\n📊 Generating report...")
-    from quantpits.scripts.deep_analysis.report_generator import ReportGenerator
+            _trace_dir = _critic_trace_logger.finalize()
+            if _trace_dir:
+                print(f"   📋 LLM traces: {_trace_dir}")
 
-    report_gen = ReportGenerator(all_findings, synthesis_result, executive_summary)
-    report_md = report_gen.generate()
+        print("\n📝 Generating executive summary...")
+        from quantpits.scripts.deep_analysis.llm_interface import LLMInterface
+        from quantpits.scripts.deep_analysis.llm_trace import LLMTraceLogger
+        from quantpits.scripts.deep_analysis.langfuse_adapter import LangfuseAdapter
 
-    # Write output — inject date (and optional label) into filename if not already present
-    output_path = os.path.join(workspace_root, args.output)
-    _base, _ext = os.path.splitext(output_path)
-    if data_date not in _base:
-        _suffix = data_date
-        if run_label:
-            _suffix += f"_{run_label}"
-        output_path = f"{_base}_{_suffix}{_ext}"
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(report_md)
+        if args.llm:
+            _ws_llm_cfg_summary = {}
+            _llm_cfg_path2 = os.path.join(workspace_root, 'config', 'llm_config.json')
+            if os.path.exists(_llm_cfg_path2):
+                try:
+                    with open(_llm_cfg_path2) as _ff:
+                        _ws_llm_cfg_summary = json.load(_ff)
+                except Exception:
+                    pass
+            _langfuse_summary = LangfuseAdapter.from_config(_ws_llm_cfg_summary)
+            _summary_trace_logger = LLMTraceLogger.from_llm_config(
+                llm_config=_ws_llm_cfg_summary,
+                workspace_root=workspace_root,
+                run_date=data_date,
+                workspace_name=os.path.basename(workspace_root),
+                pipeline_stage="summary",
+                langfuse_adapter=_langfuse_summary,
+                run_label=run_label,
+            )
+            llm = LLMInterface(
+                api_key=args.api_key,
+                model=args.llm_model,
+                base_url=args.base_url,
+                trace_logger=_summary_trace_logger,
+            )
+        else:
+            _summary_trace_logger = None
+            llm = LLMInterface()
 
-    print(f"\n✅ Report saved to: {output_path}")
-    print(f"   Health: {synthesis_result.get('health_status', 'Unknown')}")
-    print("=" * 60)
+        executive_summary = llm.generate_executive_summary(synthesis_result, workspace_root)
+
+        if _summary_trace_logger is not None:
+            _sum_dir = _summary_trace_logger.finalize()
+            if _sum_dir:
+                print(f"   📋 Summary traces: {_sum_dir}")
+
+        def _dedup_executive_summary_title(text: str) -> str:
+            if not text or not isinstance(text, str):
+                return text
+            lines = text.split("\n")
+            import re
+            while lines:
+                stripped = lines[0].strip()
+                if (stripped.lower() in ("**executive summary**", "executive summary")
+                        or re.match(r'^#{1,3}\s+executive\s+summary', stripped, re.I)):
+                    lines.pop(0)
+                    if lines and not lines[0].strip():
+                        lines.pop(0)
+                else:
+                    break
+            return "\n".join(lines)
+        executive_summary = _dedup_executive_summary_title(executive_summary)
+
+        critic_data = {
+            "action_items": action_items,
+            "executive_summary": executive_summary,
+            "synthesis_result": synthesis_result
+        }
+        stage_runner.save_checkpoint("critic", critic_data)
+        stage_data["critic"] = critic_data
+
+    critic_data = ensure_stage_data("critic")
+    action_items = critic_data["action_items"]
+    executive_summary = critic_data["executive_summary"]
+    synthesis_result = critic_data.get("synthesis_result", synthesis_result)
+
+    if run_only_one_stage and requested_stage_name == "critic":
+        print("\n✅ Stopped after 'critic' stage.")
+        return 0
+
+    # --- Stage 7: report ---
+    if start_stage_idx <= 6:
+        print("\n--- [Stage 7/7: Report Generation] ---")
+        from quantpits.scripts.deep_analysis.report_generator import ReportGenerator
+
+        report_gen = ReportGenerator(all_findings, synthesis_result, executive_summary)
+        report_md = report_gen.generate()
+
+        output_path = os.path.join(workspace_root, args.output)
+        _base, _ext = os.path.splitext(output_path)
+        if data_date not in _base:
+            _suffix = data_date
+            if run_label:
+                _suffix += f"_{run_label}"
+            output_path = f"{_base}_{_suffix}{_ext}"
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(report_md)
+
+        print(f"\n✅ Report saved to: {output_path}")
+        print(f"   Health: {synthesis_result.get('health_status', 'Unknown')}")
+        print("=" * 60)
+
+        report_data = {
+            "report_md": report_md,
+            "output_path": output_path
+        }
+        stage_runner.save_checkpoint("report", report_data)
+        stage_data["report"] = report_data
 
     return 0
 

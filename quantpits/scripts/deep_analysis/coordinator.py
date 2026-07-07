@@ -106,6 +106,7 @@ class Coordinator:
         self._discovered_files = {}
         self._data_end_date = None
         self._data_start_date = None
+        self.training_context = None
 
     # ------------------------------------------------------------------
     # Data Discovery
@@ -114,6 +115,8 @@ class Coordinator:
     def discover(self):
         """Scan workspace for all available data and determine date range."""
         print("📂 Discovering data files...")
+        from .training_context import TrainingModeContext
+        self.training_context = TrainingModeContext.from_workspace(self.workspace_root)
         self._load_shared_dataframes()
         self._discover_dated_files()
         print(f"   Data range: {self._data_start_date} → {self._data_end_date}")
@@ -325,6 +328,7 @@ class Coordinator:
             model_contribution_files=_filter('model_contribution'),
             freq_change_date=self.freq_change_date,
             is_pre_cutoff_window=window.get('is_pre_cutoff', False),
+            training_context=self.training_context,
         )
 
     # ------------------------------------------------------------------
