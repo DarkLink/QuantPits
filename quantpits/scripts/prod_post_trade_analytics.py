@@ -7,7 +7,7 @@ Production Post-Trade Analytics 批量处理脚本
 
 使用方法:
     cd QuantPits
-    source workspaces/CSI300_Base/run_env.sh
+    source workspaces/Demo_Workspace/run_env.sh
     python quantpits/scripts/prod_post_trade_analytics.py                # 正常运行
     python quantpits/scripts/prod_post_trade_analytics.py --dry-run       # 仅预览，不写文件
     python quantpits/scripts/prod_post_trade_analytics.py --end-date 2026-02-10  # 指定结束日期

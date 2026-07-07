@@ -10,7 +10,7 @@
   python quantpits/scripts/migrate_records.py
 
   # 指定工作区目录
-  python quantpits/scripts/migrate_records.py --workspace ./workspaces/CSI300_Base
+  python quantpits/scripts/migrate_records.py --workspace ./workspaces/Demo_Workspace
 """
 import argparse
 import json

@@ -15,9 +15,9 @@ from quantpits.scripts.deep_analysis.promote_config import (
 @pytest.fixture
 def promote_workspaces(tmp_path):
     """Create production + playground workspaces for promotion testing."""
-    prod = tmp_path / "CSI300_Base"
+    prod = tmp_path / "Demo_Workspace"
     prod.mkdir()
-    pg = tmp_path / "CSI300_Base_Playground"
+    pg = tmp_path / "Demo_Workspace_Playground"
     pg.mkdir()
 
     # Production config

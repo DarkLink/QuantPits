@@ -1,12 +1,12 @@
 """
-Integration test: run PortfolioAnalyzer on real CSI300_Base production data.
+Integration test: run PortfolioAnalyzer on real Demo_Workspace production data.
 
 This file is automatically excluded from collection (via conftest.py
 ``collect_ignore_glob``) when ``QLIB_WORKSPACE_DIR`` does not point at a
 workspace with production data.  It will never show as SKIPPED in CI.
 
 Run with:
-  QLIB_WORKSPACE_DIR=workspaces/CSI300_Base \
+  QLIB_WORKSPACE_DIR=workspaces/Demo_Workspace \
     conda run -n qlib_cupy python -m pytest tests/quantpits/scripts/analysis/test_portfolio_analyzer_integration.py -v --tb=short
 """
 import os

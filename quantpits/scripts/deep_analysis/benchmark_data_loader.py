@@ -55,7 +55,7 @@ MAJOR_DD_THRESHOLD = -0.15
 
 # Quality score weights — similarity and recency dominate because:
 # - coverage is non-differentiating when all configs capture all regime types
-# - real-world experiments (CSI300_Base CHANGELOG) show older data hurts,
+# - real-world experiments show older data hurts,
 #   not helps — similarity to CURRENT market is what matters
 # - boundary and stability are tiebreakers
 WEIGHT_COVERAGE = 0.10

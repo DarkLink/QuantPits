@@ -2,7 +2,7 @@
 """
 Historical Trade Classification Backfill
 
-一次性脚本：为 CSI300_Base 工作区的全部历史交易记录批量生成分类标签。
+一次性脚本：为 Demo_Workspace 工作区的全部历史交易记录批量生成分类标签。
 
 Usage:
     cd QuantPits

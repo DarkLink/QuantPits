@@ -24,7 +24,7 @@ from quantpits.scripts.deep_analysis.feedback_loop import (
 @pytest.fixture
 def orchestrator_workspace(tmp_path):
     """Create a workspace with action_items, config, and data for testing."""
-    ws = tmp_path / "CSI300_Base"
+    ws = tmp_path / "Demo_Workspace"
     ws.mkdir()
 
     # config/
@@ -285,7 +285,7 @@ class TestFeedbackLoopExecute:
         assert len(report.validation_results) == 0
 
         # Verify Playground was created
-        pg_dir = os.path.join(os.path.dirname(str(ws)), "CSI300_Base_Playground")
+        pg_dir = os.path.join(os.path.dirname(str(ws)), "Demo_Workspace_Playground")
         assert os.path.isdir(pg_dir)
 
     def test_execute_dry_run(self, orchestrator_workspace):

@@ -10,7 +10,7 @@ from quantpits.scripts.deep_analysis.playground_manager import PlaygroundManager
 @pytest.fixture
 def production_workspace(tmp_path):
     """Create a realistic production workspace for testing."""
-    ws = tmp_path / "CSI300_Base"
+    ws = tmp_path / "Demo_Workspace"
     ws.mkdir()
 
     # config/

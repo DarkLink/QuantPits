@@ -171,7 +171,7 @@ def test_llm_trace_logger_full_flow(tmp_path):
         output_dir=str(tmp_path),
         run_id="run12345",
         run_date="2026-06-05",
-        workspace="CSI300_Base",
+        workspace="Demo_Workspace",
         pipeline_stage="layered",
         langfuse_adapter=mock_langfuse,
         enabled=True,
