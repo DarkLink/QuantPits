@@ -21,6 +21,7 @@ import gc
 import os
 import time
 import warnings
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -208,6 +209,8 @@ def train_window(model_name, yaml_file, window, params_base,
     if cache_size and cache_size != 0:
         from quantpits.utils.handler_cache import HandlerCacheManager
         cache_mgr = HandlerCacheManager(max_size_mb=cache_size)
+
+    total_t0 = time.time()
 
     try:
         with R.start(experiment_name=experiment_name):
@@ -457,6 +460,35 @@ def train_window(model_name, yaml_file, window, params_base,
             result['fold_scores'] = fold_scores
             result['performance'] = performance
 
+            # Track CPCV rolling training event (Phase 2c)
+            from quantpits.utils.train_utils import (
+                append_jsonl, ROLLING_TRAINING_HISTORY_FILE,
+            )
+            fold_scores_clean = [s for s in fold_scores if s is not None]
+            history_entry = {
+                "model_name": model_name,
+                "mode": "cpcv_rolling",
+                "experiment_name": experiment_name,
+                "record_id": recorder.id,
+                "anchor_date": params_base.get('anchor_date'),
+                "window_idx": widx,
+                "train_start": window['train_start'],
+                "train_end": window['train_end'],
+                "test_start": window['test_start'],
+                "test_end": window['test_end'],
+                "trained_at": datetime.now().isoformat(),
+                "duration_seconds": round(time.time() - total_t0, 2),
+                "n_folds": len(folds),
+                "fold_ic_mean": float(np.mean(fold_scores_clean)) if fold_scores_clean else None,
+                "IC_Mean": performance.get("IC_Mean"),
+                "ICIR": performance.get("ICIR"),
+                "Ann_Excess": performance.get("Ann_Excess"),
+                "Max_DD": performance.get("Max_DD"),
+                "Information_Ratio": performance.get("Information_Ratio"),
+                "score_type": "cpcv_rolling_folds",
+            }
+            append_jsonl(ROLLING_TRAINING_HISTORY_FILE, history_entry)
+
             if cache_mgr is not None:
                 print(f"  Handler Cache: {cache_mgr}")
             print(f"  ✅ CPCV window {widx} complete: {len(folds)} folds, "
@@ -685,6 +717,24 @@ def predict_latest(model_name, model_info, state, rolling_exp_name,
 
         print(f"  [{model_name}] Ensemble prediction complete: "
               f"{len(final_pred)} rows")
+
+        # Track CPCV rolling predict-only event (Phase 2c)
+        from quantpits.utils.train_utils import (
+            append_jsonl, ROLLING_PREDICTION_HISTORY_FILE,
+        )
+        pred_entry = {
+            "model_name": model_name,
+            "mode": "cpcv_rolling",
+            "anchor_date": anchor_date,
+            "predicted_at": datetime.now().isoformat(),
+            "experiment_name": rolling_exp_name,
+            "record_id": None,
+            "source_record_id": latest['record_id'],
+            "window_idx": latest_widx,
+            "prediction_type": "cpcv_rolling_ensemble",
+        }
+        append_jsonl(ROLLING_PREDICTION_HISTORY_FILE, pred_entry)
+
         return final_pred
 
     except Exception as e:

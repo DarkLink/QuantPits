@@ -11,6 +11,7 @@ Exports the standard strategy interface:
 """
 
 import os
+import time
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -173,7 +174,9 @@ def train_window(model_name, yaml_file, window, params_base,
             dataset = init_instance_by_config(dataset_cfg)
 
             print(f"[{model_name}|W{widx}] Training...")
+            t0 = time.time()
             model.fit(dataset=dataset)
+            train_duration = round(time.time() - t0, 2)
 
             # Predict
             print(f"[{model_name}|W{widx}] Predicting...")
@@ -218,6 +221,31 @@ def train_window(model_name, yaml_file, window, params_base,
             result['success'] = True
             result['record_id'] = rid
             result['performance'] = performance
+
+            # Track rolling training event (Phase 2c)
+            from quantpits.utils.train_utils import (
+                append_jsonl, ROLLING_TRAINING_HISTORY_FILE,
+            )
+            history_entry = {
+                "model_name": model_name,
+                "mode": "rolling",
+                "experiment_name": experiment_name,
+                "record_id": rid,
+                "anchor_date": params_base.get('anchor_date'),
+                "window_idx": widx,
+                "train_start": window['train_start'],
+                "train_end": window['train_end'],
+                "valid_start": window['valid_start'],
+                "valid_end": window['valid_end'],
+                "test_start": window['test_start'],
+                "test_end": window['test_end'],
+                "trained_at": datetime.now().isoformat(),
+                "duration_seconds": train_duration,
+                "IC_Mean": performance.get("IC_Mean"),
+                "ICIR": performance.get("ICIR"),
+                "score_type": "rolling_slide",
+            }
+            append_jsonl(ROLLING_TRAINING_HISTORY_FILE, history_entry)
 
     except Exception as e:
         result['error'] = str(e)
@@ -507,6 +535,24 @@ def predict_latest(model_name, model_info, state, rolling_exp_name,
             pred.columns = ['score']
 
         print(f"  [{model_name}] Prediction complete: Recorder={latest['record_id']}")
+
+        # Track rolling predict-only event (Phase 2c)
+        from quantpits.utils.train_utils import (
+            append_jsonl, ROLLING_PREDICTION_HISTORY_FILE,
+        )
+        pred_entry = {
+            "model_name": model_name,
+            "mode": "rolling",
+            "anchor_date": anchor_date,
+            "predicted_at": datetime.now().isoformat(),
+            "experiment_name": rolling_exp_name,
+            "record_id": None,
+            "source_record_id": latest['record_id'],
+            "window_idx": widx,
+            "prediction_type": "rolling_gap_predict",
+        }
+        append_jsonl(ROLLING_PREDICTION_HISTORY_FILE, pred_entry)
+
         return pred
 
     except Exception as e:

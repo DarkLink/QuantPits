@@ -225,12 +225,16 @@ As of Phase 2b, the Deep Analysis system has full training mode awareness. `Trai
 | Source | Provides |
 |--------|----------|
 | `latest_train_records.json` | Model→mode mapping (`lstm_Alpha158@static`), anchor_date, experiment_name |
-| `training_history.jsonl` | Per-model last train date, mode, convergence status |
-| `prediction_history.jsonl` | Per-model last predict-only event (for predict-only cycle detection) |
+| `training_history.jsonl` | Per-model last train date, mode, convergence status (Phase 2b) |
+| `prediction_history.jsonl` | Per-model last predict-only event (Phase 2b) |
+| `data/rolling_training_history.jsonl` | Rolling training events (slide + CPCV), separate from static (Phase 2c) |
+| `data/rolling_prediction_history.jsonl` | Rolling predict-only events (slide + CPCV) (Phase 2c) |
 | `config/rolling_config.yaml` | Rolling scheduler configuration |
 | `data/rolling_state.json` | Slide rolling progress |
 | `data/rolling_state_cpcv.json` | CPCV rolling progress |
 | `config/model_config.json` | CPCV parameters (purged_cv) |
+
+> **Phase 2c file separation**: Rolling training has independent code paths (calls `model.fit()` directly, bypassing `train_utils` wrappers) and produces "thin" log entries (no epoch-level data). Rolling events are therefore written to dedicated files, fully isolated from static training logs. Users not using rolling training never create these files — zero overhead.
 
 #### `@suffix` Model Key Convention
 
@@ -452,21 +456,68 @@ One JSON object per line, recording each predict-only event. Written by `predict
 | `ICIR` | float\|null | Prediction-period ICIR |
 | `prediction_type` | string\|null | `cpcv_ensemble` (CPCV predict only) |
 
+### `rolling_training_history.jsonl` (Phase 2c)
+
+One JSON object per line, recording slide or CPCV rolling training events. Written by `strategy_slide.py::train_window()` and `strategy_cpcv.py::train_window()`. Separated from `training_history.jsonl` to avoid log bloat from bulk rolling entries.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model_name` | string | Model name (without @mode suffix) |
+| `mode` | string | `rolling` (slide mode) or `cpcv_rolling` (CPCV mode) |
+| `experiment_name` | string | MLflow experiment name |
+| `record_id` | string | MLflow recorder UUID |
+| `anchor_date` | string | Training anchor date (YYYY-MM-DD) |
+| `window_idx` | int | Sliding window index |
+| `train_start` | string | Training segment start date |
+| `train_end` | string | Training segment end date |
+| `valid_start` | string\|null | Validation segment start (slide only) |
+| `valid_end` | string\|null | Validation segment end (slide only) |
+| `test_start` | string | Test segment start date |
+| `test_end` | string | Test segment end date |
+| `trained_at` | string | ISO 8601 training completion timestamp |
+| `duration_seconds` | float | Training duration in seconds |
+| `IC_Mean` | float\|null | Test-set IC mean |
+| `ICIR` | float\|null | IC information ratio |
+| `score_type` | string | `rolling_slide` or `cpcv_rolling_folds` |
+| `n_folds` | int\|null | CPCV fold count (only `cpcv_rolling`) |
+| `fold_ic_mean` | float\|null | Fold validation IC mean (only `cpcv_rolling`) |
+| `Ann_Excess` | float\|null | Annualized excess return (CPCV only) |
+| `Max_DD` | float\|null | Maximum drawdown (CPCV only) |
+| `Information_Ratio` | float\|null | Information ratio (CPCV only) |
+
+> **Note**: The following fields are intentionally absent (unavailable from `model.fit()`): `early_stopped`, `actual_epochs`, `converged`, `epoch_*` arrays. Setting them to `null` would be misleading; absence is truthful.
+
+### `rolling_prediction_history.jsonl` (Phase 2c)
+
+One JSON object per line, recording rolling predict-only events. Written by `strategy_slide.py::predict_latest()` and `strategy_cpcv.py::predict_latest()`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model_name` | string | Model name |
+| `mode` | string | `rolling` or `cpcv_rolling` |
+| `anchor_date` | string | Prediction anchor date |
+| `predicted_at` | string | ISO 8601 prediction timestamp |
+| `experiment_name` | string | MLflow experiment name |
+| `record_id` | null | Always `null` (`predict_latest()` does not create a new MLflow run) |
+| `source_record_id` | string | Source training window recorder UUID |
+| `window_idx` | int | Sliding window index used for prediction |
+| `prediction_type` | string | `rolling_gap_predict` (slide) or `cpcv_rolling_ensemble` (CPCV) |
+
 ### `latest_train_records.json`
 
 Workspace root file recording the latest training/prediction cycle's model registry.
 
 ```json
 {
-    "experiment_name": "rolling_combined_weekly",
-    "static_experiment_name": "prod_predict_weekly",
+    "experiment_name": "<your_experiment_name>",
+    "static_experiment_name": "<static_experiment_name>",
     "rolling_experiment_name": "",
-    "cpcv_experiment_name": "prod_predict_weekly",
-    "anchor_date": "2026-06-26",
+    "cpcv_experiment_name": "<cpcv_experiment_name>",
+    "anchor_date": "YYYY-MM-DD",
     "models": {
         "lstm_Alpha158@static": "<record-uuid>",
         "lstm_Alpha158@rolling": "<record-uuid>",
-        "linear_Alpha158@cpcv"": "<record-uuid>"
+        "linear_Alpha158@cpcv": "<record-uuid>"
     }
 }
 ```

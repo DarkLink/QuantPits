@@ -36,6 +36,11 @@ def run_agents(state, **kwargs):
     coordinator._discovered_files = state.discovered_files
     coordinator._load_shared_dataframes()
 
+    # Rebuild training context (Phase 2b/2c) — discover() is not called here,
+    # so TrainingModeContext must be instantiated explicitly.
+    from quantpits.scripts.deep_analysis.training_context import TrainingModeContext
+    coordinator.training_context = TrainingModeContext.from_workspace(workspace_root)
+
     # Load dynamic agents
     manifest_agents = load_manifest_agents(workspace_root, manifest_path)
     ALL_AGENTS.update(manifest_agents)

@@ -203,6 +203,21 @@ class TrainingModeContext:
                     "record_id": entry.get("record_id"),
                 }
 
+        # 5b. Merge rolling prediction history (Phase 2c — file may not exist)
+        rolling_pred_path = os.path.join(
+            workspace_root, "data", "rolling_prediction_history.jsonl"
+        )
+        for entry in _read_jsonl(rolling_pred_path):
+            name = entry.get("model_name")
+            if name and entry.get("predicted_at", "") >= last_prediction.get(
+                name, {}
+            ).get("date", ""):
+                last_prediction[name] = {
+                    "date": entry["predicted_at"],
+                    "mode": entry.get("mode", "rolling"),
+                    "record_id": entry.get("record_id"),
+                }
+
         # 6. Parse training_history.jsonl for per-model last-train tracking
         last_train = {}
         hist_path = os.path.join(workspace_root, "data", "training_history.jsonl")
@@ -217,6 +232,23 @@ class TrainingModeContext:
                     "record_id": entry.get("record_id"),
                     "epochs": entry.get("actual_epochs"),
                     "early_stopped": entry.get("early_stopped"),
+                }
+
+        # 6b. Merge rolling training history (Phase 2c — file may not exist)
+        rolling_hist_path = os.path.join(
+            workspace_root, "data", "rolling_training_history.jsonl"
+        )
+        for entry in _read_jsonl(rolling_hist_path):
+            name = entry.get("model_name")
+            if name and entry.get("trained_at", "") >= last_train.get(
+                name, {}
+            ).get("date", ""):
+                last_train[name] = {
+                    "date": entry["trained_at"],
+                    "mode": entry.get("mode", "rolling"),
+                    "record_id": entry.get("record_id"),
+                    "epochs": None,
+                    "early_stopped": None,
                 }
 
         # 7. Detect predict-only cycle (>50% of models have predict as latest op)

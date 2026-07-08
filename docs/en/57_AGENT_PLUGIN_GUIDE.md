@@ -196,13 +196,56 @@ class MyModeAwareAgent(BaseAgent):
 |--------------------|-------------|-------------|
 | `tc.available_modes` | `List[str]` | `latest_train_records.json` @suffix |
 | `tc.models_by_name` | `Dict[str, Dict[str, str]]` | `latest_train_records.json` models keys |
-| `tc.is_predict_only_cycle` | `bool` | `training_history.jsonl` + `prediction_history.jsonl` |
-| `tc.last_train` | `Dict[str, dict]` | `training_history.jsonl` (latest train) |
-| `tc.last_prediction` | `Dict[str, dict]` | `prediction_history.jsonl` (latest predict) |
-| `tc.get_last_operation(name)` | `dict\|None` | Merges last_train + last_prediction |
+| `tc.is_predict_only_cycle` | `bool` | `training_history.jsonl` + `prediction_history.jsonl` + rolling files |
+| `tc.last_train` | `Dict[str, dict]` | `training_history.jsonl` + `rolling_training_history.jsonl` (merged, latest date wins) |
+| `tc.last_prediction` | `Dict[str, dict]` | `prediction_history.jsonl` + `rolling_prediction_history.jsonl` (merged) |
+| `tc.get_last_operation(name)` | `dict\|None` | Merges all last_train + last_prediction (includes rolling) |
 | `tc.get_rolling_gap_days(mode)` | `int\|None` | `rolling_state.json` vs anchor_date |
 | `tc.rolling_states` | `Dict[str, dict]` | `data/rolling_state*.json` |
+
+> **Phase 2c merge strategy**: `TrainingModeContext.from_workspace()` first reads static/CV files, then conditionally reads rolling files (`rolling_training_history.jsonl`, `rolling_prediction_history.jsonl`). For each model, the entry with the latest date wins — a rolling entry can override an earlier static entry, and vice versa. Workspaces not using rolling training never create these files — zero overhead.
 
 ### 5.3 Predict-Only Cycle Calibration
 
 Custom agents should follow the same convention as built-in agents: **suppress "not retrained" warnings during predict-only cycles**. If a model has training history (`tc.get_last_operation()` returns `type=train`), it should not be flagged as "stale" or "missing" just because it wasn't retrained this cycle. Only models that have never been trained should be flagged.
+
+### 5.4 Rolling Training State Queries (Phase 2c)
+
+Beyond basic training mode awareness, custom agents can query rolling training progress and status:
+
+```python
+def analyze(self, ctx: AnalysisContext) -> AgentFindings:
+    tc = ctx.training_context
+    if not tc or not tc.rolling_states:
+        return AgentFindings(self.name, ctx.window_label, [], [], {})
+
+    findings = []
+
+    # 1. Check rolling progress
+    for mode, state in tc.rolling_states.items():
+        total = state.get('total_windows', 0)
+        completed = len(state.get('completed_windows', {}))
+        gap = tc.get_rolling_gap_days(mode)
+        if gap is not None and gap > 30:
+            findings.append(self._make_finding(
+                'warning', f'{mode} rolling pipeline stale',
+                f'{completed}/{total} windows, {gap}d since last anchor'
+            ))
+
+    # 2. Filter models by rolling mode
+    rolling_slide_models = tc.get_models_with_mode('rolling')
+    cpcv_rolling_models = tc.get_models_with_mode('cpcv_rolling')
+
+    # 3. Check mode coverage completeness
+    for model in tc.models_by_name:
+        modes = tc.models_by_name[model]
+        if 'rolling' not in modes and tc.rolling_states.get('rolling'):
+            findings.append(self._make_finding(
+                'info', f'{model}: slide rolling not configured',
+                f'Model has modes {list(modes.keys())} but slide rolling is active'
+            ))
+
+    return AgentFindings(self.name, ctx.window_label, findings, [], {})
+```
+
+**Key data sources**: `tc.rolling_states` contains the full `rolling_state.json` dict for slide mode (key `"rolling"`) and CPCV mode (key `"cpcv_rolling"`). Direct access to `state['total_windows']`, `state['completed_windows']`, `state['anchor_date']` is available. `tc.rolling_states` is populated only when the corresponding files exist — you will never see spurious empty dicts.

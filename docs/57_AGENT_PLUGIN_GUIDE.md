@@ -196,13 +196,56 @@ class MyModeAwareAgent(BaseAgent):
 |-----------|----------|----------|
 | `tc.available_modes` | `List[str]` | `latest_train_records.json` 的 @suffix |
 | `tc.models_by_name` | `Dict[str, Dict[str, str]]` | `latest_train_records.json` models 键 |
-| `tc.is_predict_only_cycle` | `bool` | `training_history.jsonl` + `prediction_history.jsonl` |
-| `tc.last_train` | `Dict[str, dict]` | `training_history.jsonl`（最近训练） |
-| `tc.last_prediction` | `Dict[str, dict]` | `prediction_history.jsonl`（最近预测） |
-| `tc.get_last_operation(name)` | `dict\|None` | 综合 last_train + last_prediction |
+| `tc.is_predict_only_cycle` | `bool` | `training_history.jsonl` + `prediction_history.jsonl` + rolling 文件 |
+| `tc.last_train` | `Dict[str, dict]` | `training_history.jsonl` + `rolling_training_history.jsonl`（合并，取最新日期） |
+| `tc.last_prediction` | `Dict[str, dict]` | `prediction_history.jsonl` + `rolling_prediction_history.jsonl`（合并） |
+| `tc.get_last_operation(name)` | `dict\|None` | 综合所有 last_train + last_prediction（含 rolling） |
 | `tc.get_rolling_gap_days(mode)` | `int\|None` | `rolling_state.json` vs anchor_date |
 | `tc.rolling_states` | `Dict[str, dict]` | `data/rolling_state*.json` |
+
+> **Phase 2c 合并策略**: `TrainingModeContext.from_workspace()` 先读取静态/CV 文件，再条件读取 rolling 文件（`rolling_training_history.jsonl`、`rolling_prediction_history.jsonl`）。对每个模型保留最新日期的条目 — rolling 条目可以覆盖更早的静态条目，反之亦然。未使用滚动训练的工作区不会产生这些文件，零额外开销。
 
 ### 5.3 Predict-Only 周期校准
 
 自定义 agent 应遵循与内置 agent 相同的约定：**在仅预测周期中抑制基于"未重训"的警告**。如果模型有训练历史（`tc.get_last_operation()` 返回 `type=train`），仅因本周期未重训不应标记为"陈旧"或"缺失"。只有从未训练过的模型才需要标记。
+
+### 5.4 滚动训练状态查询 (Phase 2c)
+
+除基础训练模式感知外，自定义 agent 还可以查询滚动训练进度和状态：
+
+```python
+def analyze(self, ctx: AnalysisContext) -> AgentFindings:
+    tc = ctx.training_context
+    if not tc or not tc.rolling_states:
+        return AgentFindings(self.name, ctx.window_label, [], [], {})
+
+    findings = []
+
+    # 1. 检查滚动进度
+    for mode, state in tc.rolling_states.items():
+        total = state.get('total_windows', 0)
+        completed = len(state.get('completed_windows', {}))
+        gap = tc.get_rolling_gap_days(mode)
+        if gap is not None and gap > 30:
+            findings.append(self._make_finding(
+                'warning', f'{mode} rolling pipeline stale',
+                f'{completed}/{total} windows, {gap}d since last anchor'
+            ))
+
+    # 2. 按滚动模式筛选模型
+    rolling_slide_models = tc.get_models_with_mode('rolling')
+    cpcv_rolling_models = tc.get_models_with_mode('cpcv_rolling')
+
+    # 3. 检查模式覆盖完整性
+    for model in tc.models_by_name:
+        modes = tc.models_by_name[model]
+        if 'rolling' not in modes and tc.rolling_states.get('rolling'):
+            findings.append(self._make_finding(
+                'info', f'{model}: slide rolling not configured',
+                f'Model has modes {list(modes.keys())} but slide rolling is active'
+            ))
+
+    return AgentFindings(self.name, ctx.window_label, findings, [], {})
+```
+
+**关键数据来源**: `tc.rolling_states` 包含滑动模式（key `"rolling"`）和 CPCV 模式（key `"cpcv_rolling"`）的完整 `rolling_state.json` 字典。可通过 `state['total_windows']`、`state['completed_windows']`、`state['anchor_date']` 直接访问进度信息。`tc.rolling_states` 仅在对应文件存在时填充 — 不会产生虚假的空字典。

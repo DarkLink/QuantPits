@@ -47,6 +47,14 @@ ROLLING_STATE_FILE = os.path.join(ROOT_DIR, "data", "rolling_state.json")
 ROLLING_STATE_FILE_CPCV = os.path.join(ROOT_DIR, "data", "rolling_state_cpcv.json")
 # Legacy: kept only for migration from old dual-file format
 LEGACY_ROLLING_RECORD_FILE = os.path.join(ROOT_DIR, "latest_rolling_records.json")
+
+# Phase 2b: Training & prediction history tracking (static/CV paths)
+TRAINING_HISTORY_FILE = os.path.join(ROOT_DIR, "data", "training_history.jsonl")
+PREDICTION_HISTORY_FILE = os.path.join(ROOT_DIR, "data", "prediction_history.jsonl")
+
+# Phase 2c: Rolling-specific tracking (slide + CPCV rolling paths)
+ROLLING_TRAINING_HISTORY_FILE = os.path.join(ROOT_DIR, "data", "rolling_training_history.jsonl")
+ROLLING_PREDICTION_HISTORY_FILE = os.path.join(ROOT_DIR, "data", "rolling_prediction_history.jsonl")
 PRETRAINED_DIR = os.path.join(ROOT_DIR, "data", "pretrained")
 
 # Unified training mode system
@@ -87,6 +95,29 @@ def parse_model_key(key):
         parts = key.rsplit(MODE_SEPARATOR, 1)
         return parts[0], parts[1]
     return key, DEFAULT_TRAINING_MODE
+
+
+def append_jsonl(file_path, entry):
+    """Append a dict as a JSON line to a JSONL file. Creates parent dirs as needed.
+
+    Uses ``default=str`` to handle non-serializable types (numpy floats,
+    pandas Timestamps). Silently catches all exceptions — tracking must
+    never break the training pipeline.
+
+    Args:
+        file_path: Absolute path to the JSONL file.
+        entry: Dict to serialize and append.
+
+    Returns:
+        bool: True if write succeeded, False on any I/O or serialization error.
+    """
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, default=str) + '\n')
+        return True
+    except Exception:
+        return False
 
 
 def _flatten_rnn_params(model):
@@ -1459,15 +1490,10 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             performance["convergence"] = convergence_log
 
             # 追加到 training_history.jsonl
-            try:
-                history_file = os.path.join(ROOT_DIR, 'data', 'training_history.jsonl')
-                os.makedirs(os.path.dirname(history_file), exist_ok=True)
-                history_entry = {"model_name": model_name, "mode": mode}
-                history_entry.update(convergence_log)
-                with open(history_file, 'a') as f:
-                    f.write(json.dumps(history_entry) + "\n")
-            except Exception as e:
-                print(f"[{model_name}] Warning: Could not write to training_history.jsonl: {e}")
+            history_entry = {"model_name": model_name, "mode": mode}
+            history_entry.update(convergence_log)
+            if not append_jsonl(TRAINING_HISTORY_FILE, history_entry):
+                print(f"[{model_name}] Warning: Could not write to training_history.jsonl")
             
             rid = recorder.info['id']
             print(f"[{model_name}] Finished! Recorder ID: {rid}")
@@ -1824,36 +1850,30 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
             result['performance'] = performance
 
             # Write aggregate CPCV convergence entry to training_history.jsonl
-            try:
-                history_file = os.path.join(ROOT_DIR, 'data', 'training_history.jsonl')
-                os.makedirs(os.path.dirname(history_file), exist_ok=True)
-                history_entry = {
-                    "model_name": model_name,
-                    "mode": mode,
-                    "experiment_name": experiment_name,
-                    "record_id": recorder.id,
-                    "anchor_date": params['anchor_date'],
-                    "trained_at": datetime.now().isoformat(),
-                    "duration_seconds": None,
-                    "early_stopped": False,
-                    "actual_epochs": None,
-                    "configured_epochs": None,
-                    "best_epoch": None,
-                    "best_score": None,
-                    "converged": None,
-                    "score_type": "cpcv_folds",
-                    "n_folds": len(folds),
-                    "fold_ic_mean": float(np.mean(
-                        [s for s in fold_scores if s is not None])
-                    ) if fold_scores else None,
-                    "IC_Mean": performance.get('IC_Mean'),
-                    "ICIR": performance.get('ICIR'),
-                }
-                with open(history_file, 'a') as f:
-                    f.write(json.dumps(history_entry) + "\n")
-            except Exception as e:
+            fold_scores_clean = [s for s in fold_scores if s is not None]
+            history_entry = {
+                "model_name": model_name,
+                "mode": mode,
+                "experiment_name": experiment_name,
+                "record_id": recorder.id,
+                "anchor_date": params['anchor_date'],
+                "trained_at": datetime.now().isoformat(),
+                "duration_seconds": None,
+                "early_stopped": False,
+                "actual_epochs": None,
+                "configured_epochs": None,
+                "best_epoch": None,
+                "best_score": None,
+                "converged": None,
+                "score_type": "cpcv_folds",
+                "n_folds": len(folds),
+                "fold_ic_mean": float(np.mean(fold_scores_clean)) if fold_scores_clean else None,
+                "IC_Mean": performance.get('IC_Mean'),
+                "ICIR": performance.get('ICIR'),
+            }
+            if not append_jsonl(TRAINING_HISTORY_FILE, history_entry):
                 print(f"[{model_name}] Warning: Could not write CPCV "
-                      f"convergence to training_history.jsonl: {e}")
+                      f"convergence to training_history.jsonl")
 
             print(f"  ✅ CPCV training complete: {len(folds)} folds, "
                   f"recorder={recorder.id}")
@@ -2104,27 +2124,21 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
             result['performance'] = performance
 
             # Track CPCV predict-only event in prediction_history.jsonl
-            try:
-                pred_file = os.path.join(ROOT_DIR, 'data',
-                                         'prediction_history.jsonl')
-                os.makedirs(os.path.dirname(pred_file), exist_ok=True)
-                pred_entry = {
-                    "model_name": model_name,
-                    "mode": "cpcv",
-                    "anchor_date": params['anchor_date'],
-                    "predicted_at": datetime.now().isoformat(),
-                    "experiment_name": experiment_name,
-                    "record_id": recorder.id,
-                    "source_record_id": source_id,
-                    "IC_Mean": performance.get('IC_Mean'),
-                    "ICIR": performance.get('ICIR'),
-                    "prediction_type": "cpcv_ensemble",
-                }
-                with open(pred_file, 'a') as f:
-                    f.write(json.dumps(pred_entry) + "\n")
-            except Exception as e:
+            pred_entry = {
+                "model_name": model_name,
+                "mode": "cpcv",
+                "anchor_date": params['anchor_date'],
+                "predicted_at": datetime.now().isoformat(),
+                "experiment_name": experiment_name,
+                "record_id": recorder.id,
+                "source_record_id": source_id,
+                "IC_Mean": performance.get('IC_Mean'),
+                "ICIR": performance.get('ICIR'),
+                "prediction_type": "cpcv_ensemble",
+            }
+            if not append_jsonl(PREDICTION_HISTORY_FILE, pred_entry):
                 print(f"[{model_name}] Warning: Could not write CPCV predict "
-                      f"to prediction_history.jsonl: {e}")
+                      f"to prediction_history.jsonl")
             print(f"  ✅ CPCV predict-only complete: recorder={recorder.id}")
 
     except Exception as e:
@@ -2680,28 +2694,22 @@ def predict_single_model(model_name, model_info, params, experiment_name,
             result['performance'] = performance
 
             # Track predict-only event in prediction_history.jsonl
-            try:
-                pred_file = os.path.join(ROOT_DIR, 'data',
-                                         'prediction_history.jsonl')
-                os.makedirs(os.path.dirname(pred_file), exist_ok=True)
-                # Determine source mode from the resolved key (e.g. lstm@static → static)
-                _, source_mode = parse_model_key(resolved_key)
-                pred_entry = {
-                    "model_name": model_name,
-                    "mode": source_mode,
-                    "anchor_date": params['anchor_date'],
-                    "predicted_at": datetime.now().isoformat(),
-                    "experiment_name": experiment_name,
-                    "record_id": rid,
-                    "source_record_id": source_record_id,
-                    "IC_Mean": performance.get('IC_Mean'),
-                    "ICIR": performance.get('ICIR'),
-                }
-                with open(pred_file, 'a') as f:
-                    f.write(json.dumps(pred_entry) + "\n")
-            except Exception as e:
+            # Determine source mode from the resolved key (e.g. lstm@static → static)
+            _, source_mode = parse_model_key(resolved_key)
+            pred_entry = {
+                "model_name": model_name,
+                "mode": source_mode,
+                "anchor_date": params['anchor_date'],
+                "predicted_at": datetime.now().isoformat(),
+                "experiment_name": experiment_name,
+                "record_id": rid,
+                "source_record_id": source_record_id,
+                "IC_Mean": performance.get('IC_Mean'),
+                "ICIR": performance.get('ICIR'),
+            }
+            if not append_jsonl(PREDICTION_HISTORY_FILE, pred_entry):
                 print(f"[{model_name}] Warning: Could not write to "
-                      f"prediction_history.jsonl: {e}")
+                      f"prediction_history.jsonl")
 
     except Exception as e:
         result['error'] = str(e)

@@ -215,12 +215,16 @@ python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manif
 | 数据源 | 提供内容 |
 |--------|----------|
 | `latest_train_records.json` | 模型→模式映射 (`lstm_Alpha158@static`)，anchor_date，experiment_name |
-| `training_history.jsonl` | 每个模型的最近训练日期、模式、收敛状态 |
-| `prediction_history.jsonl` | 每个模型的最近仅预测事件（用于检测 predict-only 周期） |
+| `training_history.jsonl` | 静态/CV 训练的最近训练日期、模式、收敛状态（Phase 2b） |
+| `prediction_history.jsonl` | 静态/CV 训练的最近仅预测事件（Phase 2b） |
+| `data/rolling_training_history.jsonl` | 滚动训练事件（slide + CPCV），与静态文件分离（Phase 2c） |
+| `data/rolling_prediction_history.jsonl` | 滚动仅预测事件（slide + CPCV）（Phase 2c） |
 | `config/rolling_config.yaml` | 滚动调度器配置 |
 | `data/rolling_state.json` | 滑动滚动进度 (slide) |
 | `data/rolling_state_cpcv.json` | CPCV 滚动进度 |
 | `config/model_config.json` | CPCV 参数 (purged_cv) |
+
+> **Phase 2c 文件分离设计**: 滚动训练有独立的代码路径（直接调用 `model.fit()`，不经过 `train_utils` 包装函数），且产生"薄"日志（无 epoch 级数据）。因此滚动事件写入独立文件，与静态训练日志完全隔离。未启用滚动的用户不会产生这些文件，零额外开销。
 
 #### `@suffix` 模型键约定
 
@@ -439,17 +443,64 @@ python -m quantpits.scripts.run_feedback_loop \
 | `ICIR` | float\|null | 预测期 ICIR |
 | `prediction_type` | string\|null | `cpcv_ensemble`（仅 CPCV 预测） |
 
+### `rolling_training_history.jsonl` (Phase 2c)
+
+每行一个 JSON 对象，记录滑动窗口或 CPCV 滚动训练事件。由 `strategy_slide.py::train_window()` 和 `strategy_cpcv.py::train_window()` 写入。与 `training_history.jsonl` 分离，避免滚动批量条目的日志膨胀。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `model_name` | string | 模型名称（不含 @mode 后缀） |
+| `mode` | string | `rolling`（slide 模式）或 `cpcv_rolling`（CPCV 模式） |
+| `experiment_name` | string | MLflow 实验名称 |
+| `record_id` | string | MLflow recorder UUID |
+| `anchor_date` | string | 训练锚日期 (YYYY-MM-DD) |
+| `window_idx` | int | 滑动窗口索引 |
+| `train_start` | string | 训练段起始日期 |
+| `train_end` | string | 训练段结束日期 |
+| `valid_start` | string\|null | 验证段起始（仅 slide） |
+| `valid_end` | string\|null | 验证段结束（仅 slide） |
+| `test_start` | string | 测试段起始日期 |
+| `test_end` | string | 测试段结束日期 |
+| `trained_at` | string | ISO 8601 训练完成时间戳 |
+| `duration_seconds` | float | 训练耗时（秒） |
+| `IC_Mean` | float\|null | 测试集 IC 均值 |
+| `ICIR` | float\|null | IC 信息比 |
+| `score_type` | string | `rolling_slide` 或 `cpcv_rolling_folds` |
+| `n_folds` | int\|null | CPCV fold 数（仅 `cpcv_rolling`） |
+| `fold_ic_mean` | float\|null | Fold 验证 IC 均值（仅 `cpcv_rolling`） |
+| `Ann_Excess` | float\|null | 年化超额收益（仅 CPCV） |
+| `Max_DD` | float\|null | 最大回撤（仅 CPCV） |
+| `Information_Ratio` | float\|null | 信息比（仅 CPCV） |
+
+> **注意**: 以下字段不可用（`model.fit()` 不返回 epoch 级数据）故不存在：`early_stopped`、`actual_epochs`、`converged`、`epoch_*` 数组。用 `null` 代替是误导的；字段不存在本身就是事实。
+
+### `rolling_prediction_history.jsonl` (Phase 2c)
+
+每行一个 JSON 对象，记录滚动仅预测事件。由 `strategy_slide.py::predict_latest()` 和 `strategy_cpcv.py::predict_latest()` 写入。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `model_name` | string | 模型名称 |
+| `mode` | string | `rolling` 或 `cpcv_rolling` |
+| `anchor_date` | string | 预测锚日期 |
+| `predicted_at` | string | ISO 8601 预测时间戳 |
+| `experiment_name` | string | MLflow 实验名称 |
+| `record_id` | null | 始终 `null`（`predict_latest()` 不创建新 MLflow run） |
+| `source_record_id` | string | 源训练窗口的 recorder UUID |
+| `window_idx` | int | 用于预测的滑动窗口索引 |
+| `prediction_type` | string | `rolling_gap_predict`（slide）或 `cpcv_rolling_ensemble`（CPCV） |
+
 ### `latest_train_records.json`
 
 工作区根目录，记录最新训练/预测周期的模型注册信息。
 
 ```json
 {
-    "experiment_name": "rolling_combined_weekly",
-    "static_experiment_name": "prod_predict_weekly",
+    "experiment_name": "<your_experiment_name>",
+    "static_experiment_name": "<static_experiment_name>",
     "rolling_experiment_name": "",
-    "cpcv_experiment_name": "prod_predict_weekly",
-    "anchor_date": "2026-06-26",
+    "cpcv_experiment_name": "<cpcv_experiment_name>",
+    "anchor_date": "YYYY-MM-DD",
     "models": {
         "lstm_Alpha158@static": "<record-uuid>",
         "lstm_Alpha158@rolling": "<record-uuid>",

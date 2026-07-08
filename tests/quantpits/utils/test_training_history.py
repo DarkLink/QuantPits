@@ -185,13 +185,14 @@ def test_convergence_log_appended_to_jsonl(mock_env_constants, mock_qlib, mock_p
         yaml.dump(yaml_content, f)
     
     history_file = tmp_path / "data" / "training_history.jsonl"
-    
+
     with patch('quantpits.utils.train_utils.ROOT_DIR', str(tmp_path)), \
+         patch('quantpits.utils.train_utils.TRAINING_HISTORY_FILE', str(history_file)), \
          patch('quantpits.utils.train_utils.os.path.exists', return_value=True):
-        
+
         train_single_model("model1", str(yaml_file), mock_params, "test_exp")
         train_single_model("model2", str(yaml_file), mock_params, "test_exp")
-        
+
         assert history_file.exists()
         lines = history_file.read_text().splitlines()
         assert len(lines) == 2
