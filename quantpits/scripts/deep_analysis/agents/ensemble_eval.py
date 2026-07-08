@@ -88,6 +88,28 @@ class EnsembleEvolutionAgent(BaseAgent):
 
             findings.append(self._make_finding(severity, title, detail, event))
 
+        # --- 2b. Mode-switch vs retirement detection ---
+        tc = ctx.training_context
+        if tc and tc.models_by_name:
+            for event in change_events:
+                if event.get('type') != 'composition_change':
+                    continue
+                removed = set(event.get('old_models', [])) - set(event.get('new_models', []))
+                for model in removed:
+                    if model in tc.models_by_name:
+                        other_modes = list(tc.models_by_name[model].keys())
+                        if other_modes:
+                            findings.append(self._make_finding(
+                                'info',
+                                f'{model}: Mode migration, not retirement',
+                                f"Model '{model}' removed from combo "
+                                f"'{event['combo']}' but still active under "
+                                f"mode(s): {other_modes}. This is a training "
+                                f"mode migration, not a model retirement.",
+                                {'model': model, 'other_modes': other_modes,
+                                 'combo': event['combo']}
+                            ))
+
         # --- 3. Correlation Drift ---
         corr_drift = self._analyze_correlation_drift(ctx)
         raw_metrics['correlation_drift'] = corr_drift

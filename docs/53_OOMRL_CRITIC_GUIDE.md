@@ -101,11 +101,11 @@ class Signal:
 `config/llm_config.json`:
 ```json
 {
-    "critic_model": "deepseek-v4-pro",
-    "summary_model": "deepseek-v4-pro",
-    "available_models": ["deepseek-v4-pro", "gpt-4o", "claude-sonnet-4"],
+    "critic_model": "<your-model>",
+    "summary_model": "<your-model>",
+    "available_models": ["<your-model>", "<your-model>", "<your-model>"],
     "api_key_env": "DEEPSEEK_API_KEY",
-    "base_url": "https://api.deepseek.com",
+    "base_url": "<your-api-endpoint>",
     "temperature": 0.3,
     "max_tokens": 393216
 }

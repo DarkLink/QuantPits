@@ -32,6 +32,17 @@ class ModelHealthAgent(BaseAgent):
                 'No model_performance_*.json files found in the analysis window.'))
             return AgentFindings(self.name, ctx.window_label, findings, recommendations, raw_metrics)
 
+        # --- Cycle context (predict-only awareness) ---
+        tc = ctx.training_context
+        if tc and tc.is_predict_only_cycle:
+            raw_metrics['cycle_type'] = 'predict_only'
+            findings.append(self._make_finding(
+                'info', 'Predict-only cycle',
+                'The current cycle is predict-only. Models were not retrained; '
+                'predictions use previously-trained weights. IC metrics reflect '
+                'model stability, not training quality.'
+            ))
+
         # --- 2. IC/ICIR Trend Analysis ---
         scorecard = {}
         for model_name, series in perf_series.items():
@@ -112,6 +123,14 @@ class ModelHealthAgent(BaseAgent):
         # --- 3. Convergence Analysis ---
         convergence_summary = self._analyze_convergence(perf_series)
         raw_metrics['convergence_summary'] = convergence_summary
+
+        # Group convergence by training mode for cross-mode inspection
+        if convergence_summary and 'model_details' in convergence_summary:
+            convergence_by_mode = {}
+            for model_name, conv in convergence_summary['model_details'].items():
+                mode = conv.get('mode', 'static')
+                convergence_by_mode.setdefault(mode, {})[model_name] = conv
+            raw_metrics['convergence_by_mode'] = convergence_by_mode
         
         if convergence_summary:
             for model_name in convergence_summary.get('underfitting_candidates', []):
@@ -142,8 +161,15 @@ class ModelHealthAgent(BaseAgent):
                     event
                 ))
 
-        # Staleness check
+        # Staleness check (suppress in predict-only cycles where models have
+        # training history — they just weren't retrained THIS cycle)
         stale_models = self._check_staleness(ctx, retrain_events, scorecard)
+        if tc and tc.is_predict_only_cycle:
+            stale_models = {
+                mn: info for mn, info in stale_models.items()
+                if not tc.get_last_operation(mn)  # Only truly fresh models
+                or tc.get_last_operation(mn).get('type') != 'train'
+            }
         for model_name, info in stale_models.items():
             if info.get('recommend_retrain'):
                 findings.append(self._make_finding(

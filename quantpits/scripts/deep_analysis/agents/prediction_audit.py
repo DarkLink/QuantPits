@@ -25,6 +25,17 @@ class PredictionAuditAgent(BaseAgent):
         recommendations = []
         raw_metrics = {}
 
+        # --- Cycle context ---
+        tc = ctx.training_context
+        if tc and tc.is_predict_only_cycle:
+            raw_metrics['cycle_type'] = 'predict_only'
+            findings.append(self._make_finding(
+                'info', 'Predict-only cycle',
+                'Model predictions were generated from previously-trained weights. '
+                'Hit rates and consensus metrics reflect model stability '
+                'rather than new training outcomes.'
+            ))
+
         # --- 1. Buy Suggestion Hit Rate ---
         buy_hits = self._analyze_suggestion_hits(ctx, direction='buy')
         raw_metrics['buy_hit_rate'] = buy_hits

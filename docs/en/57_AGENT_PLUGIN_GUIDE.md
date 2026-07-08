@@ -122,3 +122,87 @@ def run_stage(state, **kwargs):
 ```
 
 Loading uses the same `--manifest` parameter (the system auto-detects `"agents"` and `"stages"` keys), or different manifest files can be specified. See [50 — Deep Analysis Guide](50_DEEP_ANALYSIS_GUIDE.md) for details.
+
+---
+
+## 5. Training Mode Awareness
+
+As of Phase 2b, `AnalysisContext` provides a `training_context` field (type: `Optional[TrainingModeContext]`), enabling custom agents to be aware of the current workspace's training state.
+
+### 5.1 Available API
+
+```python
+from quantpits.scripts.deep_analysis.base_agent import BaseAgent, AgentFindings, AnalysisContext
+
+class MyModeAwareAgent(BaseAgent):
+    name = "my_mode_aware_agent"
+    description = "Demonstrates training mode awareness in a custom agent."
+
+    def analyze(self, ctx: AnalysisContext) -> AgentFindings:
+        findings = []
+        tc = ctx.training_context
+
+        if not tc:
+            # No training records (fresh workspace or missing data)
+            findings.append(self._make_finding(
+                'info', 'No training context',
+                'Workspace has no training records yet.'
+            ))
+            return AgentFindings(self.name, ctx.window_label, findings, [], {})
+
+        # 1. Check if this is a predict-only cycle
+        if tc.is_predict_only_cycle:
+            findings.append(self._make_finding(
+                'info', 'Predict-only cycle',
+                'Current cycle is predict-only. Models were not retrained.'
+            ))
+
+        # 2. Query the latest operation for a model
+        last_op = tc.get_last_operation("lstm_Alpha158")
+        if last_op:
+            findings.append(self._make_finding(
+                'info', f'Last op for lstm_Alpha158: {last_op["type"]}',
+                f"Mode: {last_op['mode']}, Date: {last_op['date'][:10]}"
+            ))
+
+        # 3. Get models trained in multiple modes
+        cross_mode = tc.get_cross_mode_models()
+        if cross_mode:
+            findings.append(self._make_finding(
+                'info', f'{len(cross_mode)} cross-mode models',
+                f"Models trained in multiple modes: {', '.join(cross_mode[:5])}..."
+            ))
+
+        # 4. Filter models by training mode
+        rolling_models = tc.get_models_with_mode("rolling")
+        static_models = tc.get_models_with_mode("static")
+
+        # 5. Check rolling pipeline delay
+        gap = tc.get_rolling_gap_days("rolling")
+        if gap is not None and gap > 90:
+            findings.append(self._make_finding(
+                'warning', 'Rolling pipeline stale',
+                f"Rolling pipeline has not run in {gap} days."
+            ))
+
+        return AgentFindings(self.name, ctx.window_label, findings, [], {})
+```
+
+### 5.2 Key Data Sources
+
+`TrainingModeContext` aggregates training state from workspace filesystem sources — custom agents never need to parse these files directly:
+
+| Attribute / Method | Return Type | Data Source |
+|--------------------|-------------|-------------|
+| `tc.available_modes` | `List[str]` | `latest_train_records.json` @suffix |
+| `tc.models_by_name` | `Dict[str, Dict[str, str]]` | `latest_train_records.json` models keys |
+| `tc.is_predict_only_cycle` | `bool` | `training_history.jsonl` + `prediction_history.jsonl` |
+| `tc.last_train` | `Dict[str, dict]` | `training_history.jsonl` (latest train) |
+| `tc.last_prediction` | `Dict[str, dict]` | `prediction_history.jsonl` (latest predict) |
+| `tc.get_last_operation(name)` | `dict\|None` | Merges last_train + last_prediction |
+| `tc.get_rolling_gap_days(mode)` | `int\|None` | `rolling_state.json` vs anchor_date |
+| `tc.rolling_states` | `Dict[str, dict]` | `data/rolling_state*.json` |
+
+### 5.3 Predict-Only Cycle Calibration
+
+Custom agents should follow the same convention as built-in agents: **suppress "not retrained" warnings during predict-only cycles**. If a model has training history (`tc.get_last_operation()` returns `type=train`), it should not be flagged as "stale" or "missing" just because it wasn't retrained this cycle. Only models that have never been trained should be flagged.

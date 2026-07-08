@@ -204,6 +204,71 @@ python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manif
 
 > **训练上下文 (TrainingContext)**: 该代理深度依赖 `training_context.py`。该模块提供训练模式清单（名称→模式解析）、滚动管道延迟计算、和模型键解析功能。
 
+> **滚动指标 CSV 前置条件**: Alpha 衰减、执行摩擦和因子漂移检测依赖 `output/rolling_metrics_20.csv` 和 `rolling_metrics_60.csv`。这些文件由滚动分析管道生成（`run_rolling_analysis.py`）。**如果文件缺失，agent 会显式报告此数据缺口**（`info`/`warning` 级别），而非静默跳过。若滚动训练未配置，此缺口为预期行为。
+
+### 10. 训练模式感知 (Training Mode Awareness)
+
+自 Phase 2b 起，Deep Analysis 系统具备完整的训练模式感知能力。`TrainingModeContext`（位于 `quantpits/scripts/deep_analysis/training_context.py`）是训练模式信息的唯一真相来源，所有 agent 通过 `AnalysisContext.training_context` 字段访问。
+
+#### TrainingModeContext 数据源
+
+| 数据源 | 提供内容 |
+|--------|----------|
+| `latest_train_records.json` | 模型→模式映射 (`lstm_Alpha158@static`)，anchor_date，experiment_name |
+| `training_history.jsonl` | 每个模型的最近训练日期、模式、收敛状态 |
+| `prediction_history.jsonl` | 每个模型的最近仅预测事件（用于检测 predict-only 周期） |
+| `config/rolling_config.yaml` | 滚动调度器配置 |
+| `data/rolling_state.json` | 滑动滚动进度 (slide) |
+| `data/rolling_state_cpcv.json` | CPCV 滚动进度 |
+| `config/model_config.json` | CPCV 参数 (purged_cv) |
+
+#### `@suffix` 模型键约定
+
+训练记录使用 `模型名@训练模式` 作为复合键：
+
+| 后缀 | 训练模式 | 示例 |
+|------|----------|------|
+| `@static` | 标准单次训练 | `lstm_Alpha158@static` |
+| `@cpcv` | Purged K-Fold 交叉验证 | `linear_Alpha158@cpcv` |
+| `@rolling` | 滑动窗口滚动训练 | `gru_Alpha360@rolling` |
+| `@cpcv_rolling` | CPCV 策略下的滚动窗口 | `lstm_Alpha158@cpcv_rolling` |
+
+`TrainingModeContext.models_by_name` 按模型名聚合所有模式：`{"lstm_Alpha158": {"static": "rid1", "rolling": "rid2"}}`。
+
+#### Predict-Only 周期检测
+
+系统自动检测当前周期是否为仅预测周期（>50% 模型的最新操作为预测而非训练）。当 `is_predict_only_cycle=True` 时，agent 行为校准如下：
+
+| Agent | Predict-Only 行为 |
+|-------|-------------------|
+| **ModelHealth** | 抑制 "stale" 误报（模型仅未在本周期重训，并非真正陈旧）；标注 `cycle_type: predict_only` |
+| **TrainingHealth** | 抑制 "缺失预期模式" 警告（模式未在本周期运行，并非从未训练） |
+| **PredictionAudit** | 添加周期类型上下文，提示命中率反映模型稳定性而非新训练质量 |
+| **EnsembleEval** | 区分模型退役与训练模式迁移（如 `static→rolling` 切换） |
+
+#### 插件开发中使用 TrainingModeContext
+
+自定义 agent 通过 `ctx.training_context` 访问所有训练模式信息：
+
+```python
+def analyze(self, ctx: AnalysisContext) -> AgentFindings:
+    tc = ctx.training_context
+    if tc:
+        # 查询模型最新操作
+        last_op = tc.get_last_operation("lstm_Alpha158")
+        # → {"type": "train", "date": "2026-07-03T...", "mode": "static", ...}
+        
+        # 检查是否为仅预测周期
+        if tc.is_predict_only_cycle:
+            ...
+        
+        # 获取多模式模型
+        cross_mode = tc.get_cross_mode_models()  # → ["lstm_Alpha158", ...]
+        
+        # 按模式筛选模型
+        rolling_models = tc.get_models_with_mode("rolling")
+```
+
 ## 数据发现
 
 系统会同时扫描 **活动工作区** 和 **归档** 目录：
@@ -329,3 +394,68 @@ python -m quantpits.scripts.run_feedback_loop \
     --action-items output/deep_analysis/action_items_$(date +%Y-%m-%d).json \
     --promote
 ```
+
+## 数据文件格式参考
+
+### `training_history.jsonl`
+
+每行一个 JSON 对象，记录每次模型训练的收敛信息。由 `train_single_model()` 和 `train_cpcv_model()` 写入。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `model_name` | string | 模型名称（不含 @mode 后缀） |
+| `mode` | string | 训练模式：`static`/`rolling`/`cpcv`/`cpcv_rolling`（Phase 2b+，旧条目默认 `static`） |
+| `experiment_name` | string | MLflow 实验名称 |
+| `record_id` | string | MLflow recorder UUID |
+| `anchor_date` | string | 训练锚日期 (YYYY-MM-DD) |
+| `trained_at` | string | ISO 8601 训练完成时间戳 |
+| `duration_seconds` | float\|null | 训练耗时 |
+| `early_stopped` | bool | 是否早停 |
+| `actual_epochs` | int\|null | 实际 epoch 数（GBDT 为 num_boost_round） |
+| `configured_epochs` | int\|null | 配置的 epoch 数 |
+| `best_epoch` | int\|null | 最佳验证分数 epoch |
+| `best_score` | float\|null | 最佳验证分数 |
+| `converged` | bool\|null | actual_epochs == configured_epochs |
+| `score_type` | string | 指标类型：`ic`/`rank_ic`/`loss`/`cpcv_folds` |
+| `IC_Mean` | float\|null | 测试集 IC 均值 |
+| `ICIR` | float\|null | IC 信息比 |
+| `n_folds` | int\|null | CPCV fold 数（仅 `score_type=cpcv_folds`） |
+| `fold_ic_mean` | float\|null | CPCV fold IC 均值（仅 CPCV） |
+
+### `prediction_history.jsonl`
+
+每行一个 JSON 对象，记录每次仅预测事件。由 `predict_single_model()` 和 `predict_cpcv_model()` 写入。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `model_name` | string | 模型名称 |
+| `mode` | string | 源模型的训练模式 |
+| `anchor_date` | string | 预测锚日期 |
+| `predicted_at` | string | ISO 8601 预测时间戳 |
+| `experiment_name` | string | MLflow 实验名称 |
+| `record_id` | string | 新 recorder UUID |
+| `source_record_id` | string | 源训练 recorder UUID |
+| `IC_Mean` | float\|null | 预测期 IC 均值 |
+| `ICIR` | float\|null | 预测期 ICIR |
+| `prediction_type` | string\|null | `cpcv_ensemble`（仅 CPCV 预测） |
+
+### `latest_train_records.json`
+
+工作区根目录，记录最新训练/预测周期的模型注册信息。
+
+```json
+{
+    "experiment_name": "rolling_combined_weekly",
+    "static_experiment_name": "prod_predict_weekly",
+    "rolling_experiment_name": "",
+    "cpcv_experiment_name": "prod_predict_weekly",
+    "anchor_date": "2026-06-26",
+    "models": {
+        "lstm_Alpha158@static": "<record-uuid>",
+        "lstm_Alpha158@rolling": "<record-uuid>",
+        "linear_Alpha158@cpcv": "<record-uuid>"
+    }
+}
+```
+
+`models` 键使用 `模型名@训练模式` 复合键。`TrainingModeContext` 解析 `@` 分隔符以构建 `models_by_name` 映射，支持跨模式查询。

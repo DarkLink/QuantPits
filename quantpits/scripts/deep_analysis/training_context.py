@@ -19,6 +19,27 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _read_jsonl(path: str) -> list:
+    """Read a JSONL file, returning a list of parsed dicts.
+
+    Silently handles missing files, empty lines, and malformed JSON.
+    """
+    entries = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except (FileNotFoundError, PermissionError):
+        pass
+    return entries
+
+
 class TrainingModeContext:
     """Provides structured training configurations and model mode mappings."""
 
@@ -32,6 +53,9 @@ class TrainingModeContext:
         rolling_config: Optional[dict] = None,
         rolling_states: Optional[Dict[str, dict]] = None,
         cpcv_config: Optional[dict] = None,
+        last_prediction: Optional[Dict[str, dict]] = None,
+        last_train: Optional[Dict[str, dict]] = None,
+        is_predict_only_cycle: bool = False,
     ):
         self.workspace_root = workspace_root
         self.anchor_date = anchor_date
@@ -41,6 +65,9 @@ class TrainingModeContext:
         self.rolling_config = rolling_config or {}
         self.rolling_states = rolling_states or {}
         self.cpcv_config = cpcv_config or {}
+        self.last_prediction = last_prediction or {}
+        self.last_train = last_train or {}
+        self.is_predict_only_cycle = is_predict_only_cycle
 
     def get_cross_mode_models(self) -> List[str]:
         """Return model names that have runs registered in multiple training modes."""
@@ -77,6 +104,23 @@ class TrainingModeContext:
             if rid == record_id:
                 return key
         return None
+
+    def get_last_operation(self, model_name: str) -> Optional[dict]:
+        """Return the most recent operation (train or predict) for a model.
+
+        Returns:
+            dict with keys: type ('train'|'predict'), date, mode, record_id.
+            None if no operation found for this model.
+        """
+        train_info = self.last_train.get(model_name, {})
+        pred_info = self.last_prediction.get(model_name, {})
+        t_date = train_info.get("date", "")
+        p_date = pred_info.get("date", "")
+        if not t_date and not p_date:
+            return None
+        if t_date >= p_date:
+            return {"type": "train", **train_info}
+        return {"type": "predict", **pred_info}
 
     @classmethod
     def from_workspace(cls, workspace_root: str) -> "TrainingModeContext":
@@ -145,6 +189,49 @@ class TrainingModeContext:
             except Exception as e:
                 logger.error(f"Failed to load config/model_config.json: {e}")
 
+        # 5. Parse prediction_history.jsonl for predict-only tracking
+        last_prediction = {}
+        pred_path = os.path.join(workspace_root, "data", "prediction_history.jsonl")
+        for entry in _read_jsonl(pred_path):
+            name = entry.get("model_name")
+            if name and entry.get("predicted_at", "") >= last_prediction.get(
+                name, {}
+            ).get("date", ""):
+                last_prediction[name] = {
+                    "date": entry["predicted_at"],
+                    "mode": entry.get("mode", "static"),
+                    "record_id": entry.get("record_id"),
+                }
+
+        # 6. Parse training_history.jsonl for per-model last-train tracking
+        last_train = {}
+        hist_path = os.path.join(workspace_root, "data", "training_history.jsonl")
+        for entry in _read_jsonl(hist_path):
+            name = entry.get("model_name")
+            if name and entry.get("trained_at", "") >= last_train.get(
+                name, {}
+            ).get("date", ""):
+                last_train[name] = {
+                    "date": entry["trained_at"],
+                    "mode": entry.get("mode", "static"),
+                    "record_id": entry.get("record_id"),
+                    "epochs": entry.get("actual_epochs"),
+                    "early_stopped": entry.get("early_stopped"),
+                }
+
+        # 7. Detect predict-only cycle (>50% of models have predict as latest op)
+        predict_only_cycle = False
+        if last_prediction and anchor_date:
+            all_models = set(last_prediction.keys()) | set(last_train.keys())
+            if all_models:
+                pred_latest = sum(
+                    1
+                    for m in all_models
+                    if last_prediction.get(m, {}).get("date", "")
+                    >= last_train.get(m, {}).get("date", "")
+                )
+                predict_only_cycle = pred_latest / len(all_models) > 0.5
+
         return cls(
             workspace_root=workspace_root,
             anchor_date=anchor_date,
@@ -153,5 +240,8 @@ class TrainingModeContext:
             available_modes=sorted(list(available_modes)),
             rolling_config=rolling_config,
             rolling_states=rolling_states,
-            cpcv_config=cpcv_config
+            cpcv_config=cpcv_config,
+            last_prediction=last_prediction,
+            last_train=last_train,
+            is_predict_only_cycle=predict_only_cycle,
         )

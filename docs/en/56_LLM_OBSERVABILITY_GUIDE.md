@@ -12,8 +12,8 @@ You can configure the `trace` block in the workspace's `config/llm_config.json` 
 
 ```json
 {
-    "critic_model": "deepseek-v4-pro",
-    "summary_model": "gpt-4o",
+    "critic_model": "<your-model>",
+    "summary_model": "<your-model>",
     "trace": {
         "enabled": true,
         "output_dir": "output/deep_analysis/llm_traces",
@@ -40,7 +40,7 @@ After executing `run_deep_analysis.py`, a unique dated run directory is created 
 output/deep_analysis/llm_traces/2026-06-05_run_abc12345/
 ├── manifest.json                        ← Global index and aggregated statistics
 ├── triage/
-│   └── 001_triage_deepseek-v4-pro.json  ← Concrete LLM API Call record
+│   └── 001_triage_<your-model>.json  ← Concrete LLM API Call record
 ├── per_model/
 │   ├── alstm_Alpha158/
 │   │   └── 002_alstm_Alpha158_v4-pro.json
@@ -53,7 +53,7 @@ output/deep_analysis/llm_traces/2026-06-05_run_abc12345/
 ├── synthesizer/
 │   └── ...
 └── summary/
-    └── 007_summary_gpt-4o.json
+    └── 007_summary_<your-model>.json
 ```
 
 ### Concept Definitions
@@ -84,8 +84,8 @@ Each `.json` file is a strictly serialized representation of the `LLMTraceRecord
   "timestamp": "2026-06-05T10:35:00.123456",
   "duration_ms": 32400,
   
-  "model_requested": "deepseek-v4-pro",
-  "model_responded": "deepseek-v4-pro",
+  "model_requested": "<your-model>",
+  "model_responded": "<your-model>",
   "temperature": 0.3,
   "max_tokens": 32768,
   

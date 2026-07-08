@@ -1136,7 +1136,7 @@ class BestScoreCaptureHandler(logging.Handler):
 
 # ================= 单模型训练 =================
 def train_single_model(model_name, yaml_file, params, experiment_name,
-                       no_pretrain=False, cache_mgr=None):
+                       no_pretrain=False, cache_mgr=None, mode="static"):
     """
     训练单个模型的完整流程：训练 → 预测 → Signal Record → IC 计算
 
@@ -1149,6 +1149,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
         experiment_name: MLflow 实验名称
         no_pretrain: 强制不加载预训练模型
         cache_mgr: HandlerCacheManager 实例或 None（None=不使用缓存）
+        mode: 训练模式标识 ('static', 'rolling', 'cpcv', 'cpcv_rolling')
 
     Returns:
         dict: {
@@ -1359,6 +1360,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             # score_type is now: 'ir', 'ic', 'rank_ic', or 'loss'
 
             convergence_log = {
+                "mode": mode,               # Training mode: static/rolling/cpcv/cpcv_rolling
                 "experiment_name": experiment_name,
                 "record_id": R.get_recorder().info['id'],
                 "anchor_date": params['anchor_date'],
@@ -1460,7 +1462,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             try:
                 history_file = os.path.join(ROOT_DIR, 'data', 'training_history.jsonl')
                 os.makedirs(os.path.dirname(history_file), exist_ok=True)
-                history_entry = {"model_name": model_name}
+                history_entry = {"model_name": model_name, "mode": mode}
                 history_entry.update(convergence_log)
                 with open(history_file, 'a') as f:
                     f.write(json.dumps(history_entry) + "\n")
@@ -1485,7 +1487,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
 
 # ================= CPCV 多折训练 =================
 def train_cpcv_model(model_name, yaml_file, params, experiment_name,
-                      no_pretrain=False, cache_mgr=None):
+                      no_pretrain=False, cache_mgr=None, mode="cpcv"):
     """Train K CPCV folds for a single model and average predictions.
 
     For each fold:
@@ -1504,6 +1506,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
         model_name: model identifier.
         yaml_file: path to the Qlib workflow YAML.
         params: date_params from calculate_dates() (must contain cpcv_folds).
+        mode: training mode identifier ('cpcv' or 'cpcv_rolling').
         experiment_name: MLflow experiment name.
         no_pretrain: force random-weight init for basemodels.
         cache_mgr: HandlerCacheManager instance or None (None = legacy path).
@@ -1820,6 +1823,38 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
             result['fold_scores'] = fold_scores
             result['performance'] = performance
 
+            # Write aggregate CPCV convergence entry to training_history.jsonl
+            try:
+                history_file = os.path.join(ROOT_DIR, 'data', 'training_history.jsonl')
+                os.makedirs(os.path.dirname(history_file), exist_ok=True)
+                history_entry = {
+                    "model_name": model_name,
+                    "mode": mode,
+                    "experiment_name": experiment_name,
+                    "record_id": recorder.id,
+                    "anchor_date": params['anchor_date'],
+                    "trained_at": datetime.now().isoformat(),
+                    "duration_seconds": None,
+                    "early_stopped": False,
+                    "actual_epochs": None,
+                    "configured_epochs": None,
+                    "best_epoch": None,
+                    "best_score": None,
+                    "converged": None,
+                    "score_type": "cpcv_folds",
+                    "n_folds": len(folds),
+                    "fold_ic_mean": float(np.mean(
+                        [s for s in fold_scores if s is not None])
+                    ) if fold_scores else None,
+                    "IC_Mean": performance.get('IC_Mean'),
+                    "ICIR": performance.get('ICIR'),
+                }
+                with open(history_file, 'a') as f:
+                    f.write(json.dumps(history_entry) + "\n")
+            except Exception as e:
+                print(f"[{model_name}] Warning: Could not write CPCV "
+                      f"convergence to training_history.jsonl: {e}")
+
             print(f"  ✅ CPCV training complete: {len(folds)} folds, "
                   f"recorder={recorder.id}")
 
@@ -2067,6 +2102,29 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
             result['success'] = True
             result['record_id'] = recorder.id
             result['performance'] = performance
+
+            # Track CPCV predict-only event in prediction_history.jsonl
+            try:
+                pred_file = os.path.join(ROOT_DIR, 'data',
+                                         'prediction_history.jsonl')
+                os.makedirs(os.path.dirname(pred_file), exist_ok=True)
+                pred_entry = {
+                    "model_name": model_name,
+                    "mode": "cpcv",
+                    "anchor_date": params['anchor_date'],
+                    "predicted_at": datetime.now().isoformat(),
+                    "experiment_name": experiment_name,
+                    "record_id": recorder.id,
+                    "source_record_id": source_id,
+                    "IC_Mean": performance.get('IC_Mean'),
+                    "ICIR": performance.get('ICIR'),
+                    "prediction_type": "cpcv_ensemble",
+                }
+                with open(pred_file, 'a') as f:
+                    f.write(json.dumps(pred_entry) + "\n")
+            except Exception as e:
+                print(f"[{model_name}] Warning: Could not write CPCV predict "
+                      f"to prediction_history.jsonl: {e}")
             print(f"  ✅ CPCV predict-only complete: recorder={recorder.id}")
 
     except Exception as e:
@@ -2620,6 +2678,30 @@ def predict_single_model(model_name, model_info, params, experiment_name,
             result['success'] = True
             result['record_id'] = rid
             result['performance'] = performance
+
+            # Track predict-only event in prediction_history.jsonl
+            try:
+                pred_file = os.path.join(ROOT_DIR, 'data',
+                                         'prediction_history.jsonl')
+                os.makedirs(os.path.dirname(pred_file), exist_ok=True)
+                # Determine source mode from the resolved key (e.g. lstm@static → static)
+                _, source_mode = parse_model_key(resolved_key)
+                pred_entry = {
+                    "model_name": model_name,
+                    "mode": source_mode,
+                    "anchor_date": params['anchor_date'],
+                    "predicted_at": datetime.now().isoformat(),
+                    "experiment_name": experiment_name,
+                    "record_id": rid,
+                    "source_record_id": source_record_id,
+                    "IC_Mean": performance.get('IC_Mean'),
+                    "ICIR": performance.get('ICIR'),
+                }
+                with open(pred_file, 'a') as f:
+                    f.write(json.dumps(pred_entry) + "\n")
+            except Exception as e:
+                print(f"[{model_name}] Warning: Could not write to "
+                      f"prediction_history.jsonl: {e}")
 
     except Exception as e:
         result['error'] = str(e)

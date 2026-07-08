@@ -103,7 +103,7 @@ with OperatorLog("static_train", args=sys.argv[1:]) as oplog:
 ```json
 {
     "model_name": "adarnn_Alpha360",
-    "experiment_name": "Prod_Train_WEEK",
+    "experiment_name": "prod_train_weekly",
     "record_id": "c35fb440b0404678977240f20769e264",
     "anchor_date": "2026-04-24",
     "trained_at": "2026-04-28T16:59:25.228065",

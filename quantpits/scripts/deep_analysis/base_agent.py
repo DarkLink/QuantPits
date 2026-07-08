@@ -4,10 +4,15 @@ Base classes and data types for the MAS Deep Analysis System.
 Defines the core abstractions: Finding, AgentFindings, AnalysisContext, and BaseAgent.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, TYPE_CHECKING
 import pandas as pd
+
+if TYPE_CHECKING:
+    from .training_context import TrainingModeContext
 
 
 @dataclass
@@ -84,7 +89,7 @@ class AnalysisContext:
     is_pre_cutoff_window: bool = False  # True if window contains mostly pre-cutoff data
 
     # Phase 2 Training Mode Context
-    training_context: Optional[Any] = None
+    training_context: Optional[TrainingModeContext] = None  # WAS: Optional[Any]
 
 
 class BaseAgent(ABC):

@@ -122,3 +122,87 @@ def run_stage(state, **kwargs):
 ```
 
 加载方式与 Agent 插件共用 `--manifest` 参数（系统自动识别 `"agents"` 和 `"stages"` 键），或分别指定不同清单文件。详见 [50 — 深度分析系统使用指南](50_DEEP_ANALYSIS_GUIDE.md)。
+
+---
+
+## 5. 训练模式感知 (Training Mode Awareness)
+
+自 Phase 2b 起，`AnalysisContext` 提供了 `training_context` 字段（类型：`Optional[TrainingModeContext]`），使自定义 agent 可以感知当前工作区的训练状态。
+
+### 5.1 可用 API
+
+```python
+from quantpits.scripts.deep_analysis.base_agent import BaseAgent, AgentFindings, AnalysisContext
+
+class MyModeAwareAgent(BaseAgent):
+    name = "my_mode_aware_agent"
+    description = "Demonstrates training mode awareness in a custom agent."
+
+    def analyze(self, ctx: AnalysisContext) -> AgentFindings:
+        findings = []
+        tc = ctx.training_context
+
+        if not tc:
+            # 工作区无训练记录（全新工作区或数据缺失）
+            findings.append(self._make_finding(
+                'info', 'No training context',
+                'Workspace has no training records yet.'
+            ))
+            return AgentFindings(self.name, ctx.window_label, findings, [], {})
+
+        # 1. 检查是否为仅预测周期
+        if tc.is_predict_only_cycle:
+            findings.append(self._make_finding(
+                'info', 'Predict-only cycle',
+                'Current cycle is predict-only. Models were not retrained.'
+            ))
+
+        # 2. 查询模型的最新操作
+        last_op = tc.get_last_operation("lstm_Alpha158")
+        if last_op:
+            findings.append(self._make_finding(
+                'info', f'Last op for lstm_Alpha158: {last_op["type"]}',
+                f"Mode: {last_op['mode']}, Date: {last_op['date'][:10]}"
+            ))
+
+        # 3. 获取多模式训练的模型
+        cross_mode = tc.get_cross_mode_models()
+        if cross_mode:
+            findings.append(self._make_finding(
+                'info', f'{len(cross_mode)} cross-mode models',
+                f"Models trained in multiple modes: {', '.join(cross_mode[:5])}..."
+            ))
+
+        # 4. 按训练模式筛选
+        rolling_models = tc.get_models_with_mode("rolling")
+        static_models = tc.get_models_with_mode("static")
+
+        # 5. 检查滚动管道延迟
+        gap = tc.get_rolling_gap_days("rolling")
+        if gap is not None and gap > 90:
+            findings.append(self._make_finding(
+                'warning', 'Rolling pipeline stale',
+                f"Rolling pipeline has not run in {gap} days."
+            ))
+
+        return AgentFindings(self.name, ctx.window_label, findings, [], {})
+```
+
+### 5.2 关键数据源
+
+`TrainingModeContext` 从工作区文件系统聚合训练状态，无需自定义 agent 自行解析：
+
+| 属性/方法 | 返回类型 | 数据来源 |
+|-----------|----------|----------|
+| `tc.available_modes` | `List[str]` | `latest_train_records.json` 的 @suffix |
+| `tc.models_by_name` | `Dict[str, Dict[str, str]]` | `latest_train_records.json` models 键 |
+| `tc.is_predict_only_cycle` | `bool` | `training_history.jsonl` + `prediction_history.jsonl` |
+| `tc.last_train` | `Dict[str, dict]` | `training_history.jsonl`（最近训练） |
+| `tc.last_prediction` | `Dict[str, dict]` | `prediction_history.jsonl`（最近预测） |
+| `tc.get_last_operation(name)` | `dict\|None` | 综合 last_train + last_prediction |
+| `tc.get_rolling_gap_days(mode)` | `int\|None` | `rolling_state.json` vs anchor_date |
+| `tc.rolling_states` | `Dict[str, dict]` | `data/rolling_state*.json` |
+
+### 5.3 Predict-Only 周期校准
+
+自定义 agent 应遵循与内置 agent 相同的约定：**在仅预测周期中抑制基于"未重训"的警告**。如果模型有训练历史（`tc.get_last_operation()` 返回 `type=train`），仅因本周期未重训不应标记为"陈旧"或"缺失"。只有从未训练过的模型才需要标记。

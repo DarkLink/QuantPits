@@ -12,8 +12,8 @@
 
 ```json
 {
-    "critic_model": "deepseek-v4-pro",
-    "summary_model": "gpt-4o",
+    "critic_model": "<your-model>",
+    "summary_model": "<your-model>",
     "trace": {
         "enabled": true,
         "output_dir": "output/deep_analysis/llm_traces",
@@ -40,7 +40,7 @@
 output/deep_analysis/llm_traces/2026-06-05_run_abc12345/
 ├── manifest.json                        ← 全局索引与聚合统计
 ├── triage/
-│   └── 001_triage_deepseek-v4-pro.json  ← 具体的 LLM API Call 记录
+│   └── 001_triage_<your-model>.json  ← 具体的 LLM API Call 记录
 ├── per_model/
 │   ├── alstm_Alpha158/
 │   │   └── 002_alstm_Alpha158_v4-pro.json
@@ -53,7 +53,7 @@ output/deep_analysis/llm_traces/2026-06-05_run_abc12345/
 ├── synthesizer/
 │   └── ...
 └── summary/
-    └── 007_summary_gpt-4o.json
+    └── 007_summary_<your-model>.json
 ```
 
 ### 概念定义
@@ -84,8 +84,8 @@ output/deep_analysis/llm_traces/2026-06-05_run_abc12345/
   "timestamp": "2026-06-05T10:35:00.123456",
   "duration_ms": 32400,
   
-  "model_requested": "deepseek-v4-pro",
-  "model_responded": "deepseek-v4-pro",
+  "model_requested": "<your-model>",
+  "model_responded": "<your-model>",
   "temperature": 0.3,
   "max_tokens": 32768,
   
