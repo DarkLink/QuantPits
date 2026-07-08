@@ -179,13 +179,24 @@ python -m quantpits.scripts.ensemble_fusion --from-config-all --only-last-years 
 
 **文件**: `quantpits/scripts/deep_analysis/training_context.py`
 
-在 Phase 2 中引入，为所有分析代理提供当前工作区状态和训练模式的上下文感知能力，以避免在特定模式下（如 predict-only 模式）产生误导性的报警。
+在 Phase 2 中引入，为所有分析代理提供当前工作区的训练模式清单和滚动管道状态信息。
 
 ### 核心能力
 
-- **模式识别**: 自动检测当前是否处于 `predict_only` 阶段。
-- **孤儿模型守卫 (Orphan Model Guard)**: 在 predict-only 模式下，系统能够识别出未被更新但在系统中遗留的“孤儿模型”。
-- **文件与特征一致性验证**: 提供辅助方法，供代理验证生成的 CSV 数据列是否与预期结构对齐。
+- **训练模式解析**: 从 `latest_train_records.json` 解析 `name@mode` 格式的模型键，识别每个模型使用的训练算法模式（static / cpcv / rolling / cpcv_rolling）。
+- **跨模式检测**: `get_cross_mode_models()` 返回同时以多种训练模式训练的模型列表。
+- **管道延迟计算**: `get_rolling_gap_days(mode)` 计算滚动管道上次 anchor 日期到当前日期的天数差，用于陈旧度检测。
+- **模型键解析**: `resolve_model_key(record_id)` 从 record/run ID 反查完整 `name@mode` 标识，供下游 agent（如 Model Health）区分同一模型的不同训练模式。
+
+**数据来源**（由 `from_workspace()` 工厂方法读取）:
+
+| 文件 | 用途 |
+|------|------|
+| `data/latest_train_records.json` | 模型→run ID 映射、anchor 日期、`@` 后缀模式解析 |
+| `config/rolling_config.yaml` | 滚动调度器配置 |
+| `data/rolling_state.json` | Slide 滚动窗口进度 |
+| `data/rolling_state_cpcv.json` | CPCV 滚动窗口进度 |
+| `config/model_config.json` | `purged_cv` 段（CPCV 参数） |
 
 ---
 
@@ -193,9 +204,16 @@ python -m quantpits.scripts.ensemble_fusion --from-config-all --only-last-years 
 
 ### Training Health Agent (新增)
 
-- **数据完整性守卫**: 强校验模型预测输出的 CSV 结构（如必须包含 `datetime`, `instrument`, `score`）。
-- **回撤与模式感知**: 结合 `TrainingContext`，识别 predict-only 模式下预期的特征，并惩罚预测集缺失。
-- **异常拦截**: 检测异常的 loss 值。
+综合评估训练管道健康、滚动进度和交易执行趋势：
+
+- **模式覆盖审计**: 检查每个模型的训练模式覆盖情况（static / cpcv / rolling / cpcv_rolling），标记缺少预期模式的模型。
+- **滚动进度与陈旧度**: 检查滚动管道完成百分比，标记超过 90 天未更新的管道（warning），已完成管道标记 positive。
+- **Alpha 衰减监控**: 对比 `rolling_metrics_20.csv` 和 `rolling_metrics_60.csv` 中的 `Idiosyncratic_Alpha` 指标。短期（20d）均值下穿长期（60d）均值且转负时，判定为选股能力衰减（warning）；短期向上穿越长期且为正时标记 positive。
+- **执行摩擦检测**:
+  - 滑点 z-score：对 `Exec_Slippage_Mean` 进行 60 日 z-score 检验，z < -2.0 → critical “执行摩擦崩盘”。
+  - 延迟成本 z-score：对 `Delay_Cost_Mean` 进行 60 日 z-score 检验，z < -2.0 → warning “隔夜跳空恶化”。
+- **Barra 因子漂移**: 对 `Exposure_Liquidity` 在 252 日滚动窗口中的百分位进行检测。≤ 5%（微盘漂移）→ critical；≥ 95%（大盘蓝筹超载）→ warning。
+- **孤儿模型检测**: 发现已启用但不在任何活跃组合中的陈旧模型 → warning/info。
 
 ### Model Health Agent
 

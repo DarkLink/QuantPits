@@ -31,7 +31,7 @@
 
 ```bash
 # 激活工作区
-source workspaces/Example_Workspace/run_env.sh
+source workspaces/Demo_Workspace/run_env.sh
 
 # 基础规则分析
 python -m quantpits.scripts.run_deep_analysis
@@ -156,24 +156,46 @@ python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manif
 - **输入**: `model_config.json`（窗口参数）、`training_history.jsonl`（anchor 历史）、Market Regime Agent 的 regime 切换数据
 - **输出**: `WindowAnalysisFinding` 列表，包含 severity（critical/warning/info）、metrics、和可执行的建议
 
-**六条检测规则**：
-1. **窗口大小边界**: `train_set_windows` < 4 年 → critical，> 15 年 → info
+**16 类检测规则**，分为三组：
+
+**静态规则 (R1-R6)** — 始终运行：
+1. **窗口大小边界**: `train_set_windows` < 4 年 → critical/warning，> 15 年 → info
 2. **验证比率**: `valid / train` < 0.15 → early stopping 不可靠
-3. **训练终点距离 (train-end gap)**: 在 slide 模式下，`train_end = anchor - (valid + test)` 年。当 gap ≥ 5 年且 regime 切换 ≥ 20 次 → critical
+3. **训练终点距离 (train-end gap)**: 在 slide 模式下 gap ≥ 5 年 + regime 切换 ≥ 20 → critical
 4. **Anchor 陈旧度**: 最新 anchor > 90 天 → warning，> 60 天 → info
-5. **Regime vs 窗口不匹配**: 高波动 regime 需要 ≥ 10 年训练窗口；≥ 3 次 regime 切换需要 ≥ 8 年训练窗口
-6. **频率兼容性**: 日频 + 大窗口数 → 数据量过大
+5. **Regime vs 窗口不匹配**: 高波动需 ≥ 10 年；≥ 3 次切换需 ≥ 8 年
+6. **频率兼容性**: 日频 + > 365 窗口 → 数据量过大
+
+**数据驱动规则 (R7-R13)** — 需要 `BenchmarkDataLoader` 提供的市场基准数据：
+7. **Regime 覆盖**: 训练覆盖 < 40% observed regimes → warning；缺失 Bearish-HighVol → 独立 warning
+8. **波动率漂移**: train vs test 波动率比 > 1.5x 或 < 0.5x → warning/info
+9. **收益分布漂移**: KS 统计量 > 0.20 → warning；mean shift > 1.0σ → info
+10. **回撤覆盖**: 训练窗口缺少全历史中存在的大回撤 (>15%) → warning
+11. **边界 Regime 不匹配**: train→valid 或 valid→test 边界发生 regime 切换 → warning
+12. **断崖效应 (Cliff Edge)**: regime 将在 4 周内滑出训练窗口 → warning/info
+13. **覆盖稳定性**: 滑动窗口间 regime 覆盖稳定性 < 0.90 → info
+
+**CPCV/滚动规则 (R14-R16)** — 通过 `TrainingModeContext` 自动运行：
+14. **CPCV 组数不足**: `n_groups` ≤ `n_test + n_val` → critical
+15. **CPCV 泄露威胁**: `purge_steps` > 10 或 `embargo_steps` > 20 → warning
+16. **滚动陈旧度**: rolling state > 90 天未更新 → warning
 
 分析结果通过 `training_window_mismatch` 信号注入 LLM Critic，同时在所有分层流水线 prompt 中以 `training_window_analysis` 字段提供。
 
 ### 9. 训练健康 (`training_health`)
 
-检测训练过程的质量、数据完整性及训练模式（如 predict-only 孤儿模型、回撤水平）。
+检测训练管道健康、滚动进度和交易执行趋势：
 
-- **输入**: `training_history.jsonl`，以及 `TrainingContext` 提供的元数据
-- **输出**: CSV 数据列一致性验证（含缺失列守卫）、预测集缺失惩罚、异常损失值拦截
+- **输入**: `training_history.jsonl`、`rolling_metrics_20.csv`、`rolling_metrics_60.csv`、`latest_train_records.json`，以及 `TrainingContext` 提供的元数据
+- **输出**: 
+  - **模式覆盖审计**: 检查每个模型的训练模式覆盖（static/cpcv/rolling/cpcv_rolling），标记缺失预期模式
+  - **滚动管道陈旧度**: 检查滚动窗口进度，标记超过 90 天未更新的管道
+  - **Alpha 衰减监控**: 对比短/长期特质 Alpha，检测选股能力退化
+  - **执行摩擦检测**: 监控滑点 (`Exec_Slippage_Mean`) 和延迟成本 (`Delay_Cost_Mean`) 的 z-score 异常
+  - **因子漂移检测**: 检测 Barra Liquidity Exposure 的极端百分位漂移（微盘/大盘）
+  - **孤儿模型检测**: 识别已启用但不属于任何活跃组合的陈旧模型
 
-> **训练上下文 (TrainingContext)**: 该代理深度依赖 `training_context.py`。该模块提供当前工作区状态、活动训练模式（Training Mode Awareness）以及数据完整性验证逻辑，供代理评估环境完整性。
+> **训练上下文 (TrainingContext)**: 该代理深度依赖 `training_context.py`。该模块提供训练模式清单（名称→模式解析）、滚动管道延迟计算、和模型键解析功能。
 
 ## 数据发现
 

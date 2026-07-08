@@ -1042,6 +1042,9 @@ class SignalExtractor:
                 elif "微盘" in f.title or "Size" in f.title:
                     sig_type = "style_drift"
                     scope = "portfolio_construction"
+                elif "orphan" in f.title.lower() or "孤立" in f.title.lower():
+                    sig_type = "orphan_model"
+                    scope = "model_selection"
 
                 signals.append(Signal(
                     signal_type=sig_type,

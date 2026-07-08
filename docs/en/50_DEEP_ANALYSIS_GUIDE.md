@@ -31,7 +31,7 @@ Developers can declare workspace-local agents in a manifest file (e.g., `config/
 
 ```bash
 # Activate workspace
-source workspaces/Example_Workspace/run_env.sh
+source workspaces/Demo_Workspace/run_env.sh
 
 # Basic rule-based analysis
 python -m quantpits.scripts.run_deep_analysis
@@ -161,27 +161,50 @@ any LLM dependency:
 - **Output**: List of `WindowAnalysisFinding` objects with severity
   (critical/warning/info), metrics, and actionable recommendations
 
-**Six detection rules**:
-1. **Window size bounds**: `train_set_windows` < 4 years → critical, > 15 years → info
+**Sixteen detection rules** in three groups:
+
+**Static rules (R1-R6)** — always run:
+1. **Window size bounds**: `train_set_windows` < 4 years → critical/warning, > 15 years → info
 2. **Validation ratio**: `valid / train` < 0.15 → early stopping unreliable
-3. **Train-end gap**: In slide mode, `train_end = anchor - (valid + test)` years.
-   When gap ≥ 5 years with ≥ 20 regime switches → critical
+3. **Train-end gap**: In slide mode, gap ≥ 5 years + ≥ 20 regime switches → critical
 4. **Anchor staleness**: latest anchor > 90 days ago → warning, > 60 days → info
 5. **Regime vs. window mismatch**: high-vol regime needs ≥ 10 years of training;
    ≥ 3 regime switches needs ≥ 8 years of training
-6. **Frequency compatibility**: daily frequency with large window count → data overload
+6. **Frequency compatibility**: daily frequency with > 365 windows → data overload
+
+**Data-driven rules (R7-R13)** — require `BenchmarkDataLoader` market benchmark data:
+7. **Regime coverage**: training coverage < 40% observed regimes → warning;
+   missing Bearish-HighVol → separate warning
+8. **Volatility regime shift**: train vs test vol ratio > 1.5x or < 0.5x → warning/info
+9. **Return distribution shift**: KS statistic > 0.20 → warning; mean shift > 1.0σ → info
+10. **Drawdown coverage**: training lacks major drawdowns (>15%) present in full history → warning
+11. **Boundary regime mismatch**: regime change at train→valid or valid→test boundary → warning
+12. **Cliff edge**: regime will drop from training within 4 weeks → warning/info
+13. **Coverage stability**: regime coverage stability < 0.90 across sliding windows → info
+
+**CPCV/rolling rules (R14-R16)** — auto-run via `TrainingModeContext`:
+14. **CPCV groups insufficient**: `n_groups` ≤ `n_test + n_val` → critical
+15. **CPCV leak threat**: `purge_steps` > 10 or `embargo_steps` > 20 → warning
+16. **Rolling staleness**: rolling state > 90 days without update → warning
 
 Findings flow into the LLM Critic as `training_window_mismatch` signals and
 appear in all layered pipeline prompts as the `training_window_analysis` field.
 
 ### 9. Training Health (`training_health`)
 
-Checks the quality of the training process, data integrity, and identifies anomalies depending on active training modes (e.g., predict-only).
+Evaluates training pipeline health, rolling progress, and trade execution trends:
 
-- **Input**: `training_history.jsonl`, plus workspace metadata provided by `TrainingContext`.
-- **Outputs**: CSV schema alignment validation (missing column guards), penalty triggers for missing prediction files, anomaly validation (excessive loss value intercept).
+- **Input**: `training_history.jsonl`, `rolling_metrics_20.csv`, `rolling_metrics_60.csv`,
+  `latest_train_records.json`, plus workspace metadata provided by `TrainingContext`.
+- **Outputs**:
+  - **Mode coverage audit**: Checks each model's training mode coverage (static/cpcv/rolling/cpcv_rolling), flags models missing expected modes
+  - **Rolling pipeline staleness**: Inspects rolling window progress, marks pipelines > 90 days stale
+  - **Alpha decay monitoring**: Compares short/long-term idiosyncratic Alpha to detect stock-selection decay
+  - **Execution friction**: Monitors z-score anomalies in slippage (`Exec_Slippage_Mean`) and delay cost (`Delay_Cost_Mean`)
+  - **Factor drift detection**: Detects extreme percentile drift in Barra Liquidity Exposure (micro-cap / large-cap)
+  - **Orphan model detection**: Identifies enabled models not belonging to any active combo
 
-> **Training Context (`TrainingContext`)**: This agent heavily relies on `training_context.py` to acquire active training mode awareness and directory state context, enabling context-aware data integrity checking.
+> **Training Context (`TrainingContext`)**: This agent relies on `training_context.py` for training mode inventory (name→mode parsing), rolling pipeline gap calculation, and model key resolution.
 
 ## Data Discovery
 

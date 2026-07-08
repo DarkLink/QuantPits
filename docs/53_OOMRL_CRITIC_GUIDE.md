@@ -44,7 +44,7 @@ class Signal:
     context: str        # 人类可读的一句话描述
 ```
 
-### 16 种 Signal 类型
+### 23 种 Signal 类型
 
 | Signal Type | 来源 Agent | Scope | 触发条件 |
 |-------------|-----------|-------|---------|
@@ -64,6 +64,13 @@ class Signal:
 | `time_horizon_reversal` | Cross-Agent | (最佳 scope) | 时间维度上的 OOS 收益方向发生反转 |
 | `combo_fragility` | Ensemble Eval / Cross-Agent | combo_search | 组合对单一模型的依赖度过高（脆弱性） |
 | `orphan_model` | Training Health | model_selection | Predict-only 模式下发现遗留且未更新的模型 |
+| `optimizer_thrashing` | Model Health | hyperparams | 训练 epoch 间 loss 震荡比例 > 15%(warning) / > 30%(critical) |
+| `training_mode_gap` | Training Health | training_config | 模型缺少预期的训练模式覆盖（如缺少 rolling 模式） |
+| `rolling_staleness` | Training Health | training_config | 滚动管道 > 90 天未更新 |
+| `execution_friction` | Training Health | execution | 滑点或延迟成本 z-score < -2.0 |
+| `alpha_decay` | Training Health | model_selection | 短期 Alpha (20d) 下穿长期 (60d) 并转负 |
+| `style_drift` | Training Health | portfolio_construction | Barra Exposure_Liquidity 处于极端百分位 (≤5% / ≥95%) |
+| `ic_combo_contradiction` | Cross-Agent / Synthesizer | combo_search | 模型 IC 提升但组合收益下降 → 相关性漂移预警 |
 
 ---
 

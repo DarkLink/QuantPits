@@ -117,7 +117,12 @@ class EnsembleEvolutionAgent(BaseAgent):
                     f"Consider removing {model} from its ensemble combo(s)."
                 )
 
-        # --- 5. OOS History Analysis ---
+        # --- 5. Combo Fragility Detection ---
+        fragility_findings, fragility_recs = self._check_combo_fragility(ctx, contributions)
+        findings.extend(fragility_findings)
+        recommendations.extend(fragility_recs)
+
+        # --- 6. OOS History Analysis ---
         oos_trend = self._load_oos_history(ctx)
         raw_metrics['oos_trend'] = oos_trend
         
@@ -427,6 +432,98 @@ class EnsembleEvolutionAgent(BaseAgent):
                           for k, v in loo_deltas.items()},
             'consistently_negative': consistently_negative,
         }
+
+    def _check_combo_fragility(
+        self, ctx: AnalysisContext, contributions: dict
+    ) -> tuple:
+        """Detect combos that are overly dependent on a single model.
+
+        Fragility indicators:
+        1. Structural: combo has only 1-2 models (lack of diversification).
+        2. Performance: a single model dominates the combo AND has
+           consistently negative contribution.
+
+        Returns (findings, recommendations).
+        """
+        findings = []
+        recommendations = []
+
+        # Read ensemble config to get combo definitions
+        ec_path = os.path.join(ctx.workspace_root, "config", "ensemble_config.json")
+        if not os.path.exists(ec_path):
+            return findings, recommendations
+
+        try:
+            with open(ec_path, "r") as f:
+                ec = json.load(f)
+        except Exception:
+            return findings, recommendations
+
+        combos = ec.get("combos", ec.get("combo_groups", {}))
+        if not combos:
+            return findings, recommendations
+
+        negative_models = set(contributions.get("consistently_negative", []))
+
+        for combo_name, combo_def in combos.items():
+            models = combo_def.get("models", [])
+            if not models:
+                continue
+
+            method = combo_def.get("method", "equal")
+            n_models = len(models)
+
+            # --- Indicator 1: Structural fragility (too few models) ---
+            if n_models == 1:
+                sole_model = models[0]
+                findings.append(self._make_finding(
+                    "warning",
+                    f"{combo_name}: Combo fragility detected (组合脆弱性)",
+                    f"Combo '{combo_name}' contains only one model "
+                    f"('{sole_model}') — zero diversification. "
+                    f"Any degradation in this model directly impacts the entire combo.",
+                    {"combo": combo_name, "dominant_model": sole_model,
+                     "model_count": 1, "method": method}
+                ))
+                recommendations.append(
+                    f"[组合加固] Combo '{combo_name}' 仅含单一模型，建议增加至少2-3个低相关模型以分散风险。"
+                )
+                continue
+
+            if n_models == 2:
+                findings.append(self._make_finding(
+                    "info",
+                    f"{combo_name}: Combo fragility detected (组合脆弱性)",
+                    f"Combo '{combo_name}' has only {n_models} models. "
+                    f"Limited diversification increases fragility risk.",
+                    {"combo": combo_name, "model_count": n_models,
+                     "models": models, "method": method}
+                ))
+
+            # --- Indicator 2: Negative contributor in small combo ---
+            fragile_negatives = [m for m in models if m in negative_models]
+            if fragile_negatives and n_models <= 3:
+                for neg_model in fragile_negatives:
+                    effective_weight = combo_def.get("weights", {}).get(
+                        neg_model, 1.0 / n_models
+                    )
+                    if effective_weight >= 0.3:
+                        findings.append(self._make_finding(
+                            "warning",
+                            f"{combo_name}: Combo fragility detected (组合脆弱性)",
+                            f"Combo '{combo_name}' relies {effective_weight*100:.0f}% "
+                            f"on model '{neg_model}' which has consistently negative "
+                            f"contribution. This creates single-point-of-failure risk.",
+                            {"combo": combo_name, "dominant_model": neg_model,
+                             "weight_pct": round(effective_weight * 100, 1),
+                             "model_count": n_models, "is_negative": True}
+                        ))
+                        recommendations.append(
+                            f"[组合去风险] '{neg_model}' 在 Combo '{combo_name}' 中占比高"
+                            f"且贡献持续为负，建议降低权重或替换该模型。"
+                        )
+
+        return findings, recommendations
 
     def _load_performance_history(self, ctx: AnalysisContext) -> List[dict]:
         """

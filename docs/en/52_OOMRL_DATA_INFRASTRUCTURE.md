@@ -190,13 +190,24 @@ Default exclusion period controlled by `config/oos_config.json`:
 
 **File**: `quantpits/scripts/deep_analysis/training_context.py`
 
-Introduced in Phase 2 to provide all analysis agents with context-awareness of the active workspace state and training mode. This prevents misleading alarms during specific operation cycles, such as predict-only cycles.
+Introduced in Phase 2 to provide all analysis agents with the current workspace's training mode inventory and rolling pipeline status.
 
 ### Core Capabilities
 
-- **Mode Recognition**: Automatically determines if the current phase runs in a `predict_only` state.
-- **Orphan Model Guard**: Identifies stale or legacy models left in the configuration that are no longer updated during predict-only phases.
-- **File & Schema Verification**: Exposes helper functions for validating schema consistency on prediction CSV columns.
+- **Training Mode Parsing**: Parses `name@mode` keys from `latest_train_records.json` to identify each model's training algorithm mode (static / cpcv / rolling / cpcv_rolling).
+- **Cross-Mode Detection**: `get_cross_mode_models()` returns models that exist in multiple training modes simultaneously.
+- **Pipeline Gap Calculation**: `get_rolling_gap_days(mode)` computes the number of days between the last rolling anchor date and the current date, used for staleness detection.
+- **Model Key Resolution**: `resolve_model_key(record_id)` reverse-looks up the full `name@mode` identifier from a record/run ID, enabling downstream agents (e.g., Model Health) to distinguish models trained in different modes.
+
+**Data Sources** (read by `from_workspace()` factory):
+
+| File | Purpose |
+|------|---------|
+| `data/latest_train_records.json` | Model→run ID mappings, anchor dates, `@` suffix mode parsing |
+| `config/rolling_config.yaml` | Rolling scheduler configuration |
+| `data/rolling_state.json` | Slide rolling window progress |
+| `data/rolling_state_cpcv.json` | CPCV rolling window progress |
+| `config/model_config.json` | `purged_cv` section (CPCV parameters) |
 
 ---
 
@@ -204,9 +215,16 @@ Introduced in Phase 2 to provide all analysis agents with context-awareness of t
 
 ### Training Health Agent (New)
 
-- **Data Integrity Guard**: Strongly validates CSV output schemas of prediction files (e.g., must contain `datetime`, `instrument`, `score`).
-- **Drawdown & Mode Awareness**: Incorporates `TrainingContext` to identify features expected in predict-only cycles and penalizes missing predictions.
-- **Anomaly Interceptor**: Captures invalid or extremely large loss values during training.
+Comprehensively evaluates training pipeline health, rolling progress, and trade execution trends:
+
+- **Mode Coverage Audit**: Checks each model's training mode coverage (static / cpcv / rolling / cpcv_rolling), flags models missing expected modes.
+- **Rolling Progress & Staleness**: Inspects rolling pipeline completion percentage, marks pipelines over 90 days stale (warning), and completed pipelines (positive).
+- **Alpha Decay Monitoring**: Compares `Idiosyncratic_Alpha` from `rolling_metrics_20.csv` and `rolling_metrics_60.csv`. Short-term (20d) mean falling below long-term (60d) mean into negative territory → warning "Alpha Decay". Short-term surging above long-term → positive "Alpha Surge".
+- **Execution Friction Detection**:
+  - Slippage z-score: Computes 60-day z-score of `Exec_Slippage_Mean`. z < -2.0 → critical "High Slippage Extreme".
+  - Delay cost z-score: Computes 60-day z-score of `Delay_Cost_Mean`. z < -2.0 → warning "Delay Cost Degradation".
+- **Barra Factor Drift**: Checks `Exposure_Liquidity` percentile over a 252-day rolling window. ≤5% (micro-cap drift) → critical; ≥95% (large-cap overload) → warning.
+- **Orphan Model Detection**: Detects enabled models not in any active combo → warning/info.
 
 ### Model Health Agent
 

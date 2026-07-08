@@ -47,7 +47,7 @@ class Signal:
     context: str        # Human-readable one-line description
 ```
 
-### The 16 Signal Types
+### The 23 Signal Types
 
 | Signal Type | Source Agent | Scope | Trigger Condition |
 |-------------|-------------|-------|-------------------|
@@ -67,6 +67,13 @@ class Signal:
 | `time_horizon_reversal` | Cross-Agent | (best scope) | Returns trend direction reverses across OOS horizons |
 | `combo_fragility` | Ensemble Eval / Cross-Agent | combo_search | Combo exhibits excessive dependency on a single model |
 | `orphan_model` | Training Health | model_selection | Legacy/unused model left in config during predict-only phases |
+| `optimizer_thrashing` | Model Health | hyperparams | Epoch-to-epoch loss oscillation ratio > 15% (warning) / > 30% (critical) |
+| `training_mode_gap` | Training Health | training_config | Model missing expected training mode coverage |
+| `rolling_staleness` | Training Health | training_config | Rolling pipeline > 90 days without update |
+| `execution_friction` | Training Health | execution | Slippage or delay cost z-score < -2.0 |
+| `alpha_decay` | Training Health | model_selection | Short-term Alpha (20d) dropping below long-term (60d) and turning negative |
+| `style_drift` | Training Health | portfolio_construction | Barra Exposure_Liquidity at extreme percentile (≤5% / ≥95%) |
+| `ic_combo_contradiction` | Cross-Agent / Synthesizer | combo_search | Model IC improving but combo returns declining → correlation drift alert |
 
 ---
 

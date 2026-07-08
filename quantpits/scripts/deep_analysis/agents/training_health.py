@@ -9,6 +9,7 @@ Evaluates the health, scheduling, progress, and performance trends of training p
 """
 
 import os
+import json
 import logging
 import pandas as pd
 
@@ -58,7 +59,12 @@ class TrainingHealthAgent(BaseAgent):
                     {'model': model_name, 'missing': missing, 'present': modes}
                 ))
 
-        # --- 2. Rolling Progress & Staleness Audit ---
+        # --- 2. Orphan Model Detection ---
+        orphan_findings, orphan_recs = self._detect_orphan_models(ctx)
+        findings.extend(orphan_findings)
+        recommendations.extend(orphan_recs)
+
+        # --- 3. Rolling Progress & Staleness Audit ---
         rolling_progress = {}
         for mode, state in tc.rolling_states.items():
             total = state.get("total_windows", 0)
@@ -93,7 +99,7 @@ class TrainingHealthAgent(BaseAgent):
 
         raw_metrics['rolling_progress'] = rolling_progress
 
-        # --- 3. Alpha, Friction, and Factor Drift Monitoring ---
+        # --- 4. Alpha, Friction, and Factor Drift Monitoring ---
         # Look for rolling_metrics_20.csv and rolling_metrics_60.csv in output dir
         output_dir = os.path.join(ctx.workspace_root, "output")
         file_20 = os.path.join(output_dir, "rolling_metrics_20.csv")
@@ -203,3 +209,96 @@ class TrainingHealthAgent(BaseAgent):
                 ))
 
         return AgentFindings(self.name, ctx.window_label, findings, recommendations, raw_metrics)
+
+    def _detect_orphan_models(self, ctx: AnalysisContext) -> tuple:
+        """Detect enabled models that are not in any active combo.
+
+        An orphan model is one that:
+        - Is enabled in model_registry.yaml
+        - Is NOT listed in any combo in ensemble_config.json
+        - May be stale (no recent training record)
+
+        Returns (findings, recommendations).
+        """
+        findings = []
+        recommendations = []
+
+        # 1. Read model_registry.yaml for enabled models
+        registry_path = os.path.join(
+            ctx.workspace_root, "config", "model_registry.yaml"
+        )
+        if not os.path.exists(registry_path):
+            return findings, recommendations
+
+        try:
+            import yaml
+            with open(registry_path, "r") as f:
+                registry = yaml.safe_load(f) or {}
+        except Exception:
+            return findings, recommendations
+
+        enabled_models = set()
+        for name, spec in registry.get("models", {}).items():
+            if spec.get("enabled", False):
+                enabled_models.add(name)
+
+        if not enabled_models:
+            return findings, recommendations
+
+        # 2. Read ensemble_config.json for models in any combo
+        ec_path = os.path.join(
+            ctx.workspace_root, "config", "ensemble_config.json"
+        )
+        combo_models = set()
+        if os.path.exists(ec_path):
+            try:
+                with open(ec_path, "r") as f:
+                    ec = json.load(f)
+                for combo_def in ec.get("combos", ec.get("combo_groups", {})).values():
+                    for m in combo_def.get("models", []):
+                        # Strip @suffix if present (e.g., lstm@static -> lstm)
+                        base_name = m.split("@")[0]
+                        combo_models.add(base_name)
+            except Exception:
+                pass
+
+        # 3. Find orphans: enabled but not in any combo
+        for model_name in sorted(enabled_models):
+            if model_name not in combo_models:
+                # Check staleness via training_context
+                is_stale = False
+                stale_detail = ""
+                tc = ctx.training_context
+                if tc and hasattr(tc, "models_by_name"):
+                    model_modes = tc.models_by_name.get(model_name, {})
+                    if not model_modes:
+                        is_stale = True
+                        stale_detail = (
+                            f" Model '{model_name}' has no recent training "
+                            f"records in latest_train_records.json."
+                        )
+
+                severity = "warning" if is_stale else "info"
+                findings.append(self._make_finding(
+                    severity,
+                    f"{model_name}: Orphan model detected (孤立模型)",
+                    f"Model '{model_name}' is enabled in model_registry.yaml "
+                    f"but is not in any active combo. This model produces "
+                    f"predictions that are never used in ensemble fusion."
+                    + stale_detail,
+                    {"model": model_name, "in_any_combo": False,
+                     "is_stale": is_stale}
+                ))
+
+                if is_stale:
+                    recommendations.append(
+                        f"[模型清理] '{model_name}' 是孤立且陈旧的模型，"
+                        f"建议禁用 (enabled: false) 或将其加入活跃组合。"
+                    )
+                else:
+                    recommendations.append(
+                        f"[模型审查] '{model_name}' 不在任何活跃组合中，"
+                        f"建议确认是否需要保留此模型。"
+                    )
+
+        return findings, recommendations
