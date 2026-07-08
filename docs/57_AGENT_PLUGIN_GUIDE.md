@@ -80,3 +80,45 @@ python quantpits/scripts/run_deep_analysis.py \
 ```
 
 运行输出中将包含由 `WorkspaceLocalAgent` 产生的信息，证明本地插件已成功隔离加载并执行完毕。
+
+---
+
+## 4. 阶段插件 (Pipeline Stage Plugins)
+
+除了 Agent 插件，系统同样支持通过工作区本地清单注册**自定义流水线阶段**。机制与 Agent 插件完全一致：
+
+```json
+// config/pipeline_manifest.json
+{
+    "stages": [
+        {
+            "name": "custom_liquidity_check",
+            "depends_on": ["signals"],
+            "provides": ["liquidity_report"],
+            "class_path": "custom_stages.liquidity.run_stage",
+            "insert_after": "signals",
+            "enabled": true
+        }
+    ]
+}
+```
+
+自定义阶段函数使用 `@register_stage` 装饰器自声明依赖关系和产出字段：
+
+```python
+# custom_stages/liquidity.py
+from quantpits.scripts.deep_analysis.stage_runner import register_stage
+
+@register_stage(
+    name='custom_liquidity_check',
+    depends_on=['signals'],
+    provides=['liquidity_report'],
+)
+def run_stage(state, **kwargs):
+    # state.signals — 由上游 signals 阶段产出
+    ...
+    state.liquidity_report = {...}
+    return state
+```
+
+加载方式与 Agent 插件共用 `--manifest` 参数（系统自动识别 `"agents"` 和 `"stages"` 键），或分别指定不同清单文件。详见 [50 — 深度分析系统使用指南](50_DEEP_ANALYSIS_GUIDE.md)。

@@ -11,21 +11,26 @@ Starting from Phase 3, the system integrates OOM-RL (Out-of-Money Reinforcement 
 
 ### 1. 7-Stage Pipeline
 
-Deep Analysis execution follows a strict, sequential 7-stage pipeline. The starting stage or individual stages can be run selectively using the `--stage` parameter.
+Deep Analysis execution follows a strict 7-stage pipeline. Each stage self-declares its dependencies and outputs via the `@register_stage` decorator; the system builds an execution DAG dynamically. Use `--stage` to run **only** the target stage — upstream data is auto-loaded from checkpoints without re-execution.
 
 1. **`discover`**: Scans the workspace to discover and load all relevant snapshots, model predictions, and historical configuration data.
-2. **`agents`**: Instantiates and executes registered specialist analysis Agents in parallel, producing structured `AgentFindings`.
-3. **`synthesis`**: Passes all agent findings to the LLM Synthesizer to generate cross-domain insights and summaries.
-4. **`window_analysis`**: Runs the purely rule-driven `TrainingWindowAnalyzer` to assess training time window configurations.
+2. **`agents`**: Instantiates and executes registered specialist analysis Agents, producing structured `AgentFindings`.
+3. **`synthesis`**: Passes all agent findings to the Synthesizer to generate cross-domain insights and summaries.
+4. **`window_analysis`**: Runs the rule-driven `TrainingWindowAnalyzer` to assess training window configurations. **Always enabled** — static and CPCV/rolling rules run unconditionally; data-driven rules auto-activate when benchmark data is available.
 5. **`signals`**: Runs `SignalExtractor` to convert raw agent metrics into standardized signals for Critic consumption.
 6. **`critic`**: Executes the LLM Critic to transform signals into actionable optimization advice (`ActionItems`).
 7. **`report`**: Synthesizes output from all stages and renders the final Markdown report.
 
-### 2. Pluggable Agent Registry
+**Checkpoints & Label Isolation**: Each stage auto-saves a checkpoint to `output/deep_analysis/checkpoints/`. The `--run-label` flag injects the label into checkpoint filenames — different labels are fully isolated, allowing multiple same-day experiments without interference. `--resume-latest` continues from the newest checkpoint within the same label.
 
-The system allows loading custom agents via a workspace-local plugin system without polluting the global codebase or environment.
+### 2. Pluggable Agent & Stage Registry
 
-Developers can declare workspace-local agents in a manifest file (e.g., `config/agent_manifest.json`) at their workspace root. The system dynamically injects the workspace path to `sys.path` to enable clean, isolated imports. For detailed development steps, refer to [57 — Agent Plugin Development Guide](57_AGENT_PLUGIN_GUIDE.md).
+The system allows loading custom agents and pipeline stages via workspace-local manifests without polluting the global codebase.
+
+- **Agent plugins**: Declare in `config/agent_manifest.json`. The system injects the workspace path into `sys.path`, imports the agent class, registers it, and cleans up.
+- **Stage plugins**: Declare in `config/pipeline_manifest.json`. Same isolation mechanism — workspace-root `sys.path` injection with cleanup after loading. Stages declare their own `depends_on` and `insert_after` position in the DAG.
+
+For detailed development steps, refer to [57 — Agent Plugin Development Guide](57_AGENT_PLUGIN_GUIDE.md).
 
 ## Quick Start
 
@@ -55,17 +60,17 @@ python -m quantpits.scripts.run_deep_analysis \
 # Specific agents only
 python -m quantpits.scripts.run_deep_analysis --agents model_health,prediction_audit
 
-# Run with label (prevents overwriting when running multiple times on same date)
+# Run with label (checkpoints fully isolated between different labels)
 python -m quantpits.scripts.run_deep_analysis --critic --run-label after-retrain
+
+# Run a single stage only (upstream auto-loaded from same-label checkpoints)
+python -m quantpits.scripts.run_deep_analysis --stage signals --run-label exp-1
+
+# Resume from latest checkpoint within the same label
+python -m quantpits.scripts.run_deep_analysis --resume-latest --run-label exp-1
 
 # Custom time windows
 python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
-
-# Enable training window analysis (rule-based, independent of Critic)
-python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
-
-# Specify starting pipeline stage (e.g., skip discover and start from agents)
-python -m quantpits.scripts.run_deep_analysis --stage agents
 
 # Load workspace-local custom agent plugin
 python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manifest config/agent_manifest.json
@@ -75,8 +80,11 @@ python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manif
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--stage` | `discover` | Starting execution stage (`discover`, `agents`, `synthesis`, `window_analysis`, `signals`, `critic`, `report`) |
-| `--manifest` | `None` | Agent registry manifest path (JSON), relative to current workspace root, for loading local plugins |
+| `--stage` | `all` | Run a single stage only (`discover`, `agents`, `agents:NAME`, `synthesis`, `window_analysis`, `signals`, `critic`, `report`, `all`). Upstream stages auto-loaded from same-label checkpoints |
+| `--run-label` | `""` | Run label (e.g., "after-retrain"). Injected into checkpoint and report filenames — different labels are fully isolated |
+| `--resume-latest` | (flag) | Auto-find the latest checkpoint for the current label and resume from the next stage |
+| `--resume-from` | `None` | Resume from a specific checkpoint file |
+| `--manifest` | `None` | Agent/stage manifest path (JSON/YAML), relative to current workspace root |
 | `--windows` | `full,weekly_era,1y,6m,3m,1m` | Comma-separated time windows |
 | `--freq-change-date` | From config or `None` | Daily→weekly frequency cutoff date |
 | `--output` | `output/deep_analysis_report.md` | Report output path |
@@ -86,8 +94,7 @@ python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manif
 | `--base-url` | (llm_config.json) | API base URL override |
 | `--critic` | (flag) | **OOM-RL Phase 3** — Enable Critic mode, generate ActionItems |
 | `--critic-dry-run` | (flag) | Critic preview mode, generate ActionItems without persisting |
-| `--window-analysis` | (flag) | Enable rule-based training window analysis (TrainingWindowAnalyzer), runs independently of Critic |
-| `--run-label` | `""` | Run label (e.g., "after-retrain"), injected into output filenames to prevent same-date overwrites |
+| `--window-analysis` | (flag, retained) | Always runs by default; flag kept for backward compatibility |
 | `--agents` | `all` | Comma-separated agent names |
 | `--notes` | `""` | Free-text external context |
 | `--notes-file` | `None` | File path containing external notes |
@@ -151,7 +158,8 @@ Analyzes trading behavior patterns and signal discipline.
 ### 8. Training Window Analyzer (`TrainingWindowAnalyzer`)
 
 A **purely rule-driven**, independent analyzer that runs after the agents but before
-signal extraction. Enabled via the `--window-analysis` flag.
+signal extraction. Always enabled — static and CPCV/rolling rules run unconditionally;
+data-driven rules auto-activate when benchmark data is available.
 
 It detects structural problems in the training data split configuration without
 any LLM dependency:
@@ -316,8 +324,8 @@ Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback 
 ### Quick Flow
 
 ```bash
-# Step 1: Deep Analysis + Critic + Window Analysis → produce ActionItems
-python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
+# Step 1: Deep Analysis + Critic → produce ActionItems (window_analysis runs by default)
+python -m quantpits.scripts.run_deep_analysis --critic
 
 # Step 2: Preview the Feedback Loop
 python -m quantpits.scripts.run_feedback_loop \

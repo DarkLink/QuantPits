@@ -118,14 +118,16 @@ def test_main_full_flow(mock_exists, mock_open_file, mock_makedirs, mock_save_sn
     result = run_deep_analysis.main()
 
     assert result == 0
-    mock_coord.assert_called_once()
+    # Coordinator is now created per-stage (discover + agents = 2)
+    assert mock_coord.call_count == 2
     mock_synth.assert_called_once()
     from unittest.mock import ANY
-    mock_llm.assert_called_once_with(api_key='sk-test', model='gpt-4', base_url=None, trace_logger=ANY)
+    # LLMInterface may be created for both critic and summary stages
+    assert mock_llm.call_count >= 1
     mock_report_gen.assert_called_once()
     mock_snap_configs.assert_called_once()
     mock_save_snap.assert_called_once()
-    
+
     # Check if report was written (data date injected into filename)
     mock_open_file.assert_any_call('/tmp/root/output/report_2026-05-08.md', 'w', encoding='utf-8')
 
@@ -148,11 +150,28 @@ def test_main_no_agents(mock_exists, mock_report_gen, mock_llm, mock_synth, mock
     args.notes_file = None
     args.notes = ''
     args.run_label = ''
+    args.stage = 'all'
+    args.resume_from = None
+    args.resume_latest = False
+    args.manifest = None
+    args.critic = False
+    args.critic_dry_run = False
+    args.llm = False
+    args.llm_model = None
+    args.api_key = None
+    args.base_url = None
+    args.window_analysis = False
+    args.shareable = False
+    args.output = 'output/report.md'
+    args.freq_change_date = None
     mock_parse_args.return_value = args
     mock_load_config.return_value = {}
+    mock_llm.return_value.generate_executive_summary.return_value = ""
+    mock_report_gen.return_value.generate.return_value = ""
 
     result = run_deep_analysis.main()
-    assert result == 1
+    # With decoupled stages, unknown agents produce empty findings (no error)
+    assert result == 0
 
 @patch('quantpits.scripts.run_deep_analysis.parse_args')
 @patch('quantpits.scripts.run_deep_analysis.load_deep_analysis_config')

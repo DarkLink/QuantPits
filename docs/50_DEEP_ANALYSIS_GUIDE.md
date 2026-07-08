@@ -11,21 +11,26 @@
 
 ### 1. 7-Stage Pipeline
 
-深度分析执行遵循严格的 7 阶段顺序执行管道。可以在命令行中通过 `--stage` 参数指定起始或单独运行的阶段。
+深度分析执行遵循严格的 7 阶段流水线。每个阶段通过 `@register_stage` 装饰器自声明依赖关系和产出字段，系统根据声明动态构建执行 DAG。可以通过 `--stage` 参数**单独运行**任意阶段——上游阶段的数据自动从 checkpoint 加载，无需重复执行。
 
 1. **`discover`**: 扫描工作区，发现并加载所有相关的快照、模型预测和历史配置数据。
-2. **`agents`**: 实例化并并行执行注册的分析代理 (Agents)，生成结构化的 `AgentFindings`。
-3. **`synthesis`**: 将所有代理的发现传递给 LLM 综合器，生成跨域的洞察和摘要。
-4. **`window_analysis`**: 运行纯规则驱动的 `TrainingWindowAnalyzer`，分析训练时间窗口的合理性。
+2. **`agents`**: 实例化并执行注册的分析代理 (Agents)，生成结构化的 `AgentFindings`。
+3. **`synthesis`**: 将所有代理的发现传递给综合器，生成跨域的洞察和摘要。
+4. **`window_analysis`**: 运行纯规则驱动的 `TrainingWindowAnalyzer`，分析训练时间窗口的合理性。**默认启用**，静态规则 + CPCV/滚动规则始终运行，数据驱动规则在 benchmark 数据可用时自动激活。
 5. **`signals`**: 运行 `SignalExtractor`，将代理指标转换为标准化信号 (Signals) 以供 Critic 消费。
 6. **`critic`**: 运行 LLM Critic，将提取的信号转化为可操作的优化建议 (ActionItems)。
 7. **`report`**: 汇总所有阶段的输出并渲染 Markdown 最终报告。
 
-### 2. 可插拔代理注册 (Pluggable Agent Registry)
+**Checkpoint 与 Label 隔离**: 每个阶段完成后自动保存 checkpoint 到 `output/deep_analysis/checkpoints/`。通过 `--run-label` 指定的标签会注入 checkpoint 文件名，不同 label 之间的 checkpoint 完全隔离——同日多次运行不同参数的实验互不干扰。`--resume-latest` 可从同 label 的最新 checkpoint 续跑。
 
-系统允许在不污染全局环境的情况下，通过工作区本地的插件系统加载自定义代理。
+### 2. 可插拔代理与阶段注册 (Pluggable Agent & Stage Registry)
 
-开发者可以在工作区根目录下的配置文件 (如 `config/agent_manifest.json`) 中声明本地代理，系统会自动将工作区路径注入 `sys.path`，实现干净、隔离的动态加载。详细开发流程请参阅 [57 — 代理插件开发指南](57_AGENT_PLUGIN_GUIDE.md)。
+系统支持通过工作区本地清单文件加载自定义代理和流水线阶段，全程不污染全局环境。
+
+- **代理插件**: 通过 `config/agent_manifest.json` 声明。系统注入工作区路径到 `sys.path`，导入 agent 类并注册，完成后清理路径。
+- **阶段插件**: 通过 `config/pipeline_manifest.json` 声明。采用相同的隔离加载机制——工作区路径临时注入 `sys.path`，加载后清理。自定义阶段通过 `insert_after` 声明在 DAG 中的插入位置。
+
+详细开发流程请参阅 [57 — 代理插件开发指南](57_AGENT_PLUGIN_GUIDE.md)。
 
 ## 快速开始
 
@@ -55,17 +60,17 @@ python -m quantpits.scripts.run_deep_analysis \
 # 仅运行特定代理
 python -m quantpits.scripts.run_deep_analysis --agents model_health,prediction_audit
 
-# 带标签运行（同日多次运行不覆盖）
+# 带标签运行（同日多次运行不覆盖，不同 label 的 checkpoint 完全隔离）
 python -m quantpits.scripts.run_deep_analysis --critic --run-label after-retrain
+
+# 独立运行单个阶段（上游自动从 checkpoint 加载，不重复执行）
+python -m quantpits.scripts.run_deep_analysis --stage signals --run-label exp-1
+
+# 从最新 checkpoint 续跑
+python -m quantpits.scripts.run_deep_analysis --resume-latest --run-label exp-1
 
 # 自定义时间窗口
 python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
-
-# 启用训练窗口分析（规则驱动，独立于 Critic）
-python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
-
-# 指定起始阶段执行 (如跳过 discover，直接从 agents 开始)
-python -m quantpits.scripts.run_deep_analysis --stage agents
 
 # 加载工作区本地自定义代理插件
 python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manifest config/agent_manifest.json
@@ -75,8 +80,11 @@ python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manif
 
 | 参数 | 默认值 | 描述 |
 |-----------|---------|-------------|
-| `--stage` | `discover` | 起始执行阶段 (`discover`, `agents`, `synthesis`, `window_analysis`, `signals`, `critic`, `report`) |
-| `--manifest` | `None` | Agent 注册清单 (JSON)，路径相对于当前工作区，用于加载本地插件 |
+| `--stage` | `all` | 单独运行指定阶段 (`discover`, `agents`, `agents:NAME`, `synthesis`, `window_analysis`, `signals`, `critic`, `report`, `all`)。上游阶段自动从同 label checkpoint 加载 |
+| `--run-label` | `""` | 运行标签（如 "after-retrain"）。Checkpoint 和报告文件名均注入此标签，不同 label 之间完全隔离 |
+| `--resume-latest` | (flag) | 自动查找同 label 的最新 checkpoint 并从下一阶段续跑 |
+| `--resume-from` | `None` | 从指定 checkpoint 文件恢复 |
+| `--manifest` | `None` | Agent/Stage 注册清单 (JSON)，路径相对于当前工作区 |
 | `--windows` | `full,weekly_era,1y,6m,3m,1m` | 逗号分隔的时间窗口 |
 | `--freq-change-date` | 来自配置或 `None` | 日频→周频切换的截止日期 |
 | `--output` | `output/deep_analysis_report.md` | 报告输出路径 |
@@ -86,8 +94,7 @@ python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manif
 | `--base-url` | (llm_config.json) | API base URL 覆盖 |
 | `--critic` | (flag) | **OOM-RL Phase 3** — 启用 Critic 模式，生成 ActionItems |
 | `--critic-dry-run` | (flag) | Critic 预览模式，生成 ActionItems 但不持久化到文件 |
-| `--window-analysis` | (flag) | 启用规则驱动的训练窗口分析（TrainingWindowAnalyzer），独立于 Critic 运行 |
-| `--run-label` | `""` | 运行标签（如 "after-retrain"），注入输出文件名防止同日多次运行覆盖 |
+| `--window-analysis` | (flag, 默认启用) | 规则驱动的训练窗口分析，现默认运行，flag 保留向后兼容 |
 | `--agents` | `all` | 逗号分隔的代理名称 |
 | `--notes` | `""` | 自由文本形式的外部上下文 |
 | `--notes-file` | `None` | 包含外部笔记的文件路径 |
@@ -149,7 +156,7 @@ python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manif
 
 ### 8. 训练窗口分析器 (`TrainingWindowAnalyzer`)
 
-一个**纯规则驱动**的独立分析器，在 Agent 运行之后、Signal 提取之前执行。通过 `--window-analysis` 标志启用。
+一个**纯规则驱动**的独立分析器，在 Agent 运行之后、Signal 提取之前自动执行。静态规则 + CPCV/滚动规则始终运行；数据驱动规则在 benchmark 数据可用时自动启用。
 
 它检测训练数据划分配置中的结构性问题，不依赖 LLM：
 
@@ -304,8 +311,8 @@ Agent Findings → Signal Extractor → LLM Critic → ActionItems → Feedback 
 ### 快速流程
 
 ```bash
-# Step 1: Deep Analysis + Critic + 窗口分析 → 产出 ActionItems
-python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
+# Step 1: Deep Analysis + Critic → 产出 ActionItems（window_analysis 默认运行）
+python -m quantpits.scripts.run_deep_analysis --critic
 
 # Step 2: 预览 Feedback Loop
 python -m quantpits.scripts.run_feedback_loop \
