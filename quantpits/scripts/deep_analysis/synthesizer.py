@@ -148,8 +148,9 @@ class Synthesizer:
         """
         Check: Model IC trend is improving or stable, but combo returns are declining.
 
-        FRAGILE: Relies on English keywords in finding detail/title text.
-        TODO: Move to structured raw_metrics-based detection.
+        Uses structured raw_metrics from Model Health (scorecard.*.ic_trend) and
+        Ensemble Evolution ({combo}_return_change, oos_trend.is_oos_decay) —
+        no keyword matching on free-text finding fields.
         """
         findings = []
         model_runs = self._by_agent.get('Model Health', [])
@@ -157,29 +158,46 @@ class Synthesizer:
         if not model_runs or not ee_runs:
             return findings
 
+        # 1. Any model with improving or stable IC trend (from scorecard)
         ic_improving = False
         for af in model_runs:
-            for f in af.findings:
-                if 'improving' in f.detail.lower() or 'stable' in f.detail.lower():
+            scorecard = af.raw_metrics.get('scorecard', {})
+            for _model_name, sc in scorecard.items():
+                if sc.get('ic_trend') in ('improving', 'stable'):
                     ic_improving = True
                     break
+            if ic_improving:
+                break
 
+        # 2. Any combo with declining returns
         combo_degrading = False
         degrading_combo_name = ""
         for af in ee_runs:
-            for f in af.findings:
-                if 'degrading' in f.title.lower():
+            # Check per-combo return_change (negative delta = degrading)
+            for key, val in af.raw_metrics.items():
+                if key.endswith('_return_change') and isinstance(val, (int, float)):
+                    if val < -0.03:  # -3% absolute return decline
+                        combo_degrading = True
+                        degrading_combo_name = key.replace('_return_change', '')
+                        break
+            # Also check OOS decay signal
+            if not combo_degrading:
+                oos = af.raw_metrics.get('oos_trend', {})
+                if oos.get('is_oos_decay'):
                     combo_degrading = True
-                    degrading_combo_name = f.title.split(':')[0]
-                    break
+                    degrading_combo_name = "OOS"
+            if combo_degrading:
+                break
 
         if ic_improving and combo_degrading:
             findings.append(Finding(
                 severity='warning',
                 category='Cross-Agent',
                 title='IC-Combo Performance Contradiction (指标背离)',
-                detail=f"背离警示：单模型IC趋势稳定/回升，但融合组合 ({degrading_combo_name}) 表现超额却出现持续恶化。这可能暗示模型间的相关性结构漂移或过度拟合。",
-                data={'ic_improving': ic_improving, 'combo_degrading': combo_degrading}
+                detail=f"背离警示：单模型IC趋势稳定/回升，但融合组合 ({degrading_combo_name}) 表现超额却出现持续恶化。"
+                       f"这可能暗示模型间的相关性结构漂移或过度拟合。",
+                data={'ic_improving': ic_improving, 'combo_degrading': combo_degrading,
+                      'degrading_combo': degrading_combo_name}
             ))
         return findings
 

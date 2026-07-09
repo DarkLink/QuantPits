@@ -142,15 +142,26 @@ def test_synthesizer_time_horizon_reversal():
 
 
 def test_synthesizer_ic_combo_contradiction():
-    f_model = Finding(severity='info', category='Model Health', title='Model IC', detail='IC trend is improving')
-    af_model = AgentFindings(agent_name='Model Health', window_label='1m', findings=[f_model])
-    
-    f_ee = Finding(severity='warning', category='Ensemble Evolution', title='Defensive_V2: Calmar degrading', detail='...')
-    af_ee = AgentFindings(agent_name='Ensemble Evolution', window_label='1m', findings=[f_ee])
-    
+    """IC-Combo contradiction detected via structured raw_metrics (not keyword matching)."""
+    # Model Health: scorecard shows improving IC trend
+    af_model = AgentFindings(agent_name='Model Health', window_label='1m',
+                             findings=[], recommendations=[], raw_metrics={
+                                 'scorecard': {
+                                     'lstm_Alpha158': {'ic_trend': 'improving', 'ic_mean': 0.04},
+                                 }
+                             })
+
+    # Ensemble Evolution: return_change is negative (degrading)
+    af_ee = AgentFindings(agent_name='Ensemble Evolution', window_label='1m',
+                          findings=[], recommendations=[], raw_metrics={
+                              'Defensive_V2_return_change': -0.08,
+                          })
+
     synth = Synthesizer([af_model, af_ee])
     result = synth.synthesize()
-    
+
     cross = [f for f in result['cross_findings'] if 'IC-Combo Performance Contradiction' in f.title]
     assert len(cross) == 1
     assert cross[0].severity == 'warning'
+    assert cross[0].data['ic_improving'] is True
+    assert cross[0].data['combo_degrading'] is True

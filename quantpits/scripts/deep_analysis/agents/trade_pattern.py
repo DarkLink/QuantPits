@@ -100,26 +100,27 @@ class TradePatternAgent(BaseAgent):
 
         # --- 4. Win Rate by Classification ---
         if not classification.empty and not trade_log.empty:
-            class_perf = self._analyze_class_performance(trade_log, classification)
+            class_perf = self._analyze_class_performance(trade_log, classification, holding_log)
             raw_metrics['class_performance'] = class_perf
 
             if class_perf:
                 for cls, metrics in class_perf.items():
                     if metrics.get('n_trades', 0) >= 3:
+                        wr = metrics.get('win_rate')
+                        wr_str = f"Win rate: {wr*100:.1f}%." if wr is not None else "Win rate: N/A (no holding data)."
                         findings.append(self._make_finding(
                             'info', f'{cls} trade performance',
-                            f"Count: {metrics['n_trades']}. "
-                            f"Win rate: {metrics.get('win_rate', 0)*100:.1f}%.",
+                            f"Count: {metrics['n_trades']}. {wr_str}",
                             metrics
                         ))
 
-                # Compare SIGNAL vs SUBSTITUTE
+                # Compare SIGNAL vs SUBSTITUTE (only when both have real win rates)
                 sig = class_perf.get('SIGNAL', {})
                 sub = class_perf.get('SUBSTITUTE', {})
                 if sig.get('n_trades', 0) >= 5 and sub.get('n_trades', 0) >= 3:
-                    sig_wr = sig.get('win_rate', 0)
-                    sub_wr = sub.get('win_rate', 0)
-                    if sub_wr > sig_wr + 0.1:
+                    sig_wr = sig.get('win_rate')
+                    sub_wr = sub.get('win_rate')
+                    if sig_wr is not None and sub_wr is not None and sub_wr > sig_wr + 0.1:
                         findings.append(self._make_finding(
                             'warning', 'Substitute trades outperforming signals',
                             f'SUBSTITUTE win rate ({sub_wr*100:.1f}%) exceeds '
@@ -216,8 +217,16 @@ class TradePatternAgent(BaseAgent):
         }
 
     def _analyze_class_performance(self, trade_log: pd.DataFrame,
-                                   classification: pd.DataFrame) -> dict:
-        """Approximate win rate by trade classification using sell-side PnL."""
+                                   classification: pd.DataFrame,
+                                   holding_log: pd.DataFrame | None = None) -> dict:
+        """Compute win rate by trade classification using mark-to-market PnL.
+
+        Buy trades:  close_price > fill_price  →  win (bought below market close).
+        Sell trades: fill_price > avg_cost     →  win (sold above cost basis).
+
+        When holding_log is unavailable, win_rate is None (unknown) rather than
+        a fake constant — consumers should check for None before formatting.
+        """
         buy_types = ['上海A股普通股票竞价买入', '深圳A股普通股票竞价买入']
         sell_types = ['上海A股普通股票竞价卖出', '深圳A股普通股票竞价卖出']
 
@@ -227,9 +236,10 @@ class TradePatternAgent(BaseAgent):
         # Map classification to labels
         class_map = {'S': 'SIGNAL', 'A': 'SUBSTITUTE', 'M': 'MANUAL'}
 
-        # Merge classification with buy trades
+        # Split buys and sells; merge classification with both
         buys = trade_log[trade_log['交易类别'].isin(buy_types)].copy()
-        if buys.empty or classification.empty:
+        sells = trade_log[trade_log['交易类别'].isin(sell_types)].copy()
+        if (buys.empty and sells.empty) or classification.empty:
             return {}
 
         if 'trade_date' in classification.columns:
@@ -239,26 +249,69 @@ class TradePatternAgent(BaseAgent):
             classification = classification.copy()
             classification['证券代码'] = classification['instrument']
 
-        merged = pd.merge(
-            buys[['成交日期', '证券代码', '成交价格', '成交金额']],
-            classification[['成交日期', '证券代码', 'trade_class']],
-            on=['成交日期', '证券代码'],
-            how='left'
-        )
-        merged['trade_class'] = merged['trade_class'].fillna('U')
+        # Build price lookups from holding log: (date_str, code) → price
+        close_prices: dict[tuple, float] = {}
+        avg_costs: dict[tuple, float] = {}
+        if holding_log is not None and not holding_log.empty:
+            if '成交日期' in holding_log.columns and '证券代码' in holding_log.columns:
+                for _, row in holding_log.iterrows():
+                    date_str = str(row['成交日期'])[:10]
+                    code = str(row['证券代码'])
+                    key = (date_str, code)
+                    cp = row.get('收盘价格')
+                    ac = row.get('持仓均价')
+                    if cp is not None and float(cp) > 0:
+                        close_prices[key] = float(cp)
+                    if ac is not None and float(ac) > 0:
+                        avg_costs[key] = float(ac)
 
-        # Simple win approximation: compare buy price with current holding value
-        # This is a rough proxy; exact PnL requires FIFO matching
+        def _merge_and_eval(trades: pd.DataFrame) -> pd.DataFrame:
+            """Merge classification into trades and evaluate mark-to-market."""
+            if trades.empty:
+                return trades
+            merged = pd.merge(
+                trades[['成交日期', '证券代码', '成交价格', '成交金额', '交易类别']],
+                classification[['成交日期', '证券代码', 'trade_class']],
+                on=['成交日期', '证券代码'],
+                how='left'
+            )
+            merged['trade_class'] = merged['trade_class'].fillna('U')
+
+            # Determine win per row
+            results = []
+            for _, row in merged.iterrows():
+                date_str = str(row['成交日期'])[:10]
+                code = str(row['证券代码'])
+                is_buy = row['交易类别'] in buy_types
+                benchmark = close_prices.get((date_str, code)) if is_buy else avg_costs.get((date_str, code))
+                if benchmark is not None and benchmark > 0:
+                    win = (benchmark > row['成交价格']) if is_buy else (row['成交价格'] > benchmark)
+                    results.append((row['trade_class'], row['成交金额'], win))
+                else:
+                    results.append((row['trade_class'], row['成交金额'], None))
+            return pd.DataFrame(results, columns=['trade_class', '成交金额', 'win'])
+
+        buy_eval = _merge_and_eval(buys)
+        sell_eval = _merge_and_eval(sells)
+        all_eval = pd.concat([df for df in [buy_eval, sell_eval] if not df.empty],
+                             ignore_index=True)
+
         result = {}
         for cls_code, cls_label in class_map.items():
-            cls_trades = merged[merged['trade_class'] == cls_code]
-            n = len(cls_trades)
-            if n == 0:
+            cls_trades = all_eval[all_eval['trade_class'] == cls_code]
+            n_total = len(cls_trades)
+            if n_total == 0:
                 continue
+
+            n_known = cls_trades['win'].notna().sum()
+            n_wins = int(cls_trades['win'].sum()) if n_known > 0 else 0
+
             result[cls_label] = {
-                'n_trades': n,
+                'n_trades': n_total,
                 'total_amount': float(cls_trades['成交金额'].sum()),
-                'win_rate': 0.5,  # Placeholder — exact win rate needs FIFO
+                'win_rate': (n_wins / n_known) if n_known > 0 else None,
+                'n_wins': n_wins,
+                'n_with_benchmark': int(n_known),
             }
 
         return result

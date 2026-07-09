@@ -391,7 +391,9 @@ class TestAnalyzeClassPerformance:
 
         agent = TradePatternAgent()
         result = agent._analyze_class_performance(trade_log, classification)
-        assert result == {}  # no buys
+        # Sells are now classified too (not just buys); win_rate is None without holding data
+        assert 'SIGNAL' in result
+        assert result['SIGNAL']['n_trades'] == 5
 
     def test_substitute_outperforming_signal(self):
         """When substitute trades have higher win rate, check for warning."""
