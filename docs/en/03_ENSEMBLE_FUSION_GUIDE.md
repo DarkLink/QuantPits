@@ -25,6 +25,9 @@ python quantpits/scripts/ensemble_fusion.py --combo combo_A
 
 # 4. Run all combos and generate comparisons
 python quantpits/scripts/ensemble_fusion.py --from-config-all
+
+# 5. Explain the execution plan only; do not initialize Qlib or write files
+python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 ```
 
 ## Complete Parameter List
@@ -50,6 +53,34 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 | `--detailed-analysis` | false | Generates a detailed backtest analysis report (similar to production reports) |
 | `--verbose-backtest` | false | Enables verbose mode for Qlib backtesting |
 | `--norm-method` | `rank` | Cross-sectional normalization: `rank` (percentile [0,1], recommended) or `zscore` |
+| `--explain-plan` | false | Print a dry-run execution plan and exit without Qlib initialization or writes |
+| `--json-plan` | false | Emit a machine-readable JSON plan; implies dry-run |
+| `--run-id` | auto-generated | Set the run ID used by the plan and manifest |
+| `--no-manifest` | false | Disable writing `output/manifests/ensemble_fusion/<run_id>.json` during actual execution |
+
+## Dry-run and Run Manifests
+
+Before a real run, inspect the execution plan:
+
+```bash
+python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
+```
+
+This command only reads workspace configs and train records. It prints the resolved combos, input fingerprints, planned writes, and expensive steps. It does not trigger the safeguard, initialize Qlib, load recorders, or write to `output/`, `data/`, or `config/`.
+
+Schedulers or CI jobs can use the JSON form:
+
+```bash
+python quantpits/scripts/ensemble_fusion.py --from-config-all --json-plan
+```
+
+Actual execution writes a run manifest by default:
+
+```text
+output/manifests/ensemble_fusion/<run_id>.json
+```
+
+The manifest records the `run_id`, plan fingerprint, input config fingerprints, resolved combos, execution status, and result summary. `data/operator_log.jsonl` links the same run with `run_id`, `manifest_path`, and `plan_fingerprint`. Use `--no-manifest` when you need the old no-manifest side-effect profile.
 
 ## Multi-Combo Configurations
 
@@ -208,25 +239,31 @@ Cross-combo Comparison Table + Merged Net Value Crossover Plot
 
 ```text
 output/
-└── ensemble/
+├── ensemble/
     ├── ensemble_fusion_config_{date}.json     # Fused configuration state
     ├── correlation_matrix_{date}.csv          # Correlation matrix
     ├── leaderboard_{date}.csv                 # Performance leaderboards
     ├── ensemble_nav_{date}.png                # Net asset value trajectories
     ├── ensemble_weights_{date}.png            # Dynamic weight mapping (dynamic mode)
     └── backtest_analysis_report_{date}.md     # [NEW] Detailed backtest analysis report (--detailed-analysis)
+└── manifests/
+    └── ensemble_fusion/
+        └── <run_id>.json                      # Run manifest
 ```
 
 ### Multi Combo Mode (`--from-config-all` or `--combo`)
 
 ```text
 output/
-└── ensemble/
+├── ensemble/
     ├── ensemble_fusion_config_combo_A_{date}.json
     ├── ensemble_fusion_config_combo_B_{date}.json
     ├── combo_comparison_{date}.csv           # Tabular cross-reference
     ├── combo_comparison_{date}.png           # Comparative charted trajectories
     └── backtest_analysis_report_{combo}_{date}.md # [NEW] Detailed analysis report for this specific combo
+└── manifests/
+    └── ensemble_fusion/
+        └── <run_id>.json                     # Run manifest
 ```
 
 

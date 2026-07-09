@@ -54,6 +54,7 @@ import sys
 import json
 import argparse
 from datetime import datetime
+from pathlib import Path
 
 from quantpits.utils import env
 os.chdir(env.ROOT_DIR)
@@ -1078,10 +1079,7 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
     }
 
 
-# ============================================================================
-# Main
-# ============================================================================
-def main():
+def build_arg_parser():
     parser = argparse.ArgumentParser(
         description='Ensemble Fusion - 对选定模型组合进行融合预测、回测和风险分析',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1148,133 +1146,184 @@ def main():
     parser.add_argument('--save-csv', action='store_true', help='除了保存为 Qlib Recorder 外，同时输出 predictions csv')
     parser.add_argument('--norm-method', type=str, default='rank', choices=['zscore', 'rank'],
                         help='截面归一化方法 (默认: zscore)')
+    parser.add_argument('--explain-plan', action='store_true',
+                        help='仅打印执行计划，不初始化 Qlib，不写文件')
+    parser.add_argument('--json-plan', action='store_true',
+                        help='以 JSON 输出执行计划；隐含 dry-run，不写文件')
+    parser.add_argument('--run-id', type=str, default=None,
+                        help='显式指定运行 ID（用于 dry-run/manifest 对齐）')
+    parser.add_argument('--no-manifest', action='store_true',
+                        help='真实执行时不写 output/manifests/ensemble_fusion/<run_id>.json')
+    return parser
 
-    args = parser.parse_args()
 
-    from quantpits.utils import env
-    from quantpits.utils.operator_log import OperatorLog
-    env.safeguard("Ensemble Fusion")
+def _emit_json_plan(plan, plan_fingerprint):
+    from quantpits.runtime.render import command_plan_to_public_dict
+
+    payload = {
+        "schema_version": 1,
+        "plan_fingerprint": plan_fingerprint,
+        "plan": command_plan_to_public_dict(plan),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+
+
+def _emit_human_plan(plan, plan_fingerprint):
+    from quantpits.runtime import render_command_plan
+
+    print(render_command_plan(plan))
+    print(f"\nPlan fingerprint: {plan_fingerprint}")
+
+
+def _workspace_relative(ctx, path):
+    if path is None:
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = ctx.path(candidate.as_posix())
+    try:
+        return candidate.resolve().relative_to(ctx.root).as_posix()
+    except ValueError:
+        return candidate.as_posix()
+
+
+def _actual_output_refs(ctx, combo_results, *, anchor_date, args, manifest_file=None):
+    from quantpits.runtime import OutputRef
+
+    outputs = []
+    for result in combo_results:
+        pred_file = result.get("pred_file")
+        if pred_file:
+            kind = "prediction" if str(pred_file).endswith(".csv") else "record"
+            outputs.append(OutputRef(str(pred_file), kind=kind, description=f"combo {result.get('name')} prediction"))
+    if len(combo_results) > 1:
+        outputs.append(
+            OutputRef(
+                _workspace_relative(ctx, Path(args.output_dir) / f"combo_comparison_{anchor_date}.csv"),
+                kind="report",
+                description="combo comparison",
+                overwrite=True,
+            )
+        )
+    if manifest_file is not None:
+        outputs.append(
+            OutputRef(
+                _workspace_relative(ctx, manifest_file),
+                kind="manifest",
+                description="run manifest",
+                overwrite=True,
+            )
+        )
+    return tuple(outputs)
+
+
+def _write_manifest_safely(ctx, result):
+    from quantpits.runtime import manifest_from_result, write_run_manifest
+
+    manifest = manifest_from_result(result)
+    return write_run_manifest(ctx, manifest)
+
+
+# ============================================================================
+# Main
+# ============================================================================
+def main(argv=None):
+    parser = build_arg_parser()
+    cli_args = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(argv)
+
+    if args.json_plan:
+        args.explain_plan = True
 
     # ---- 验证参数 ----
     if not args.models and not args.from_config and not args.from_config_all and not args.combo:
         parser.error("必须指定 --models、--from-config、--from-config-all 或 --combo")
 
-    with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
+    from quantpits.config_contracts.workspace import validate_workspace
+    from quantpits.runtime import CommandResult, fingerprint_command_plan
+    from quantpits.utils.ensemble_plan import (
+        EnsemblePlanError,
+        build_ensemble_command_plan,
+        resolve_ensemble_combos,
+    )
+    from quantpits.utils import env
+    from quantpits.utils.operator_log import OperatorLog
+
+    ctx = env.get_workspace_context()
+    validation_result = validate_workspace(ctx, include_optional=True, strict=False)
+    train_records, model_config, ensemble_config = load_config(args.record_file)
+
+    # 确定频率
+    if not args.freq:
+        args.freq = model_config.get('freq', 'week')
+
+    try:
+        combos_to_run = resolve_ensemble_combos(
+            args=args,
+            train_records=train_records,
+            ensemble_config=ensemble_config,
+        )
+    except EnsemblePlanError as exc:
+        parser.error(str(exc))
+
+    plan = build_ensemble_command_plan(
+        ctx=ctx,
+        args=args,
+        train_records=train_records,
+        model_config=model_config,
+        ensemble_config=ensemble_config,
+        combos=combos_to_run,
+        validation_result=validation_result,
+        run_id=args.run_id,
+        cli_args=cli_args,
+    )
+    plan_fingerprint = fingerprint_command_plan(plan)
+
+    if args.json_plan:
+        _emit_json_plan(plan, plan_fingerprint)
+        return
+
+    if args.explain_plan:
+        _emit_human_plan(plan, plan_fingerprint)
+        return
+
+    env.safeguard("Ensemble Fusion")
+
+    started_at = datetime.now().isoformat()
+    with OperatorLog("ensemble_fusion", args=cli_args, run_id=plan.run_id,
+                     plan_fingerprint=plan_fingerprint) as oplog:
         # ---- Stage 0: 初始化 ----
         print(f"\n{'#'*60}")
         print("# Ensemble Fusion")
         print(f"# {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"{'#'*60}")
 
-        init_qlib()
-        train_records, model_config, ensemble_config = load_config(args.record_file)
-
-        # 确定频率
-        if args.freq:
-            args.freq = args.freq
-        else:
-            args.freq = model_config.get('freq', 'week')
         print(f"当前交易频率: {args.freq}")
 
         anchor_date = train_records.get('anchor_date', datetime.now().strftime('%Y-%m-%d'))
         experiment_name = train_records['experiment_name']
-        all_models_dict = train_records.get('models', {})
-        # 获取 --training-mode（CLI 级别默认模式）
-        cli_training_mode = getattr(args, 'training_mode', None)
 
-        from quantpits.utils.train_utils import resolve_model_key
+        init_qlib()
 
-        # ---- 确定要运行的 combo 列表 ----
-        combos_to_run = []  # list of (name, models, method, manual_weights_str, is_default)
+        for combo in combos_to_run:
+            for warning in combo.warnings:
+                print(f"Warning: {warning}")
 
-        if args.models:
-            # 直接指定模型列表模式 — 解析 model@mode key
-            raw_models = [m.strip() for m in args.models.split(',')]
-            selected_models = []
-            for m in raw_models:
-                full_key = resolve_model_key(m, all_models_dict, cli_training_mode)
-                if full_key:
-                    selected_models.append(full_key)
-                else:
-                    print(f"\nWarning: 模型 '{m}' 不在训练记录中，将被跳过")
-            if not selected_models:
-                print("Error: 没有有效的模型")
-                sys.exit(1)
-            combos_to_run.append((None, selected_models, args.method, args.weights, True))
-
-        elif args.combo:
-            # 运行指定的 combo
-            combos, global_config = parse_ensemble_config(ensemble_config)
-            if args.combo not in combos:
-                print(f"Error: combo '{args.combo}' 不在 ensemble_config.json 中")
-                print(f"可用的 combo: {list(combos.keys())}")
-                sys.exit(1)
-            cfg = combos[args.combo]
-            # combo 级 training_mode > CLI 级
-            combo_mode = cfg.get('training_mode', cli_training_mode)
-            resolved = []
-            for m in cfg['models']:
-                full_key = resolve_model_key(m, all_models_dict, combo_mode)
-                if full_key:
-                    resolved.append(full_key)
-                else:
-                    print(f"Warning: combo '{args.combo}' 中模型 '{m}' 不在训练记录中")
-            is_def = cfg.get('default', False)
-            combos_to_run.append((args.combo, resolved, cfg.get('method', 'equal'),
-                                  None, is_def))
-
-        elif args.from_config_all:
-            # 运行所有 combo
-            combos, global_config = parse_ensemble_config(ensemble_config)
-            if not combos:
-                print("Error: ensemble_config.json 中没有 combos")
-                sys.exit(1)
-            for name, cfg in combos.items():
-                combo_mode = cfg.get('training_mode', cli_training_mode)
-                resolved = []
-                for m in cfg['models']:
-                    full_key = resolve_model_key(m, all_models_dict, combo_mode)
-                    if full_key:
-                        resolved.append(full_key)
-                    else:
-                        print(f"Warning: combo '{name}' 中模型 '{m}' 不在训练记录中")
-                is_def = cfg.get('default', False)
-                combos_to_run.append((name, resolved, cfg.get('method', 'equal'),
-                                      None, is_def))
+        if args.from_config_all:
             print(f"多组合模式: 共 {len(combos_to_run)} 个 combo")
-            for name, models, method, _, is_def in combos_to_run:
-                tag = " [DEFAULT]" if is_def else ""
-                print(f"  {name}{tag}: {models} ({method})")
-
-        else:  # args.from_config
-            # 读取 default combo
-            combos, global_config = parse_ensemble_config(ensemble_config)
-            default_name, default_cfg = get_default_combo(combos)
-            if not default_cfg:
-                print("Error: ensemble_config.json 中没有 default combo")
-                sys.exit(1)
-            # 如果命令行未指定 method，使用 combo 中配置的
-            method = default_cfg.get('method', 'equal')
-            if args.method != 'equal':  # 用户显式指定了 method
-                method = args.method
-            combo_mode = default_cfg.get('training_mode', cli_training_mode)
-            resolved = []
-            for m in default_cfg['models']:
-                full_key = resolve_model_key(m, all_models_dict, combo_mode)
-                if full_key:
-                    resolved.append(full_key)
-                else:
-                    print(f"Warning: default combo 中模型 '{m}' 不在训练记录中")
-            combos_to_run.append((default_name, resolved, method,
-                                  args.weights, True))
-            print(f"从 ensemble_config.json 加载 default combo: {default_name}")
-            print(f"模型: {resolved}")
-            print(f"权重: {method}")
+            for combo in combos_to_run:
+                tag = " [DEFAULT]" if combo.is_default else ""
+                print(f"  {combo.name}{tag}: {list(combo.models)} ({combo.method})")
+        elif args.from_config:
+            combo = combos_to_run[0]
+            print(f"从 ensemble_config.json 加载 default combo: {combo.name}")
+            print(f"模型: {list(combo.models)}")
+            print(f"权重: {combo.method}")
 
         # ---- 验证所有 combo 的模型（已在上面 resolve 时处理）----
         all_needed_models = set()
-        for _, models, _, _, _ in combos_to_run:
-            all_needed_models.update(models)
+        for combo in combos_to_run:
+            all_needed_models.update(combo.models)
 
         if not all_needed_models:
             print("Error: 没有有效的模型")
@@ -1282,48 +1331,102 @@ def main():
 
         print(f"\n所有 combo 涉及的模型并集 ({len(all_needed_models)}): {sorted(all_needed_models)}")
 
-        # ---- Stage 1: 一次性加载所有模型预测 ----
-        norm_df, model_metrics, loaded_models = load_selected_predictions(
-            train_records, sorted(all_needed_models), norm_method=args.norm_method
-        )
+        combo_results = []
+        manifest_file = None
 
-        # ---- 时间窗口过滤 ----
-        norm_df = filter_norm_df_by_args(norm_df, args)
-        if norm_df.empty:
-            print("Error: 过滤后没有预测数据，请检查日期参数。")
-            sys.exit(1)
+        # ---- Stage 1: 一次性加载所有模型预测 ----
+        try:
+            norm_df, model_metrics, loaded_models = load_selected_predictions(
+                train_records, sorted(all_needed_models), norm_method=args.norm_method
+            )
+
+            # ---- 时间窗口过滤 ----
+            norm_df = filter_norm_df_by_args(norm_df, args)
+            if norm_df.empty:
+                print("Error: 过滤后没有预测数据，请检查日期参数。")
+                sys.exit(1)
+        except Exception as exc:
+            if not args.no_manifest:
+                finished_at = datetime.now().isoformat()
+                failed_result = CommandResult(
+                    plan=plan,
+                    status="failed",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    records={
+                        "anchor_date": anchor_date,
+                        "experiment_name": experiment_name,
+                        "n_combos": len(combo_results),
+                    },
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
+                try:
+                    manifest_file = _write_manifest_safely(ctx, failed_result)
+                    oplog.set_run_manifest(
+                        run_id=plan.run_id,
+                        manifest_path=_workspace_relative(ctx, manifest_file),
+                    )
+                except Exception as manifest_exc:
+                    print(f"Warning: failed to write run manifest: {manifest_exc}")
+            raise
 
         # ---- 逐 combo 运行 Stage 2-8 ----
-        combo_results = []
-        for combo_name, models, method, manual_w, is_default in combos_to_run:
-            # 过滤掉实际未加载成功的模型
-            valid_models = [m for m in models if m in loaded_models]
-            if not valid_models:
-                print(f"\nWarning: combo {combo_name} 没有有效模型，跳过")
-                continue
+        try:
+            for combo in combos_to_run:
+                combo_name = combo.name
+                models = list(combo.models)
+                # 过滤掉实际未加载成功的模型
+                valid_models = [m for m in models if m in loaded_models]
+                if not valid_models:
+                    print(f"\nWarning: combo {combo_name} 没有有效模型，跳过")
+                    continue
 
-            result = run_single_combo(
-                combo_name=combo_name,
-                selected_models=valid_models,
-                method=method,
-                manual_weights_str=manual_w,
-                norm_df=norm_df,
-                model_metrics=model_metrics,
-                loaded_models=loaded_models,
-                train_records=train_records,
-                model_config=model_config,
-                ensemble_config=ensemble_config,
-                anchor_date=anchor_date,
-                experiment_name=experiment_name,
-                args=args,
-                is_default=is_default,
-            )
-            if result:
-                combo_results.append(result)
+                result = run_single_combo(
+                    combo_name=combo_name,
+                    selected_models=valid_models,
+                    method=combo.method,
+                    manual_weights_str=combo.manual_weights,
+                    norm_df=norm_df,
+                    model_metrics=model_metrics,
+                    loaded_models=loaded_models,
+                    train_records=train_records,
+                    model_config=model_config,
+                    ensemble_config=ensemble_config,
+                    anchor_date=anchor_date,
+                    experiment_name=experiment_name,
+                    args=args,
+                    is_default=combo.is_default,
+                )
+                if result:
+                    combo_results.append(result)
 
-        # ---- 多组合对比 ----
-        if len(combo_results) > 1:
-            compare_combos(combo_results, anchor_date, args.output_dir, args.freq)
+            # ---- 多组合对比 ----
+            if len(combo_results) > 1:
+                compare_combos(combo_results, anchor_date, args.output_dir, args.freq)
+        except Exception as exc:
+            if not args.no_manifest:
+                finished_at = datetime.now().isoformat()
+                failed_result = CommandResult(
+                    plan=plan,
+                    status="failed",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    records={
+                        "anchor_date": anchor_date,
+                        "experiment_name": experiment_name,
+                        "n_combos": len(combo_results),
+                    },
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
+                try:
+                    manifest_file = _write_manifest_safely(ctx, failed_result)
+                    oplog.set_run_manifest(
+                        run_id=plan.run_id,
+                        manifest_path=_workspace_relative(ctx, manifest_file),
+                    )
+                except Exception as manifest_exc:
+                    print(f"Warning: failed to write run manifest: {manifest_exc}")
+            raise
 
         # ---- 完成 ----
         print(f"\n{'#'*60}")
@@ -1343,10 +1446,55 @@ def main():
                 print(f"  策略收益 : {total_return*100:.2f}%")
         print(f"输出目录   : {args.output_dir}")
 
+        if not args.no_manifest:
+            from quantpits.runtime import manifest_path
+
+            finished_at = datetime.now().isoformat()
+            planned_manifest_file = manifest_path(ctx, plan.command, plan.run_id)
+            manifest_outputs = _actual_output_refs(
+                ctx,
+                combo_results,
+                anchor_date=anchor_date,
+                args=args,
+                manifest_file=planned_manifest_file,
+            )
+            result = CommandResult(
+                plan=plan,
+                status="success",
+                started_at=started_at,
+                finished_at=finished_at,
+                outputs=manifest_outputs,
+                records={
+                    "anchor_date": anchor_date,
+                    "n_combos": len(combo_results),
+                    "experiment_name": experiment_name,
+                    "combos": [
+                        {
+                            "name": item.get("name"),
+                            "models": item.get("models", []),
+                            "method": item.get("method"),
+                            "is_default": item.get("is_default", False),
+                            "pred_file": item.get("pred_file"),
+                        }
+                        for item in combo_results
+                    ],
+                },
+            )
+            try:
+                manifest_file = _write_manifest_safely(ctx, result)
+                oplog.set_run_manifest(
+                    run_id=plan.run_id,
+                    manifest_path=_workspace_relative(ctx, manifest_file),
+                )
+                print(f"Run manifest: {_workspace_relative(ctx, manifest_file)}")
+            except Exception as manifest_exc:
+                print(f"Warning: failed to write run manifest: {manifest_exc}")
+
         oplog.set_result({
             "anchor_date": anchor_date,
             "n_combos": len(combo_results),
-            "experiment_name": experiment_name
+            "experiment_name": experiment_name,
+            "manifest_path": _workspace_relative(ctx, manifest_file) if manifest_file else None,
         })
 
 

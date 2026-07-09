@@ -7,6 +7,7 @@ from quantpits.runtime.command import (
     InputRef,
     OutputRef,
     StateRef,
+    fingerprint_command_plan,
 )
 from quantpits.runtime.ids import generate_run_id
 from quantpits.runtime.manifest import (
@@ -27,6 +28,7 @@ __all__ = [
     "RunManifest",
     "StateRef",
     "command_plan_to_public_dict",
+    "fingerprint_command_plan",
     "generate_run_id",
     "manifest_from_result",
     "manifest_path",

@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Literal, Tuple
 
+from quantpits.utils.workspace import short_fingerprint
+
 
 RefKind = Literal[
     "config",
@@ -176,3 +178,31 @@ class CommandResult:
             "error": self.error,
         }
         return payload
+
+
+def _strip_plan_fingerprint(payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(payload)
+    metadata = normalized.get("metadata")
+    if isinstance(metadata, dict):
+        metadata = dict(metadata)
+        metadata.pop("plan_fingerprint", None)
+        normalized["metadata"] = metadata
+    return normalized
+
+
+def fingerprint_command_plan(
+    plan: CommandPlan,
+    *,
+    length: int = 12,
+    include_run_id: bool = False,
+) -> str:
+    """Return a stable short fingerprint for a command plan.
+
+    ``run_id`` is volatile and excluded by default so repeated dry-runs of the
+    same semantic plan are comparable.
+    """
+
+    payload = _strip_plan_fingerprint(plan.to_public_dict())
+    if not include_run_id:
+        payload.pop("run_id", None)
+    return short_fingerprint(payload, length=length)

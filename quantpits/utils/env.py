@@ -84,6 +84,7 @@ def _resolve_mlflow_backend(workspace_root: str) -> str:
             f"   To migrate to the modern SQLite backend run:\n"
             f"     python -m quantpits.tools.migrate_mlflow_backend "
             f"--workspace {workspace_root}\n",
+            file=sys.stderr,
             flush=True,
         )
     # ── 3. New default: SQLite ────────────────────────────────────────────────

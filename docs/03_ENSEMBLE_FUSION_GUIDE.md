@@ -25,6 +25,9 @@ python quantpits/scripts/ensemble_fusion.py --combo combo_A
 
 # 4. 运行所有 combo 并生成对比
 python quantpits/scripts/ensemble_fusion.py --from-config-all
+
+# 5. 只解释执行计划，不初始化 Qlib、不写文件
+python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 ```
 
 ## 完整参数
@@ -50,6 +53,34 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all
 | `--detailed-analysis` | false | 生成详尽的回测分析报告（类似实盘分析） |
 | `--verbose-backtest` | false | 开启 Qlib 回测的详细模式 |
 | `--norm-method` | `rank` | 截面归一化方法: `rank` (percentile rank [0,1]，推荐) 或 `zscore` |
+| `--explain-plan` | false | 打印 dry-run 执行计划后退出，不初始化 Qlib、不写文件 |
+| `--json-plan` | false | 输出机器可读 JSON plan；隐含 dry-run |
+| `--run-id` | 自动生成 | 指定本次 plan/manifest 的运行 ID |
+| `--no-manifest` | false | 真实执行时不写 `output/manifests/ensemble_fusion/<run_id>.json` |
+
+## Dry-run 与运行清单
+
+正式运行前建议先查看执行计划：
+
+```bash
+python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
+```
+
+该命令只读取 workspace 配置和训练记录，输出将运行的 combo、输入 fingerprint、计划写入的文件和耗时步骤；不会触发 safeguard、不会初始化 Qlib、不会加载 recorder，也不会写 `output/`、`data/` 或 `config/`。
+
+调度器或 CI 可以使用 JSON 版本：
+
+```bash
+python quantpits/scripts/ensemble_fusion.py --from-config-all --json-plan
+```
+
+真实执行默认会写入运行清单：
+
+```text
+output/manifests/ensemble_fusion/<run_id>.json
+```
+
+清单记录 `run_id`、plan fingerprint、输入配置 fingerprint、resolved combos、执行状态和结果摘要，并会通过 `data/operator_log.jsonl` 关联 `run_id`、`manifest_path` 和 `plan_fingerprint`。如果需要保持旧的无 manifest 副作用，可加 `--no-manifest`。
 
 ## 多组合配置
 
@@ -237,25 +268,31 @@ Stage 8: 可视化 (可跳过)
 
 ```
 output/
-└── ensemble/
+├── ensemble/
     ├── ensemble_fusion_config_{date}.json     # 融合配置
     ├── correlation_matrix_{date}.csv          # 相关性矩阵
     ├── leaderboard_{date}.csv                 # 绩效排行榜
     ├── ensemble_nav_{date}.png                # 净值曲线
     ├── ensemble_weights_{date}.png            # 动态权重图 (dynamic 模式)
     └── backtest_analysis_report_{date}.md     # [NEW] 详尽回测分析报告 (--detailed-analysis)
+└── manifests/
+    └── ensemble_fusion/
+        └── <run_id>.json                      # 运行清单
 ```
 
 ### 多组合模式（`--from-config-all` 或 `--combo`）
 
 ```
 output/
-└── ensemble/
+├── ensemble/
     ├── ensemble_fusion_config_combo_A_{date}.json
     ├── ensemble_fusion_config_combo_B_{date}.json
     ├── combo_comparison_{date}.csv           # 跨组合对比表
     ├── combo_comparison_{date}.png           # 净值对比图
     └── backtest_analysis_report_{combo}_{date}.md # [NEW] 该组合的详尽分析报告
+└── manifests/
+    └── ensemble_fusion/
+        └── <run_id>.json                     # 运行清单
 ```
 
 
