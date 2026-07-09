@@ -57,7 +57,6 @@ from pathlib import Path
 
 from quantpits.utils import env
 
-import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -153,33 +152,20 @@ def filter_norm_df_by_args(norm_df, args):
 # ============================================================================
 def correlation_analysis(norm_df, output_dir, anchor_date, combo_name=None):
     """计算并保存选定模型的预测值相关性矩阵"""
-    print(f"\n{'='*60}")
-    print("Stage 2: 相关性分析（仅选定模型）")
-    print(f"{'='*60}")
+    from quantpits.ensemble.analytics import (
+        CorrelationAnalysisRequest,
+        run_correlation_analysis,
+    )
 
-    corr_matrix = norm_df.corr()
-    print("\n模型预测相关性矩阵:")
-    print(corr_matrix.round(4))
-
-    # 保存
-    os.makedirs(output_dir, exist_ok=True)
-    suffix = f"_{combo_name}" if combo_name else ""
-    corr_file = os.path.join(output_dir, f"correlation_matrix{suffix}_{anchor_date}.csv")
-    corr_matrix.to_csv(corr_file)
-    print(f"\n相关性矩阵已保存: {corr_file}")
-
-    # 统计
-    n = len(corr_matrix)
-    if n > 1:
-        upper = corr_matrix.where(
-            np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+    result = run_correlation_analysis(
+        CorrelationAnalysisRequest(
+            norm_df=norm_df,
+            output_dir=output_dir,
+            anchor_date=anchor_date,
+            combo_name=combo_name,
         )
-        avg_corr = upper.stack().mean()
-        max_corr = upper.stack().max()
-        min_corr = upper.stack().min()
-        print(f"\n相关性统计: 均值={avg_corr:.4f}, 最大={max_corr:.4f}, 最小={min_corr:.4f}")
-
-    return corr_matrix
+    )
+    return result.matrix
 
 
 # ============================================================================
@@ -213,34 +199,9 @@ def calculate_loo_contribution(norm_df, final_score):
     Returns:
         dict: {model_name: {"loo_ic": float, "full_ic": float, "delta": float}}
     """
-    import numpy as np
-    models = norm_df.columns.tolist()
-    if len(models) <= 1:
-        return {}
+    from quantpits.ensemble.analytics import calculate_loo_contribution as _calculate
 
-    contributions = {}
-    # Full ensemble: equal-weight average of ALL models
-    full_ensemble = norm_df.mean(axis=1)
-    full_ic = float(full_ensemble.corr(final_score))
-
-    for m in models:
-        # LOO score: 剩余模型的等权平均
-        other_models = [mod for mod in models if mod != m]
-        loo_score = norm_df[other_models].mean(axis=1)
-        
-        # 计算相关性
-        # 注意：norm_df 和 final_score 的 index 应对齐（level 0: datetime, level 1: instrument）
-        # 这里直接用 corr()
-        loo_ic = float(loo_score.corr(final_score))
-        delta = full_ic - loo_ic
-        
-        contributions[m] = {
-            "loo_ic": round(loo_ic, 6),
-            "full_ic": round(full_ic, 6),
-            "delta": round(delta, 6)
-        }
-        
-    return contributions
+    return _calculate(norm_df, final_score)
 
 
 # ============================================================================
@@ -922,17 +883,15 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
     print(f"{'='*60}")
     contributions = calculate_loo_contribution(combo_norm_df, final_score)
     if contributions:
-        contrib_out = {
-            "combo": combo_name or "default",
-            "anchor_date": anchor_date,
-            "method": "loo_ic_proxy",
-            "contributions": contributions
-        }
-        suffix = f"_{combo_name}" if combo_name else ""
-        contrib_file = os.path.join(combo_output_dir, f"model_contribution{suffix}_{anchor_date}.json")
-        with open(contrib_file, 'w') as f:
-            json.dump(contrib_out, f, indent=4, ensure_ascii=False)
-        print(f"模型贡献度已保存: {contrib_file}")
+        from quantpits.ensemble.analytics import save_model_contribution_snapshot
+
+        contribution_result = save_model_contribution_snapshot(
+            output_dir=combo_output_dir,
+            anchor_date=anchor_date,
+            combo_name=combo_name,
+            contributions=contributions,
+        )
+        print(f"模型贡献度已保存: {contribution_result.path}")
 
     # ---- Stage 10: Fusion Run Ledger 追加 ----
     # 只有实际完成了回测才写入，跳过回测无意义

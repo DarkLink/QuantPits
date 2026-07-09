@@ -567,7 +567,7 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `config_loader.py` | Workspace-level config loading | Global |
 | `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
 | `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | `ensemble_fusion` is integrated; future heavy commands can reuse it |
-| `ensemble/` | Ensemble fusion service and I/O layer: explicit config loading, workspace-bound execution paths, plan/render, manifest, OperatorLog linkage, prediction persistence, fusion ledger, and execution lifecycle | Fusion |
+| `ensemble/` | Ensemble fusion service, I/O, and deterministic analytics layer: explicit config loading, workspace-bound execution paths, plan/render, manifest, OperatorLog linkage, prediction persistence, fusion ledger, correlation/LOO analytics, and execution lifecycle | Fusion |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
 | `backtest_utils.py` | Qlib backtest execution and evaluation | Ensemble Search, Fusion, Analysis |
 | `env.py` | Qlib initialization, workspace management, `set_root_dir()` runtime switching | Global |
