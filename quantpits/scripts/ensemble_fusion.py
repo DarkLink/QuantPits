@@ -57,7 +57,6 @@ from datetime import datetime
 from pathlib import Path
 
 from quantpits.utils import env
-os.chdir(env.ROOT_DIR)
 
 import numpy as np
 import pandas as pd
@@ -65,10 +64,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # 路径设置
 # ---------------------------------------------------------------------------
-# 已在上方导入并切换目录
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = env.ROOT_DIR
-sys.path.append(SCRIPT_DIR)
+ROOT_DIR = env.ROOT_DIR  # Backward compatibility only; do not use for writes.
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -324,10 +320,21 @@ def append_to_fusion_ledger(
 # ============================================================================
 # Stage 5: 保存预测结果
 # ============================================================================
+def _workspace_root_path(workspace_root=None) -> Path:
+    if workspace_root is None:
+        return env.get_workspace_context().root
+    return Path(workspace_root).expanduser().resolve()
+
+
+def _workspace_bound_path(workspace_root: Path, path_value) -> Path:
+    candidate = Path(path_value)
+    return candidate if candidate.is_absolute() else workspace_root / candidate
+
+
 def save_predictions(final_score, anchor_date, experiment_name, method,
                      model_names, model_metrics, static_weights, is_dynamic,
                      output_dir, combo_name=None, is_default=False,
-                     prediction_dir=None, save_csv=False):
+                     prediction_dir=None, save_csv=False, workspace_root=None):
     """
     保存融合预测和配置。
     """
@@ -348,12 +355,13 @@ def save_predictions(final_score, anchor_date, experiment_name, method,
     print(f"\nEnsemble 预测已保存至 Recorder: {record_id} (Experiment: Ensemble_Fusion)")
 
     # 更新 ensemble_records.json
-    records_file = os.path.join(ROOT_DIR, "config", "ensemble_records.json")
-    os.makedirs(os.path.dirname(records_file), exist_ok=True)
+    workspace_root_path = _workspace_root_path(workspace_root)
+    records_file = workspace_root_path / "config" / "ensemble_records.json"
+    records_file.parent.mkdir(parents=True, exist_ok=True)
     
     ensemble_records = {}
-    if os.path.exists(records_file):
-        with open(records_file, "r") as f:
+    if records_file.exists():
+        with records_file.open("r", encoding="utf-8") as f:
             ensemble_records = json.load(f)
             
     ensemble_records.setdefault("combos", {})
@@ -362,28 +370,32 @@ def save_predictions(final_score, anchor_date, experiment_name, method,
         ensemble_records["default_combo"] = combo_display
         ensemble_records["default_record_id"] = record_id
         
-    with open(records_file, "w") as f:
+    with records_file.open("w", encoding="utf-8") as f:
         json.dump(ensemble_records, f, indent=4)
 
     # 可选保存 CSV
     pred_file = None
     if save_csv:
-        pred_dir = prediction_dir or os.path.join("output", "predictions")
-        os.makedirs(pred_dir, exist_ok=True)
+        pred_dir = _workspace_bound_path(
+            workspace_root_path,
+            prediction_dir or os.path.join("output", "predictions"),
+        )
+        pred_dir.mkdir(parents=True, exist_ok=True)
         if combo_name:
-            pred_file = os.path.join(pred_dir, f"ensemble_{combo_name}_{anchor_date}.csv")
+            pred_file = pred_dir / f"ensemble_{combo_name}_{anchor_date}.csv"
         else:
-            pred_file = os.path.join(pred_dir, f"ensemble_{anchor_date}.csv")
+            pred_file = pred_dir / f"ensemble_{anchor_date}.csv"
 
         ensemble_df.to_csv(pred_file)
         print(f"Ensemble CSV 已额外保存: {pred_file}")
         
         if combo_name and is_default:
-            compat_file = os.path.join(pred_dir, f"ensemble_{anchor_date}.csv")
+            compat_file = pred_dir / f"ensemble_{anchor_date}.csv"
             ensemble_df.to_csv(compat_file)
 
     # 保存配置
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir_path = _workspace_bound_path(workspace_root_path, output_dir)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
     config_out = {
         'recorder_id': record_id,
         'anchor_date': anchor_date,
@@ -400,12 +412,12 @@ def save_predictions(final_score, anchor_date, experiment_name, method,
         config_out['static_weights'] = {m: round(w, 4) for m, w in static_weights.items()}
 
     suffix = f"_{combo_name}" if combo_name else ""
-    config_file = os.path.join(output_dir, f"ensemble_fusion_config{suffix}_{anchor_date}.json")
-    with open(config_file, 'w') as f:
+    config_file = output_dir_path / f"ensemble_fusion_config{suffix}_{anchor_date}.json"
+    with config_file.open("w", encoding="utf-8") as f:
         json.dump(config_out, f, indent=4, ensure_ascii=False)
     print(f"Config 已保存: {config_file}")
 
-    return pred_file or record_id
+    return str(pred_file) if pred_file else record_id
 
 
 # ============================================================================
@@ -934,11 +946,15 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
 
     # ---- Stage 5: 保存预测 ----
     prediction_dir = getattr(args, 'prediction_dir', None)
+    workspace_root = getattr(args, 'workspace_root', None)
+    if not isinstance(workspace_root, (str, os.PathLike)):
+        workspace_root = None
     pred_file = save_predictions(
         final_score, anchor_date, experiment_name, method,
         combo_models, combo_metrics, static_weights, is_dynamic,
         combo_output_dir, combo_name=combo_name, is_default=is_default,
-        prediction_dir=prediction_dir, save_csv=getattr(args, 'save_csv', False)
+        prediction_dir=prediction_dir, save_csv=getattr(args, 'save_csv', False),
+        workspace_root=workspace_root,
     )
 
     # ---- Stage 6: 回测 ----
@@ -995,6 +1011,9 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
     if report_df is not None and leaderboard_df is not None:
         try:
             import sys as _sys
+            cli_args = getattr(args, 'cli_args', None)
+            if not isinstance(cli_args, (list, tuple)):
+                cli_args = _sys.argv[1:]
 
             # 构造 Ensemble 行指标
             ledger_metrics = {}
@@ -1040,7 +1059,7 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
             } if contributions else {}
 
             append_to_fusion_ledger(
-                workspace_root=ROOT_DIR,
+                workspace_root=workspace_root or env.get_workspace_context().root.as_posix(),
                 run_date=anchor_date,
                 combo_name=combo_name,
                 models=combo_models,
@@ -1050,7 +1069,7 @@ def run_single_combo(combo_name, selected_models, method, manual_weights_str,
                 metrics=ledger_metrics,
                 sub_model_metrics=sub_metrics,
                 loo_contributions=loo_summary,
-                cli_args=_sys.argv[1:],
+                cli_args=list(cli_args),
             )
         except Exception as _e:
             print(f"[Ledger] 写入失败（非致命）: {_e}")

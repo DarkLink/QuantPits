@@ -92,7 +92,8 @@ with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
 
 The concrete `ensemble_fusion.py` integration is owned by
 `quantpits/ensemble/service.py`: the service writes `data/operator_log.jsonl`
-through an explicit `WorkspaceContext`, real executions write
+through an explicit `WorkspaceContext`, resolves relative output paths under
+the active workspace at the real execution boundary, writes
 `output/manifests/ensemble_fusion/<run_id>.json` by default, and dry-runs
 (`--explain-plan` / `--json-plan`) do not write run manifests.
 

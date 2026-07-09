@@ -35,7 +35,6 @@ def ef_module(monkeypatch, tmp_path):
 
     from quantpits.scripts import ensemble_fusion as ef
 
-    monkeypatch.setattr(ef, "ROOT_DIR", str(workspace))
     yield ef, workspace
 
 
@@ -56,6 +55,26 @@ def _configs():
         }
     }
     return train_records, model_config, ensemble_config
+
+
+def test_import_ensemble_fusion_does_not_change_cwd(monkeypatch, tmp_path):
+    workspace = tmp_path / "Demo_Workspace"
+    (workspace / "config").mkdir(parents=True)
+    (workspace / "data").mkdir()
+    (workspace / "output").mkdir()
+
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
+    monkeypatch.chdir(tmp_path)
+
+    import importlib
+
+    for mod_name in ["quantpits.utils.env", "quantpits.scripts.ensemble_fusion"]:
+        sys.modules.pop(mod_name, None)
+
+    before = Path.cwd()
+    importlib.import_module("quantpits.scripts.ensemble_fusion")
+
+    assert Path.cwd() == before
 
 
 def test_explain_plan_does_not_run_heavy_paths(ef_module, capsys):

@@ -46,6 +46,26 @@ def workspace_relative(ctx: WorkspaceContext, path: str | Path | None) -> str | 
         return candidate.as_posix()
 
 
+def resolve_workspace_path(ctx: WorkspaceContext, path: str | Path | None) -> str | None:
+    if path is None:
+        return None
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate.as_posix()
+    return ctx.path(candidate.as_posix()).as_posix()
+
+
+def execution_options_for_workspace(
+    ctx: WorkspaceContext,
+    options: EnsembleRunOptions,
+) -> EnsembleRunOptions:
+    return replace(
+        options,
+        output_dir=resolve_workspace_path(ctx, options.output_dir) or options.output_dir,
+        prediction_dir=resolve_workspace_path(ctx, options.prediction_dir),
+    )
+
+
 def _actual_output_refs(
     ctx: WorkspaceContext,
     combo_results: list[dict],
@@ -231,7 +251,10 @@ class EnsembleFusionService:
 
     def execute(self, prepared: PreparedEnsembleRun) -> EnsembleRunSummary:
         options = prepared.options
-        args = options_to_namespace(options)
+        execution_options = execution_options_for_workspace(prepared.ctx, options)
+        args = options_to_namespace(execution_options)
+        args.workspace_root = prepared.ctx.root.as_posix()
+        args.cli_args = list(prepared.cli_args)
         train_records = prepared.config.train_records
         model_config = prepared.config.model_config
         ensemble_config = prepared.config.ensemble_config
@@ -337,7 +360,12 @@ class EnsembleFusionService:
                         combo_results.append(result)
 
                 if len(combo_results) > 1:
-                    self.hooks.compare_combos(combo_results, anchor_date, options.output_dir, options.freq)
+                    self.hooks.compare_combos(
+                        combo_results,
+                        anchor_date,
+                        execution_options.output_dir,
+                        execution_options.freq,
+                    )
             except Exception as exc:
                 if not options.no_manifest:
                     self._write_failed_manifest_best_effort(

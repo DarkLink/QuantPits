@@ -80,7 +80,7 @@ with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
     # ... 脚本主逻辑 ...
 ```
 
-`ensemble_fusion.py` 的实际接入由 `quantpits/ensemble/service.py` 负责：service 使用显式 `WorkspaceContext` 写入 `data/operator_log.jsonl`，真实执行默认写入 `output/manifests/ensemble_fusion/<run_id>.json`，dry-run (`--explain-plan` / `--json-plan`) 不写运行清单。
+`ensemble_fusion.py` 的实际接入由 `quantpits/ensemble/service.py` 负责：service 使用显式 `WorkspaceContext` 写入 `data/operator_log.jsonl`，在真实执行边界把相对输出路径解析到当前 workspace，真实执行默认写入 `output/manifests/ensemble_fusion/<run_id>.json`，dry-run (`--explain-plan` / `--json-plan`) 不写运行清单。
 
 ---
 

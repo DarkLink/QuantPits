@@ -117,6 +117,43 @@ def test_service_execute_success_writes_manifest_and_operator_log(tmp_path):
     assert log_entry["plan_fingerprint"]
 
 
+def test_service_execute_passes_workspace_absolute_paths_to_hooks(tmp_path):
+    ctx = _workspace(tmp_path)
+    prepared = _prepared(
+        ctx,
+        options=EnsembleRunOptions(
+            from_config=True,
+            run_id="path-run",
+            output_dir="output/ensemble",
+            prediction_dir="output/predictions",
+        ),
+    )
+    seen = {}
+
+    def run_combo(**kwargs):
+        args = kwargs["args"]
+        seen["output_dir"] = args.output_dir
+        seen["prediction_dir"] = args.prediction_dir
+        seen["workspace_root"] = args.workspace_root
+        seen["cli_args"] = args.cli_args
+        return _result()
+
+    hooks = EnsembleExecutionHooks(
+        init_qlib=lambda: None,
+        load_selected_predictions=lambda *a, **k: (_norm_df(), {"m1@static": 0.1}, ["m1@static"]),
+        filter_norm_df_by_args=lambda norm_df, args: norm_df,
+        run_single_combo=run_combo,
+        compare_combos=lambda *a, **k: None,
+    )
+
+    EnsembleFusionService(hooks).execute(prepared)
+
+    assert seen["output_dir"] == (ctx.root / "output" / "ensemble").as_posix()
+    assert seen["prediction_dir"] == (ctx.root / "output" / "predictions").as_posix()
+    assert seen["workspace_root"] == ctx.root.as_posix()
+    assert seen["cli_args"] == ["--from-config", "--run-id", "path-run"]
+
+
 def test_service_execute_respects_no_manifest(tmp_path):
     ctx = _workspace(tmp_path)
     options = EnsembleRunOptions(from_config=True, run_id="no-manifest-run", no_manifest=True)

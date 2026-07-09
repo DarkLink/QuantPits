@@ -21,7 +21,7 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
    > [!IMPORTANT]
    > **Initialization order**: Core scripts should import `env` before resolving workspace-scoped paths. This ensures `ROOT_DIR` is recognized, `MLFLOW_TRACKING_URI` points to the active workspace's MLflow backend (SQLite `mlflow.db` by default; legacy `mlruns/` file stores are auto-detected), and Qlib can be initialized through `env.init_qlib()`. To customize the backend, set `MLFLOW_TRACKING_URI` in `run_env.sh`.
    >
-   > **Runtime context**: New code should prefer `env.get_workspace_context()` to obtain an explicit `WorkspaceContext` instead of copying `env.ROOT_DIR` or deriving import-time path constants. Legacy APIs remain compatible, so existing production scripts do not need immediate migration.
+   > **Runtime context**: New code should prefer `env.get_workspace_context()` to obtain an explicit `WorkspaceContext` instead of copying `env.ROOT_DIR`, deriving import-time path constants, or changing the process `cwd` with `os.chdir()`. Legacy APIs remain compatible and production scripts will migrate gradually; `ensemble_fusion.py` has already removed its import-time cwd side effect.
 
 ---
 
@@ -567,7 +567,7 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `config_loader.py` | Workspace-level config loading | Global |
 | `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
 | `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | `ensemble_fusion` is integrated; future heavy commands can reuse it |
-| `ensemble/` | Ensemble fusion service layer: explicit config loading, plan/render, manifest, OperatorLog linkage, and execution lifecycle | Fusion |
+| `ensemble/` | Ensemble fusion service layer: explicit config loading, workspace-bound execution paths, plan/render, manifest, OperatorLog linkage, and execution lifecycle | Fusion |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
 | `backtest_utils.py` | Qlib backtest execution and evaluation | Ensemble Search, Fusion, Analysis |
 | `env.py` | Qlib initialization, workspace management, `set_root_dir()` runtime switching | Global |
@@ -604,7 +604,7 @@ The command does not write to the workspace. JSON output includes paths, summari
 | `render.py` | Human-readable dry-run plan rendering and public dict output |
 | `manifest.py` | `RunManifest`, `manifest_from_result()`, and `write_run_manifest()` |
 
-The default manifest path is `output/manifests/{command}/{run_id}.json`, and files are written only when the caller explicitly invokes `write_run_manifest()`. Manifest/public dict output records paths, summaries, fingerprints, records, and warnings; it does not include full raw configs. Real `ensemble_fusion.py` runs now write `output/manifests/ensemble_fusion/<run_id>.json` by default; dry-runs (`--explain-plan` / `--json-plan`) do not write manifests.
+The default manifest path is `output/manifests/{command}/{run_id}.json`, and files are written only when the caller explicitly invokes `write_run_manifest()`. Manifest/public dict output records paths, summaries, fingerprints, records, and warnings; it does not include full raw configs. Real `ensemble_fusion.py` runs now write `output/manifests/ensemble_fusion/<run_id>.json` by default; dry-runs (`--explain-plan` / `--json-plan`) do not write manifests. `ensemble_fusion.py` keeps plan output workspace-relative and resolves relative output paths under the active workspace only at the real execution boundary.
 
 `OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, and `plan_fingerprint`. `ensemble_fusion.py` now links these fields to its run manifest; legacy commands that are not yet manifest-integrated keep them as `null`.
 

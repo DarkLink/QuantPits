@@ -21,7 +21,7 @@
    > [!IMPORTANT]
    > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 MLflow 数据库（新工作区默认 `mlflow.db` / SQLite；含历史 `mlruns/` 数据的旧工作区自动回退到 `file://` 并设置 `MLFLOW_ALLOW_FILE_STORE=true`），并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径。如需使用自定义后端，在 `run_env.sh` 中设置 `MLFLOW_TRACKING_URI` 即可，`env.py` 会优先使用该值。
    >
-   > **运行时上下文**：新增代码优先通过 `env.get_workspace_context()` 获取显式的 `WorkspaceContext`，而不是直接复制 `env.ROOT_DIR` 或在 import 时派生路径常量。旧接口仍保持兼容，现有生产脚本无需立即迁移。
+   > **运行时上下文**：新增代码优先通过 `env.get_workspace_context()` 获取显式的 `WorkspaceContext`，而不是直接复制 `env.ROOT_DIR`、在 import 时派生路径常量，或通过 `os.chdir()` 隐式改变进程 cwd。旧接口仍保持兼容，现有生产脚本会逐步迁移；`ensemble_fusion.py` 已完成 import-time cwd 副作用清理。
 
 ---
 
@@ -570,7 +570,7 @@ python -m quantpits.scripts.static_train --all-enabled
 | `config_loader.py` | Workspace 级配置加载 | 全局 |
 | `config_contracts/` | Workspace 配置校验、normalize、fingerprint，供运行前检查和后续 plan/manifest 复用 | 全局 |
 | `runtime/` | 通用 `CommandPlan` / `RunManifest` / plan renderer / manifest writer 运行时基础类型 | `ensemble_fusion` 已接入；后续重资产命令逐步复用 |
-| `ensemble/` | Ensemble fusion 的 service 层：显式配置加载、plan/render、manifest、OperatorLog linkage 与执行生命周期 | 融合 |
+| `ensemble/` | Ensemble fusion 的 service 层：显式配置加载、workspace-bound 执行路径、plan/render、manifest、OperatorLog linkage 与执行生命周期 | 融合 |
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
 | `backtest_utils.py` | Qlib 回测执行与评估 | 穷举、融合、分析 |
 | `env.py` | Qlib 初始化、工作目录管理、`set_root_dir()` 运行时工作区切换 | 全局 |
@@ -607,7 +607,7 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 | `render.py` | 人类可读 dry-run plan 渲染与 public dict 输出 |
 | `manifest.py` | `RunManifest`、`manifest_from_result()`、`write_run_manifest()` |
 
-默认 manifest 写入位置为 `output/manifests/{command}/{run_id}.json`，仅在调用方显式调用 `write_run_manifest()` 时写入。Manifest/public dict 只记录路径、summary、fingerprint、records 等摘要，不包含完整 raw config。`ensemble_fusion.py` 真实执行默认会写入 `output/manifests/ensemble_fusion/<run_id>.json`；dry-run (`--explain-plan` / `--json-plan`) 不写任何 manifest。
+默认 manifest 写入位置为 `output/manifests/{command}/{run_id}.json`，仅在调用方显式调用 `write_run_manifest()` 时写入。Manifest/public dict 只记录路径、summary、fingerprint、records 等摘要，不包含完整 raw config。`ensemble_fusion.py` 真实执行默认会写入 `output/manifests/ensemble_fusion/<run_id>.json`；dry-run (`--explain-plan` / `--json-plan`) 不写任何 manifest。`ensemble_fusion.py` 的 plan 输出保持 workspace-relative，真实执行时才将相对输出路径解析到当前激活的 workspace。
 
 `OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint` 字段。`ensemble_fusion.py` 已将这些字段与运行清单关联；未接入 manifest 的旧命令仍保持 `null`。
 

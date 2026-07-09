@@ -43,7 +43,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 | `--freq` | `None` | Backtest frequency: `day` / `week` (Default: read from the workspace merged config / `model_config.json`) |
 | `--training-mode` | `None` | Filter models by mode (e.g. `static` or `rolling`); defaults to automatic resolution |
 | `--record-file` | `latest_train_records.json` | Train records pointer |
-| `--output-dir` | `output/ensemble` | Output directory bounds |
+| `--output-dir` | `output/ensemble` | Output directory; relative paths are resolved under the active workspace root |
 | `--no-backtest` | false | Skip backtesting execution |
 | `--no-charts` | false | Skip chart generation |
 | `--start-date` | None | Filter start date YYYY-MM-DD |
@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 The manifest records the `run_id`, plan fingerprint, input config fingerprints, resolved combos, execution status, and result summary. `data/operator_log.jsonl` links the same run with `run_id`, `manifest_path`, and `plan_fingerprint`. Use `--no-manifest` when you need the old no-manifest side-effect profile.
 
-Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. The core fusion, backtest, chart, and recorder-writing functions remain in the script for behavioral compatibility.
+Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. Importing the script no longer changes the process `cwd`; during real execution, the service resolves relative paths such as `--output-dir` and `--prediction-dir` under the active workspace root. The core fusion, backtest, chart, and recorder-writing functions remain in the script for behavioral compatibility.
 
 ## Multi-Combo Configurations
 

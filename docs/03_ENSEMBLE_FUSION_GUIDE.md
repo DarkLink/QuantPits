@@ -43,7 +43,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 | `--freq` | `None` | 回测频率: `day` / `week` (默认从 workspace merged config / `model_config.json` 读取) |
 | `--training-mode` | `None` | 限定模型训练模式（如 `static` 或 `rolling`）；默认自动解析 |
 | `--record-file` | `latest_train_records.json` | 指定训练记录文件 |
-| `--output-dir` | `output/ensemble` | 输出目录 |
+| `--output-dir` | `output/ensemble` | 输出目录；相对路径按当前激活 workspace root 解析 |
 | `--no-backtest` | false | 跳过回测 |
 | `--no-charts` | false | 跳过图表生成 |
 | `--start-date` | 无 | 过滤数据的开始日期 YYYY-MM-DD |
@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 清单记录 `run_id`、plan fingerprint、输入配置 fingerprint、resolved combos、执行状态和结果摘要，并会通过 `data/operator_log.jsonl` 关联 `run_id`、`manifest_path` 和 `plan_fingerprint`。如果需要保持旧的无 manifest 副作用，可加 `--no-manifest`。
 
-实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。核心融合、回测、图表和 recorder 写入函数仍保留在脚本中，以保持既有行为兼容。
+实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。核心融合、回测、图表和 recorder 写入函数仍保留在脚本中，以保持既有行为兼容。
 
 ## 多组合配置
 

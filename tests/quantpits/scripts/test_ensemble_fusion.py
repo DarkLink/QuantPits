@@ -310,22 +310,21 @@ def test_save_predictions(mock_env, tmp_path):
     out_dir = tmp_path / "output" / "ensemble"
     out_dir.mkdir(parents=True, exist_ok=True)
     
-    with patch('quantpits.scripts.ensemble_fusion.os.makedirs') as mock_makedir:
-        with patch('quantpits.utils.predict_utils.save_predictions_to_recorder', return_value="rec_123"):
-            pred_file = ef.save_predictions(
-                final_score, 
-                "2020-01-01", 
-                "exp1", 
-                "equal", 
-                ["M1", "M2"], 
-                {"M1": 0.5, "M2": 0.6}, 
-                {"M1": 0.5, "M2": 0.5}, 
-                False, 
-                str(out_dir)
-            )
+    with patch('quantpits.utils.predict_utils.save_predictions_to_recorder', return_value="rec_123"):
+        pred_file = ef.save_predictions(
+            final_score,
+            "2020-01-01",
+            "exp1",
+            "equal",
+            ["M1", "M2"],
+            {"M1": 0.5, "M2": 0.6},
+            {"M1": 0.5, "M2": 0.5},
+            False,
+            str(out_dir),
+            workspace_root=str(workspace),
+        )
             
     assert pred_file == "rec_123"
-    assert mock_makedir.called
     
     config_file = out_dir / "ensemble_fusion_config_2020-01-01.json"
     assert config_file.exists()
@@ -834,7 +833,6 @@ def test_save_predictions_combo_and_default(mock_env, tmp_path):
     idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")])
     final_score = pd.Series([1.0], index=idx)
     
-    os.makedirs("output/predictions", exist_ok=True)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     
@@ -842,7 +840,7 @@ def test_save_predictions_combo_and_default(mock_env, tmp_path):
         pred_file = ef.save_predictions(
             final_score, "2020-01-01", "exp1", "equal", ["M1"], 
             {"M1": 0.5}, {"M1": 1.0}, False, str(out_dir), 
-            combo_name="my_combo", is_default=True
+            combo_name="my_combo", is_default=True, workspace_root=str(workspace)
         )
     
     assert pred_file == "rec_123"
@@ -867,9 +865,40 @@ def test_save_predictions_with_csv_and_existing_records(mock_env, tmp_path):
         pred_file = ef.save_predictions(
             final_score, "2020-01-01", "exp1", "equal", ["M1"], 
             {"M1": 0.5}, {"M1": 1.0}, False, str(out_dir), 
-            combo_name="my_combo", is_default=True, save_csv=True, prediction_dir=str(out_dir)
+            combo_name="my_combo", is_default=True, save_csv=True,
+            prediction_dir=str(out_dir), workspace_root=str(workspace)
         )
     assert os.path.exists(os.path.join(str(out_dir), "ensemble_my_combo_2020-01-01.csv"))
+
+
+def test_save_predictions_relative_paths_bind_to_workspace(mock_env, tmp_path, monkeypatch):
+    ef, workspace = mock_env
+    monkeypatch.chdir(tmp_path)
+
+    idx = pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")])
+    final_score = pd.Series([1.0], index=idx)
+
+    with patch('quantpits.utils.predict_utils.save_predictions_to_recorder', return_value="rec_123"):
+        pred_file = ef.save_predictions(
+            final_score,
+            "2020-01-01",
+            "exp1",
+            "equal",
+            ["M1"],
+            {"M1": 0.5},
+            {"M1": 1.0},
+            False,
+            "output/ensemble",
+            combo_name="my_combo",
+            is_default=True,
+            save_csv=True,
+            workspace_root=str(workspace),
+        )
+
+    assert pred_file == str(workspace / "output" / "predictions" / "ensemble_my_combo_2020-01-01.csv")
+    assert (workspace / "config" / "ensemble_records.json").exists()
+    assert (workspace / "output" / "ensemble" / "ensemble_fusion_config_my_combo_2020-01-01.json").exists()
+    assert not (tmp_path / "output" / "ensemble").exists()
 
 # --- Stage 6: Backtest & Analysis ---
 
@@ -950,7 +979,7 @@ def test_run_detailed_backtest_analysis_metrics_calc(mock_env, tmp_path):
 # --- Stage 7: Risk Analysis & Leaderboard ---
 
 @patch('qlib.workflow.R')
-def test_risk_analysis_and_leaderboard_submodel_skip(mock_R, mock_env):
+def test_risk_analysis_and_leaderboard_submodel_skip(mock_R, mock_env, tmp_path):
     ef, _ = mock_env
     # Lines 1010, 1054-1055
     report_df = pd.DataFrame({"account": [100.0], "bench": [0.0], "return": [0.0]}, index=pd.to_datetime(["2020-01-01"]))
@@ -965,10 +994,12 @@ def test_risk_analysis_and_leaderboard_submodel_skip(mock_R, mock_env):
         with patch('quantpits.utils.strategy.load_strategy_config', return_value={}):
             with patch('qlib.data.D.calendar', return_value=pd.to_datetime(["2020-01-01"])):
                 with patch('builtins.print') as mock_p:
-                    ef.risk_analysis_and_leaderboard(report_df, norm_df, train_records, ["M1", "M1"], "day", "out", "date")
+                    ef.risk_analysis_and_leaderboard(
+                        report_df, norm_df, train_records, ["M1", "M1"], "day", str(tmp_path / "out"), "date"
+                    )
                     assert any("[跳过]" in str(c) for c in mock_p.call_args_list)
 
-def test_risk_analysis_and_leaderboard_display_cols(mock_env):
+def test_risk_analysis_and_leaderboard_display_cols(mock_env, tmp_path):
     ef, _ = mock_env
     # Line 1071: fallback print
     report_df = pd.DataFrame({"account": [100.0], "bench": [0.0], "return": [0.0]}, index=pd.to_datetime(["2020-01-01"]))
@@ -981,7 +1012,10 @@ def test_risk_analysis_and_leaderboard_display_cols(mock_env):
         with patch('quantpits.utils.strategy.load_strategy_config', return_value={}):
             with patch('qlib.data.D.calendar', return_value=pd.to_datetime(["2020-01-01"])):
                 with patch('builtins.print') as mock_p:
-                    ef.risk_analysis_and_leaderboard(report_df, norm_df, {"experiment_name":"E", "models":{"M1":"r1"}}, ["M1"], "day", "out", "date")
+                    ef.risk_analysis_and_leaderboard(
+                        report_df, norm_df, {"experiment_name":"E", "models":{"M1":"r1"}},
+                        ["M1"], "day", str(tmp_path / "out"), "date"
+                    )
 
 # --- Main & Others ---
 
