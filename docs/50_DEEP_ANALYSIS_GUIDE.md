@@ -11,7 +11,7 @@
 
 ### 1. 7-Stage Pipeline
 
-深度分析执行遵循严格的 7 阶段流水线。每个阶段通过 `@register_stage` 装饰器自声明依赖关系和产出字段，系统根据声明动态构建执行 DAG。可以通过 `--stage` 参数**单独运行**任意阶段——上游阶段的数据自动从 checkpoint 加载，无需重复执行。
+深度分析执行遵循严格的 7 阶段流水线。每个阶段通过 `@register_stage` 装饰器自声明依赖关系和产出字段，系统根据声明动态构建执行 DAG。可以通过 `--stage` 参数**单独运行**任意阶段——系统只会复用目标阶段的上游 checkpoint，目标阶段本身会重新执行。
 
 1. **`discover`**: 扫描工作区，发现并加载所有相关的快照、模型预测和历史配置数据。
 2. **`agents`**: 实例化并执行注册的分析代理 (Agents)，生成结构化的 `AgentFindings`。
@@ -21,14 +21,16 @@
 6. **`critic`**: 运行 LLM Critic，将提取的信号转化为可操作的优化建议 (ActionItems)。
 7. **`report`**: 汇总所有阶段的输出并渲染 Markdown 最终报告。
 
-**Checkpoint 与 Label 隔离**: 每个阶段完成后自动保存 checkpoint 到 `output/deep_analysis/checkpoints/`。通过 `--run-label` 指定的标签会注入 checkpoint 文件名，不同 label 之间的 checkpoint 完全隔离——同日多次运行不同参数的实验互不干扰。`--resume-latest` 可从同 label 的最新 checkpoint 续跑。
+**Checkpoint 与 Label 隔离**: 每个阶段完成后自动保存 checkpoint 到 `output/deep_analysis/checkpoints/`。通过 `--run-label` 指定的标签会注入 checkpoint 文件名，不同 label 之间的 checkpoint 完全隔离——同日多次运行不同参数的实验互不干扰。Checkpoint metadata 会记录窗口、agent selector、manifest 路径和内容指纹；当本次请求与 checkpoint 不兼容时，系统会跳过旧 checkpoint 并重跑对应上游阶段。`--resume-latest` 可从同 label 的最新 checkpoint 续跑。
+
+**执行计划解释**: 使用 `--explain-plan` 可以只解析 DAG、workspace stage manifest、上游 checkpoint 兼容性和最终执行计划，不运行任何阶段，也不会写入 checkpoint。它适合在单阶段验证、插件调试或 checkpoint 语义不确定时先确认“哪些阶段会跑、哪些 checkpoint 会被复用或跳过”。
 
 ### 2. 可插拔代理与阶段注册 (Pluggable Agent & Stage Registry)
 
 系统支持通过工作区本地清单文件加载自定义代理和流水线阶段，全程不污染全局环境。
 
-- **代理插件**: 通过 `config/agent_manifest.json` 声明。系统注入工作区路径到 `sys.path`，导入 agent 类并注册，完成后清理路径。
-- **阶段插件**: 通过 `config/pipeline_manifest.json` 声明。采用相同的隔离加载机制——工作区路径临时注入 `sys.path`，加载后清理。自定义阶段通过 `insert_after` 声明在 DAG 中的插入位置。
+- **代理插件**: 通过 `config/agent_manifest.json` 声明。系统注入工作区路径到 `sys.path`，导入 agent 类，并仅在本次运行的局部 registry 中使用，完成后清理路径。
+- **阶段插件**: 通过 `config/pipeline_manifest.json` 声明。采用相同的隔离加载机制——工作区路径临时注入 `sys.path`，运行结束后恢复 stage registry 快照。自定义阶段通过 `insert_after` 声明在 DAG 中的插入位置。
 
 详细开发流程请参阅 [57 — 代理插件开发指南](57_AGENT_PLUGIN_GUIDE.md)。
 
@@ -63,8 +65,11 @@ python -m quantpits.scripts.run_deep_analysis --agents model_health,prediction_a
 # 带标签运行（同日多次运行不覆盖，不同 label 的 checkpoint 完全隔离）
 python -m quantpits.scripts.run_deep_analysis --critic --run-label after-retrain
 
-# 独立运行单个阶段（上游自动从 checkpoint 加载，不重复执行）
+# 独立运行单个阶段（上游自动从兼容 checkpoint 加载，目标阶段重新执行）
 python -m quantpits.scripts.run_deep_analysis --stage signals --run-label exp-1
+
+# 查看单阶段执行计划，不实际执行
+python -m quantpits.scripts.run_deep_analysis --stage agents:model_health --windows 1m --explain-plan
 
 # 从最新 checkpoint 续跑
 python -m quantpits.scripts.run_deep_analysis --resume-latest --run-label exp-1
@@ -73,18 +78,24 @@ python -m quantpits.scripts.run_deep_analysis --resume-latest --run-label exp-1
 python -m quantpits.scripts.run_deep_analysis --windows 1y,3m,1m
 
 # 加载工作区本地自定义代理插件
-python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --manifest config/agent_manifest.json
+python -m quantpits.scripts.run_deep_analysis --agents custom_mock_agent --agent-manifest config/agent_manifest.json
+
+# 加载工作区本地自定义阶段插件
+python -m quantpits.scripts.run_deep_analysis --stage custom_liquidity_check --stage-manifest config/pipeline_manifest.json
 ```
 
 ## CLI 参数
 
 | 参数 | 默认值 | 描述 |
 |-----------|---------|-------------|
-| `--stage` | `all` | 单独运行指定阶段 (`discover`, `agents`, `agents:NAME`, `synthesis`, `window_analysis`, `signals`, `critic`, `report`, `all`)。上游阶段自动从同 label checkpoint 加载 |
+| `--stage` | `all` | 单独运行指定阶段 (`discover`, `agents`, `agents:NAME`, `synthesis`, `window_analysis`, `signals`, `critic`, `report`, `all`)。上游阶段自动从同 label 的兼容 checkpoint 加载，目标阶段重新执行 |
 | `--run-label` | `""` | 运行标签（如 "after-retrain"）。Checkpoint 和报告文件名均注入此标签，不同 label 之间完全隔离 |
 | `--resume-latest` | (flag) | 自动查找同 label 的最新 checkpoint 并从下一阶段续跑 |
 | `--resume-from` | `None` | 从指定 checkpoint 文件恢复 |
-| `--manifest` | `None` | Agent/Stage 注册清单 (JSON)，路径相对于当前工作区 |
+| `--manifest` | `None` | 兼容旧用法的 agent manifest 参数；推荐改用 `--agent-manifest` |
+| `--agent-manifest` | `None` | Agent 注册清单 (JSON/YAML)，路径相对于当前工作区；显式指定但不存在时会报错 |
+| `--stage-manifest` | `None` | Stage 注册清单 (JSON/YAML)，路径相对于当前工作区；用于加载自定义流水线阶段 |
+| `--explain-plan` | (flag) | 只打印 DAG、checkpoint 兼容性和将要运行的阶段；不执行阶段、不写 checkpoint |
 | `--windows` | `full,weekly_era,1y,6m,3m,1m` | 逗号分隔的时间窗口 |
 | `--freq-change-date` | 来自配置或 `None` | 日频→周频切换的截止日期 |
 | `--output` | `output/deep_analysis_report.md` | 报告输出路径 |

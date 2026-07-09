@@ -65,6 +65,9 @@ python -m quantpits.scripts.prod_post_trade
 ### 步骤 3：跑 Deep Analysis（Critic 模式）
 
 ```bash
+# 可选：先解释本次会复用哪些 checkpoint、会执行哪些阶段
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis --explain-plan
+
 python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 ```
 

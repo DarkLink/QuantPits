@@ -10,7 +10,7 @@
 
 系统通过 `quantpits.scripts.deep_analysis.agents.__init__.py` 中的 `load_manifest_agents()` 方法动态加载代理。
 
-1. **读取 Manifest**: 从 `--manifest` 参数指定的文件 (通常位于 `workspaces/<name>/config/agent_manifest.json`) 读取代理定义。
+1. **读取 Manifest**: 从 `--agent-manifest` 参数指定的文件 (通常位于 `workspaces/<name>/config/agent_manifest.json`) 读取代理定义。`--manifest` 仍作为旧用法兼容别名。
 2. **环境隔离 (sys.path 注入)**: 在加载代理类之前，系统会将当前执行上下文（工作区根目录）动态注入到 Python 的 `sys.path` 的首位。
 3. **类加载**: 使用 `importlib.import_module` 根据 Manifest 中的 `class_path` 导入代理类。
 4. **清理**: 加载完成后，系统会自动移除注入的路径，确保后续操作不受污染。
@@ -65,7 +65,7 @@ class WorkspaceLocalAgent(BaseAgent):
 
 ## 3. 运行流水线
 
-使用 `--manifest` 指定配置文件，并通过 `--agents` 指定要运行的代理：
+使用 `--agent-manifest` 指定配置文件，并通过 `--agents` 指定要运行的代理：
 
 ```bash
 # 进入量化系统根目录
@@ -75,9 +75,11 @@ cd /path/to/QuantPits_Release
 python quantpits/scripts/run_deep_analysis.py \
     --stage agents \
     --agents workspace_local_plugin \
-    --manifest workspaces/Demo_Workspace/config/agent_manifest.json \
+    --agent-manifest config/agent_manifest.json \
     --no-snapshot
 ```
+
+调试插件加载或 checkpoint 复用时，可以先加 `--explain-plan`。该模式会打印 DAG、manifest 加载结果、上游 checkpoint 命中/跳过原因和将要执行的阶段，但不会真正运行 agent。
 
 运行输出中将包含由 `WorkspaceLocalAgent` 产生的信息，证明本地插件已成功隔离加载并执行完毕。
 
@@ -121,7 +123,18 @@ def run_stage(state, **kwargs):
     return state
 ```
 
-加载方式与 Agent 插件共用 `--manifest` 参数（系统自动识别 `"agents"` 和 `"stages"` 键），或分别指定不同清单文件。详见 [50 — 深度分析系统使用指南](50_DEEP_ANALYSIS_GUIDE.md)。
+加载方式使用独立的 `--stage-manifest` 参数；Agent 插件使用 `--agent-manifest`。两类 manifest 分开传入，避免 agent 和 stage registry 互相误读。详见 [50 — 深度分析系统使用指南](50_DEEP_ANALYSIS_GUIDE.md)。
+
+建议在首次运行自定义阶段前使用：
+
+```bash
+python quantpits/scripts/run_deep_analysis.py \
+    --stage custom_liquidity_check \
+    --stage-manifest config/pipeline_manifest.json \
+    --explain-plan
+```
+
+确认自定义阶段已注册、依赖关系正确、上游 checkpoint 兼容后，再去掉 `--explain-plan` 执行真实流水线。
 
 ---
 

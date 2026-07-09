@@ -196,6 +196,7 @@ workspaces/Demo_Workspace/data/*
 # AI assistant configs and scratch files
 .claude/
 CLAUDE.md
+AGENTS.md
 brain/
 
 # Local planning and design docs (not part of the shipped product)

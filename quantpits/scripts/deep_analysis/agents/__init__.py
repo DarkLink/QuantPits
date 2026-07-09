@@ -32,6 +32,7 @@ def load_manifest_agents(workspace_root: str, manifest_path: str = None) -> dict
     import sys
     ws_added = False
     loaded_agents = {}
+    explicit_manifest = bool(manifest_path)
     try:
         if workspace_root and workspace_root not in sys.path:
             sys.path.insert(0, workspace_root)
@@ -39,13 +40,18 @@ def load_manifest_agents(workspace_root: str, manifest_path: str = None) -> dict
 
         manifests_to_try = []
         if manifest_path:
-            manifests_to_try.append(manifest_path)
+            manifests_to_try.append(
+                manifest_path if os.path.isabs(manifest_path)
+                else os.path.join(workspace_root, manifest_path)
+            )
         else:
             manifests_to_try.append(os.path.join(workspace_root, "config", "agent_manifest.json"))
             manifests_to_try.append(os.path.join(workspace_root, "config", "agent_manifest.yaml"))
 
+        found_manifest = False
         for path in manifests_to_try:
             if path and os.path.exists(path):
+                found_manifest = True
                 try:
                     if path.endswith('.yaml') or path.endswith('.yml'):
                         import yaml
@@ -72,7 +78,11 @@ def load_manifest_agents(workspace_root: str, manifest_path: str = None) -> dict
                                 print(f"  ❌ Failed to import agent '{name}' from '{class_path}': {import_err}")
                 except Exception as e:
                     print(f"  ❌ Failed to parse agent manifest at {path}: {e}")
+                    if explicit_manifest:
+                        raise
                 break
+        if explicit_manifest and not found_manifest:
+            raise FileNotFoundError(f"Agent manifest not found: {manifests_to_try[0]}")
     finally:
         if ws_added and workspace_root in sys.path:
             sys.path.remove(workspace_root)

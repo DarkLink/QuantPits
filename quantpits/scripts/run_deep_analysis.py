@@ -110,7 +110,16 @@ def parse_args():
         help='Automatically find the latest checkpoint to resume from')
     parser.add_argument(
         '--manifest', type=str, default=None,
-        help='Path to agent_manifest.yaml configuration file')
+        help='Path to agent_manifest.yaml/json configuration file (deprecated alias for --agent-manifest)')
+    parser.add_argument(
+        '--agent-manifest', type=str, default=None,
+        help='Path to agent manifest file')
+    parser.add_argument(
+        '--stage-manifest', type=str, default=None,
+        help='Path to pipeline stage manifest file')
+    parser.add_argument(
+        '--explain-plan', action='store_true',
+        help='Print the resolved stage DAG/checkpoint plan and exit without running stages')
     return parser.parse_args()
 
 
@@ -124,6 +133,47 @@ def load_deep_analysis_config(workspace_root: str) -> dict:
         except Exception:
             pass
     return {}
+
+
+def _print_explain_plan(plan: dict) -> None:
+    """Render a StageRunner dry-run plan for CLI users."""
+    print("\n--- Execution Plan (dry run) ---")
+    print(f"Target stage: {plan.get('target', '')}")
+    selector = plan.get('stage_selector') or plan.get('target', '')
+    if selector:
+        print(f"Stage selector: {selector}")
+    if plan.get('run_label'):
+        print(f"Run label: {plan['run_label']}")
+
+    registered = plan.get("registered_stages", [])
+    if registered:
+        print("\nRegistered stages:")
+        for stage in registered:
+            deps = plan.get("dag", {}).get(stage, [])
+            dep_text = ", ".join(deps) if deps else "-"
+            provides = ", ".join(plan.get("provides_map", {}).get(stage, [])) or "-"
+            print(f"  - {stage}  deps=[{dep_text}]  provides=[{provides}]")
+
+    events = plan.get("checkpoint_events", [])
+    if events:
+        print("\nUpstream checkpoint resolution:")
+        for event in events:
+            stage = event.get("stage", "")
+            status = event.get("status", "")
+            reason = event.get("reason", "")
+            ckpt = event.get("checkpoint", "")
+            suffix = f" ({ckpt})" if ckpt and status in {"loaded", "skipped", "error"} else ""
+            print(f"  - {stage}: {status} - {reason}{suffix}")
+    else:
+        print("\nUpstream checkpoint resolution: no upstream stages")
+
+    execution_plan = plan.get("execution_plan", [])
+    print("\nStages that would run:")
+    if execution_plan:
+        for stage in execution_plan:
+            print(f"  - {stage}")
+    else:
+        print("  - <none>")
 
 
 # ------------------------------------------------------------------
@@ -990,6 +1040,9 @@ def main():
     resume_path = clean_arg(args.resume_from, None)
     resume_latest = clean_arg(getattr(args, 'resume_latest', False), False)
     manifest_arg = clean_arg(getattr(args, 'manifest', None), None)
+    agent_manifest_arg = clean_arg(getattr(args, 'agent_manifest', None), None) or manifest_arg
+    stage_manifest_arg = clean_arg(getattr(args, 'stage_manifest', None), None)
+    explain_plan = clean_arg(getattr(args, 'explain_plan', False), False)
 
     print("=" * 60)
     print("  🤖 MAS Deep Analysis System")
@@ -1012,10 +1065,12 @@ def main():
             external_notes = f.read().strip()
 
     # Parse windows
-    windows = [w.strip() for w in args.windows.split(',')]
+    windows = [w.strip() for w in args.windows.split(',') if w.strip()]
     # --- Initialize StageRunner ---
     from quantpits.scripts.deep_analysis.stage_runner import StageRunner
     stage_runner = StageRunner(workspace_root, data_date, run_label=run_label)
+    # Register built-in stages (import triggers @register_stage decorators)
+    import quantpits.scripts.deep_analysis.stages  # noqa: F401
 
     if resume_latest:
         latest_ckpt = None
@@ -1033,38 +1088,20 @@ def main():
         else:
             print("   ⚠️  No latest checkpoint found. Running from start.")
 
-    start_stage_idx = 0
-    stage_data = {stg: None for stg in StageRunner.STAGES}
-
-    if resume_path:
-        loaded = stage_runner.load_checkpoint(resume_path)
-        meta = loaded["meta"]
-        ckpt_stage = meta["stage"]
-        print(f"   🔄 Resuming from stage '{ckpt_stage}' checkpoint: {resume_path}")
-        stage_data[ckpt_stage] = loaded["data"]
-        start_stage_idx = StageRunner.STAGES.index(ckpt_stage) + 1
-
     # Check if a specific stage was requested
-    requested_stage_name = target_stage
-    specific_agents = []
-    run_only_one_stage = False
-
-    # Determine stage target and optional agent filter
     specific_agents = None
     stage_target = target_stage
     if target_stage != "all":
         if target_stage.startswith("agents:"):
             stage_target = "agents"
-            specific_agents = [a.strip() for a in target_stage.split(":")[1].split(",")]
-        if stage_target not in StageRunner.STAGES and stage_target != "all":
-            print(f"❌ Unknown stage: {target_stage}. Available: {StageRunner.STAGES}")
-            return 1
+            specific_agents = [
+                a.strip()
+                for a in target_stage.split(":", 1)[1].split(",")
+                if a.strip()
+            ]
 
     # Resolve final target stage name for runner
     runner_target = "report" if target_stage == "all" else stage_target
-
-    # Register built-in stages (import triggers @register_stage decorators)
-    import quantpits.scripts.deep_analysis.stages  # noqa: F401
 
     # Initialize state
     from quantpits.scripts.deep_analysis.state import DeepAnalysisState
@@ -1089,30 +1126,66 @@ def main():
         # needed by agents stage
         pass  # let resolve_plan figure out from checkpoints
 
+    stage_kwargs = {
+        "agent_manifest_path": agent_manifest_arg,
+        "stage_selector": target_stage,
+        "snapshot_config": not clean_arg(getattr(args, 'no_snapshot', False), False),
+        "no_snapshot": clean_arg(getattr(args, 'no_snapshot', False), False),
+        "agent_filter": clean_arg(args.agents, 'all'),
+        "specific_agents": specific_agents,
+        "windows": windows,
+        "critic_enabled": clean_arg(getattr(args, 'critic', False), False)
+        or clean_arg(getattr(args, 'critic_dry_run', False), False),
+        "critic_dry_run": clean_arg(getattr(args, 'critic_dry_run', False), False),
+        "enable_llm_summary": clean_arg(getattr(args, 'llm', False), False),
+        "llm_model": clean_arg(getattr(args, 'llm_model', None), None),
+        "api_key": clean_arg(getattr(args, 'api_key', None), None),
+        "base_url": clean_arg(getattr(args, 'base_url', None), None),
+        "shareable": clean_arg(getattr(args, 'shareable', False), False),
+        "run_date": data_date,
+        "run_label": run_label,
+        "output": clean_arg(args.output, 'output/deep_analysis_report.md'),
+    }
+
+    if explain_plan:
+        try:
+            plan = stage_runner.explain_plan(
+                target=runner_target,
+                state=state,
+                workspace_root=workspace_root,
+                manifest_path=stage_manifest_arg,
+                **stage_kwargs,
+            )
+            _print_explain_plan(plan)
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"❌ {exc}")
+            return 1
+        except Exception as exc:
+            from quantpits.scripts.deep_analysis.stage_runner import StageDependencyError
+            if isinstance(exc, StageDependencyError):
+                print(f"❌ {exc}")
+                return 1
+            raise
+
     try:
         state = stage_runner.run(
             target=runner_target,
             state=state,
             workspace_root=workspace_root,
-            manifest_path=manifest_arg,
+            manifest_path=stage_manifest_arg,
             # CLI args forwarded to stages
-            snapshot_config=not clean_arg(getattr(args, 'no_snapshot', False), False),
-            no_snapshot=clean_arg(getattr(args, 'no_snapshot', False), False),
-            agent_filter=clean_arg(args.agents, 'all'),
-            specific_agents=specific_agents,
-            windows=windows,
-            critic_enabled=clean_arg(getattr(args, 'critic', False), False)
-                          or clean_arg(getattr(args, 'critic_dry_run', False), False),
-            critic_dry_run=clean_arg(getattr(args, 'critic_dry_run', False), False),
-            enable_llm_summary=clean_arg(getattr(args, 'llm', False), False),
-            llm_model=clean_arg(getattr(args, 'llm_model', None), None),
-            api_key=clean_arg(getattr(args, 'api_key', None), None),
-            base_url=clean_arg(getattr(args, 'base_url', None), None),
-            shareable=clean_arg(getattr(args, 'shareable', False), False),
-            run_date=data_date,
-            run_label=run_label,
-            output=clean_arg(args.output, 'output/deep_analysis_report.md'),
+            **stage_kwargs,
         )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"❌ {exc}")
+        return 1
+    except Exception as exc:
+        from quantpits.scripts.deep_analysis.stage_runner import StageDependencyError
+        if isinstance(exc, StageDependencyError):
+            print(f"❌ {exc}")
+            return 1
+        raise
     finally:
         # Clean up workspace-local stages
         from quantpits.scripts.deep_analysis.stage_runner import (

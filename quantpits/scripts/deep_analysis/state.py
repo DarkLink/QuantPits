@@ -61,14 +61,27 @@ class DeepAnalysisState:
     # helpers
     # ------------------------------------------------------------------
 
-    def has(self, key: str) -> bool:
-        """Check whether *key* has been populated (non-None, non-empty)."""
+    def has_attr(self, key: str) -> bool:
+        """Check whether *key* exists and is not None.
+
+        Empty lists/dicts can be valid stage outputs, so dependency checks use
+        this weaker predicate together with ``completed_stages``.
+        """
+        val = getattr(self, key, None)
+        return val is not None
+
+    def has_non_empty(self, key: str) -> bool:
+        """Check whether *key* has a non-empty value."""
         val = getattr(self, key, None)
         if val is None:
             return False
         if isinstance(val, (list, dict)) and len(val) == 0:
             return False
         return True
+
+    def has(self, key: str) -> bool:
+        """Backward-compatible non-empty population check."""
+        return self.has_non_empty(key)
 
     def mark_completed(self, stage: str) -> None:
         """Record *stage* as having finished successfully."""
@@ -82,7 +95,9 @@ class DeepAnalysisState:
 
     def is_stage_done(self, stage_name: str, provides: List[str]) -> bool:
         """Return True when every field in *provides* is populated."""
-        return all(self.has(key) for key in provides)
+        if stage_name in self.completed_stages:
+            return all(self.has_attr(key) for key in provides)
+        return all(self.has_non_empty(key) for key in provides)
 
     # ------------------------------------------------------------------
     # serialization (delegates to StageRunner's existing serializers)

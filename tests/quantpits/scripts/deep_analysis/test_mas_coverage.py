@@ -255,6 +255,44 @@ def test_ensemble_evolution_agent_changes(mock_analysis_context):
     assert 'active_switch' in event_types
     assert 'content_mutation' in event_types
 
+
+def test_ensemble_evolution_agent_changes_current_combo_schema(mock_analysis_context):
+    from quantpits.scripts.deep_analysis.agents.ensemble_eval import EnsembleEvolutionAgent
+
+    agent = EnsembleEvolutionAgent()
+    history_dir = os.path.join(mock_analysis_context.workspace_root, 'data', 'config_history')
+    os.makedirs(history_dir, exist_ok=True)
+
+    snap1 = {
+        'snapshot_date': '2026-03-01',
+        'ensemble_config': {
+            'combos': {
+                'c1': {'models': ['m1'], 'method': 'equal', 'default': True},
+                'c2': {'models': ['m2'], 'method': 'equal', 'default': False},
+            }
+        }
+    }
+    snap2 = {
+        'snapshot_date': '2026-04-01',
+        'ensemble_config': {
+            'combos': {
+                'c1': {'models': ['m1', 'm3'], 'method': 'equal', 'default': False},
+                'c2': {'models': ['m2'], 'method': 'equal', 'default': True},
+            }
+        }
+    }
+
+    with open(os.path.join(history_dir, 'config_snapshot_2026-03-01.json'), 'w') as f:
+        json.dump(snap1, f)
+    with open(os.path.join(history_dir, 'config_snapshot_2026-04-01.json'), 'w') as f:
+        json.dump(snap2, f)
+
+    events = agent._detect_changes(mock_analysis_context)
+    event_types = [event['type'] for event in events]
+
+    assert 'active_switch' in event_types
+    assert 'content_mutation' in event_types
+
 def test_ensemble_evolution_correlation_drift(mock_analysis_context):
     from quantpits.scripts.deep_analysis.agents.ensemble_eval import EnsembleEvolutionAgent
     agent = EnsembleEvolutionAgent()
@@ -1138,5 +1176,4 @@ def test_calculate_loo_contribution_weak_model():
     # Removing "weak" should have small delta (or even negative if it hurts)
     # Removing "strong_a" should have larger positive delta
     assert result["strong_a"]["delta"] > result["weak"]["delta"]
-
 

@@ -21,7 +21,7 @@ def run_agents(state, **kwargs):
     from quantpits.scripts.deep_analysis.base_agent import AgentFindings
 
     workspace_root = kwargs.get('workspace_root', state.workspace_root)
-    manifest_path = kwargs.get('manifest_path', None)
+    manifest_path = kwargs.get('agent_manifest_path', kwargs.get('manifest_path', None))
     agent_filter = kwargs.get('agent_filter', 'all')
 
     # Rebuild coordinator from discover outputs
@@ -43,23 +43,23 @@ def run_agents(state, **kwargs):
 
     # Load dynamic agents
     manifest_agents = load_manifest_agents(workspace_root, manifest_path)
-    ALL_AGENTS.update(manifest_agents)
+    agent_registry = {**ALL_AGENTS, **manifest_agents}
 
     # Determine which agents to run
     specific_agents = kwargs.get('specific_agents', None)
     if specific_agents:
         agent_names = specific_agents
     elif agent_filter == 'all':
-        agent_names = list(ALL_AGENTS.keys())
+        agent_names = list(agent_registry.keys())
     else:
         agent_names = [a.strip() for a in agent_filter.split(',')]
 
     agents = []
     for name in agent_names:
-        if name in ALL_AGENTS:
-            agents.append(ALL_AGENTS[name]())
+        if name in agent_registry:
+            agents.append(agent_registry[name]())
         else:
-            print(f"  ⚠️  Unknown agent: {name}. Available: {list(ALL_AGENTS.keys())}")
+            print(f"  ⚠️  Unknown agent: {name}. Available: {list(agent_registry.keys())}")
 
     if not agents:
         print("❌ No agents to run.")

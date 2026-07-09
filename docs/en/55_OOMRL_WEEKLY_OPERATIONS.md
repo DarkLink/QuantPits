@@ -65,6 +65,9 @@ This updates `cash` and `holdings` in `prod_config.json`, which is required for 
 ### Step 3: Run Deep Analysis (Critic Mode)
 
 ```bash
+# Optional: explain which checkpoints will be reused and which stages will run
+python -m quantpits.scripts.run_deep_analysis --critic --window-analysis --explain-plan
+
 python -m quantpits.scripts.run_deep_analysis --critic --window-analysis
 ```
 

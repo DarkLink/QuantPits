@@ -23,6 +23,8 @@ import time
 import logging
 import uuid
 import importlib
+import hashlib
+import copy
 from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -115,6 +117,13 @@ class CheckpointMeta:
     label: str
     timestamp: str
     predecessor: Optional[str] = None
+    workspace: str = ""
+    stage_selector: str = ""
+    stage_source: str = ""
+    windows: str = ""
+    agent_filter: str = ""
+    agent_manifest_path: str = ""
+    agent_manifest_fingerprint: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -266,15 +275,27 @@ class StageRunner:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, stage: str, data: dict, predecessor: Optional[str] = None) -> str:
-        if stage not in self.STAGES:
-            raise ValueError(f"Invalid stage name: {stage}. Must be one of {self.STAGES}")
+        valid = set(self.STAGES) | set(STAGE_REGISTRY.keys())
+        if stage not in valid:
+            raise ValueError(f"Invalid stage name: {stage}. Must be one of {sorted(valid)}")
+
+        stage_meta = STAGE_REGISTRY.get(stage, {})
 
         meta = CheckpointMeta(
             stage=stage,
             date=self.run_date,
             label=self.run_label,
             timestamp=datetime.now().isoformat(),
-            predecessor=predecessor
+            predecessor=predecessor,
+            workspace=self.workspace_root,
+            stage_selector=getattr(self, "_checkpoint_stage_selector", ""),
+            stage_source=stage_meta.get("source", ""),
+            windows=getattr(self, "_checkpoint_windows", ""),
+            agent_filter=getattr(self, "_checkpoint_agent_filter", ""),
+            agent_manifest_path=getattr(self, "_checkpoint_agent_manifest_path", ""),
+            agent_manifest_fingerprint=getattr(
+                self, "_checkpoint_agent_manifest_fingerprint", ""
+            ),
         )
 
         serialized_data = self._serialize_val(data)
@@ -309,6 +330,190 @@ class StageRunner:
             "meta": meta_dict,
             "data": data
         }
+
+    @staticmethod
+    def _normalize_list_key(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            parts = [p.strip() for p in value.split(',') if p.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            parts = [str(p).strip() for p in value if str(p).strip()]
+        else:
+            parts = [str(value).strip()]
+        return ",".join(parts)
+
+    def _normalize_path_key(self, value: Any) -> str:
+        if not value:
+            return ""
+        path = os.path.expanduser(str(value))
+        if not os.path.isabs(path):
+            path = os.path.join(self.workspace_root, path)
+        return os.path.abspath(path)
+
+    def _resolve_agent_manifest_path(self, value: Any) -> str:
+        if value:
+            return self._normalize_path_key(value)
+        for filename in ("agent_manifest.json", "agent_manifest.yaml"):
+            path = os.path.join(self.workspace_root, "config", filename)
+            if os.path.exists(path):
+                return os.path.abspath(path)
+        return ""
+
+    @staticmethod
+    def _file_fingerprint(path: str) -> str:
+        if not path or not os.path.exists(path):
+            return ""
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _checkpoint_matches_request(
+        self,
+        stage: str,
+        checkpoint: dict,
+        stage_kwargs: dict,
+    ) -> bool:
+        """Return False when a checkpoint does not match local selectors."""
+        meta = checkpoint.get("meta", {})
+        data = checkpoint.get("data", {})
+
+        if stage == "discover":
+            requested = self._normalize_list_key(stage_kwargs.get("windows"))
+            if requested:
+                ckpt_windows = data.get("windows", [])
+                ckpt_labels = self._normalize_list_key([
+                    w.get("label", "") for w in ckpt_windows
+                    if isinstance(w, dict)
+                ])
+                if ckpt_labels and ckpt_labels != requested:
+                    return False
+                meta_windows = meta.get("windows", "")
+                if meta_windows and meta_windows != requested:
+                    return False
+
+        if stage == "agents":
+            specific = stage_kwargs.get("specific_agents")
+            requested = (
+                self._normalize_list_key(specific)
+                if specific
+                else self._normalize_list_key(stage_kwargs.get("agent_filter", "all"))
+            )
+            if requested and requested != "all":
+                meta_agent_filter = meta.get("agent_filter", "")
+                meta_selector = meta.get("stage_selector", "")
+                if meta_agent_filter and meta_agent_filter != requested:
+                    return False
+                if meta_selector.startswith("agents:"):
+                    selector_agents = self._normalize_list_key(
+                        meta_selector.split(":", 1)[1]
+                    )
+                    if selector_agents != requested:
+                        return False
+                if not meta_agent_filter and not meta_selector:
+                    return False
+
+            requested_manifest = self._resolve_agent_manifest_path(
+                stage_kwargs.get("agent_manifest_path")
+            )
+            if stage_kwargs.get("agent_manifest_path") and not os.path.exists(
+                requested_manifest
+            ):
+                return False
+            checkpoint_manifest = self._normalize_path_key(
+                meta.get("agent_manifest_path", "")
+            )
+            if requested_manifest or checkpoint_manifest:
+                if checkpoint_manifest != requested_manifest:
+                    return False
+                requested_fingerprint = self._file_fingerprint(requested_manifest)
+                checkpoint_fingerprint = meta.get("agent_manifest_fingerprint", "")
+                if requested_fingerprint and (
+                    not checkpoint_fingerprint
+                    or checkpoint_fingerprint != requested_fingerprint
+                ):
+                    return False
+
+        return True
+
+    def _checkpoint_mismatch_reason(
+        self,
+        stage: str,
+        checkpoint: dict,
+        stage_kwargs: dict,
+    ) -> str:
+        """Return a short human-readable reason for incompatibility."""
+        meta = checkpoint.get("meta", {})
+        data = checkpoint.get("data", {})
+
+        if stage == "discover":
+            requested = self._normalize_list_key(stage_kwargs.get("windows"))
+            if requested:
+                ckpt_windows = data.get("windows", [])
+                ckpt_labels = self._normalize_list_key([
+                    w.get("label", "") for w in ckpt_windows
+                    if isinstance(w, dict)
+                ])
+                if ckpt_labels and ckpt_labels != requested:
+                    return f"window labels differ ({ckpt_labels} != {requested})"
+                meta_windows = meta.get("windows", "")
+                if meta_windows and meta_windows != requested:
+                    return f"window metadata differs ({meta_windows} != {requested})"
+
+        if stage == "agents":
+            specific = stage_kwargs.get("specific_agents")
+            requested = (
+                self._normalize_list_key(specific)
+                if specific
+                else self._normalize_list_key(stage_kwargs.get("agent_filter", "all"))
+            )
+            if requested and requested != "all":
+                meta_agent_filter = meta.get("agent_filter", "")
+                meta_selector = meta.get("stage_selector", "")
+                if meta_agent_filter and meta_agent_filter != requested:
+                    return (
+                        f"agent filter differs ({meta_agent_filter} != {requested})"
+                    )
+                if meta_selector.startswith("agents:"):
+                    selector_agents = self._normalize_list_key(
+                        meta_selector.split(":", 1)[1]
+                    )
+                    if selector_agents != requested:
+                        return (
+                            f"stage selector agents differ "
+                            f"({selector_agents} != {requested})"
+                        )
+                if not meta_agent_filter and not meta_selector:
+                    return "checkpoint has no agent selector metadata"
+
+            requested_manifest = self._resolve_agent_manifest_path(
+                stage_kwargs.get("agent_manifest_path")
+            )
+            if stage_kwargs.get("agent_manifest_path") and not os.path.exists(
+                requested_manifest
+            ):
+                return f"requested agent manifest is missing: {requested_manifest}"
+            checkpoint_manifest = self._normalize_path_key(
+                meta.get("agent_manifest_path", "")
+            )
+            if requested_manifest or checkpoint_manifest:
+                if checkpoint_manifest != requested_manifest:
+                    return (
+                        f"agent manifest path differs "
+                        f"({checkpoint_manifest or '<none>'} != "
+                        f"{requested_manifest or '<none>'})"
+                    )
+                requested_fingerprint = self._file_fingerprint(requested_manifest)
+                checkpoint_fingerprint = meta.get("agent_manifest_fingerprint", "")
+                if requested_fingerprint and (
+                    not checkpoint_fingerprint
+                    or checkpoint_fingerprint != requested_fingerprint
+                ):
+                    return "agent manifest fingerprint differs"
+
+        return "checkpoint does not match this request"
 
     def find_latest_checkpoint(self, stage: str) -> Optional[str]:
         # Accept any registered stage (not just the legacy STAGES list)
@@ -390,6 +595,7 @@ class StageRunner:
         self, target: str, completed_stages: List[str],
         provides_map: Dict[str, List[str]] = None,
         state: Any = None,
+        rerun_target: bool = True,
     ) -> List[str]:
         """Return ordered list of stages to execute up to *target*.
 
@@ -422,7 +628,7 @@ class StageRunner:
         plan: List[str] = []
         for stage in sorted_stages:
             if stage == target:
-                if state is None or not state.is_stage_done(stage, provides_map.get(stage, [])):
+                if rerun_target or state is None or not state.is_stage_done(stage, provides_map.get(stage, [])):
                     plan.append(stage)
                 break
 
@@ -452,6 +658,44 @@ class StageRunner:
             plan.append(stage)
 
         return plan
+
+    def _dependency_closure(self, target: str, dag: Dict[str, List[str]]) -> set:
+        """Return all transitive dependencies for *target*."""
+        if target not in dag:
+            raise StageDependencyError(
+                f"Stage '{target}' not found in registry. "
+                f"Available: {sorted(dag.keys())}"
+            )
+
+        deps = set()
+
+        def visit(stage: str) -> None:
+            for dep in dag.get(stage, []):
+                if dep in deps:
+                    continue
+                deps.add(dep)
+                visit(dep)
+
+        visit(target)
+        return deps
+
+    @staticmethod
+    def _snapshot_registry() -> Dict[str, dict]:
+        """Take a shallow metadata snapshot of the global stage registry."""
+        return {
+            name: {
+                **meta,
+                'depends_on': list(meta.get('depends_on', [])),
+                'provides': list(meta.get('provides', [])),
+            }
+            for name, meta in STAGE_REGISTRY.items()
+        }
+
+    @staticmethod
+    def _restore_registry(snapshot: Dict[str, dict]) -> None:
+        """Restore the global stage registry after workspace-local mutation."""
+        STAGE_REGISTRY.clear()
+        STAGE_REGISTRY.update(snapshot)
 
     # ------------------------------------------------------------------
     # Workspace-local stage loading
@@ -489,6 +733,7 @@ class StageRunner:
         loaded: Dict[str, dict] = {}
 
         manifests_to_try: List[str] = []
+        explicit_manifest = bool(manifest_path)
         if manifest_path:
             manifests_to_try.append(
                 manifest_path if os.path.isabs(manifest_path)
@@ -506,17 +751,31 @@ class StageRunner:
                 ws_added = True
 
             manifest_specs: List[dict] = []
+            found_manifest = False
             for path in manifests_to_try:
                 if not os.path.exists(path):
                     continue
+                found_manifest = True
                 try:
                     manifest_specs = self._parse_manifest(path)
                 except Exception as exc:
                     logger.debug("Failed to parse manifest %s: %s", path, exc)
+                    if explicit_manifest:
+                        raise ValueError(
+                            f"Failed to parse stage manifest at {path}: {exc}"
+                        ) from exc
                     continue
                 break  # first found manifest wins
 
             if not manifest_specs:
+                if explicit_manifest:
+                    if found_manifest:
+                        raise ValueError(
+                            f"Stage manifest contains no enabled stages: {manifests_to_try[0]}"
+                        )
+                    raise FileNotFoundError(
+                        f"Stage manifest not found: {manifests_to_try[0]}"
+                    )
                 return loaded
 
             for spec in manifest_specs:
@@ -531,10 +790,19 @@ class StageRunner:
                     module_path, fn_name = class_path.rsplit('.', 1)
                     module = importlib.import_module(module_path)
                     fn = getattr(module, fn_name)
-                    # If fn used @register_stage, it's already in STAGE_REGISTRY.
                     if name in STAGE_REGISTRY:
                         STAGE_REGISTRY[name]['source'] = 'workspace'
                         STAGE_REGISTRY[name]['workspace_root'] = workspace_root
+                    else:
+                        STAGE_REGISTRY[name] = {
+                            'name': name,
+                            'depends_on': list(spec.get('depends_on', [])),
+                            'provides': list(spec.get('provides', [])),
+                            'fn': fn,
+                            'description': spec.get('description', ''),
+                            'source': 'workspace',
+                            'workspace_root': workspace_root,
+                        }
                     loaded[name] = STAGE_REGISTRY.get(name, {})
                     print(f"  🔌 Loaded workspace stage: {name} from {class_path}")
                 except Exception as exc:
@@ -628,11 +896,12 @@ class StageRunner:
         """
         from quantpits.scripts.deep_analysis.state import DeepAnalysisState
 
-        # 1. Load workspace-local stages
-        if workspace_root:
-            self.load_workspace_stages(workspace_root, manifest_path)
-
+        registry_snapshot = self._snapshot_registry()
         try:
+            # 1. Load workspace-local stages
+            if workspace_root:
+                self.load_workspace_stages(workspace_root, manifest_path)
+
             if state is None:
                 state = DeepAnalysisState(workspace_root=workspace_root)
 
@@ -641,26 +910,34 @@ class StageRunner:
                 for name, meta in STAGE_REGISTRY.items()
             }
 
-            # 2a. Auto-load available checkpoints into state so that
-            #     resolve_plan() can skip already-completed upstream stages.
-            #     This is what makes --stage X truly "run-only".
             dag = self.build_dag()
             try:
                 sorted_all = self._topological_sort(dag)
             except ValueError:
                 sorted_all = list(dag.keys())
 
+            upstream_only = self._dependency_closure(target, dag)
+
             for stage_name in sorted_all:
+                if stage_name not in upstream_only:
+                    continue
                 if state.is_stage_done(stage_name, provides_map.get(stage_name, [])):
                     continue
                 ckpt_path = self.find_latest_checkpoint(stage_name)
                 if ckpt_path:
                     try:
                         loaded = self.load_checkpoint(ckpt_path)
+                        if not self._checkpoint_matches_request(stage_name, loaded, stage_kwargs):
+                            logger.info(
+                                "Skipping checkpoint for stage '%s' because it "
+                                "does not match this request",
+                                stage_name,
+                            )
+                            continue
                         ckpt_data = loaded.get("data", {})
                         # Populate state fields from checkpoint
                         for key in provides_map.get(stage_name, []):
-                            if key in ckpt_data and not state.has(key):
+                            if key in ckpt_data:
                                 setattr(state, key, ckpt_data[key])
                         state.mark_completed(stage_name)
                         print(f"   📥 Auto-loaded checkpoint: {stage_name}")
@@ -671,6 +948,7 @@ class StageRunner:
             # 2b-3. Resolve plan
             plan = self.resolve_plan(
                 target, state.completed_stages, provides_map, state,
+                rerun_target=True,
             )
 
             if not plan:
@@ -697,6 +975,24 @@ class StageRunner:
 
                 # Checkpoint
                 try:
+                    self._checkpoint_stage_selector = str(stage_kwargs.get('stage_selector', ''))
+                    self._checkpoint_windows = self._normalize_list_key(stage_kwargs.get('windows'))
+                    specific_agents = stage_kwargs.get('specific_agents')
+                    self._checkpoint_agent_filter = (
+                        self._normalize_list_key(specific_agents)
+                        if specific_agents
+                        else self._normalize_list_key(stage_kwargs.get('agent_filter', 'all'))
+                    )
+                    self._checkpoint_agent_manifest_path = (
+                        self._resolve_agent_manifest_path(
+                            stage_kwargs.get('agent_manifest_path')
+                        )
+                    )
+                    self._checkpoint_agent_manifest_fingerprint = (
+                        self._file_fingerprint(
+                            self._checkpoint_agent_manifest_path
+                        )
+                    )
                     self.save_checkpoint(stage_name, state.to_dict())
                 except Exception as exc:
                     logger.warning(
@@ -709,9 +1005,119 @@ class StageRunner:
             return state
 
         finally:
-            # 5. Clean up workspace-local stages
+            self._restore_registry(registry_snapshot)
+
+    def explain_plan(
+        self,
+        target: str = "report",
+        state: Any = None,
+        workspace_root: str = "",
+        manifest_path: str = None,
+        **stage_kwargs,
+    ) -> dict:
+        """Build a dry-run execution plan without running any stages.
+
+        The method intentionally mirrors ``run()``: workspace-local stages are
+        loaded, compatible upstream checkpoints are considered, and the target
+        stage is still planned for rerun.
+        """
+        from quantpits.scripts.deep_analysis.state import DeepAnalysisState
+
+        registry_snapshot = self._snapshot_registry()
+        try:
             if workspace_root:
-                unregister_workspace_stages(workspace_root)
+                self.load_workspace_stages(workspace_root, manifest_path)
+
+            if state is None:
+                state = DeepAnalysisState(workspace_root=workspace_root)
+            else:
+                state = copy.deepcopy(state)
+
+            provides_map = {
+                name: meta.get('provides', [])
+                for name, meta in STAGE_REGISTRY.items()
+            }
+            dag = self.build_dag()
+            sorted_all = self._topological_sort(dag)
+            upstream_only = self._dependency_closure(target, dag)
+            checkpoint_events = []
+
+            for stage_name in sorted_all:
+                if stage_name not in upstream_only:
+                    continue
+                event = {
+                    "stage": stage_name,
+                    "source": "none",
+                    "checkpoint": "",
+                    "status": "missing",
+                    "reason": "no compatible checkpoint found",
+                }
+                if state.is_stage_done(stage_name, provides_map.get(stage_name, [])):
+                    event.update({
+                        "source": "state",
+                        "status": "available",
+                        "reason": "state already has required outputs",
+                    })
+                    checkpoint_events.append(event)
+                    continue
+
+                ckpt_path = self.find_latest_checkpoint(stage_name)
+                if ckpt_path:
+                    event["checkpoint"] = ckpt_path
+                    try:
+                        loaded = self.load_checkpoint(ckpt_path)
+                        if self._checkpoint_matches_request(
+                            stage_name, loaded, stage_kwargs
+                        ):
+                            ckpt_data = loaded.get("data", {})
+                            for key in provides_map.get(stage_name, []):
+                                if key in ckpt_data:
+                                    setattr(state, key, ckpt_data[key])
+                            state.mark_completed(stage_name)
+                            event.update({
+                                "source": "checkpoint",
+                                "status": "loaded",
+                                "reason": "compatible checkpoint",
+                            })
+                        else:
+                            event.update({
+                                "source": "checkpoint",
+                                "status": "skipped",
+                                "reason": self._checkpoint_mismatch_reason(
+                                    stage_name, loaded, stage_kwargs
+                                ),
+                            })
+                    except Exception as exc:
+                        event.update({
+                            "source": "checkpoint",
+                            "status": "error",
+                            "reason": str(exc),
+                        })
+                checkpoint_events.append(event)
+
+            plan = self.resolve_plan(
+                target, state.completed_stages, provides_map, state,
+                rerun_target=True,
+            )
+
+            return {
+                "target": target,
+                "stage_selector": str(stage_kwargs.get("stage_selector", "")),
+                "workspace_root": workspace_root or self.workspace_root,
+                "run_date": self.run_date,
+                "run_label": self.run_label,
+                "registered_stages": sorted_all,
+                "dependency_closure": [
+                    stage for stage in sorted_all if stage in upstream_only
+                ],
+                "checkpoint_events": checkpoint_events,
+                "execution_plan": plan,
+                "provides_map": provides_map,
+                "dag": dag,
+            }
+
+        finally:
+            self._restore_registry(registry_snapshot)
 
 
 class StageDependencyError(Exception):

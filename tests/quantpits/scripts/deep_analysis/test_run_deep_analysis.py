@@ -37,6 +37,17 @@ def test_parse_args():
         args = run_deep_analysis.parse_args()
         assert args.critic_dry_run is True
 
+    with patch('sys.argv', [
+        'run_deep_analysis.py',
+        '--agent-manifest', 'config/agent_manifest.json',
+        '--stage-manifest', 'config/pipeline_manifest.json',
+        '--explain-plan',
+    ]):
+        args = run_deep_analysis.parse_args()
+        assert args.agent_manifest == 'config/agent_manifest.json'
+        assert args.stage_manifest == 'config/pipeline_manifest.json'
+        assert args.explain_plan is True
+
 def test_load_deep_analysis_config(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -57,6 +68,77 @@ def test_load_deep_analysis_config(tmp_path):
     with open(config_file, 'w') as f:
         f.write("invalid json")
     assert run_deep_analysis.load_deep_analysis_config(str(workspace)) == {}
+
+
+@patch('quantpits.scripts.run_deep_analysis.parse_args')
+@patch('quantpits.scripts.run_deep_analysis._resolve_data_date', return_value='2026-05-08')
+@patch('quantpits.scripts.run_deep_analysis.load_deep_analysis_config', return_value={})
+@patch('quantpits.scripts.deep_analysis.stage_runner.StageRunner.explain_plan')
+@patch('quantpits.scripts.deep_analysis.coordinator.Coordinator')
+@patch('os.path.exists', return_value=False)
+@patch('quantpits.utils.env.ROOT_DIR', '/tmp/root')
+def test_main_explain_plan_exits_without_running_stages(
+    mock_exists,
+    mock_coord,
+    mock_explain,
+    mock_load_config,
+    mock_data_date,
+    mock_parse_args,
+    capsys,
+):
+    args = MagicMock()
+    args.windows = '1m'
+    args.freq_change_date = None
+    args.output = 'output/report.md'
+    args.llm = False
+    args.llm_model = None
+    args.api_key = None
+    args.base_url = None
+    args.agents = 'model_health'
+    args.notes = ''
+    args.notes_file = None
+    args.snapshot_config = True
+    args.no_snapshot = True
+    args.shareable = False
+    args.critic = False
+    args.critic_dry_run = False
+    args.run_label = 'dry'
+    args.stage = 'agents:model_health'
+    args.resume_from = None
+    args.resume_latest = False
+    args.manifest = None
+    args.agent_manifest = 'config/agent_manifest.json'
+    args.stage_manifest = 'config/pipeline_manifest.json'
+    args.explain_plan = True
+    mock_parse_args.return_value = args
+    mock_explain.return_value = {
+        "target": "agents",
+        "stage_selector": "agents:model_health",
+        "run_label": "dry",
+        "registered_stages": ["discover", "agents"],
+        "dag": {"discover": [], "agents": ["discover"]},
+        "provides_map": {
+            "discover": ["discovered_files", "windows"],
+            "agents": ["all_findings"],
+        },
+        "checkpoint_events": [{
+            "stage": "discover",
+            "status": "loaded",
+            "reason": "compatible checkpoint",
+            "checkpoint": "/tmp/root/output/deep_analysis/checkpoints/discover.json",
+        }],
+        "execution_plan": ["agents"],
+    }
+
+    result = run_deep_analysis.main()
+
+    assert result == 0
+    mock_explain.assert_called_once()
+    mock_coord.assert_not_called()
+    output = capsys.readouterr().out
+    assert "Execution Plan (dry run)" in output
+    assert "Stages that would run" in output
+    assert "agents" in output
 
 @patch('quantpits.scripts.run_deep_analysis.parse_args')
 @patch('quantpits.scripts.run_deep_analysis._resolve_data_date', return_value='2026-05-08')

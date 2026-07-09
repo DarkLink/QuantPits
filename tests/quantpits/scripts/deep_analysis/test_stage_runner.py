@@ -145,3 +145,400 @@ def test_checkpoint_io(tmp_path):
     assert loaded["meta"]["date"] == "2026-07-07"
     assert loaded["meta"]["label"] == "test_label"
     assert isinstance(loaded["data"]["all_findings"][0], AgentFindings)
+
+
+def test_stage_run_loads_only_upstream_and_reruns_target(tmp_path):
+    from quantpits.scripts.deep_analysis.stage_runner import STAGE_REGISTRY
+    from quantpits.scripts.deep_analysis.state import DeepAnalysisState
+
+    snapshot = StageRunner._snapshot_registry()
+    STAGE_REGISTRY.clear()
+    calls = []
+
+    def run_discover(state, **kwargs):
+        calls.append("discover")
+        state.discovered_files = {"from": "fresh"}
+        state.windows = [{"label": "fresh"}]
+        return state
+
+    def run_agents(state, **kwargs):
+        calls.append("agents")
+        state.all_findings = []
+        return state
+
+    try:
+        STAGE_REGISTRY["discover"] = {
+            "name": "discover",
+            "depends_on": [],
+            "provides": ["discovered_files", "windows"],
+            "fn": run_discover,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+        STAGE_REGISTRY["agents"] = {
+            "name": "agents",
+            "depends_on": ["discover"],
+            "provides": ["all_findings"],
+            "fn": run_agents,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+
+        runner = StageRunner(str(tmp_path), "2026-07-07", "rerun")
+        runner.save_checkpoint(
+            "discover",
+            {"discovered_files": {"from": "checkpoint"}, "windows": [{"label": "ckpt"}]},
+        )
+        runner.save_checkpoint("agents", {"all_findings": ["stale"]})
+
+        state = DeepAnalysisState(workspace_root=str(tmp_path))
+        result = runner.run(target="agents", state=state)
+
+        assert calls == ["agents"]
+        assert result.discovered_files == {"from": "checkpoint"}
+        assert result.windows == [{"label": "ckpt"}]
+        assert result.all_findings == []
+    finally:
+        StageRunner._restore_registry(snapshot)
+
+
+def test_explain_plan_loads_upstream_without_running_target(tmp_path):
+    from quantpits.scripts.deep_analysis.stage_runner import STAGE_REGISTRY
+    from quantpits.scripts.deep_analysis.state import DeepAnalysisState
+
+    snapshot = StageRunner._snapshot_registry()
+    STAGE_REGISTRY.clear()
+    calls = []
+
+    def run_discover(state, **kwargs):
+        calls.append("discover")
+        state.discovered_files = {"from": "fresh"}
+        state.windows = [{"label": "fresh"}]
+        return state
+
+    def run_agents(state, **kwargs):
+        calls.append("agents")
+        state.all_findings = ["fresh"]
+        return state
+
+    try:
+        STAGE_REGISTRY["discover"] = {
+            "name": "discover",
+            "depends_on": [],
+            "provides": ["discovered_files", "windows"],
+            "fn": run_discover,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+        STAGE_REGISTRY["agents"] = {
+            "name": "agents",
+            "depends_on": ["discover"],
+            "provides": ["all_findings"],
+            "fn": run_agents,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+
+        runner = StageRunner(str(tmp_path), "2026-07-07", "dry")
+        runner.save_checkpoint(
+            "discover",
+            {
+                "discovered_files": {"from": "checkpoint"},
+                "windows": [{"label": "1m"}],
+            },
+        )
+
+        state = DeepAnalysisState(workspace_root=str(tmp_path))
+        plan = runner.explain_plan(
+            target="agents",
+            state=state,
+            windows=["1m"],
+            stage_selector="agents:model_health",
+            specific_agents=["model_health"],
+        )
+
+        assert calls == []
+        assert state.completed_stages == []
+        assert plan["dependency_closure"] == ["discover"]
+        assert plan["execution_plan"] == ["agents"]
+        assert plan["checkpoint_events"][0]["stage"] == "discover"
+        assert plan["checkpoint_events"][0]["status"] == "loaded"
+    finally:
+        StageRunner._restore_registry(snapshot)
+
+
+def test_explain_plan_reports_incompatible_checkpoint(tmp_path):
+    from quantpits.scripts.deep_analysis.stage_runner import STAGE_REGISTRY
+    from quantpits.scripts.deep_analysis.state import DeepAnalysisState
+
+    snapshot = StageRunner._snapshot_registry()
+    STAGE_REGISTRY.clear()
+
+    try:
+        STAGE_REGISTRY["discover"] = {
+            "name": "discover",
+            "depends_on": [],
+            "provides": ["discovered_files", "windows"],
+            "fn": lambda state, **kwargs: state,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+        STAGE_REGISTRY["agents"] = {
+            "name": "agents",
+            "depends_on": ["discover"],
+            "provides": ["all_findings"],
+            "fn": lambda state, **kwargs: state,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+
+        runner = StageRunner(str(tmp_path), "2026-07-07", "dry_mismatch")
+        runner.save_checkpoint(
+            "discover",
+            {
+                "discovered_files": {"from": "checkpoint"},
+                "windows": [{"label": "3m"}],
+            },
+        )
+
+        plan = runner.explain_plan(
+            target="agents",
+            state=DeepAnalysisState(workspace_root=str(tmp_path)),
+            windows=["1m"],
+        )
+
+        assert plan["checkpoint_events"][0]["status"] == "skipped"
+        assert "window labels differ" in plan["checkpoint_events"][0]["reason"]
+        assert plan["execution_plan"] == ["discover", "agents"]
+    finally:
+        StageRunner._restore_registry(snapshot)
+
+
+def test_empty_stage_outputs_are_valid_when_marked_completed():
+    from quantpits.scripts.deep_analysis.state import DeepAnalysisState
+
+    state = DeepAnalysisState(signals=[])
+    assert state.has("signals") is False
+    assert state.is_stage_done("signals", ["signals"]) is False
+
+    state.mark_completed("signals")
+    assert state.is_stage_done("signals", ["signals"]) is True
+
+
+def test_custom_stage_manifest_runs_and_registry_is_restored(tmp_path):
+    import json
+    from quantpits.scripts.deep_analysis.stage_runner import STAGE_REGISTRY
+    from quantpits.scripts.deep_analysis.state import DeepAnalysisState
+
+    snapshot = StageRunner._snapshot_registry()
+    STAGE_REGISTRY.clear()
+    plugin_dir = tmp_path / "plugin_stages"
+    plugin_dir.mkdir()
+    (plugin_dir / "__init__.py").write_text("")
+    (plugin_dir / "custom.py").write_text(
+        "def run_custom(state, **kwargs):\n"
+        "    state.custom_output = 'ok'\n"
+        "    return state\n"
+    )
+    manifest = tmp_path / "config" / "pipeline_manifest.json"
+    manifest.parent.mkdir()
+    manifest.write_text(json.dumps({
+        "stages": [{
+            "name": "custom_check",
+            "class_path": "plugin_stages.custom.run_custom",
+            "depends_on": [],
+            "provides": ["custom_output"],
+            "enabled": True,
+        }]
+    }))
+
+    try:
+        runner = StageRunner(str(tmp_path), "2026-07-07", "custom")
+        state = runner.run(
+            target="custom_check",
+            state=DeepAnalysisState(workspace_root=str(tmp_path)),
+            workspace_root=str(tmp_path),
+            manifest_path="config/pipeline_manifest.json",
+        )
+
+        assert state.custom_output == "ok"
+        assert "custom_check" not in STAGE_REGISTRY
+        assert os.path.exists(
+            tmp_path / "output" / "deep_analysis" / "checkpoints" /
+            "custom_check_2026-07-07_custom.json"
+        )
+    finally:
+        StageRunner._restore_registry(snapshot)
+
+
+def test_explicit_stage_manifest_parse_error_is_reported(tmp_path):
+    manifest = tmp_path / "config" / "pipeline_manifest.json"
+    manifest.parent.mkdir()
+    manifest.write_text("{not-json")
+
+    runner = StageRunner(str(tmp_path), "2026-07-07", "bad_manifest")
+
+    with pytest.raises(ValueError, match="Failed to parse stage manifest"):
+        runner.load_workspace_stages(
+            str(tmp_path),
+            manifest_path="config/pipeline_manifest.json",
+        )
+
+
+def test_agent_checkpoint_requires_matching_manifest(tmp_path):
+    from quantpits.scripts.deep_analysis.stage_runner import STAGE_REGISTRY
+    from quantpits.scripts.deep_analysis.state import DeepAnalysisState
+
+    snapshot = StageRunner._snapshot_registry()
+    STAGE_REGISTRY.clear()
+    calls = []
+
+    def run_discover(state, **kwargs):
+        state.discovered_files = {"from": "fresh"}
+        state.windows = [{"label": "1m"}]
+        return state
+
+    def run_agents(state, **kwargs):
+        calls.append("agents")
+        state.all_findings = ["fresh"]
+        return state
+
+    def run_synthesis(state, **kwargs):
+        calls.append("synthesis")
+        state.synthesis_result = {"ok": True}
+        return state
+
+    try:
+        STAGE_REGISTRY["discover"] = {
+            "name": "discover",
+            "depends_on": [],
+            "provides": ["discovered_files", "windows"],
+            "fn": run_discover,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+        STAGE_REGISTRY["agents"] = {
+            "name": "agents",
+            "depends_on": ["discover"],
+            "provides": ["all_findings"],
+            "fn": run_agents,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+        STAGE_REGISTRY["synthesis"] = {
+            "name": "synthesis",
+            "depends_on": ["agents"],
+            "provides": ["synthesis_result"],
+            "fn": run_synthesis,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+
+        runner = StageRunner(str(tmp_path), "2026-07-07", "manifest_match")
+        runner._checkpoint_agent_manifest_path = runner._normalize_path_key(
+            "config/old_agent_manifest.json"
+        )
+        runner.save_checkpoint("agents", {"all_findings": ["stale"]})
+
+        state = DeepAnalysisState(
+            workspace_root=str(tmp_path),
+            discovered_files={"from": "preloaded"},
+            windows=[{"label": "1m"}],
+        )
+        state.mark_completed("discover")
+
+        result = runner.run(
+            target="synthesis",
+            state=state,
+            agent_manifest_path="config/new_agent_manifest.json",
+        )
+
+        assert calls == ["agents", "synthesis"]
+        assert result.all_findings == ["fresh"]
+        assert result.synthesis_result == {"ok": True}
+    finally:
+        StageRunner._restore_registry(snapshot)
+
+
+def test_agent_checkpoint_requires_matching_manifest_fingerprint(tmp_path):
+    from quantpits.scripts.deep_analysis.stage_runner import STAGE_REGISTRY
+    from quantpits.scripts.deep_analysis.state import DeepAnalysisState
+
+    snapshot = StageRunner._snapshot_registry()
+    STAGE_REGISTRY.clear()
+    calls = []
+
+    def run_agents(state, **kwargs):
+        calls.append("agents")
+        state.all_findings = ["fresh"]
+        return state
+
+    def run_synthesis(state, **kwargs):
+        calls.append("synthesis")
+        state.synthesis_result = {"ok": True}
+        return state
+
+    try:
+        STAGE_REGISTRY["agents"] = {
+            "name": "agents",
+            "depends_on": ["discover"],
+            "provides": ["all_findings"],
+            "fn": run_agents,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+        STAGE_REGISTRY["synthesis"] = {
+            "name": "synthesis",
+            "depends_on": ["agents"],
+            "provides": ["synthesis_result"],
+            "fn": run_synthesis,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+        STAGE_REGISTRY["discover"] = {
+            "name": "discover",
+            "depends_on": [],
+            "provides": ["discovered_files", "windows"],
+            "fn": lambda state, **kwargs: state,
+            "description": "",
+            "source": "builtin",
+            "workspace_root": None,
+        }
+
+        manifest = tmp_path / "config" / "agent_manifest.json"
+        manifest.parent.mkdir()
+        manifest.write_text('{"agents": []}')
+
+        runner = StageRunner(str(tmp_path), "2026-07-07", "manifest_fp")
+        runner._checkpoint_agent_manifest_path = runner._resolve_agent_manifest_path(None)
+        runner._checkpoint_agent_manifest_fingerprint = runner._file_fingerprint(
+            runner._checkpoint_agent_manifest_path
+        )
+        runner.save_checkpoint("agents", {"all_findings": ["stale"]})
+
+        manifest.write_text('{"agents": [{"name": "changed"}]}')
+
+        state = DeepAnalysisState(
+            workspace_root=str(tmp_path),
+            discovered_files={"from": "preloaded"},
+            windows=[{"label": "1m"}],
+        )
+        state.mark_completed("discover")
+
+        result = runner.run(target="synthesis", state=state)
+
+        assert calls == ["agents", "synthesis"]
+        assert result.all_findings == ["fresh"]
+    finally:
+        StageRunner._restore_registry(snapshot)

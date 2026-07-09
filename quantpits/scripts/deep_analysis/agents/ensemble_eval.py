@@ -279,6 +279,57 @@ class EnsembleEvolutionAgent(BaseAgent):
         """
         events = []
 
+        def normalize_ensemble_config(config: dict) -> tuple:
+            """Return (default_combo, normalized_combos) for old and new schemas."""
+            if not isinstance(config, dict):
+                return None, {}
+
+            if 'combos' in config or 'models' in config:
+                try:
+                    from quantpits.utils.ensemble_utils import (
+                        parse_ensemble_config,
+                        get_default_combo,
+                    )
+                    combos, _ = parse_ensemble_config(config)
+                    default_combo, _ = get_default_combo(combos)
+                except Exception:
+                    combos = config.get('combos', {}) if isinstance(config.get('combos'), dict) else {}
+                    default_combo = None
+            else:
+                combos = {}
+                default_combo = config.get('default_combo')
+                for name, value in config.get('combo_groups', {}).items():
+                    if isinstance(value, dict):
+                        combo_cfg = dict(value)
+                    else:
+                        combo_cfg = {'models': value}
+                    combo_cfg.setdefault('default', name == default_combo)
+                    combos[name] = combo_cfg
+
+            normalized = {}
+            for name, combo_cfg in (combos or {}).items():
+                if not isinstance(combo_cfg, dict):
+                    combo_cfg = {'models': combo_cfg}
+                payload = {
+                    k: v for k, v in combo_cfg.items()
+                    if k != 'default'
+                }
+                if isinstance(payload.get('models'), dict):
+                    payload['models'] = sorted(payload['models'].keys())
+                elif isinstance(payload.get('models'), list):
+                    payload['models'] = sorted(payload['models'])
+                normalized[name] = payload
+
+            if not default_combo:
+                for name, combo_cfg in (combos or {}).items():
+                    if isinstance(combo_cfg, dict) and combo_cfg.get('default', False):
+                        default_combo = name
+                        break
+            if not default_combo and normalized:
+                default_combo = next(iter(normalized))
+
+            return default_combo, normalized
+
         # Layer 1: Composition change from ensemble_fusion_config files
         fusion_configs = {}  # (combo, date) -> model_list
         for path in ctx.ensemble_fusion_config_files:
@@ -337,9 +388,10 @@ class EnsembleEvolutionAgent(BaseAgent):
                 new_ec = new_snap.get('ensemble_config', {})
                 snap_date = new_snap.get('snapshot_date', self._extract_date(snapshots[i]))
 
+                old_default, old_groups = normalize_ensemble_config(old_ec)
+                new_default, new_groups = normalize_ensemble_config(new_ec)
+
                 # Layer 2: Active combo switch
-                old_default = old_ec.get('default_combo')
-                new_default = new_ec.get('default_combo')
                 if old_default and new_default and old_default != new_default:
                     events.append({
                         'type': 'active_switch',
@@ -349,8 +401,6 @@ class EnsembleEvolutionAgent(BaseAgent):
                     })
 
                 # Layer 3: Intra-combo content mutation
-                old_groups = old_ec.get('combo_groups', {})
-                new_groups = new_ec.get('combo_groups', {})
                 for name in set(old_groups.keys()) & set(new_groups.keys()):
                     if json.dumps(old_groups[name], sort_keys=True) != \
                        json.dumps(new_groups[name], sort_keys=True):
