@@ -569,7 +569,8 @@ python -m quantpits.scripts.static_train --all-enabled
 | `predict_utils.py` | 预测数据加载/保存、Recorder 管理 | 预测、融合、穷举 |
 | `config_loader.py` | Workspace 级配置加载 | 全局 |
 | `config_contracts/` | Workspace 配置校验、normalize、fingerprint，供运行前检查和后续 plan/manifest 复用 | 全局 |
-| `runtime/` | 通用 `CommandPlan` / `RunManifest` / plan renderer / manifest writer 运行时基础类型 | 后续重资产命令接入 |
+| `runtime/` | 通用 `CommandPlan` / `RunManifest` / plan renderer / manifest writer 运行时基础类型 | `ensemble_fusion` 已接入；后续重资产命令逐步复用 |
+| `ensemble/` | Ensemble fusion 的 service 层：显式配置加载、plan/render、manifest、OperatorLog linkage 与执行生命周期 | 融合 |
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
 | `backtest_utils.py` | Qlib 回测执行与评估 | 穷举、融合、分析 |
 | `env.py` | Qlib 初始化、工作目录管理、`set_root_dir()` 运行时工作区切换 | 全局 |
@@ -597,7 +598,7 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 
 ### Runtime Plan / Manifest 基础设施
 
-`quantpits/runtime/` 提供通用运行计划与运行清单 primitives，供后续重资产命令逐步接入：
+`quantpits/runtime/` 提供通用运行计划与运行清单 primitives；`ensemble_fusion.py` 已作为第一条生产命令接入，后续重资产命令可按同一模式逐步复用：
 
 | 模块 | 用途 |
 |------|------|
@@ -606,9 +607,9 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 | `render.py` | 人类可读 dry-run plan 渲染与 public dict 输出 |
 | `manifest.py` | `RunManifest`、`manifest_from_result()`、`write_run_manifest()` |
 
-默认 manifest 写入位置为 `output/manifests/{command}/{run_id}.json`，仅在调用方显式调用 `write_run_manifest()` 时写入。Manifest/public dict 只记录路径、summary、fingerprint、records 等摘要，不包含完整 raw config。现有生产脚本不会因为该基础设施自动改变行为。
+默认 manifest 写入位置为 `output/manifests/{command}/{run_id}.json`，仅在调用方显式调用 `write_run_manifest()` 时写入。Manifest/public dict 只记录路径、summary、fingerprint、records 等摘要，不包含完整 raw config。`ensemble_fusion.py` 真实执行默认会写入 `output/manifests/ensemble_fusion/<run_id>.json`；dry-run (`--explain-plan` / `--json-plan`) 不写任何 manifest。
 
-`OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint` 字段，后续命令接入 run manifest 后可以把审计日志与具体运行清单关联起来；未设置时这些字段为 `null`。
+`OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint` 字段。`ensemble_fusion.py` 已将这些字段与运行清单关联；未接入 manifest 的旧命令仍保持 `null`。
 
 ### ⑧ 文件归档工具
 

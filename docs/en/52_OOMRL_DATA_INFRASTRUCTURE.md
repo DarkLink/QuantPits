@@ -52,8 +52,9 @@ filtered out in downstream analysis.
 
 ### Runtime Manifest Linkage Fields
 
-`OperatorLog` now has three backward-compatible optional fields for future
-commands that integrate with `quantpits.runtime.RunManifest`:
+`OperatorLog` now has three backward-compatible optional fields for commands
+that integrate with `quantpits.runtime.RunManifest`. `ensemble_fusion.py` is
+already integrated with this mechanism:
 
 | Field | Meaning |
 |-------|---------|
@@ -77,8 +78,7 @@ with OperatorLog("static_train", args=sys.argv[1:]) as oplog:
     oplog.set_result({"n_models": 20, "anchor_date": "2026-04-24"})
 ```
 
-Once a command writes a run manifest, it can link the audit entry to that
-manifest:
+Commands that write run manifests can link the audit entry to that manifest:
 
 ```python
 with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
@@ -89,6 +89,12 @@ with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
     oplog.set_plan_fingerprint(plan_fingerprint)
     # ... main script logic ...
 ```
+
+The concrete `ensemble_fusion.py` integration is owned by
+`quantpits/ensemble/service.py`: the service writes `data/operator_log.jsonl`
+through an explicit `WorkspaceContext`, real executions write
+`output/manifests/ensemble_fusion/<run_id>.json` by default, and dry-runs
+(`--explain-plan` / `--json-plan`) do not write run manifests.
 
 ---
 

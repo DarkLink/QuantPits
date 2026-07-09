@@ -40,8 +40,8 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 | `--combo` | 无 | 运行指定名称的 combo |
 | `--method` | `equal` | 权重模式: `equal` / `icir_weighted` / `manual` / `dynamic` |
 | `--weights` | 无 | 手动权重，如 `"gru:0.6,linear_Alpha158:0.4"` |
-| `--freq` | `None` | 回测频率: `day` / `week` (默认从 `strategy_config.yaml` 读取) |
-| `--training-mode` | `static` | 限定模型训练模式（如 `static` 或 `rolling`） |
+| `--freq` | `None` | 回测频率: `day` / `week` (默认从 workspace merged config / `model_config.json` 读取) |
+| `--training-mode` | `None` | 限定模型训练模式（如 `static` 或 `rolling`）；默认自动解析 |
 | `--record-file` | `latest_train_records.json` | 指定训练记录文件 |
 | `--output-dir` | `output/ensemble` | 输出目录 |
 | `--no-backtest` | false | 跳过回测 |
@@ -81,6 +81,8 @@ output/manifests/ensemble_fusion/<run_id>.json
 ```
 
 清单记录 `run_id`、plan fingerprint、输入配置 fingerprint、resolved combos、执行状态和结果摘要，并会通过 `data/operator_log.jsonl` 关联 `run_id`、`manifest_path` 和 `plan_fingerprint`。如果需要保持旧的无 manifest 副作用，可加 `--no-manifest`。
+
+实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。核心融合、回测、图表和 recorder 写入函数仍保留在脚本中，以保持既有行为兼容。
 
 ## 多组合配置
 
@@ -249,7 +251,7 @@ python quantpits/scripts/ensemble_fusion.py \
 
 ```
 Stage 0: 初始化 Qlib + 加载配置
-Stage 1: 加载选定模型预测 + Z-Score 归一化（所有 combo 共享）
+Stage 1: 加载选定模型预测 + 截面归一化（默认 `rank`，所有 combo 共享）
 --- 以下逐 combo 执行 ---
 Stage 2: 相关性分析（仅该 combo 模型）
 Stage 3: 权重计算
@@ -299,9 +301,9 @@ output/
 > [!NOTE]
 > **关于单模型表现与融合回测的评测差异说明**
 >
-> 融合与穷举脚本在评估模型表现时，引入了严格的 **Z-Score 归一化**（Z-Score Normalization）和 **数据对齐**（Data Alignment）处理，因此由于 TopK 截断的存在，单模型在此处的回测结果可能与训练期间通过 `run_analysis.py` 查看到的原始预测分值回测结果存在合理且微小的差异：
-> 1. **独立归一化隔离**：每个模型的预测分值会首先仅基于自身非为空的预测股票池进行按天的 Z-Score 归一化处理。这保证了模型之间的评分尺度统一，且某个模型的数据缺失不会影响并在归一化前污染其他模型的分布。
-> 2. **延迟交集对齐**：仅在计算最终特定组合的均值或加权打分时，系统才会对当前组合涉及的模型取交集（即执行 `dropna(how='any')`），这避免了无关模型的数据缺失引发当前组合评测池的不当缩水。
+> 融合与穷举脚本在评估模型表现时，会先做按日截面归一化和数据对齐处理。默认 `--norm-method rank` 使用 percentile rank，并对模型未覆盖股票填充中性分 `0.5`；如果显式使用 `--norm-method zscore`，则保留 Z-Score 与交集对齐语义。因此由于归一化、覆盖范围和 TopK 截断的存在，单模型在此处的回测结果可能与训练期间通过 `run_analysis.py` 查看到的原始预测分值回测结果存在合理且微小的差异：
+> 1. **独立归一化隔离**：每个模型的预测分值会首先基于自身预测股票池按天归一化，避免其他模型的数据缺失在融合前污染该模型的分布。
+> 2. **覆盖范围对齐**：`rank` 模式使用并集股票池并以 `0.5` 表示中性弃权；`zscore` 模式保留 NaN，并在特定组合打分阶段按当前组合涉及模型取交集（`dropna(how='any')`）。
 > 3. **评估排名的对齐**：所有提供参照的基准数据（如单模型的历史排行榜回测指标）均会严格根据当前评价矩阵实际生成的时间窗口进行动态切片对齐，从而为您提供“同时间段”的一致性比对。
 
 ## 典型工作流

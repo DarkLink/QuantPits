@@ -566,7 +566,8 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `predict_utils.py` | Prediction data load/save, Recorder management | Prediction, Fusion, Ensemble Search |
 | `config_loader.py` | Workspace-level config loading | Global |
 | `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
-| `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | Future heavy-command integrations |
+| `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | `ensemble_fusion` is integrated; future heavy commands can reuse it |
+| `ensemble/` | Ensemble fusion service layer: explicit config loading, plan/render, manifest, OperatorLog linkage, and execution lifecycle | Fusion |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
 | `backtest_utils.py` | Qlib backtest execution and evaluation | Ensemble Search, Fusion, Analysis |
 | `env.py` | Qlib initialization, workspace management, `set_root_dir()` runtime switching | Global |
@@ -594,7 +595,7 @@ The command does not write to the workspace. JSON output includes paths, summari
 
 ### Runtime Plan / Manifest Infrastructure
 
-`quantpits/runtime/` provides shared runtime planning and run manifest primitives for future heavy-command integrations:
+`quantpits/runtime/` provides shared runtime planning and run manifest primitives. `ensemble_fusion.py` is the first production command integrated with this runtime model, and future heavy commands can reuse the same pattern:
 
 | Module | Purpose |
 |------|------|
@@ -603,9 +604,9 @@ The command does not write to the workspace. JSON output includes paths, summari
 | `render.py` | Human-readable dry-run plan rendering and public dict output |
 | `manifest.py` | `RunManifest`, `manifest_from_result()`, and `write_run_manifest()` |
 
-The default manifest path is `output/manifests/{command}/{run_id}.json`, and files are written only when the caller explicitly invokes `write_run_manifest()`. Manifest/public dict output records paths, summaries, fingerprints, records, and warnings; it does not include full raw configs. Existing production scripts do not change behavior just because these primitives exist.
+The default manifest path is `output/manifests/{command}/{run_id}.json`, and files are written only when the caller explicitly invokes `write_run_manifest()`. Manifest/public dict output records paths, summaries, fingerprints, records, and warnings; it does not include full raw configs. Real `ensemble_fusion.py` runs now write `output/manifests/ensemble_fusion/<run_id>.json` by default; dry-runs (`--explain-plan` / `--json-plan`) do not write manifests.
 
-`OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, and `plan_fingerprint`, so future command integrations can link audit entries to concrete run manifests. When unset, these fields are `null`.
+`OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, and `plan_fingerprint`. `ensemble_fusion.py` now links these fields to its run manifest; legacy commands that are not yet manifest-integrated keep them as `null`.
 
 ### ⑧ File Archiving Tool
 

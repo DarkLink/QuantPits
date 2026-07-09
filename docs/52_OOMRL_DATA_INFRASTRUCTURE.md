@@ -46,7 +46,7 @@
 
 ### runtime manifest 关联字段
 
-`OperatorLog` 向后兼容地新增了 3 个可选字段，供后续命令接入 `quantpits.runtime.RunManifest` 时使用：
+`OperatorLog` 向后兼容地新增了 3 个可选字段，供命令接入 `quantpits.runtime.RunManifest` 时使用。`ensemble_fusion.py` 已接入该机制：
 
 | 字段 | 含义 |
 |------|------|
@@ -68,7 +68,7 @@ with OperatorLog("static_train", args=sys.argv[1:]) as oplog:
     oplog.set_result({"n_models": 20, "anchor_date": "2026-04-24"})
 ```
 
-未来命令接入 run manifest 后，可以关联运行清单：
+接入 run manifest 的命令可以关联运行清单：
 
 ```python
 with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
@@ -79,6 +79,8 @@ with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
     oplog.set_plan_fingerprint(plan_fingerprint)
     # ... 脚本主逻辑 ...
 ```
+
+`ensemble_fusion.py` 的实际接入由 `quantpits/ensemble/service.py` 负责：service 使用显式 `WorkspaceContext` 写入 `data/operator_log.jsonl`，真实执行默认写入 `output/manifests/ensemble_fusion/<run_id>.json`，dry-run (`--explain-plan` / `--json-plan`) 不写运行清单。
 
 ---
 

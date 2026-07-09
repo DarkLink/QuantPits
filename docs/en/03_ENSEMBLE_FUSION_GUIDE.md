@@ -40,8 +40,8 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 | `--combo` | None | Runs a specifically named combo |
 | `--method` | `equal` | Weighting mode: `equal` / `icir_weighted` / `manual` / `dynamic` |
 | `--weights` | None | Manual weights string, e.g., `"gru:0.6,linear_Alpha158:0.4"` |
-| `--freq` | `None` | Backtest frequency: `day` / `week` (Default: read from `strategy_config.yaml`) |
-| `--training-mode` | `static` | Filter models by mode (e.g. `static` or `rolling`) |
+| `--freq` | `None` | Backtest frequency: `day` / `week` (Default: read from the workspace merged config / `model_config.json`) |
+| `--training-mode` | `None` | Filter models by mode (e.g. `static` or `rolling`); defaults to automatic resolution |
 | `--record-file` | `latest_train_records.json` | Train records pointer |
 | `--output-dir` | `output/ensemble` | Output directory bounds |
 | `--no-backtest` | false | Skip backtesting execution |
@@ -81,6 +81,8 @@ output/manifests/ensemble_fusion/<run_id>.json
 ```
 
 The manifest records the `run_id`, plan fingerprint, input config fingerprints, resolved combos, execution status, and result summary. `data/operator_log.jsonl` links the same run with `run_id`, `manifest_path`, and `plan_fingerprint`. Use `--no-manifest` when you need the old no-manifest side-effect profile.
+
+Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. The core fusion, backtest, chart, and recorder-writing functions remain in the script for behavioral compatibility.
 
 ## Multi-Combo Configurations
 
@@ -220,7 +222,7 @@ Leverages rolling 60-day window assessments targeting TopK position Sharpe Ratio
 
 ```text
 Stage 0: Initialize Qlib + Parse Configuration
-Stage 1: Load selected predictions + Z-Score normalization (Shared across combos)
+Stage 1: Load selected predictions + cross-sectional normalization (default: `rank`, shared across combos)
 --- Iterated per combo ---
 Stage 2: Correlation Analysis (Confined to combo models)
 Stage 3: Compute Weights
@@ -270,9 +272,9 @@ output/
 > [!NOTE]
 > **Understanding Metric Discrepancies: Single Models vs. Ensemble Backtests**
 >
-> When evaluating model performance within fusion and brute-force architectures, strict **Z-Score Normalization** and **Data Alignment** processing govern the engine. Therefore, because of TopK position bounding, backtest results of a single model here may exhibit reasonable, micro-level disparities from the raw metrics evaluated naturally post-training (e.g. via `run_analysis.py`):
-> 1. **Isolated Normalization**: Each model calculates its daily cross-sectional Z-scores purely on its *own* non-null predicted universe. Scaling remains mathematically uniform, and a single model's signal scale cannot be skewed by other models' data coverage gaps prior to scoring.
-> 2. **Delayed Intersection**: Strict intersection dropping (`dropna(how='any')`) is executed strictly at the exact combo scoring phase and is limited precisely to the subset of models within that specific combo iteration. This guarantees irrelevant sub-models don't unilaterally shrink the evaluated combination universe.
+> Fusion and brute-force evaluation first apply daily cross-sectional normalization and coverage alignment. The default `--norm-method rank` uses percentile ranks and fills uncovered stocks with neutral `0.5`; explicit `--norm-method zscore` keeps the older Z-Score/intersection semantics. Because normalization, coverage handling, and TopK position bounding differ from raw post-training analysis, single-model backtest results here may reasonably differ slightly from raw metrics viewed through `run_analysis.py`:
+> 1. **Isolated Normalization**: Each model is normalized within its own daily prediction universe, so another model's coverage gaps do not skew its score distribution before fusion.
+> 2. **Coverage Alignment**: `rank` mode uses the union of model coverages and treats missing coverage as neutral abstention (`0.5`); `zscore` mode keeps NaNs and drops to the current combo intersection at scoring time (`dropna(how='any')`).
 > 3. **Benchmarking Alignment**: The sub-model evaluation leaderboard dynamically slices historical records to match the precise temporal boundaries established by the current ensemble matrix index. This constructs a perfect "apples-to-apples" comparison avoiding overlapping timeframe distortion.
 
 ## Typical Operations Sequence

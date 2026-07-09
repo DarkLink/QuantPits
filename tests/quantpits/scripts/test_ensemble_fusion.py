@@ -330,29 +330,21 @@ def test_save_predictions(mock_env, tmp_path):
     config_file = out_dir / "ensemble_fusion_config_2020-01-01.json"
     assert config_file.exists()
 
-@patch("builtins.open")
-@patch("os.path.exists")
-def test_load_config(mock_exists, mock_open):
-    import quantpits.scripts.ensemble_fusion as ef
-    
-    mock_exists.return_value = True
-    
-    with patch("quantpits.utils.config_loader.load_workspace_config") as mock_load_workspace:
-        mock_load_workspace.return_value = {"model": "config"}
-        
-        with patch("quantpits.scripts.ensemble_fusion.json.load") as mock_json_load:
-            mock_json_load.side_effect = [
-                {"train": "record"},
-                {"ensemble": "config"}
-            ]
-            
-            tr, mc, ec = ef.load_config("dummy.json")
-            
-            assert tr == {"train": "record"}
-            assert mc == {"model": "config"}
-            assert ec == {"ensemble": "config"}
-            assert mock_json_load.call_count == 2
-            mock_load_workspace.assert_called_once()
+def test_load_config(mock_env):
+    ef, workspace = mock_env
+
+    (workspace / "dummy.json").write_text(json.dumps({"train": "record"}), encoding="utf-8")
+    (workspace / "config" / "model_config.json").write_text(json.dumps({"freq": "week"}), encoding="utf-8")
+    (workspace / "config" / "ensemble_config.json").write_text(
+        json.dumps({"ensemble": "config"}),
+        encoding="utf-8",
+    )
+
+    tr, mc, ec = ef.load_config("dummy.json")
+
+    assert tr == {"train": "record"}
+    assert mc["freq"] == "week"
+    assert ec == {"ensemble": "config"}
 
 def test_filter_norm_df_by_args():
     import quantpits.scripts.ensemble_fusion as ef
