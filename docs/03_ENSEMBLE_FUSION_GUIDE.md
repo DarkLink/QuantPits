@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 清单记录 `run_id`、plan fingerprint、输入配置 fingerprint、resolved combos、执行状态和结果摘要，并会通过 `data/operator_log.jsonl` 关联 `run_id`、`manifest_path` 和 `plan_fingerprint`。如果需要保持旧的无 manifest 副作用，可加 `--no-manifest`。
 
-实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。核心融合、回测、图表和 recorder 写入函数仍保留在脚本中，以保持既有行为兼容。
+实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。预测持久化与融合运行 ledger 写入分别由 `quantpits/ensemble/persistence.py` 和 `quantpits/ensemble/ledger.py` 负责，脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口；核心融合、回测和图表逻辑仍保留在脚本中。
 
 ## 多组合配置
 
@@ -265,6 +265,8 @@ Stage 8: 可视化 (可跳过)
 ```
 
 ## 输出文件
+
+真实执行还会更新 workspace 状态文件：`config/ensemble_records.json` 保存 combo → recorder_id 映射与 default 指针；完成回测后会向 `data/fusion_run_ledger.jsonl` 追加一条融合运行记录，供后续深度分析读取。Dry-run (`--explain-plan` / `--json-plan`) 不会写这些文件。
 
 ### 单组合模式（`--models` 或 `--from-config`）
 

@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 The manifest records the `run_id`, plan fingerprint, input config fingerprints, resolved combos, execution status, and result summary. `data/operator_log.jsonl` links the same run with `run_id`, `manifest_path`, and `plan_fingerprint`. Use `--no-manifest` when you need the old no-manifest side-effect profile.
 
-Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. Importing the script no longer changes the process `cwd`; during real execution, the service resolves relative paths such as `--output-dir` and `--prediction-dir` under the active workspace root. The core fusion, backtest, chart, and recorder-writing functions remain in the script for behavioral compatibility.
+Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. Importing the script no longer changes the process `cwd`; during real execution, the service resolves relative paths such as `--output-dir` and `--prediction-dir` under the active workspace root. Prediction persistence and fusion ledger writes live in `quantpits/ensemble/persistence.py` and `quantpits/ensemble/ledger.py`; the script keeps thin same-name wrappers for existing patch/import compatibility. Core fusion, backtest, and chart logic remain in the script.
 
 ## Multi-Combo Configurations
 
@@ -236,6 +236,8 @@ Cross-combo Comparison Table + Merged Net Value Crossover Plot
 ```
 
 ## Output Artifacts
+
+Actual execution also updates workspace state files: `config/ensemble_records.json` stores combo → recorder_id mappings and the default pointer, while completed backtests append one record to `data/fusion_run_ledger.jsonl` for downstream deep analysis. Dry-runs (`--explain-plan` / `--json-plan`) do not write these files.
 
 ### Single Combo Mode (`--models` or `--from-config`)
 

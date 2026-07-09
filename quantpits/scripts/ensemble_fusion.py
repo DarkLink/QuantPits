@@ -53,7 +53,6 @@ import os
 import sys
 import json
 import argparse
-from datetime import datetime
 from pathlib import Path
 
 from quantpits.utils import env
@@ -282,53 +281,38 @@ def append_to_fusion_ledger(
         loo_contributions: LOO 贡献度 {model_name: {delta, loo_ic, full_ic}}
         cli_args:       sys.argv[1:]
     """
-    ledger_path = os.path.join(workspace_root, 'data', 'fusion_run_ledger.jsonl')
-    os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+    from quantpits.ensemble.ledger import FusionLedgerEntry, append_fusion_ledger
 
-    # 判断是否为 OOS 模式
-    oos_last_years = eval_window.get('only_last_years', 0)
-    oos_last_months = eval_window.get('only_last_months', 0)
-    is_oos = (oos_last_years > 0 or oos_last_months > 0)
-
-    record = {
-        'run_date': run_date,
-        'combo_name': combo_name or 'default',
-        'models': models,
-        'method': method,
-        'is_default': is_default,
-        'eval_window': {
-            'start': eval_window.get('start'),
-            'end': eval_window.get('end'),
-            'is_oos': is_oos,
-            'only_last_years': oos_last_years,
-            'only_last_months': oos_last_months,
-        },
-        'metrics': metrics,
-        'sub_model_metrics': sub_model_metrics or {},
-        'loo_contributions': loo_contributions or {},
-        'source': 'ensemble_fusion',
-        'cli_args': ' '.join(cli_args) if cli_args else None,
-    }
-
-    with open(ledger_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps(record, ensure_ascii=False, default=str) + '\n')
-
-    print(f"\n[Ledger] 已追加本次融合结果 (combo={combo_name or 'default'}, "
-          f"oos={is_oos}) → {ledger_path}")
+    append_fusion_ledger(
+        workspace_root,
+        FusionLedgerEntry(
+            run_date=run_date,
+            combo_name=combo_name,
+            models=tuple(models),
+            method=method,
+            is_default=is_default,
+            eval_window=eval_window,
+            metrics=metrics,
+            sub_model_metrics=sub_model_metrics or {},
+            loo_contributions=loo_contributions or {},
+            cli_args=tuple(cli_args or ()),
+        ),
+    )
 
 
 # ============================================================================
 # Stage 5: 保存预测结果
 # ============================================================================
 def _workspace_root_path(workspace_root=None) -> Path:
-    if workspace_root is None:
-        return env.get_workspace_context().root
-    return Path(workspace_root).expanduser().resolve()
+    from quantpits.ensemble.persistence import workspace_root_path
+
+    return workspace_root_path(workspace_root)
 
 
 def _workspace_bound_path(workspace_root: Path, path_value) -> Path:
-    candidate = Path(path_value)
-    return candidate if candidate.is_absolute() else workspace_root / candidate
+    from quantpits.ensemble.persistence import workspace_bound_path
+
+    return workspace_bound_path(workspace_root, path_value)
 
 
 def save_predictions(final_score, anchor_date, experiment_name, method,
@@ -338,86 +322,30 @@ def save_predictions(final_score, anchor_date, experiment_name, method,
     """
     保存融合预测和配置。
     """
-    from quantpits.utils.predict_utils import save_predictions_to_recorder
-    ensemble_df = final_score.to_frame('score')
-
-    combo_display = combo_name if combo_name else "ensemble_raw"
-    record_id = save_predictions_to_recorder(
-        pred=ensemble_df,
-        experiment_name="Ensemble_Fusion",
-        model_name=combo_display,
-        tags={
-            "anchor_date": anchor_date,
-            "weight_mode": method,
-            "combo_name": combo_display
-        }
+    from quantpits.ensemble.persistence import (
+        PredictionSaveRequest,
+        save_ensemble_predictions,
     )
-    print(f"\nEnsemble 预测已保存至 Recorder: {record_id} (Experiment: Ensemble_Fusion)")
 
-    # 更新 ensemble_records.json
-    workspace_root_path = _workspace_root_path(workspace_root)
-    records_file = workspace_root_path / "config" / "ensemble_records.json"
-    records_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    ensemble_records = {}
-    if records_file.exists():
-        with records_file.open("r", encoding="utf-8") as f:
-            ensemble_records = json.load(f)
-            
-    ensemble_records.setdefault("combos", {})
-    ensemble_records["combos"][combo_display] = record_id
-    if is_default:
-        ensemble_records["default_combo"] = combo_display
-        ensemble_records["default_record_id"] = record_id
-        
-    with records_file.open("w", encoding="utf-8") as f:
-        json.dump(ensemble_records, f, indent=4)
-
-    # 可选保存 CSV
-    pred_file = None
-    if save_csv:
-        pred_dir = _workspace_bound_path(
-            workspace_root_path,
-            prediction_dir or os.path.join("output", "predictions"),
+    result = save_ensemble_predictions(
+        PredictionSaveRequest(
+            final_score=final_score,
+            anchor_date=anchor_date,
+            experiment_name=experiment_name,
+            method=method,
+            model_names=tuple(model_names),
+            model_metrics=model_metrics,
+            static_weights=static_weights,
+            is_dynamic=is_dynamic,
+            output_dir=output_dir,
+            combo_name=combo_name,
+            is_default=is_default,
+            prediction_dir=prediction_dir,
+            save_csv=save_csv,
+            workspace_root=workspace_root,
         )
-        pred_dir.mkdir(parents=True, exist_ok=True)
-        if combo_name:
-            pred_file = pred_dir / f"ensemble_{combo_name}_{anchor_date}.csv"
-        else:
-            pred_file = pred_dir / f"ensemble_{anchor_date}.csv"
-
-        ensemble_df.to_csv(pred_file)
-        print(f"Ensemble CSV 已额外保存: {pred_file}")
-        
-        if combo_name and is_default:
-            compat_file = pred_dir / f"ensemble_{anchor_date}.csv"
-            ensemble_df.to_csv(compat_file)
-
-    # 保存配置
-    output_dir_path = _workspace_bound_path(workspace_root_path, output_dir)
-    output_dir_path.mkdir(parents=True, exist_ok=True)
-    config_out = {
-        'recorder_id': record_id,
-        'anchor_date': anchor_date,
-        'experiment_name': experiment_name,
-        'weight_mode': method,
-        'models_used': model_names,
-        'model_metrics': {m: round(v, 4) for m, v in model_metrics.items()},
-        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
-    if combo_name:
-        config_out['combo_name'] = combo_name
-        config_out['is_default'] = is_default
-    if not is_dynamic and static_weights:
-        config_out['static_weights'] = {m: round(w, 4) for m, w in static_weights.items()}
-
-    suffix = f"_{combo_name}" if combo_name else ""
-    config_file = output_dir_path / f"ensemble_fusion_config{suffix}_{anchor_date}.json"
-    with config_file.open("w", encoding="utf-8") as f:
-        json.dump(config_out, f, indent=4, ensure_ascii=False)
-    print(f"Config 已保存: {config_file}")
-
-    return str(pred_file) if pred_file else record_id
+    )
+    return result.returned_ref
 
 
 # ============================================================================

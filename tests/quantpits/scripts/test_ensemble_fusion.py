@@ -557,7 +557,7 @@ def test_main_combo_specified(mock_run_combo, mock_load_pred, mock_load_cfg, moc
 @patch('quantpits.scripts.ensemble_fusion.run_backtest')
 @patch('quantpits.scripts.ensemble_fusion.risk_analysis_and_leaderboard')
 @patch('quantpits.scripts.ensemble_fusion.generate_charts')
-def test_run_single_combo_pipeline(mock_charts, mock_risk, mock_bt, mock_save, mock_signal, mock_weights, mock_corr, mock_env):
+def test_run_single_combo_pipeline(mock_charts, mock_risk, mock_bt, mock_save, mock_signal, mock_weights, mock_corr, mock_env, tmp_path):
     ef, workspace = mock_env
     
     norm_df = pd.DataFrame({"m1": [0.5]}, index=pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"), "A")]))
@@ -568,7 +568,7 @@ def test_run_single_combo_pipeline(mock_charts, mock_risk, mock_bt, mock_save, m
     mock_risk.return_value = ({"Ensemble": pd.DataFrame()}, pd.DataFrame())
     
     args = MagicMock()
-    args.output_dir = "out"
+    args.output_dir = str(tmp_path / "out")
     args.no_backtest = False
     args.no_charts = False
     args.freq = "day"
@@ -597,7 +597,7 @@ def test_run_single_combo_pipeline(mock_charts, mock_risk, mock_bt, mock_save, m
 @patch('quantpits.scripts.ensemble_fusion.run_backtest')
 @patch('quantpits.scripts.ensemble_fusion.risk_analysis_and_leaderboard')
 @patch('quantpits.scripts.ensemble_fusion.generate_charts')
-def test_run_single_combo_empty_and_detailed(mock_charts, mock_risk, mock_bt, mock_save, mock_signal, mock_weights, mock_corr, mock_detailed, mock_env):
+def test_run_single_combo_empty_and_detailed(mock_charts, mock_risk, mock_bt, mock_save, mock_signal, mock_weights, mock_corr, mock_detailed, mock_env, tmp_path):
     ef, workspace = mock_env
     # Empty models
     res_empty = ef.run_single_combo("c2", [], "equal", None, None, {}, [], {}, {}, {}, "2020-01-01", "exp", MagicMock())
@@ -609,7 +609,7 @@ def test_run_single_combo_empty_and_detailed(mock_charts, mock_risk, mock_bt, mo
     mock_bt.return_value = (pd.DataFrame({"account": [100]}), MagicMock())
     mock_risk.return_value = ({"Ensemble": pd.DataFrame()}, pd.DataFrame())
     args = MagicMock()
-    args.output_dir = "out"
+    args.output_dir = str(tmp_path / "out")
     args.no_backtest = False
     args.no_charts = False
     args.freq = "day"

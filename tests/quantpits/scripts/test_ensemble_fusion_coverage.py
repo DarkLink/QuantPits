@@ -102,7 +102,7 @@ def test_run_backtest_null_report(ef_cov_env):
                for call in mock_print.call_args_list for c in call[0])
 
 
-def test_risk_analysis_submodel_no_record_id(ef_cov_env):
+def test_risk_analysis_submodel_no_record_id(ef_cov_env, tmp_path):
     """Line 631: model has None/empty record_id → continue (skip)."""
     ef, workspace = ef_cov_env
 
@@ -135,14 +135,14 @@ def test_risk_analysis_submodel_no_record_id(ef_cov_env):
                 with patch("builtins.print"):
                     reports, lb = ef.risk_analysis_and_leaderboard(
                         report_df, norm_df, train_records,
-                        ["M1", "M2"], "day", "out", "2020-01-01"
+                        ["M1", "M2"], "day", str(tmp_path / "out"), "2020-01-01"
                     )
 
     # M1 should be skipped (record_id=None), M2 should be processed
     assert "M2" in reports
 
 
-def test_risk_analysis_fallback_display_all_cols(ef_cov_env):
+def test_risk_analysis_fallback_display_all_cols(ef_cov_env, tmp_path):
     """Line 693: none of the standard display cols present → print all."""
     ef, workspace = ef_cov_env
 
@@ -182,7 +182,7 @@ def test_risk_analysis_fallback_display_all_cols(ef_cov_env):
                 with patch("builtins.print"):
                     reports, lb = ef.risk_analysis_and_leaderboard(
                         report_df, norm_df, train_records,
-                        ["M1"], "day", "out", "2020-01-01"
+                        ["M1"], "day", str(tmp_path / "out"), "2020-01-01"
                     )
 
     # Should not crash, leaderboard should be returned
