@@ -38,6 +38,12 @@ python quantpits/scripts/order_gen.py --verbose
 
 The script loads unified workspace parameters implicitly leveraging `config_loader` (which aggregates `prod_config.json`, `model_config.json`, and `strategy_config.yaml`). Below are the vital operative boundaries steering execution logic:
 
+Before running it, use the read-only validator to catch config issues early:
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only
+```
+
 - **market**: (Recommended) Target operational universe (e.g., `csi300`, `csi1000`). Customarily bounded centrally inside `model_config.json`. If omitted, the architecture auto-infers data scopes utilizing target prediction limits.
 - **benchmark**: (Recommended) Index metric boundaries (e.g., `SH000300`, `SH000852`). Built into `model_config.json`.
 - **current_cash**: Current liquid balance limits defining order sizes. Systematically maintained via Post-Trade executing upon `prod_config.json`.

@@ -15,8 +15,9 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 **How to use workspaces?**
 1. Create a new workspace: Use `python quantpits/tools/init_workspace.py --source workspaces/A --target workspaces/B` for quick scaffolding.
 2. Activate a workspace: Enter the system directory and run `source workspaces/<Your_Workspace>/run_env.sh` to set `QLIB_WORKSPACE_DIR`.
-3. (Optional) Custom data source: Uncomment `QLIB_DATA_DIR` / `QLIB_REGION` in `run_env.sh` to point the workspace at a different Qlib data directory (defaults to `~/.qlib/qlib_data/cn_data` and `cn`).
-4. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace, and `env.init_qlib()` will initialize Qlib with the configured data path.
+3. Validate configs before running: `python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only` performs a read-only check of core workspace configs and reports normalized fingerprints plus warnings/errors.
+4. (Optional) Custom data source: Uncomment `QLIB_DATA_DIR` / `QLIB_REGION` in `run_env.sh` to point the workspace at a different Qlib data directory (defaults to `~/.qlib/qlib_data/cn_data` and `cn`).
+5. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace, and `env.init_qlib()` will initialize Qlib with the configured data path.
    > [!IMPORTANT]
    > **Initialization order**: Core scripts should import `env` before resolving workspace-scoped paths. This ensures `ROOT_DIR` is recognized, `MLFLOW_TRACKING_URI` points to the active workspace's MLflow backend (SQLite `mlflow.db` by default; legacy `mlruns/` file stores are auto-detected), and Qlib can be initialized through `env.init_qlib()`. To customize the backend, set `MLFLOW_TRACKING_URI` in `run_env.sh`.
    >
@@ -564,6 +565,7 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `train_utils.py` | Date calculus, YAML injection, model registry, record merging, history backups | Training, Prediction |
 | `predict_utils.py` | Prediction data load/save, Recorder management | Prediction, Fusion, Ensemble Search |
 | `config_loader.py` | Workspace-level config loading | Global |
+| `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
 | `backtest_utils.py` | Qlib backtest execution and evaluation | Ensemble Search, Fusion, Analysis |
 | `env.py` | Qlib initialization, workspace management, `set_root_dir()` runtime switching | Global |
@@ -574,6 +576,20 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `run_context.py` | Encapsulates per-run output directory management and IS/OOS stratifications | Ensemble Search, Analysis |
 | `fusion_engine.py` | Weight calculation (equal/icir/manual/dynamic), signal fusion | Fusion |
 | `backtest_report.py` | Detailed backtest analysis reports (using PortfolioAnalyzer) | Fusion |
+
+### Workspace Config Validation
+
+| Script | Purpose |
+|------|------|
+| `validate_workspace.py` | Read-only validation for core workspace configs with structured warnings/errors and normalized fingerprints |
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --json
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --strict
+```
+
+The command does not write to the workspace. JSON output includes paths, summaries, and fingerprints only; it does not include full raw configs, holding details, or cash details.
 
 ### ⑧ File Archiving Tool
 

@@ -28,8 +28,10 @@ QuantPits/
 │   │   ├── train_utils.py            # 日期计算、YAML 注入、模型注册表、记录合并
 │   │   ├── predict_utils.py          # 预测数据加载/保存
 │   │   ├── config_loader.py          # Workspace 级配置加载
+│   │   ├── workspace.py              # 显式 WorkspaceContext 与 fingerprint helper
 │   │   ├── strategy.py               # 策略配置/回测策略构建
 │   │   └── ...                       # 更多共享模块（详见系统总览）
+│   ├── config_contracts/              # Workspace 配置校验、normalize、fingerprint
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # 本文档
 │

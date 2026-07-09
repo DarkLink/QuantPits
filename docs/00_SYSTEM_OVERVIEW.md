@@ -15,8 +15,9 @@
 **如何使用工作区？**
 1. 创建新工作区：使用 `python quantpits/tools/init_workspace.py --source workspaces/A --target workspaces/B` 快速搭建。
 2. 激活工作区：进入系统目录，`source workspaces/<你的工作区>/run_env.sh` 设置 `QLIB_WORKSPACE_DIR`。
-3. (可选) 自定义数据源：在 `run_env.sh` 中取消注释 `QLIB_DATA_DIR` / `QLIB_REGION`，即可为该工作区指向不同的 Qlib 数据目录（默认 `~/.qlib/qlib_data/cn_data`、`cn`）。
-4. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
+3. 运行前校验配置：`python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only` 会只读检查核心 workspace 配置、输出 normalized fingerprint 和 warning/error。
+4. (可选) 自定义数据源：在 `run_env.sh` 中取消注释 `QLIB_DATA_DIR` / `QLIB_REGION`，即可为该工作区指向不同的 Qlib 数据目录（默认 `~/.qlib/qlib_data/cn_data`、`cn`）。
+5. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
    > [!IMPORTANT]
    > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 MLflow 数据库（新工作区默认 `mlflow.db` / SQLite；含历史 `mlruns/` 数据的旧工作区自动回退到 `file://` 并设置 `MLFLOW_ALLOW_FILE_STORE=true`），并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径。如需使用自定义后端，在 `run_env.sh` 中设置 `MLFLOW_TRACKING_URI` 即可，`env.py` 会优先使用该值。
    >
@@ -567,6 +568,7 @@ python -m quantpits.scripts.static_train --all-enabled
 | `train_utils.py` | 日期计算、YAML 注入、模型注册表、记录合并、历史备份 | 训练、预测 |
 | `predict_utils.py` | 预测数据加载/保存、Recorder 管理 | 预测、融合、穷举 |
 | `config_loader.py` | Workspace 级配置加载 | 全局 |
+| `config_contracts/` | Workspace 配置校验、normalize、fingerprint，供运行前检查和后续 plan/manifest 复用 | 全局 |
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
 | `backtest_utils.py` | Qlib 回测执行与评估 | 穷举、融合、分析 |
 | `env.py` | Qlib 初始化、工作目录管理、`set_root_dir()` 运行时工作区切换 | 全局 |
@@ -577,6 +579,20 @@ python -m quantpits.scripts.static_train --all-enabled
 | `run_context.py` | 每次运行的输出路径管理，封装 IS/OOS 子目录结构 | 组合搜索、组合分析 |
 | `fusion_engine.py` | 权重计算 (equal/icir/manual/dynamic)、信号融合 | 融合 |
 | `backtest_report.py` | 详尽回测分析报告生成 (复用 PortfolioAnalyzer) | 融合 |
+
+### Workspace 配置校验
+
+| 脚本 | 用途 |
+|------|------|
+| `validate_workspace.py` | 只读校验 workspace 核心配置，输出结构化 warnings/errors 与 normalized fingerprints |
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --json
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --strict
+```
+
+该命令不会写入 workspace。JSON 输出只包含路径、summary 和 fingerprint，不包含完整原始配置、持仓明细或现金明细。
 
 ### ⑧ 文件归档工具
 

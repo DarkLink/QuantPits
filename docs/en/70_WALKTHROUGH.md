@@ -136,6 +136,14 @@ source workspaces/Demo_Workspace/run_env.sh
 
 Output: `Workspace activated: .../Demo_Workspace` confirms successful activation.
 
+Before running a pipeline, you can perform a read-only config validation:
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only
+```
+
+The command only reads workspace configs and reports warnings/errors plus normalized fingerprints; it does not write files.
+
 **Note for Windows:** If this is your first time running a `.ps1` script, PowerShell may block execution. You need to run PowerShell as **Administrator** and execute:
 ```powershell
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
@@ -161,6 +169,10 @@ source workspaces/MyWorkspace/run_env.sh
 
 # For Windows
 . ./workspaces/MyWorkspace/run_env.ps1
+```
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/MyWorkspace --read-only
 ```
 
 ### 3.4 Workspace Directory Structure

@@ -38,6 +38,12 @@ python quantpits/scripts/order_gen.py --verbose
 
 脚本运行会通过 `config_loader` 统一合并工作区配置（包含 `prod_config.json`, `model_config.json`, `strategy_config.yaml`）。以下是影响脚本的核心逻辑字段：
 
+运行前可使用只读校验命令提前检查这些配置：
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only
+```
+
 - **market**: (推荐) 交易市场界定（如 `csi300`, `csi1000`）。通常在 `model_config.json` 定义。若缺失，脚本会从预测文件中自动推断，但建议显式指定。
 - **benchmark**: (推荐) 交易基准（如 `SH000300`, `SH000852`）。通常在 `model_config.json` 定义。
 - **current_cash**: 当前可用现金余额。由 Post-Trade 脚本自动更新维护在 `prod_config.json` 中。

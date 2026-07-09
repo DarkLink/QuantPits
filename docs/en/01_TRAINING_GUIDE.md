@@ -28,8 +28,10 @@ QuantPits/
 │   │   ├── train_utils.py            # Date calculus, YAML injection, model registry, record merging
 │   │   ├── predict_utils.py          # Prediction data load/save
 │   │   ├── config_loader.py          # Workspace-level config loading
+│   │   ├── workspace.py              # Explicit WorkspaceContext and fingerprint helpers
 │   │   ├── strategy.py               # Strategy config / backtest strategy construction
 │   │   └── ...                       # More shared modules (see System Overview)
+│   ├── config_contracts/              # Workspace config validation, normalization, fingerprints
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # This document
 │

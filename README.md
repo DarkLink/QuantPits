@@ -90,6 +90,12 @@ cd QuantPits/
 source workspaces/Demo_Workspace/run_env.sh
 ```
 
+Optionally validate the workspace configs before running a pipeline:
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only
+```
+
 ### 4. Run the Pipeline
 
 Once activated, you can execute the minimal routine loop using the quantpits scripts (or you can simply run `make run-daily-pipeline` from the repository root):

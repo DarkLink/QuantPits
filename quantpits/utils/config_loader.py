@@ -3,6 +3,7 @@ import json
 import yaml
 from pathlib import Path
 from quantpits.utils.constants import MONTHS_PER_YEAR
+from quantpits.utils.workspace import WorkspaceContext
 
 def load_workspace_config(workspace_path):
     """
@@ -63,6 +64,38 @@ def load_workspace_config(workspace_path):
     # If market/benchmark exist in both, we prefer model_config but can log warnings if they mismatch
     
     return config
+
+def load_workspace_config_artifacts(workspace_path):
+    """Validate workspace configs and return structured validation artifacts.
+
+    This helper is read-only and does not change the legacy
+    ``load_workspace_config`` behavior.
+    """
+    from quantpits.config_contracts.workspace import validate_workspace
+
+    ctx = WorkspaceContext.from_root(workspace_path)
+    return validate_workspace(ctx)
+
+def load_workspace_config_with_metadata(workspace_path):
+    """Load the legacy merged config plus validation/fingerprint metadata."""
+    config = load_workspace_config(workspace_path)
+    result = load_workspace_config_artifacts(workspace_path)
+    metadata = {
+        "workspace": result.workspace.as_posix(),
+        "ok": result.ok,
+        "artifacts": [
+            artifact.to_public_dict(workspace=result.workspace)
+            for artifact in result.artifacts
+        ],
+        "fingerprints": {
+            artifact.name: artifact.fingerprint
+            for artifact in result.artifacts
+            if artifact.fingerprint
+        },
+        "warnings": [message.to_dict() for message in result.warnings],
+        "errors": [message.to_dict() for message in result.errors],
+    }
+    return config, metadata
 
 def _validate_cpcv_params(train_years, n_groups, purge_steps, embargo_steps, freq):
     """Fail-Fast: reject catastrophically bad CPCV params at config load time.

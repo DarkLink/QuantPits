@@ -135,6 +135,14 @@ source workspaces/Demo_Workspace/run_env.sh
 
 输出 `Workspace activated: .../Demo_Workspace` 表示激活成功。
 
+运行 pipeline 前可先做只读配置校验：
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only
+```
+
+该命令只读取 workspace 配置，输出 warnings/errors 与 normalized fingerprints，不会写入任何文件。
+
 **特别提醒：**在 Windows 上，如果你要让 PowerShell 执行 .ps1 脚本，如果这是你第一次运行脚本，PowerShell 可能会报“禁止执行脚本”的错误。此时你需要以**管理员身份**运行 PowerShell，并输入：
 ```bash
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
@@ -159,7 +167,11 @@ python quantpits/tools/init_workspace.py \
 source workspaces/MyWorkspace/run_env.sh
 
 # For Windows
-. ./workspaces/Demo_Workspace/run_env.ps1
+. ./workspaces/MyWorkspace/run_env.ps1
+```
+
+```bash
+python -m quantpits.tools.validate_workspace --workspace workspaces/MyWorkspace --read-only
 ```
 
 ### 3.4 工作区目录结构
