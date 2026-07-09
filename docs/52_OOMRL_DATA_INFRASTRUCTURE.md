@@ -1,6 +1,6 @@
-# OOM-RL 数据基础设施 — Phase 1 & 2
+# OOM-RL 数据基础设施 — Phase 1, 2 & Runtime Linkage
 
-本文档说明 OOM-RL 系统自动收集的结构化数据，以及 Phase 2 对各 Agent 的增强。
+本文档说明 OOM-RL 系统自动收集的结构化数据、Phase 2 对各 Agent 的增强，以及 runtime plan/manifest 与操作日志的兼容关联字段。
 
 ---
 
@@ -24,6 +24,9 @@
     "tags": [],
     "notes": "",
     "action_item_id": null,
+    "run_id": null,
+    "manifest_path": null,
+    "plan_fingerprint": null,
     "result_summary": {"anchor_date": "2026-04-24", "n_models": 20},
     "exception": null
 }
@@ -41,6 +44,18 @@
 
 支持 `["test"]` / `["experiment"]` 标签。带 `test` 标签的记录在后续分析中可被过滤。
 
+### runtime manifest 关联字段
+
+`OperatorLog` 向后兼容地新增了 3 个可选字段，供后续命令接入 `quantpits.runtime.RunManifest` 时使用：
+
+| 字段 | 含义 |
+|------|------|
+| `run_id` | 本次命令运行的稳定运行 ID |
+| `manifest_path` | 对应 `RunManifest` 的 workspace-relative 路径，例如 `output/manifests/{command}/{run_id}.json` |
+| `plan_fingerprint` | dry-run plan / public plan dict 的稳定指纹 |
+
+旧脚本无需修改；未设置时字段为 `null`。这些字段只记录标识、路径和指纹，不包含原始配置内容。
+
 ### 使用方式
 
 ```python
@@ -51,6 +66,18 @@ with OperatorLog("static_train", args=sys.argv[1:]) as oplog:
     oplog.set_action_item_id("55b3a485-dfc0-4e6e-bdb3-e843ab4f5905")
     # ... 脚本主逻辑 ...
     oplog.set_result({"n_models": 20, "anchor_date": "2026-04-24"})
+```
+
+未来命令接入 run manifest 后，可以关联运行清单：
+
+```python
+with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
+    oplog.set_run_manifest(
+        run_id=run_id,
+        manifest_path=f"output/manifests/ensemble_fusion/{run_id}.json",
+    )
+    oplog.set_plan_fingerprint(plan_fingerprint)
+    # ... 脚本主逻辑 ...
 ```
 
 ---

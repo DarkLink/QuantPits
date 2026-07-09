@@ -69,7 +69,7 @@ Specify the manifest configuration file using `--agent-manifest` and select the 
 
 ```bash
 # Enter the quantitative system root directory
-cd /path/to/QuantPits_Release
+cd <repo-root>
 
 # Execute deep analysis
 python quantpits/scripts/run_deep_analysis.py \

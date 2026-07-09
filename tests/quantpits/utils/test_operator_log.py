@@ -35,6 +35,9 @@ def test_operator_log_success(mock_root_dir):
         assert 'duration_seconds' in entry
         assert 'timestamp_start' in entry
         assert 'timestamp_end' in entry
+        assert entry['run_id'] is None
+        assert entry['manifest_path'] is None
+        assert entry['plan_fingerprint'] is None
 
 def test_operator_log_exception(mock_root_dir):
     script_name = "fail_script"
@@ -77,3 +80,19 @@ def test_operator_log_silent_failure(mock_root_dir):
     
     log_file = mock_root_dir / "data" / "operator_log.jsonl"
     assert not log_file.exists()
+
+
+def test_operator_log_records_manifest_linkage(mock_root_dir):
+    with OperatorLog("ensemble_fusion", run_id="run-1") as oplog:
+        oplog.set_run_manifest(
+            run_id="run-1",
+            manifest_path="output/manifests/ensemble_fusion/run-1.json",
+        )
+        oplog.set_plan_fingerprint("abc123")
+
+    log_file = mock_root_dir / "data" / "operator_log.jsonl"
+    entry = json.loads(log_file.read_text())
+
+    assert entry["run_id"] == "run-1"
+    assert entry["manifest_path"] == "output/manifests/ensemble_fusion/run-1.json"
+    assert entry["plan_fingerprint"] == "abc123"

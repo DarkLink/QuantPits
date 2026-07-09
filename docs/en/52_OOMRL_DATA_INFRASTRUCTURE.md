@@ -1,7 +1,8 @@
-# OOM-RL Data Infrastructure — Phases 1 & 2
+# OOM-RL Data Infrastructure — Phases 1, 2 & Runtime Linkage
 
 Documents the structured data automatically collected by the OOM-RL system and
-the agent signal enhancements delivered in Phase 2.
+the agent signal enhancements delivered in Phase 2, plus compatible linkage
+fields between runtime plans/manifests and operation logs.
 
 ---
 
@@ -28,6 +29,9 @@ Each core script run automatically appends a JSONL record to
     "tags": [],
     "notes": "",
     "action_item_id": null,
+    "run_id": null,
+    "manifest_path": null,
+    "plan_fingerprint": null,
     "result_summary": {"anchor_date": "2026-04-24", "n_models": 20},
     "exception": null
 }
@@ -46,6 +50,21 @@ Each core script run automatically appends a JSONL record to
 Supports `["test"]` and `["experiment"]` tags. Records tagged `test` can be
 filtered out in downstream analysis.
 
+### Runtime Manifest Linkage Fields
+
+`OperatorLog` now has three backward-compatible optional fields for future
+commands that integrate with `quantpits.runtime.RunManifest`:
+
+| Field | Meaning |
+|-------|---------|
+| `run_id` | Stable run ID for this command execution |
+| `manifest_path` | Workspace-relative path to the matching `RunManifest`, for example `output/manifests/{command}/{run_id}.json` |
+| `plan_fingerprint` | Stable fingerprint of the dry-run plan / public plan dict |
+
+Existing scripts do not need to change. When unset, these fields are `null`.
+They record identifiers, paths, and fingerprints only; they do not include raw
+configuration content.
+
 ### Usage
 
 ```python
@@ -56,6 +75,19 @@ with OperatorLog("static_train", args=sys.argv[1:]) as oplog:
     oplog.set_action_item_id("55b3a485-dfc0-4e6e-bdb3-e843ab4f5905")
     # ... main script logic ...
     oplog.set_result({"n_models": 20, "anchor_date": "2026-04-24"})
+```
+
+Once a command writes a run manifest, it can link the audit entry to that
+manifest:
+
+```python
+with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
+    oplog.set_run_manifest(
+        run_id=run_id,
+        manifest_path=f"output/manifests/ensemble_fusion/{run_id}.json",
+    )
+    oplog.set_plan_fingerprint(plan_fingerprint)
+    # ... main script logic ...
 ```
 
 ---

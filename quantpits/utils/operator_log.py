@@ -10,9 +10,12 @@ class OperatorLog:
     记录核心脚本的每次运行到 data/operator_log.jsonl。
     格式: 一行一条 JSON，追加写入，永不覆盖。
     """
-    def __init__(self, script_name: str, args: list = None, 
+    def __init__(self, script_name: str, args: list = None,
                  tags: list = None, notes: str = "",
-                 log_file: str = None):
+                 log_file: str = None,
+                 run_id: str = None,
+                 manifest_path: str = None,
+                 plan_fingerprint: str = None):
         """
         script_name: 脚本名，如 "static_train", "brute_force_fast"
         args:        CLI 参数列表（不含脚本路径）
@@ -28,6 +31,9 @@ class OperatorLog:
         self.result_summary = {}
         self.source = "human"
         self.action_item_id = None
+        self.run_id = run_id
+        self.manifest_path = manifest_path
+        self.plan_fingerprint = plan_fingerprint
         # Resolve log_file lazily so module is importable without active workspace
         if log_file is not None:
             self.log_file = log_file
@@ -46,6 +52,15 @@ class OperatorLog:
     def set_action_item_id(self, action_item_id: str):
         """关联到触发此次运行的 ActionItem ID（LLM 操作时使用）"""
         self.action_item_id = action_item_id
+
+    def set_run_manifest(self, *, run_id: str, manifest_path: str):
+        """关联运行 manifest，路径建议使用 workspace-relative path。"""
+        self.run_id = run_id
+        self.manifest_path = manifest_path
+
+    def set_plan_fingerprint(self, fingerprint: str):
+        """记录 dry-run plan 的稳定指纹。"""
+        self.plan_fingerprint = fingerprint
 
     def __enter__(self) -> 'OperatorLog':
         """记录开始时间"""
@@ -78,6 +93,9 @@ class OperatorLog:
                 "tags": self.tags,
                 "notes": self.notes,
                 "action_item_id": self.action_item_id,
+                "run_id": self.run_id,
+                "manifest_path": self.manifest_path,
+                "plan_fingerprint": self.plan_fingerprint,
                 "result_summary": self.result_summary,
                 "exception": exception_info
             }

@@ -566,6 +566,7 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `predict_utils.py` | Prediction data load/save, Recorder management | Prediction, Fusion, Ensemble Search |
 | `config_loader.py` | Workspace-level config loading | Global |
 | `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
+| `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | Future heavy-command integrations |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
 | `backtest_utils.py` | Qlib backtest execution and evaluation | Ensemble Search, Fusion, Analysis |
 | `env.py` | Qlib initialization, workspace management, `set_root_dir()` runtime switching | Global |
@@ -590,6 +591,21 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 ```
 
 The command does not write to the workspace. JSON output includes paths, summaries, and fingerprints only; it does not include full raw configs, holding details, or cash details.
+
+### Runtime Plan / Manifest Infrastructure
+
+`quantpits/runtime/` provides shared runtime planning and run manifest primitives for future heavy-command integrations:
+
+| Module | Purpose |
+|------|------|
+| `command.py` | `CommandPlan`, `CommandResult`, input/output/state refs, and step descriptions |
+| `ids.py` | Stable-format `run_id` generation |
+| `render.py` | Human-readable dry-run plan rendering and public dict output |
+| `manifest.py` | `RunManifest`, `manifest_from_result()`, and `write_run_manifest()` |
+
+The default manifest path is `output/manifests/{command}/{run_id}.json`, and files are written only when the caller explicitly invokes `write_run_manifest()`. Manifest/public dict output records paths, summaries, fingerprints, records, and warnings; it does not include full raw configs. Existing production scripts do not change behavior just because these primitives exist.
+
+`OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, and `plan_fingerprint`, so future command integrations can link audit entries to concrete run manifests. When unset, these fields are `null`.
 
 ### ⑧ File Archiving Tool
 

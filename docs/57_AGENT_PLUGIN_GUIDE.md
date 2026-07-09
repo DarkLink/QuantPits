@@ -69,7 +69,7 @@ class WorkspaceLocalAgent(BaseAgent):
 
 ```bash
 # 进入量化系统根目录
-cd /path/to/QuantPits_Release
+cd <repo-root>
 
 # 执行深度分析
 python quantpits/scripts/run_deep_analysis.py \
