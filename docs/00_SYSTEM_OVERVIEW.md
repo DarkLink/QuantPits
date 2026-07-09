@@ -19,6 +19,8 @@
 4. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
    > [!IMPORTANT]
    > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 MLflow 数据库（新工作区默认 `mlflow.db` / SQLite；含历史 `mlruns/` 数据的旧工作区自动回退到 `file://` 并设置 `MLFLOW_ALLOW_FILE_STORE=true`），并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径。如需使用自定义后端，在 `run_env.sh` 中设置 `MLFLOW_TRACKING_URI` 即可，`env.py` 会优先使用该值。
+   >
+   > **运行时上下文**：新增代码优先通过 `env.get_workspace_context()` 获取显式的 `WorkspaceContext`，而不是直接复制 `env.ROOT_DIR` 或在 import 时派生路径常量。旧接口仍保持兼容，现有生产脚本无需立即迁移。
 
 ---
 
@@ -568,6 +570,7 @@ python -m quantpits.scripts.static_train --all-enabled
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
 | `backtest_utils.py` | Qlib 回测执行与评估 | 穷举、融合、分析 |
 | `env.py` | Qlib 初始化、工作目录管理、`set_root_dir()` 运行时工作区切换 | 全局 |
+| `workspace.py` | 显式 `WorkspaceContext`、workspace 路径 helper、稳定 fingerprint helper | 全局 |
 | `operator_log.py` | 操作审计日志：自动记录每次脚本运行 | 全局（7 个脚本已集成） |
 | `ensemble_utils.py` | Ensemble 配置解析、combo 管理、记录加载 | 融合、信号排名、订单生成 |
 | `search_utils.py` | 组合搜索共享逻辑：信号处理、回测核心、IS/OOS 切分、分组穷举 | 组合搜索(标准/快速)、最小熵搜索、组合分析 |

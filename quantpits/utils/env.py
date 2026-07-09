@@ -1,6 +1,9 @@
 import os
 import sys
 import time
+from pathlib import Path
+
+from quantpits.utils.workspace import WorkspaceContext
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -114,6 +117,30 @@ QLIB_REGION = os.environ.get("QLIB_REGION", "cn")
 
 
 _qlib_initialized = False
+
+
+def resolve_workspace_root(root_dir: str | Path | None = None) -> Path:
+    """Resolve a workspace root without changing global runtime state."""
+
+    return Path(root_dir or ROOT_DIR).expanduser().resolve()
+
+
+def get_workspace_context(root_dir: str | Path | None = None) -> WorkspaceContext:
+    """Return an explicit workspace context while preserving legacy env APIs.
+
+    Passing ``root_dir`` builds a pure context for that workspace. Omitting it
+    reflects the active module-level workspace and MLflow/Qlib settings that
+    ``env.py`` has already resolved.
+    """
+
+    if root_dir is not None:
+        return WorkspaceContext.from_root(root_dir)
+    return WorkspaceContext.from_root(
+        ROOT_DIR,
+        mlflow_uri=mlflow_backend,
+        qlib_data_dir=QLIB_DATA_DIR,
+        qlib_region=QLIB_REGION,
+    )
 
 
 def init_qlib():

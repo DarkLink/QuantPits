@@ -10,13 +10,17 @@ A **multi-frequency quantitative trading production system** (supporting weekly/
 
 The system strictly separates **Engine (Code)** from **Workspace (Data & Config)** to enable multi-instance parallelism:
 - **Engine (`quantpits/`)**: Stores all globally shared core scripts (`scripts/`), analysis dashboards (`dashboard.py`), and system documentation (`docs/`).
-- **Workspace (Directories under `workspaces/`)**: Any independent collection for live trading or simulation. Contains the instance-specific `config/`, `data/`, `output/`, and an isolated `mlruns/`.
+- **Workspace (Directories under `workspaces/`)**: Any independent collection for live trading or simulation. Contains the instance-specific `config/`, `data/`, `output/`, and isolated MLflow data (new workspaces default to `mlflow.db`; legacy workspaces with existing data remain compatible with `mlruns/`).
 
 **How to use workspaces?**
 1. Create a new workspace: Use `python quantpits/tools/init_workspace.py --source workspaces/A --target workspaces/B` for quick scaffolding.
 2. Activate a workspace: Enter the system directory and run `source workspaces/<Your_Workspace>/run_env.sh` to set `QLIB_WORKSPACE_DIR`.
 3. (Optional) Custom data source: Uncomment `QLIB_DATA_DIR` / `QLIB_REGION` in `run_env.sh` to point the workspace at a different Qlib data directory (defaults to `~/.qlib/qlib_data/cn_data` and `cn`).
 4. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace, and `env.init_qlib()` will initialize Qlib with the configured data path.
+   > [!IMPORTANT]
+   > **Initialization order**: Core scripts should import `env` before resolving workspace-scoped paths. This ensures `ROOT_DIR` is recognized, `MLFLOW_TRACKING_URI` points to the active workspace's MLflow backend (SQLite `mlflow.db` by default; legacy `mlruns/` file stores are auto-detected), and Qlib can be initialized through `env.init_qlib()`. To customize the backend, set `MLFLOW_TRACKING_URI` in `run_env.sh`.
+   >
+   > **Runtime context**: New code should prefer `env.get_workspace_context()` to obtain an explicit `WorkspaceContext` instead of copying `env.ROOT_DIR` or deriving import-time path constants. Legacy APIs remain compatible, so existing production scripts do not need immediate migration.
 
 ---
 
@@ -563,6 +567,7 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
 | `backtest_utils.py` | Qlib backtest execution and evaluation | Ensemble Search, Fusion, Analysis |
 | `env.py` | Qlib initialization, workspace management, `set_root_dir()` runtime switching | Global |
+| `workspace.py` | Explicit `WorkspaceContext`, workspace path helpers, stable fingerprint helpers | Global |
 | `operator_log.py` | Operation audit log: auto-records every script execution | Global (7 scripts integrated) |
 | `ensemble_utils.py` | Ensemble config parsing, combo management, records loading | Fusion, Signal Ranking, Order Gen |
 | `search_utils.py` | Combo search shared logic: signal handling, backtest core, IS/OOS splitting, grouped combinations | Ensemble Search (Standard/Fast), MinEntropy, Analysis |
