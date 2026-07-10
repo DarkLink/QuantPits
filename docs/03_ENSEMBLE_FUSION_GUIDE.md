@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 清单记录 `run_id`、plan fingerprint、输入配置 fingerprint、resolved combos、执行状态和结果摘要，并会通过 `data/operator_log.jsonl` 关联 `run_id`、`manifest_path` 和 `plan_fingerprint`。如果需要保持旧的无 manifest 副作用，可加 `--no-manifest`。
 
-实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。预测持久化、融合运行 ledger 写入、确定性分析分别由 `quantpits/ensemble/persistence.py`、`quantpits/ensemble/ledger.py`、`quantpits/ensemble/analytics.py` 负责；脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口。核心融合、Qlib 回测和图表逻辑仍保留在脚本中。
+实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。预测持久化、融合运行 ledger 写入、确定性分析、风险与排行榜报告分别由 `quantpits/ensemble/persistence.py`、`quantpits/ensemble/ledger.py`、`quantpits/ensemble/analytics.py`、`quantpits/ensemble/risk_report.py` 负责；脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口。核心融合、Qlib 回测和图表逻辑仍保留在脚本中。
 
 ## 多组合配置
 
@@ -291,6 +291,8 @@ output/
 ├── ensemble/
     ├── ensemble_fusion_config_combo_A_{date}.json
     ├── ensemble_fusion_config_combo_B_{date}.json
+    ├── leaderboard_combo_A_{date}.csv        # combo_A 绩效排行榜
+    ├── leaderboard_combo_B_{date}.csv        # combo_B 绩效排行榜
     ├── combo_comparison_{date}.csv           # 跨组合对比表
     ├── combo_comparison_{date}.png           # 净值对比图
     └── backtest_analysis_report_{combo}_{date}.md # [NEW] 该组合的详尽分析报告

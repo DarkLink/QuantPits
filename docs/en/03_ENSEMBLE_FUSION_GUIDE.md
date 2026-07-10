@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 The manifest records the `run_id`, plan fingerprint, input config fingerprints, resolved combos, execution status, and result summary. `data/operator_log.jsonl` links the same run with `run_id`, `manifest_path`, and `plan_fingerprint`. Use `--no-manifest` when you need the old no-manifest side-effect profile.
 
-Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. Importing the script no longer changes the process `cwd`; during real execution, the service resolves relative paths such as `--output-dir` and `--prediction-dir` under the active workspace root. Prediction persistence, fusion ledger writes, and deterministic analytics live in `quantpits/ensemble/persistence.py`, `quantpits/ensemble/ledger.py`, and `quantpits/ensemble/analytics.py`; the script keeps thin same-name wrappers for existing patch/import compatibility. Core fusion, Qlib backtest, and chart logic remain in the script.
+Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. Importing the script no longer changes the process `cwd`; during real execution, the service resolves relative paths such as `--output-dir` and `--prediction-dir` under the active workspace root. Prediction persistence, fusion ledger writes, deterministic analytics, and risk/leaderboard reporting live in `quantpits/ensemble/persistence.py`, `quantpits/ensemble/ledger.py`, `quantpits/ensemble/analytics.py`, and `quantpits/ensemble/risk_report.py`; the script keeps thin same-name wrappers for existing patch/import compatibility. Core fusion, Qlib backtest, and chart logic remain in the script.
 
 ## Multi-Combo Configurations
 
@@ -262,6 +262,8 @@ output/
 ├── ensemble/
     ├── ensemble_fusion_config_combo_A_{date}.json
     ├── ensemble_fusion_config_combo_B_{date}.json
+    ├── leaderboard_combo_A_{date}.csv       # combo_A performance leaderboard
+    ├── leaderboard_combo_B_{date}.csv       # combo_B performance leaderboard
     ├── combo_comparison_{date}.csv           # Tabular cross-reference
     ├── combo_comparison_{date}.png           # Comparative charted trajectories
     └── backtest_analysis_report_{combo}_{date}.md # [NEW] Detailed analysis report for this specific combo

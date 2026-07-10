@@ -397,198 +397,30 @@ def run_detailed_backtest_analysis(executor_obj, combo_name, anchor_date, output
 # Stage 7: 风险分析 & 排行榜
 # ============================================================================
 def calculate_safe_risk(returns, freq):
-    """确保输入为 Series，输出为扁平字典"""
-    from qlib.contrib.evaluate import risk_analysis
+    """确保输入为 Series，输出为扁平字典。"""
+    from quantpits.ensemble.risk_report import calculate_safe_risk as _calculate_safe_risk
 
-    if isinstance(returns, pd.DataFrame):
-        returns = returns.iloc[:, 0] if not returns.empty else pd.Series(dtype=float)
-
-    try:
-        risk = risk_analysis(returns, freq=freq)
-        if isinstance(risk, pd.DataFrame):
-            risk = risk.iloc[:, 0]
-        return risk.to_dict()
-    except Exception as e:
-        print(f"Risk calculation failed: {e}")
-        return {}
+    return _calculate_safe_risk(returns, freq)
 
 
 def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
                                   loaded_models, freq, output_dir, anchor_date,
                                   combo_name=None):
     """风险分析与排行榜生成"""
-    from qlib.workflow import R
-    from quantpits.utils.train_utils import get_experiment_name_for_model
+    from quantpits.ensemble.risk_report import (
+        risk_analysis_and_leaderboard as _risk_analysis_and_leaderboard,
+    )
 
-    experiment_name = train_records.get('experiment_name', '')
-    models = train_records.get('models', {})
-
-    print(f"\n{'='*60}")
-    print("Stage 7: 风险分析 & 排行榜")
-    print(f"{'='*60}")
-
-    # 1. Ensemble 风险指标
-    leaderboard_data = []
-    all_reports = {}
-
-    if report_df is not None:
-        print(">>> Ensemble 模型风险分析:")
-        from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
-        from quantpits.utils import strategy
-        st_config = strategy.load_strategy_config()
-        benchmark = st_config.get('benchmark', 'SH000300')
-        
-        # Explicitly convert returns to NAV before up-sampling
-        da_df = pd.DataFrame(index=report_df.index)
-        da_df['收盘价值'] = report_df['account']
-        da_df[benchmark] = (1 + report_df['bench']).cumprod()
-        if not isinstance(da_df.index, pd.DatetimeIndex):
-            da_df.index = pd.to_datetime(da_df.index)
-        
-        # Consistent Up-sampling for correct duration (252-day basis)
-        from qlib.data import D
-        bt_start_dt = da_df.index.min()
-        bt_end_dt = da_df.index.max()
-        daily_dates = D.calendar(start_time=bt_start_dt, end_time=bt_end_dt, freq='day')
-        da_df = da_df.reindex(daily_dates, method='ffill').dropna(subset=['收盘价值'])
-        da_df.index.name = '成交日期'
-        da_df = da_df.reset_index()
-        
-        pa = PortfolioAnalyzer(
-            daily_amount_df=da_df, 
-            trade_log_df=pd.DataFrame(), 
-            holding_log_df=pd.DataFrame(),
-            benchmark_col=benchmark, 
-            freq=freq
-        )
-        metrics = pa.calculate_traditional_metrics()
-        
-        # We still want the detailed breakdown for Ensemble in the log
-        # But we'll use our internal logic for consistency
-        r_strat = report_df['return']
-        r_bench = report_df['bench']
-        r_excess = r_strat - r_bench
-        
-        risk_strat = pd.Series({
-            'mean': r_strat.mean(),
-            'std': r_strat.std(),
-            'annualized_return': metrics.get('CAGR_252', 0),
-            'information_ratio': metrics.get('Information_Ratio_(Arithmetic)', 0),
-            'max_drawdown': metrics.get('Max_Drawdown', 0)
-        })
-        risk_bench = pd.Series({
-            'mean': r_bench.mean(),
-            'std': r_bench.std(),
-            'annualized_return': metrics.get('Benchmark_CAGR_252', 0),
-            'information_ratio': metrics.get('Benchmark_Sharpe', 0),
-            'max_drawdown': metrics.get('Benchmark_Max_Drawdown', 0)
-        })
-        risk_excess = pd.Series({
-            'mean': r_excess.mean(),
-            'std': r_excess.std(),
-            'annualized_return': metrics.get('Excess_Return_CAGR_252', 0),
-            'information_ratio': metrics.get('Information_Ratio_(Arithmetic)', 0),
-            'max_drawdown': (report_df['account']/report_df['account'].cummax() - (1+r_bench).cumprod()/((1+r_bench).cumprod().cummax())).min() # rough proxy
-        })
-        # Note: excess max drawdown is harder, but the core ones are annualized_return and IR
-
-        ensemble_wide_df = pd.concat(
-            [risk_strat, risk_bench, risk_excess],
-            axis=1, keys=['account', 'bench', 'excess']
-        )
-        print(ensemble_wide_df)
-
-        # 添加到排行榜
-        metrics_for_lb = risk_strat.to_dict()
-        metrics_for_lb['annualized_excess'] = metrics.get('Excess_Return_CAGR_252', 0)
-        metrics_for_lb['name'] = 'Ensemble'
-        leaderboard_data.append(metrics_for_lb)
-        all_reports['Ensemble'] = report_df
-
-    # 2. 子模型排行榜
-    print('\n>>> 生成子模型对比排行榜...')
-    freq_val = 'week' if freq == 'week' else 'day'
-    freq_suffix = '1week' if freq_val == 'week' else '1day'
-    report_filename = f"portfolio_analysis/report_normal_{freq_suffix}.pkl"
-
-    # 从当前 combo_norm_df 获取评价区间，以便子模型评估对齐
-    eval_start = str(norm_df.index.get_level_values('datetime').min().date())
-    eval_end = str(norm_df.index.get_level_values('datetime').max().date())
-
-    for model_name in loaded_models:
-        record_id = models.get(model_name)
-        if not record_id:
-            continue
-        try:
-            model_exp_name = get_experiment_name_for_model(train_records, model_name)
-            recorder = R.get_recorder(recorder_id=record_id, experiment_name=model_exp_name)
-            hist_report = recorder.load_object(report_filename)
-            
-            # 裁剪历史报告到当前的评价区间
-            hist_report = hist_report[(hist_report.index >= pd.to_datetime(eval_start)) & (hist_report.index <= pd.to_datetime(eval_end))]
-            all_reports[model_name] = hist_report
-
-            if 'return' in hist_report.columns and not hist_report.empty:
-                # Up-sample sub-model report for consistent metric calculation
-                sub_da_df = pd.DataFrame(index=hist_report.index)
-                sub_da_df['收盘价值'] = hist_report['account']
-                sub_da_df[benchmark] = (1 + hist_report['bench']).cumprod()
-                if not isinstance(sub_da_df.index, pd.DatetimeIndex):
-                    sub_da_df.index = pd.to_datetime(sub_da_df.index)
-                
-                # Use the same daily_dates for alignment
-                from qlib.data import D
-                sub_bt_start = sub_da_df.index.min()
-                sub_bt_end = sub_da_df.index.max()
-                sub_daily_dates = D.calendar(start_time=sub_bt_start, end_time=sub_bt_end, freq='day')
-                
-                sub_da_df = sub_da_df.reindex(sub_daily_dates, method='ffill').dropna(subset=['收盘价值'])
-                sub_da_df.index.name = '成交日期'
-                sub_da_df = sub_da_df.reset_index()
-                
-                sub_pa = PortfolioAnalyzer(
-                    daily_amount_df=sub_da_df, 
-                    trade_log_df=pd.DataFrame(), 
-                    holding_log_df=pd.DataFrame(),
-                    benchmark_col=benchmark, 
-                    freq=freq
-                )
-                sub_metrics_pa = sub_pa.calculate_traditional_metrics()
-                
-                metrics = {
-                    'name': model_name,
-                    'annualized_return': sub_metrics_pa.get('CAGR_252', 0),
-                    'annualized_excess': sub_metrics_pa.get('Excess_Return_CAGR_252', 0),
-                    'information_ratio': sub_metrics_pa.get('Information_Ratio_(Arithmetic)', 0),
-                    'max_drawdown': sub_metrics_pa.get('Max_Drawdown', 0)
-                }
-                leaderboard_data.append(metrics)
-        except Exception as e:
-            print(f"  [跳过] {model_name}: {e}")
-
-    # 3. 输出排行榜
-    leaderboard_df = None
-    if leaderboard_data:
-        leaderboard_df = pd.DataFrame(leaderboard_data).set_index('name')
-        leaderboard_df = leaderboard_df.apply(pd.to_numeric, errors='coerce')
-
-        sort_col = 'annualized_return' if 'annualized_return' in leaderboard_df.columns else leaderboard_df.columns[0]
-        leaderboard_df = leaderboard_df.sort_values(sort_col, ascending=False)
-
-        print(f"\n{'='*10} 绩效对比 {'='*10}")
-        display_cols = [c for c in ['annualized_return', 'annualized_excess', 'information_ratio', 'max_drawdown'] if c in leaderboard_df.columns]
-        if display_cols:
-            print(leaderboard_df[display_cols])
-        else:
-            print(leaderboard_df)
-
-        os.makedirs(output_dir, exist_ok=True)
-        suffix = f"_{combo_name}" if combo_name else ""
-        lb_file = os.path.join(output_dir, f"leaderboard{suffix}_{anchor_date}.csv")
-        leaderboard_df.to_csv(lb_file)
-        print(f"\n排行榜已保存: {lb_file}")
-
-    return all_reports, leaderboard_df
+    return _risk_analysis_and_leaderboard(
+        report_df,
+        norm_df,
+        train_records,
+        loaded_models,
+        freq,
+        output_dir,
+        anchor_date,
+        combo_name=combo_name,
+    )
 
 
 # ============================================================================
