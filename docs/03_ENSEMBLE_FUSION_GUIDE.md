@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 清单记录 `run_id`、plan fingerprint、输入配置 fingerprint、resolved combos、执行状态和结果摘要，并会通过 `data/operator_log.jsonl` 关联 `run_id`、`manifest_path` 和 `plan_fingerprint`。如果需要保持旧的无 manifest 副作用，可加 `--no-manifest`。
 
-实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。预测持久化、融合运行 ledger 写入、确定性分析、风险与排行榜报告、图表生成分别由 `quantpits/ensemble/persistence.py`、`quantpits/ensemble/ledger.py`、`quantpits/ensemble/analytics.py`、`quantpits/ensemble/risk_report.py`、`quantpits/ensemble/charts.py` 负责；脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口。核心融合和 Qlib 回测仍保留在脚本中。
+实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。预测持久化、融合运行 ledger 写入、确定性分析、Qlib 回测执行、风险与排行榜报告、图表生成分别由 `quantpits/ensemble/persistence.py`、`quantpits/ensemble/ledger.py`、`quantpits/ensemble/analytics.py`、`quantpits/ensemble/backtest.py`、`quantpits/ensemble/risk_report.py`、`quantpits/ensemble/charts.py` 负责；脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口。核心信号融合编排仍保留在脚本中。
 
 ## 多组合配置
 

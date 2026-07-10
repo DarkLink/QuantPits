@@ -11,6 +11,17 @@ from quantpits.ensemble.analytics import (
     save_model_contribution_snapshot,
     summarize_correlation_matrix,
 )
+from quantpits.ensemble.backtest import (
+    BacktestExecutionRequest,
+    BacktestExecutionResult,
+    BacktestPerformanceSummary,
+    build_backtest_performance_summary,
+    execution_window_from_signal,
+    print_backtest_performance_summary,
+    run_backtest,
+    run_backtest_execution,
+    run_detailed_backtest_analysis,
+)
 from quantpits.ensemble.charts import (
     ChartGenerationRequest,
     ChartGenerationResult,
@@ -62,6 +73,9 @@ from quantpits.ensemble.types import (
 )
 
 __all__ = [
+    "BacktestExecutionRequest",
+    "BacktestExecutionResult",
+    "BacktestPerformanceSummary",
     "CorrelationAnalysisRequest",
     "CorrelationAnalysisResult",
     "ComboComparisonRequest",
@@ -81,6 +95,7 @@ __all__ = [
     "RiskLeaderboardRequest",
     "RiskLeaderboardResult",
     "append_fusion_ledger",
+    "build_backtest_performance_summary",
     "build_model_contribution_payload",
     "build_chart_outputs",
     "build_combo_comparison_frame",
@@ -92,6 +107,7 @@ __all__ = [
     "compute_prediction_correlation",
     "ensemble_nav_chart_path",
     "ensemble_weights_chart_path",
+    "execution_window_from_signal",
     "generate_charts",
     "leaderboard_output_path",
     "load_ensemble_run_config",
@@ -99,10 +115,14 @@ __all__ = [
     "options_to_namespace",
     "prepare_ensemble_run",
     "prepared_plan_json",
+    "print_backtest_performance_summary",
     "render_prepared_plan",
     "risk_analysis_and_leaderboard",
+    "run_backtest",
+    "run_backtest_execution",
     "run_combo_comparison",
     "run_correlation_analysis",
+    "run_detailed_backtest_analysis",
     "save_ensemble_predictions",
     "save_model_contribution_snapshot",
     "summarize_correlation_matrix",

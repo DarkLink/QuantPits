@@ -314,82 +314,24 @@ def save_predictions(final_score, anchor_date, experiment_name, method,
 # ============================================================================
 def run_backtest(final_score, top_k, drop_n, benchmark, freq, st_config=None, bt_config=None, verbose=False):
     """运行回测"""
-    from quantpits.utils import strategy
-    from quantpits.utils.backtest_utils import run_backtest_with_strategy, standard_evaluate_portfolio
-    from qlib.backtest.exchange import Exchange
+    from quantpits.ensemble.backtest import run_backtest as _run_backtest
 
-    if st_config is None:
-        st_config = strategy.load_strategy_config()
-    if bt_config is None:
-        bt_config = strategy.get_backtest_config(st_config)
-
-    bt_start = str(final_score.index.get_level_values(0).min().date())
-    bt_end = str(final_score.index.get_level_values(0).max().date())
-
-    print(f"\n{'='*60}")
-    print("Stage 6: 回测")
-    print(f"{'='*60}")
-    print(f"Backtest Range: {bt_start} ~ {bt_end}")
-    print(f"Freq: {freq}")
-    print(f"Verbose: {verbose}")
-
-    strategy_inst = strategy.create_backtest_strategy(final_score, st_config)
-
-    # 准备共享 Exchange (ensemble 原本不需要共享，但接口需要传 trade_exchange)
-    all_codes = sorted(final_score.index.get_level_values(1).unique().tolist())
-    exchange_kwargs = bt_config["exchange_kwargs"].copy()
-    exchange_freq = exchange_kwargs.pop("freq", "day")
-
-    trade_exchange = Exchange(
-        freq=exchange_freq,
-        start_time=bt_start,
-        end_time=bt_end,
-        codes=all_codes,
-        **exchange_kwargs
+    return _run_backtest(
+        final_score,
+        top_k,
+        drop_n,
+        benchmark,
+        freq,
+        st_config=st_config,
+        bt_config=bt_config,
+        verbose=verbose,
     )
-
-    print(f"\n开始回测...")
-    report_df, executor_obj = run_backtest_with_strategy(
-        strategy_inst=strategy_inst,
-        trade_exchange=trade_exchange,
-        freq=freq,
-        account_cash=bt_config['account'],
-        bt_start=bt_start,
-        bt_end=bt_end
-    )
-
-    if report_df is not None:
-        metrics = standard_evaluate_portfolio(report_df, benchmark, freq)
-        
-        annualized_return = metrics.get('CAGR_252', 0)
-        max_drawdown = metrics.get('Max_Drawdown', 0)
-        bench_cum_ret = metrics.get('Benchmark_Absolute_Return', 0)
-        total_return = metrics.get('Absolute_Return', 0)
-        calmar = metrics.get('Calmar', 0)
-
-        initial_cash = bt_config['account']
-        final_nav = report_df.iloc[-1]['nav']
-
-        print(f'\n{"="*20} 回测绩效报告 {"="*20}')
-        print(f'回测区间     : {bt_start} ~ {bt_end}')
-        print(f'初始资金     : {initial_cash:,.2f}')
-        print(f'最终净值     : {final_nav:,.2f}')
-        print(f'策略累计收益 : {total_return*100:.2f}%')
-        print(f'基准累计收益 : {bench_cum_ret*100:.2f}% (超额: {(total_return-bench_cum_ret)*100:.2f}%)')
-        print(f'年化收益率   : {annualized_return*100:.2f}%')
-        print(f'最大回撤     : {max_drawdown*100:.2f}%')
-        if not pd.isna(calmar):
-            print(f'Calmar Ratio : {calmar:.4f}')
-
-    else:
-        print("【错误】未能提取回测数据")
-
-    return report_df, executor_obj
 
 def run_detailed_backtest_analysis(executor_obj, combo_name, anchor_date, output_dir, freq, benchmark='SH000300'):
     """运行详尽的回测分析报告 (委托给 backtest_report)"""
-    from quantpits.utils.backtest_report import run_detailed_backtest_analysis as _run
-    return _run(executor_obj, combo_name, anchor_date, output_dir, freq, benchmark)
+    from quantpits.ensemble.backtest import run_detailed_backtest_analysis as _run
+
+    return _run(executor_obj, combo_name, anchor_date, output_dir, freq, benchmark=benchmark)
 
 
 
