@@ -11,6 +11,14 @@ from quantpits.ensemble.analytics import (
     save_model_contribution_snapshot,
     summarize_correlation_matrix,
 )
+from quantpits.ensemble.charts import (
+    ChartGenerationRequest,
+    ChartGenerationResult,
+    build_chart_outputs,
+    ensemble_nav_chart_path,
+    ensemble_weights_chart_path,
+    generate_charts,
+)
 from quantpits.ensemble.comparison import (
     ComboComparisonRequest,
     ComboComparisonResult,
@@ -58,6 +66,8 @@ __all__ = [
     "CorrelationAnalysisResult",
     "ComboComparisonRequest",
     "ComboComparisonResult",
+    "ChartGenerationRequest",
+    "ChartGenerationResult",
     "EnsembleExecutionHooks",
     "EnsembleFusionService",
     "EnsembleRunConfig",
@@ -72,6 +82,7 @@ __all__ = [
     "RiskLeaderboardResult",
     "append_fusion_ledger",
     "build_model_contribution_payload",
+    "build_chart_outputs",
     "build_combo_comparison_frame",
     "build_fusion_ledger_record",
     "build_risk_leaderboard",
@@ -79,6 +90,9 @@ __all__ = [
     "calculate_safe_risk",
     "compare_combos",
     "compute_prediction_correlation",
+    "ensemble_nav_chart_path",
+    "ensemble_weights_chart_path",
+    "generate_charts",
     "leaderboard_output_path",
     "load_ensemble_run_config",
     "options_from_namespace",

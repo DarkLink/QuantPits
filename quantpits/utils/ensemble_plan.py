@@ -267,6 +267,21 @@ def _plan_outputs(args: argparse.Namespace, run_id: str) -> tuple[OutputRef, ...
         OutputRef(f"{output_dir}/leaderboard_<combo>_<anchor_date>.csv", kind="report", overwrite=True),
         OutputRef(f"{output_dir}/model_contribution_<combo>_<anchor_date>.json", kind="report", overwrite=True),
     ]
+    if not getattr(args, "no_charts", False) and not getattr(args, "no_backtest", False):
+        refs.extend(
+            [
+                OutputRef(
+                    f"{output_dir}/ensemble_nav_<combo>_<anchor_date>.png",
+                    kind="report",
+                    overwrite=True,
+                ),
+                OutputRef(
+                    f"{output_dir}/ensemble_weights_<combo>_<anchor_date>.png",
+                    kind="report",
+                    overwrite=True,
+                ),
+            ]
+        )
     if getattr(args, "save_csv", False):
         prediction_dir = getattr(args, "prediction_dir", None) or "output/predictions"
         refs.append(

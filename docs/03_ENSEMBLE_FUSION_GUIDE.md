@@ -66,7 +66,7 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 ```
 
-该命令只读取 workspace 配置和训练记录，输出将运行的 combo、输入 fingerprint、计划写入的文件和耗时步骤；不会触发 safeguard、不会初始化 Qlib、不会加载 recorder，也不会写 `output/`、`data/` 或 `config/`。
+该命令只读取 workspace 配置和训练记录，输出将运行的 combo、输入 fingerprint、计划写入的文件和耗时步骤；计划写入列表会包含报告 CSV/JSON、manifest，以及在未设置 `--no-backtest` / `--no-charts` 时可能生成的 NAV/动态权重 PNG。它不会触发 safeguard、不会初始化 Qlib、不会加载 recorder，也不会写 `output/`、`data/` 或 `config/`。
 
 调度器或 CI 可以使用 JSON 版本：
 
@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 清单记录 `run_id`、plan fingerprint、输入配置 fingerprint、resolved combos、执行状态和结果摘要，并会通过 `data/operator_log.jsonl` 关联 `run_id`、`manifest_path` 和 `plan_fingerprint`。如果需要保持旧的无 manifest 副作用，可加 `--no-manifest`。
 
-实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。预测持久化、融合运行 ledger 写入、确定性分析、风险与排行榜报告分别由 `quantpits/ensemble/persistence.py`、`quantpits/ensemble/ledger.py`、`quantpits/ensemble/analytics.py`、`quantpits/ensemble/risk_report.py` 负责；脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口。核心融合、Qlib 回测和图表逻辑仍保留在脚本中。
+实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。预测持久化、融合运行 ledger 写入、确定性分析、风险与排行榜报告、图表生成分别由 `quantpits/ensemble/persistence.py`、`quantpits/ensemble/ledger.py`、`quantpits/ensemble/analytics.py`、`quantpits/ensemble/risk_report.py`、`quantpits/ensemble/charts.py` 负责；脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口。核心融合和 Qlib 回测仍保留在脚本中。
 
 ## 多组合配置
 

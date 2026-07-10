@@ -429,57 +429,18 @@ def risk_analysis_and_leaderboard(report_df, norm_df, train_records,
 def generate_charts(all_reports, report_df, final_weights, is_dynamic,
                     freq, anchor_date, output_dir, combo_name=None):
     """生成可视化图表"""
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
+    from quantpits.ensemble.charts import generate_charts as _generate_charts
 
-    print(f"\n{'='*60}")
-    print("Stage 8: 可视化")
-    print(f"{'='*60}")
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Part 1: 净值曲线
-    if all_reports:
-        plt.figure(figsize=(12, 6))
-        for name, r_df in all_reports.items():
-            if 'return' not in r_df.columns:
-                continue
-            cum_ret = (1 + r_df['return']).cumprod()
-            style = {'color': 'red', 'linewidth': 2.5, 'zorder': 10} if name == 'Ensemble' else {'alpha': 0.4, 'linewidth': 1}
-            plt.plot(cum_ret.index, cum_ret.values, label=name, **style)
-
-        if report_df is not None and 'bench' in report_df.columns:
-            bench_cum = (1 + report_df['bench']).cumprod()
-            plt.plot(bench_cum.index, bench_cum.values, label='Benchmark', color='black', linestyle='--', alpha=0.8)
-
-        plt.title(f'Cumulative Return Comparison ({freq})')
-        plt.legend(loc='upper left', bbox_to_anchor=(1.01, 1), fontsize=8)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-
-        suffix = f"_{combo_name}" if combo_name else ""
-        chart_file = os.path.join(output_dir, f"ensemble_nav{suffix}_{anchor_date}.png")
-        plt.savefig(chart_file, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"净值曲线已保存: {chart_file}")
-
-    # Part 2: 动态权重分布图
-    if is_dynamic and final_weights is not None:
-        fig, ax = plt.subplots(figsize=(14, 6))
-        final_weights.plot.area(ax=ax, alpha=0.7, linewidth=0.5)
-        ax.set_title('Dynamic Weight Distribution (Rolling Sharpe)', fontsize=14)
-        ax.set_ylabel('Weight')
-        ax.set_ylim(0, 1)
-        ax.legend(loc='upper left', fontsize=8)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-
-        suffix = f"_{combo_name}" if combo_name else ""
-        weight_file = os.path.join(output_dir, f"ensemble_weights{suffix}_{anchor_date}.png")
-        plt.savefig(weight_file, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"权重分布图已保存: {weight_file}")
+    return _generate_charts(
+        all_reports,
+        report_df,
+        final_weights,
+        is_dynamic,
+        freq,
+        anchor_date,
+        output_dir,
+        combo_name=combo_name,
+    )
 
 
 # ============================================================================

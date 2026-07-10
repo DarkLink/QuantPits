@@ -66,7 +66,7 @@ Before a real run, inspect the execution plan:
 python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 ```
 
-This command only reads workspace configs and train records. It prints the resolved combos, input fingerprints, planned writes, and expensive steps. It does not trigger the safeguard, initialize Qlib, load recorders, or write to `output/`, `data/`, or `config/`.
+This command only reads workspace configs and train records. It prints the resolved combos, input fingerprints, planned writes, and expensive steps. Planned writes include report CSV/JSON files, the manifest, and NAV/dynamic-weight PNG placeholders when `--no-backtest` / `--no-charts` are not set. It does not trigger the safeguard, initialize Qlib, load recorders, or write to `output/`, `data/`, or `config/`.
 
 Schedulers or CI jobs can use the JSON form:
 
@@ -82,7 +82,7 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 The manifest records the `run_id`, plan fingerprint, input config fingerprints, resolved combos, execution status, and result summary. `data/operator_log.jsonl` links the same run with `run_id`, `manifest_path`, and `plan_fingerprint`. Use `--no-manifest` when you need the old no-manifest side-effect profile.
 
-Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. Importing the script no longer changes the process `cwd`; during real execution, the service resolves relative paths such as `--output-dir` and `--prediction-dir` under the active workspace root. Prediction persistence, fusion ledger writes, deterministic analytics, and risk/leaderboard reporting live in `quantpits/ensemble/persistence.py`, `quantpits/ensemble/ledger.py`, `quantpits/ensemble/analytics.py`, and `quantpits/ensemble/risk_report.py`; the script keeps thin same-name wrappers for existing patch/import compatibility. Core fusion, Qlib backtest, and chart logic remain in the script.
+Implementation note: `ensemble_fusion.py` is now a thin CLI adapter. Plan rendering, manifest handling, OperatorLog linkage, and the execution lifecycle live in `quantpits/ensemble/service.py`. Importing the script no longer changes the process `cwd`; during real execution, the service resolves relative paths such as `--output-dir` and `--prediction-dir` under the active workspace root. Prediction persistence, fusion ledger writes, deterministic analytics, risk/leaderboard reporting, and chart generation live in `quantpits/ensemble/persistence.py`, `quantpits/ensemble/ledger.py`, `quantpits/ensemble/analytics.py`, `quantpits/ensemble/risk_report.py`, and `quantpits/ensemble/charts.py`; the script keeps thin same-name wrappers for existing patch/import compatibility. Core fusion and Qlib backtesting remain in the script.
 
 ## Multi-Combo Configurations
 

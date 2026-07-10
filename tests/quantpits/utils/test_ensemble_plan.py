@@ -169,3 +169,62 @@ def test_build_plan_omits_raw_config_and_adds_expected_steps(tmp_path, ensemble_
 
     same_plan_new_run = replace(plan, run_id="run-b")
     assert fingerprint_command_plan(plan) == fingerprint_command_plan(same_plan_new_run)
+
+
+def test_build_plan_includes_chart_outputs_when_charts_enabled(tmp_path, ensemble_plan_module):
+    from quantpits.utils.workspace import WorkspaceContext
+
+    ctx = WorkspaceContext.from_root(tmp_path)
+    combo = ensemble_plan_module.ResolvedCombo(
+        name="c1",
+        models=("m1@static",),
+        method="equal",
+        source="from-config",
+    )
+
+    plan = ensemble_plan_module.build_ensemble_command_plan(
+        ctx=ctx,
+        args=_args(from_config=True, run_id="run-a"),
+        train_records={"anchor_date": "2026-07-09", "experiment_name": "exp"},
+        model_config={"freq": "week"},
+        ensemble_config={},
+        combos=(combo,),
+        run_id="run-a",
+        cli_args=("--from-config", "--explain-plan"),
+    )
+
+    output_paths = {output.path for output in plan.outputs}
+    assert "output/ensemble/ensemble_nav_<combo>_<anchor_date>.png" in output_paths
+    assert "output/ensemble/ensemble_weights_<combo>_<anchor_date>.png" in output_paths
+
+
+@pytest.mark.parametrize("flag", ["no_charts", "no_backtest"])
+def test_build_plan_omits_chart_outputs_when_charts_cannot_run(
+    tmp_path,
+    ensemble_plan_module,
+    flag,
+):
+    from quantpits.utils.workspace import WorkspaceContext
+
+    ctx = WorkspaceContext.from_root(tmp_path)
+    combo = ensemble_plan_module.ResolvedCombo(
+        name="c1",
+        models=("m1@static",),
+        method="equal",
+        source="from-config",
+    )
+
+    plan = ensemble_plan_module.build_ensemble_command_plan(
+        ctx=ctx,
+        args=_args(from_config=True, run_id="run-a", **{flag: True}),
+        train_records={"anchor_date": "2026-07-09", "experiment_name": "exp"},
+        model_config={"freq": "week"},
+        ensemble_config={},
+        combos=(combo,),
+        run_id="run-a",
+        cli_args=("--from-config", "--explain-plan"),
+    )
+
+    output_paths = {output.path for output in plan.outputs}
+    assert "output/ensemble/ensemble_nav_<combo>_<anchor_date>.png" not in output_paths
+    assert "output/ensemble/ensemble_weights_<combo>_<anchor_date>.png" not in output_paths

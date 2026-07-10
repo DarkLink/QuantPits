@@ -570,7 +570,7 @@ python -m quantpits.scripts.static_train --all-enabled
 | `config_loader.py` | Workspace 级配置加载 | 全局 |
 | `config_contracts/` | Workspace 配置校验、normalize、fingerprint，供运行前检查和后续 plan/manifest 复用 | 全局 |
 | `runtime/` | 通用 `CommandPlan` / `RunManifest` / plan renderer / manifest writer 运行时基础类型 | `ensemble_fusion` 已接入；后续重资产命令逐步复用 |
-| `ensemble/` | Ensemble fusion 的 service、I/O 与报告层：显式配置加载、workspace-bound 执行路径、plan/render、manifest、OperatorLog linkage、预测持久化、fusion ledger、correlation/LOO analytics、risk/leaderboard report 与执行生命周期 | 融合 |
+| `ensemble/` | Ensemble fusion 的 service、I/O 与报告层：显式配置加载、workspace-bound 执行路径、plan/render、manifest、OperatorLog linkage、预测持久化、fusion ledger、correlation/LOO analytics、risk/leaderboard/chart report 与执行生命周期 | 融合 |
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
 | `backtest_utils.py` | Qlib 回测执行与评估 | 穷举、融合、分析 |
 | `env.py` | Qlib 初始化、工作目录管理、`set_root_dir()` 运行时工作区切换 | 全局 |
