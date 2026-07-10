@@ -48,6 +48,14 @@ from quantpits.ensemble.persistence import (
     PredictionSaveResult,
     save_ensemble_predictions,
 )
+from quantpits.ensemble.pipeline import (
+    SingleComboPipelineHooks,
+    SingleComboPipelineRequest,
+    SingleComboPipelineResult,
+    default_single_combo_pipeline_hooks,
+    run_single_combo,
+    run_single_combo_pipeline,
+)
 from quantpits.ensemble.risk_report import (
     RiskLeaderboardRequest,
     RiskLeaderboardResult,
@@ -94,6 +102,9 @@ __all__ = [
     "PreparedEnsembleRun",
     "RiskLeaderboardRequest",
     "RiskLeaderboardResult",
+    "SingleComboPipelineHooks",
+    "SingleComboPipelineRequest",
+    "SingleComboPipelineResult",
     "append_fusion_ledger",
     "build_backtest_performance_summary",
     "build_model_contribution_payload",
@@ -105,6 +116,7 @@ __all__ = [
     "calculate_safe_risk",
     "compare_combos",
     "compute_prediction_correlation",
+    "default_single_combo_pipeline_hooks",
     "ensemble_nav_chart_path",
     "ensemble_weights_chart_path",
     "execution_window_from_signal",
@@ -123,6 +135,8 @@ __all__ = [
     "run_combo_comparison",
     "run_correlation_analysis",
     "run_detailed_backtest_analysis",
+    "run_single_combo",
+    "run_single_combo_pipeline",
     "save_ensemble_predictions",
     "save_model_contribution_snapshot",
     "summarize_correlation_matrix",
