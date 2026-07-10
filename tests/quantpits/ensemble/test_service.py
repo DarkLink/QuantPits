@@ -7,10 +7,12 @@ import pandas as pd
 import pytest
 
 from quantpits.ensemble import (
+    EmptyPredictionWindowError,
     EnsembleExecutionHooks,
     EnsembleFusionService,
     EnsembleRunConfig,
     EnsembleRunOptions,
+    NoRequiredModelsError,
     prepare_ensemble_run,
     prepared_plan_json,
     render_prepared_plan,
@@ -288,7 +290,7 @@ def test_service_execute_multi_combo_calls_comparison(tmp_path):
     assert calls[0][1] == "2026-07-09"
 
 
-def test_service_execute_no_required_models_still_exits(tmp_path):
+def test_service_execute_no_required_models_raises_typed_error_without_failed_manifest(tmp_path):
     ctx = _workspace(tmp_path)
     prepared = replace(
         _prepared(ctx, options=EnsembleRunOptions(from_config=True, run_id="no-model-run")),
@@ -311,11 +313,15 @@ def test_service_execute_no_required_models_still_exits(tmp_path):
         compare_combos=lambda *a, **k: None,
     )
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(NoRequiredModelsError, match="没有有效的模型"):
         EnsembleFusionService(hooks).execute(prepared)
 
+    assert not ctx.output_path("manifests").exists()
+    log_entry = json.loads(ctx.data_path("operator_log.jsonl").read_text(encoding="utf-8").strip())
+    assert log_entry["exception"]["type"] == "NoRequiredModelsError"
 
-def test_service_execute_empty_filtered_predictions_still_exits(tmp_path):
+
+def test_service_execute_empty_filtered_predictions_raises_typed_error_without_failed_manifest(tmp_path):
     ctx = _workspace(tmp_path)
     prepared = _prepared(ctx, options=EnsembleRunOptions(from_config=True, run_id="empty-filter-run"))
     hooks = EnsembleExecutionHooks(
@@ -326,5 +332,9 @@ def test_service_execute_empty_filtered_predictions_still_exits(tmp_path):
         compare_combos=lambda *a, **k: None,
     )
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(EmptyPredictionWindowError, match="过滤后没有预测数据"):
         EnsembleFusionService(hooks).execute(prepared)
+
+    assert not ctx.output_path("manifests").exists()
+    log_entry = json.loads(ctx.data_path("operator_log.jsonl").read_text(encoding="utf-8").strip())
+    assert log_entry["exception"]["type"] == "EmptyPredictionWindowError"

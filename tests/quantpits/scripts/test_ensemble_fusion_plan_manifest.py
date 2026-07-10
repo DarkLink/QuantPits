@@ -117,6 +117,30 @@ def test_json_plan_outputs_parseable_json_only(ef_module, capsys):
     assert payload["plan"]["command"] == "ensemble_fusion"
 
 
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    [
+        ("NoRequiredModelsError", "没有有效的模型"),
+        ("EmptyPredictionWindowError", "过滤后没有预测数据，请检查日期参数。"),
+    ],
+)
+def test_typed_execution_failure_maps_to_exit_one(ef_module, capsys, error_type, message):
+    ef, _ = ef_module
+    from quantpits.ensemble import EmptyPredictionWindowError, NoRequiredModelsError
+
+    error_class = {
+        "NoRequiredModelsError": NoRequiredModelsError,
+        "EmptyPredictionWindowError": EmptyPredictionWindowError,
+    }[error_type]
+
+    with patch("quantpits.ensemble.command.run_ensemble_command", side_effect=error_class(message)):
+        with pytest.raises(SystemExit) as exc_info:
+            ef.main(["--from-config"])
+
+    assert exc_info.value.code == 1
+    assert capsys.readouterr().out == f"Error: {message}\n"
+
+
 def test_mocked_run_writes_manifest_and_operator_log_linkage(ef_module):
     ef, workspace = ef_module
 

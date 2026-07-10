@@ -1,11 +1,19 @@
 from types import SimpleNamespace
 
 from quantpits.ensemble.execution import (
+    EmptyPredictionWindowError,
+    EnsembleExecutionError,
+    NoRequiredModelsError,
     combo_manifest_records,
     required_models_from_combos,
     success_manifest_records,
     valid_models_for_combo,
 )
+
+
+def test_expected_execution_errors_share_typed_base():
+    assert issubclass(NoRequiredModelsError, EnsembleExecutionError)
+    assert issubclass(EmptyPredictionWindowError, EnsembleExecutionError)
 
 
 def test_required_models_from_combos_deduplicates_and_sorts():

@@ -606,6 +606,8 @@ The command does not write to the workspace. JSON output includes paths, summari
 
 The default manifest path is `output/manifests/{command}/{run_id}.json`, and files are written only when the caller explicitly invokes `write_run_manifest()`. Manifest/public dict output records paths, summaries, fingerprints, records, and warnings; it does not include full raw configs. Real `ensemble_fusion.py` runs now write `output/manifests/ensemble_fusion/<run_id>.json` by default; dry-runs (`--explain-plan` / `--json-plan`) do not write manifests. `ensemble_fusion.py` keeps plan output workspace-relative and resolves relative output paths under the active workspace only at the real execution boundary.
 
+`ensemble_fusion` also exposes a typed command boundary: `quantpits/ensemble/command.py` owns the argument contract and prepare/explain/execute routing, `quantpits/ensemble/service.py` owns the execution lifecycle, and the script layer owns process exit semantics only. The engine layer never calls `sys.exit()`, so notebooks, schedulers, tests, and other Python workflows can reuse the command runner and handle structured outcomes or typed domain errors themselves.
+
 `OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, and `plan_fingerprint`. `ensemble_fusion.py` now links these fields to its run manifest; legacy commands that are not yet manifest-integrated keep them as `null`.
 
 ### ⑧ File Archiving Tool

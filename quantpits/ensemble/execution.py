@@ -9,6 +9,18 @@ from typing import Any
 from quantpits.ensemble.types import EnsembleRunOptions, PreparedEnsembleRun
 
 
+class EnsembleExecutionError(RuntimeError):
+    """Base class for expected ensemble execution failures."""
+
+
+class NoRequiredModelsError(EnsembleExecutionError):
+    """Raised when resolved combos contain no executable model."""
+
+
+class EmptyPredictionWindowError(EnsembleExecutionError):
+    """Raised when prediction filtering removes every row."""
+
+
 @dataclass(frozen=True)
 class EnsembleExecutionContext:
     prepared: PreparedEnsembleRun

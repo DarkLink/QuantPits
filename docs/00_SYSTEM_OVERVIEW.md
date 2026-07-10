@@ -609,6 +609,8 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 
 默认 manifest 写入位置为 `output/manifests/{command}/{run_id}.json`，仅在调用方显式调用 `write_run_manifest()` 时写入。Manifest/public dict 只记录路径、summary、fingerprint、records 等摘要，不包含完整 raw config。`ensemble_fusion.py` 真实执行默认会写入 `output/manifests/ensemble_fusion/<run_id>.json`；dry-run (`--explain-plan` / `--json-plan`) 不写任何 manifest。`ensemble_fusion.py` 的 plan 输出保持 workspace-relative，真实执行时才将相对输出路径解析到当前激活的 workspace。
 
+`ensemble_fusion` 还提供独立的 typed command boundary：`quantpits/ensemble/command.py` 负责参数合同和 prepare/explain/execute 路由，`quantpits/ensemble/service.py` 负责执行生命周期，脚本层只负责 process exit semantics。Engine 层不会调用 `sys.exit()`，因此 notebook、scheduler、测试或其他 Python 流程可以复用 command runner，并自行处理结构化 outcome 与 typed domain error。
+
 `OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint` 字段。`ensemble_fusion.py` 已将这些字段与运行清单关联；未接入 manifest 的旧命令仍保持 `null`。
 
 ### ⑧ 文件归档工具

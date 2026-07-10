@@ -82,7 +82,9 @@ output/manifests/ensemble_fusion/<run_id>.json
 
 清单记录 `run_id`、plan fingerprint、输入配置 fingerprint、resolved combos、执行状态和结果摘要，并会通过 `data/operator_log.jsonl` 关联 `run_id`、`manifest_path` 和 `plan_fingerprint`。如果需要保持旧的无 manifest 副作用，可加 `--no-manifest`。
 
-实现上，`ensemble_fusion.py` 现在是薄 CLI adapter；plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`，运行级上下文与预测加载边界由 `quantpits/ensemble/execution.py` 提供。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。单 combo 的 Stage 2-10 编排由 `quantpits/ensemble/pipeline.py` 负责；预测持久化、融合运行 ledger 写入、确定性分析、Qlib 回测执行、风险与排行榜报告、图表生成分别由 `quantpits/ensemble/persistence.py`、`quantpits/ensemble/ledger.py`、`quantpits/ensemble/analytics.py`、`quantpits/ensemble/backtest.py`、`quantpits/ensemble/risk_report.py`、`quantpits/ensemble/charts.py` 负责。脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口。
+实现上，`ensemble_fusion.py` 现在是薄 CLI/process adapter；参数合同和 prepare/explain/execute 路由由 `quantpits/ensemble/command.py` 的 typed command runner 负责，plan/render/manifest/OperatorLog linkage 和执行生命周期集中在 `quantpits/ensemble/service.py`，运行级上下文、预测加载边界与可预期执行错误由 `quantpits/ensemble/execution.py` 提供。Engine 层不会调用 `sys.exit()`；CLI adapter 将参数/plan 错误映射为 exit code 2，将无可执行模型或过滤后无预测数据映射为 exit code 1。导入脚本不会改变当前进程的 `cwd`；真实执行时，service 会在执行边界把 `--output-dir` / `--prediction-dir` 等相对路径解析到当前激活的 workspace 内。单 combo 的 Stage 2-10 编排由 `quantpits/ensemble/pipeline.py` 负责；预测持久化、融合运行 ledger 写入、确定性分析、Qlib 回测执行、风险与排行榜报告、图表生成分别由 `quantpits/ensemble/persistence.py`、`quantpits/ensemble/ledger.py`、`quantpits/ensemble/analytics.py`、`quantpits/ensemble/backtest.py`、`quantpits/ensemble/risk_report.py`、`quantpits/ensemble/charts.py` 负责。脚本中保留同名薄 wrapper 以兼容既有 patch/import 入口。
+
+需要从 Python 调用时，优先使用 `quantpits.ensemble.command.run_ensemble_command()` 并显式传入 `EnsembleCommandRequest` 与 `EnsembleCommandDependencies`。该接口返回结构化 outcome 或抛出 typed domain error，不会终止宿主进程，适合测试、notebook、scheduler 和后续流水线复用。
 
 ## 多组合配置
 

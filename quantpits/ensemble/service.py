@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -10,8 +9,11 @@ from pathlib import Path
 from quantpits.config_contracts.workspace import validate_workspace
 from quantpits.ensemble.config import load_ensemble_run_config
 from quantpits.ensemble.execution import (
+    EmptyPredictionWindowError,
     EnsembleExecutionContext,
+    EnsembleExecutionError,
     LoadedPredictionBundle,
+    NoRequiredModelsError,
     required_models_from_combos,
     success_manifest_records,
     valid_models_for_combo,
@@ -280,8 +282,7 @@ class EnsembleFusionService:
     def _load_prediction_bundle(self, execution: EnsembleExecutionContext) -> LoadedPredictionBundle:
         all_needed_models = required_models_from_combos(execution.prepared.combos)
         if not all_needed_models:
-            print("Error: 没有有效的模型")
-            sys.exit(1)
+            raise NoRequiredModelsError("没有有效的模型")
 
         print(f"\n所有 combo 涉及的模型并集 ({len(all_needed_models)}): {list(all_needed_models)}")
         norm_df, model_metrics, loaded_models = self.hooks.load_selected_predictions(
@@ -291,8 +292,7 @@ class EnsembleFusionService:
         )
         norm_df = self.hooks.filter_norm_df_by_args(norm_df, execution.args)
         if norm_df.empty:
-            print("Error: 过滤后没有预测数据，请检查日期参数。")
-            sys.exit(1)
+            raise EmptyPredictionWindowError("过滤后没有预测数据，请检查日期参数。")
         return LoadedPredictionBundle(
             norm_df=norm_df,
             model_metrics=model_metrics,
@@ -463,6 +463,8 @@ class EnsembleFusionService:
                 bundle = self._load_prediction_bundle(execution)
                 combo_results = self._execute_combos(execution, bundle, combo_results)
                 self._write_combo_comparison_if_needed(execution, combo_results)
+            except EnsembleExecutionError:
+                raise
             except Exception as exc:
                 if not execution.options.no_manifest:
                     self._write_failed_manifest_best_effort(
