@@ -4,9 +4,6 @@ import json
 import os
 import pytest
 import yaml
-
-os.environ["QLIB_WORKSPACE_DIR"] = "/tmp"
-
 from unittest.mock import patch, MagicMock
 
 with patch("os.chdir"):

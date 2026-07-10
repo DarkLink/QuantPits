@@ -5,10 +5,6 @@ import pandas as pd
 import json
 import yaml
 from unittest.mock import patch, MagicMock
-
-# Set environment variable BEFORE importing any quantpits modules
-os.environ["QLIB_WORKSPACE_DIR"] = os.getcwd()
-
 from quantpits.scripts.deep_analysis.coordinator import Coordinator
 from quantpits.scripts.deep_analysis.config_ledger import (
     _parse_workflow_config, snapshot_configs, save_snapshot, 

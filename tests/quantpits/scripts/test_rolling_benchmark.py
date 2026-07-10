@@ -6,9 +6,6 @@ import sys
 import pytest
 from unittest.mock import patch, MagicMock
 
-# Must set env before import because rolling_benchmark does os.chdir(env.ROOT_DIR)
-os.environ["QLIB_WORKSPACE_DIR"] = "/tmp/MockWorkspace_rolling_benchmark"
-
 with patch("os.chdir"):
     from quantpits.scripts import rolling_benchmark as rb
 

@@ -152,6 +152,9 @@ def init_qlib():
       - QLIB_DATA_DIR: Qlib data dir (default ~/.qlib/qlib_data/cn_data)
       - QLIB_REGION:   Qlib region     (default cn)
 
+    The Qlib experiment manager is explicitly bound to ``mlflow_backend`` so
+    recorder access follows the active workspace instead of the process cwd.
+
     Set these in each workspace's run_env.sh to separate data.
     """
     global _qlib_initialized
@@ -164,7 +167,21 @@ def init_qlib():
     region_map = {"cn": REG_CN, "us": REG_US}
     region = region_map.get(QLIB_REGION.lower(), REG_CN)
 
-    qlib.init(provider_uri=QLIB_DATA_DIR, region=region)
+    # Qlib's default MLflowExpManager URI is resolved from the process cwd.
+    # Workspace-scoped commands deliberately no longer chdir at import time, so
+    # relying on that default can silently point recorder reads/writes at a
+    # repository-level ``mlruns`` directory.  Bind the experiment manager to
+    # the backend already resolved for the active workspace instead.
+    exp_manager = {
+        "class": "MLflowExpManager",
+        "module_path": "qlib.workflow.expm",
+        "kwargs": {
+            "uri": mlflow_backend,
+            "default_exp_name": "Experiment",
+        },
+    }
+
+    qlib.init(provider_uri=QLIB_DATA_DIR, region=region, exp_manager=exp_manager)
     _qlib_initialized = True
 
 
@@ -193,12 +210,13 @@ def set_root_dir(path: str):
     Updates:
     - env.ROOT_DIR, env.mlruns_dir, env.mlflow_backend
     - os.environ QLIB_WORKSPACE_DIR and MLFLOW_TRACKING_URI
+    - resets Qlib initialization so the next init binds the new MLflow backend
     - train_utils module-level path constants (they are value copies, not references)
 
     Args:
         path: Absolute path to the new workspace root directory.
     """
-    global ROOT_DIR, mlruns_dir, mlflow_backend
+    global ROOT_DIR, mlruns_dir, mlflow_backend, _qlib_initialized
     ROOT_DIR = os.path.abspath(path)
     os.environ["QLIB_WORKSPACE_DIR"] = ROOT_DIR
 
@@ -211,6 +229,7 @@ def set_root_dir(path: str):
         if mlflow_backend.startswith("file://")
         else None
     )
+    _qlib_initialized = False
 
     # Synchronize train_utils module-level path constants.
     # train_utils.ROOT_DIR = env.ROOT_DIR is a value copy (strings are immutable),

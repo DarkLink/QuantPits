@@ -19,7 +19,7 @@
 4. (可选) 自定义数据源：在 `run_env.sh` 中取消注释 `QLIB_DATA_DIR` / `QLIB_REGION`，即可为该工作区指向不同的 Qlib 数据目录（默认 `~/.qlib/qlib_data/cn_data`、`cn`）。
 5. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
    > [!IMPORTANT]
-   > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 MLflow 数据库（新工作区默认 `mlflow.db` / SQLite；含历史 `mlruns/` 数据的旧工作区自动回退到 `file://` 并设置 `MLFLOW_ALLOW_FILE_STORE=true`），并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径。如需使用自定义后端，在 `run_env.sh` 中设置 `MLFLOW_TRACKING_URI` 即可，`env.py` 会优先使用该值。
+   > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 MLflow 数据库（新工作区默认 `mlflow.db` / SQLite；含历史 `mlruns/` 数据的旧工作区自动回退到 `file://` 并设置 `MLFLOW_ALLOW_FILE_STORE=true`），并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径及绑定同一工作区的 experiment manager。如需使用自定义后端，在 `run_env.sh` 中设置 `MLFLOW_TRACKING_URI` 即可，`env.py` 会优先使用该值。
    >
    > **运行时上下文**：新增代码优先通过 `env.get_workspace_context()` 获取显式的 `WorkspaceContext`，而不是直接复制 `env.ROOT_DIR`、在 import 时派生路径常量，或通过 `os.chdir()` 隐式改变进程 cwd。旧接口仍保持兼容，现有生产脚本会逐步迁移；`ensemble_fusion.py` 已完成 import-time cwd 副作用清理。
 

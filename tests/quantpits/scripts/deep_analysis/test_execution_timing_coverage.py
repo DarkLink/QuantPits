@@ -1,10 +1,6 @@
 import pytest
 import pandas as pd
 import os
-
-# Set environment variable BEFORE importing any quantpits modules
-os.environ["QLIB_WORKSPACE_DIR"] = os.getcwd()
-
 from unittest.mock import MagicMock, patch
 from quantpits.scripts.deep_analysis.agents.execution_quality import ExecutionQualityAgent
 

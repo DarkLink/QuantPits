@@ -12,13 +12,6 @@ import tempfile
 import unittest.mock as mock
 import pytest
 
-# Avoid breaking other tests by not polluting sys.modules globally with a Mock.
-# Instead, set up the environment that env.py expects.
-_fake_root = '/tmp/fake_workspace_rolling_test'
-os.makedirs(_fake_root, exist_ok=True)
-if "QLIB_WORKSPACE_DIR" not in os.environ:
-    os.environ["QLIB_WORKSPACE_DIR"] = _fake_root
-
 SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           '..', '..', '..', 'quantpits', 'scripts')
 sys.path.insert(0, os.path.abspath(SCRIPT_DIR))

@@ -16,10 +16,6 @@ import sys
 import pytest
 import pandas as pd
 from unittest.mock import MagicMock, patch
-
-# Must be set before module import to satisfy env.py
-os.environ.setdefault("QLIB_WORKSPACE_DIR", os.getcwd())
-
 from quantpits.scripts.deep_analysis.agents.execution_quality import ExecutionQualityAgent
 
 

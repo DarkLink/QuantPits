@@ -65,10 +65,12 @@ def test_init_qlib(monkeypatch, tmp_path):
         def __init__(self):
             self.provider_uri = None
             self.region = None
+            self.exp_manager = None
             
-        def init(self, provider_uri, region):
+        def init(self, provider_uri, region, exp_manager):
             self.provider_uri = provider_uri
             self.region = region
+            self.exp_manager = exp_manager
     
     mock_qlib = MockQlib()
     monkeypatch.setitem(sys.modules, "qlib", mock_qlib)
@@ -87,6 +89,14 @@ def test_init_qlib(monkeypatch, tmp_path):
     
     assert mock_qlib.provider_uri == "/mock/qlib/data"
     assert mock_qlib.region == MockConstant.REG_CN
+    assert mock_qlib.exp_manager == {
+        "class": "MLflowExpManager",
+        "module_path": "qlib.workflow.expm",
+        "kwargs": {
+            "uri": env.mlflow_backend,
+            "default_exp_name": "Experiment",
+        },
+    }
 
 # ── set_root_dir() tests ──────────────────────────────────────
 
@@ -106,10 +116,12 @@ def test_set_root_dir_updates_env(monkeypatch, tmp_path):
 
     assert env.ROOT_DIR == str(ws1)
 
+    env._qlib_initialized = True
     env.set_root_dir(str(ws2))
 
     assert env.ROOT_DIR == str(ws2)
     assert os.environ["QLIB_WORKSPACE_DIR"] == str(ws2)
+    assert env._qlib_initialized is False
     # URI must reference the new workspace; accept either backend.
     uri = os.environ["MLFLOW_TRACKING_URI"]
     assert "Workspace2" in uri or str(ws2) in uri

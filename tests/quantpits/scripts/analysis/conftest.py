@@ -19,11 +19,6 @@ _scripts_dir = os.path.abspath(
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
 
-# Ensure QLIB_WORKSPACE_DIR is set (env.py needs it at import time)
-if "QLIB_WORKSPACE_DIR" not in os.environ:
-    os.environ["QLIB_WORKSPACE_DIR"] = "/tmp/MockWorkspace_conftest"
-    os.makedirs("/tmp/MockWorkspace_conftest/config", exist_ok=True)
-
 
 def _has_workspace_data():
     """Check whether the configured workspace has real production data."""

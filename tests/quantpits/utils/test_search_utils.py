@@ -4,9 +4,6 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
-# Must set QLIB_WORKSPACE_DIR before importing quantpits
-os.environ.setdefault("QLIB_WORKSPACE_DIR", "/tmp")
-
 
 class TestLoadOosConfig:
     def test_workspace_root_added_to_search_dirs(self, tmp_path):

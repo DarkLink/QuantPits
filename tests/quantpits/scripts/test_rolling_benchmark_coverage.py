@@ -18,9 +18,6 @@ import pandas as pd
 import numpy as np
 from unittest.mock import MagicMock, patch, Mock
 
-# Must set env before import because rolling_benchmark does os.chdir(env.ROOT_DIR)
-os.environ["QLIB_WORKSPACE_DIR"] = "/tmp/MockWorkspace_rolling_benchmark_cov"
-
 with patch("os.chdir"):
     from quantpits.scripts import rolling_benchmark as rb
 

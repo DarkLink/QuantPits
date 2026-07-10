@@ -1,6 +1,4 @@
 import os
-os.environ["QLIB_WORKSPACE_DIR"] = "/tmp"
-
 import pytest
 from unittest.mock import MagicMock, patch, mock_open
 import sys

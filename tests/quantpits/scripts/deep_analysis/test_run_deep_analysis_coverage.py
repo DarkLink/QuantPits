@@ -5,8 +5,6 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch, mock_open
 
-os.environ["QLIB_WORKSPACE_DIR"] = "/tmp"
-
 with patch('os.chdir'):
     from quantpits.scripts import run_deep_analysis
 

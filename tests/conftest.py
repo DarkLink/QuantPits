@@ -1,6 +1,34 @@
-import pytest
+"""Root conftest for the QuantPits test suite."""
+
+import atexit as _atexit
 import os
+import shutil as _shutil
 import sys
+import tempfile as _tempfile
+
+# ── Session-wide test workspace bootstrap ────────────────────────────
+# env.py enforces QLIB_WORKSPACE_DIR at import time (line 29).  Pytest
+# imports test modules during collection *before* any fixture runs, so we
+# must satisfy this requirement with module-level code here.
+#
+# - Create one temporary workspace for the entire test session.
+# - os.environ.setdefault preserves an externally-supplied value (e.g.
+#   user running tests inside a sourced workspace).
+# - Cleaned up via atexit; typical /tmp tmpwatch also handles orphans.
+
+_TEST_WORKSPACE = _tempfile.mkdtemp(prefix="qp_test_ws_")
+os.makedirs(os.path.join(_TEST_WORKSPACE, "config"), exist_ok=True)
+os.makedirs(os.path.join(_TEST_WORKSPACE, "data", "history"), exist_ok=True)
+os.makedirs(os.path.join(_TEST_WORKSPACE, "output", "predictions"), exist_ok=True)
+os.environ.setdefault("QLIB_WORKSPACE_DIR", _TEST_WORKSPACE)
+
+
+@_atexit.register
+def _cleanup_test_workspace() -> None:
+    _shutil.rmtree(_TEST_WORKSPACE, ignore_errors=True)
+
+
+import pytest
 
 @pytest.fixture(autouse=True)
 def prevent_mlruns(monkeypatch, tmp_path):

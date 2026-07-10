@@ -19,7 +19,7 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 4. (Optional) Custom data source: Uncomment `QLIB_DATA_DIR` / `QLIB_REGION` in `run_env.sh` to point the workspace at a different Qlib data directory (defaults to `~/.qlib/qlib_data/cn_data` and `cn`).
 5. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace, and `env.init_qlib()` will initialize Qlib with the configured data path.
    > [!IMPORTANT]
-   > **Initialization order**: Core scripts should import `env` before resolving workspace-scoped paths. This ensures `ROOT_DIR` is recognized, `MLFLOW_TRACKING_URI` points to the active workspace's MLflow backend (SQLite `mlflow.db` by default; legacy `mlruns/` file stores are auto-detected), and Qlib can be initialized through `env.init_qlib()`. To customize the backend, set `MLFLOW_TRACKING_URI` in `run_env.sh`.
+   > **Initialization order**: Core scripts should import `env` before resolving workspace-scoped paths. This ensures `ROOT_DIR` is recognized, `MLFLOW_TRACKING_URI` points to the active workspace's MLflow backend (SQLite `mlflow.db` by default; legacy `mlruns/` file stores are auto-detected), and `env.init_qlib()` binds both the Qlib data provider and experiment manager to that workspace. To customize the backend, set `MLFLOW_TRACKING_URI` in `run_env.sh`.
    >
    > **Runtime context**: New code should prefer `env.get_workspace_context()` to obtain an explicit `WorkspaceContext` instead of copying `env.ROOT_DIR`, deriving import-time path constants, or changing the process `cwd` with `os.chdir()`. Legacy APIs remain compatible and production scripts will migrate gradually; `ensemble_fusion.py` has already removed its import-time cwd side effect.
 
