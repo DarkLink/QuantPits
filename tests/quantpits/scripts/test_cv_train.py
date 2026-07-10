@@ -119,6 +119,15 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(ct, 'ROOT_DIR', str(workspace))
     yield ct, workspace
 
+    # Teardown: restore env and train_utils to session workspace so
+    # stale MockWorkspace paths do not leak into subsequent test files.
+    for _mn in ["quantpits.utils.env", "quantpits.utils.train_utils"]:
+        if _mn in sys.modules:
+            try:
+                importlib.reload(sys.modules[_mn])
+            except Exception:
+                pass
+
 
 # Helper to build a standard CPCV params dict
 def _make_cpcv_params(**overrides):

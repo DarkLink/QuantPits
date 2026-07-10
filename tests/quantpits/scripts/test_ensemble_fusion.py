@@ -13,23 +13,23 @@ def mock_env(monkeypatch, tmp_path):
     workspace.mkdir()
     (workspace / "config").mkdir()
     (workspace / "output").mkdir()
-    
+
     import sys
     import importlib
     script_dir = os.path.join(os.getcwd(), "quantpits/scripts")
     if script_dir not in sys.path:
         sys.path.append(script_dir)
-        
+
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     monkeypatch.setattr(sys, 'argv', ['script.py'])
-    
+
     # Reload to pick up new env
     for mod_name in ['env', 'quantpits.utils.env', 'ensemble_fusion', 'quantpits.scripts.ensemble_fusion']:
         if mod_name in sys.modules:
             importlib.reload(sys.modules[mod_name])
-            
+
     from quantpits.scripts import ensemble_fusion as ef
-    
+
     # Global mocks for side-effect-heavy functions
     monkeypatch.setattr('quantpits.utils.env.safeguard', lambda x: None)
     monkeypatch.setattr('quantpits.utils.env.init_qlib', lambda: None)
@@ -37,8 +37,17 @@ def mock_env(monkeypatch, tmp_path):
     mock_D = MagicMock()
     mock_D.calendar.return_value = pd.date_range("2020-01-01", periods=10, freq="D")
     monkeypatch.setattr(qlib.data, 'D', mock_D)
-    
+
     yield ef, workspace
+
+    # Teardown: restore env and train_utils to session workspace to avoid
+    # leaking MockWorkspace paths into subsequent test files.
+    for _mn in ["quantpits.utils.env", "quantpits.utils.train_utils"]:
+        if _mn in sys.modules:
+            try:
+                importlib.reload(sys.modules[_mn])
+            except Exception:
+                pass
 
 def test_parse_ensemble_config():
     import quantpits.scripts.ensemble_fusion as ef

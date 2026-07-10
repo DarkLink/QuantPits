@@ -1,10 +1,11 @@
-FROM python:3.12-slim
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
 
 # Set working directory
 WORKDIR /app
 
 # Install system dependencies
-# Python 3.12-slim doesn't have build tools, but we need them for packages like scipy, qlib
+# slim images lack build tools needed for packages like scipy, qlib
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \

@@ -5,6 +5,8 @@ Analyzes trading behavior patterns: signal discipline, holding periods,
 turnover trends, concentration, and win rates by trade classification.
 """
 
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 from ..base_agent import BaseAgent, AgentFindings, AnalysisContext, Finding

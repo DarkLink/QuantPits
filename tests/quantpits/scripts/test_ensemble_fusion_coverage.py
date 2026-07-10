@@ -25,6 +25,15 @@ from types import SimpleNamespace
 @pytest.fixture(autouse=True)
 def ef_cov_env(monkeypatch, tmp_path):
     """Setup workspace for ensemble_fusion tests."""
+    import importlib
+
+    # Save original env state for teardown restore
+    _orig_root_dir = None
+    if "quantpits.utils.env" in __import__("sys").modules:
+        _orig_root_dir = getattr(
+            __import__("sys").modules["quantpits.utils.env"], "ROOT_DIR", None
+        )
+
     workspace = tmp_path / "EFCovWS"
     workspace.mkdir()
     (workspace / "config").mkdir()
@@ -34,7 +43,6 @@ def ef_cov_env(monkeypatch, tmp_path):
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
     monkeypatch.setattr("sys.argv", ["script.py"])
 
-    import importlib
     for mn in ["env", "quantpits.utils.env", "ensemble_fusion",
                "quantpits.scripts.ensemble_fusion"]:
         if mn in __import__("sys").modules:
@@ -44,6 +52,16 @@ def ef_cov_env(monkeypatch, tmp_path):
     monkeypatch.setattr(ef, "ROOT_DIR", str(workspace))
 
     yield ef, workspace
+
+    # Teardown: reload env and train_utils back to the session workspace so
+    # subsequent test files do not see stale EFCovWS paths.
+    _sys = __import__("sys")
+    for _mn in ["quantpits.utils.env", "quantpits.utils.train_utils"]:
+        if _mn in _sys.modules:
+            try:
+                importlib.reload(_sys.modules[_mn])
+            except Exception:
+                pass
 
 
 def test_save_predictions_no_combo_name(ef_cov_env, tmp_path):

@@ -52,9 +52,11 @@ def ppt_env(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["script.py"])
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
 
+    import importlib
+    # Ensure env is in sys.modules before reloading — a prior test may have
+    # popped it (e.g. test_package.py or test_ensemble_fusion_plan_manifest.py).
     from quantpits.utils import env
     from quantpits.scripts import prod_post_trade
-    import importlib
     importlib.reload(env)
     importlib.reload(prod_post_trade)
 

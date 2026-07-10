@@ -19,8 +19,15 @@ def test_version_installed():
 def test_version_package_not_found():
     # Reload package with mocked version function to raise PackageNotFoundError
     expected = _read_pyproject_version()
-    with patch('importlib.metadata.version', side_effect=importlib.metadata.PackageNotFoundError):
-        if 'quantpits' in sys.modules:
-            del sys.modules['quantpits']
-        import quantpits
-        assert quantpits.__version__ == expected
+    # Save quantpits and all its submodules so we can restore them after the test;
+    # otherwise subsequent tests fail with ImportError.
+    _saved = {k: v for k, v in sys.modules.items()
+              if k == "quantpits" or k.startswith("quantpits.")}
+    for k in _saved:
+        del sys.modules[k]
+    try:
+        with patch('importlib.metadata.version', side_effect=importlib.metadata.PackageNotFoundError):
+            import quantpits
+            assert quantpits.__version__ == expected
+    finally:
+        sys.modules.update(_saved)

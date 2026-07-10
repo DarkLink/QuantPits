@@ -79,19 +79,23 @@ def _prepared(ctx, *, options=None):
 
 
 def test_prepare_and_render_plan_do_not_import_script(tmp_path):
-    sys.modules.pop("quantpits.scripts.ensemble_fusion", None)
-    ctx = _workspace(tmp_path)
+    _mod = sys.modules.pop("quantpits.scripts.ensemble_fusion", None)
+    try:
+        ctx = _workspace(tmp_path)
 
-    prepared = _prepared(ctx)
-    payload = prepared_plan_json(prepared)
-    rendered = render_prepared_plan(prepared)
+        prepared = _prepared(ctx)
+        payload = prepared_plan_json(prepared)
+        rendered = render_prepared_plan(prepared)
 
-    assert "quantpits.scripts.ensemble_fusion" not in sys.modules
-    assert payload["plan"]["command"] == "ensemble_fusion"
-    assert payload["plan_fingerprint"]
-    assert "raw_config" not in json.dumps(payload)
-    assert "--- Execution Plan (dry run) ---" in rendered
-    assert "Plan fingerprint:" in rendered
+        assert "quantpits.scripts.ensemble_fusion" not in sys.modules
+        assert payload["plan"]["command"] == "ensemble_fusion"
+        assert payload["plan_fingerprint"]
+        assert "raw_config" not in json.dumps(payload)
+        assert "--- Execution Plan (dry run) ---" in rendered
+        assert "Plan fingerprint:" in rendered
+    finally:
+        if _mod is not None:
+            sys.modules["quantpits.scripts.ensemble_fusion"] = _mod
 
 
 def test_service_execute_success_writes_manifest_and_operator_log(tmp_path):

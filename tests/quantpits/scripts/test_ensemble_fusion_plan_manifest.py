@@ -68,13 +68,22 @@ def test_import_ensemble_fusion_does_not_change_cwd(monkeypatch, tmp_path):
 
     import importlib
 
+    # Save modules before popping so we can restore them; otherwise
+    # subsequent tests that try importlib.reload() will get ImportError.
+    _saved = {}
     for mod_name in ["quantpits.utils.env", "quantpits.scripts.ensemble_fusion"]:
+        _saved[mod_name] = sys.modules.get(mod_name)
         sys.modules.pop(mod_name, None)
 
-    before = Path.cwd()
-    importlib.import_module("quantpits.scripts.ensemble_fusion")
-
-    assert Path.cwd() == before
+    try:
+        before = Path.cwd()
+        importlib.import_module("quantpits.scripts.ensemble_fusion")
+        assert Path.cwd() == before
+    finally:
+        _sys = __import__("sys")
+        for mod_name, mod_obj in _saved.items():
+            if mod_obj is not None:
+                _sys.modules[mod_name] = mod_obj
 
 
 def test_explain_plan_does_not_run_heavy_paths(ef_module, capsys):
