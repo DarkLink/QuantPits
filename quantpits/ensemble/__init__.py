@@ -11,6 +11,13 @@ from quantpits.ensemble.analytics import (
     save_model_contribution_snapshot,
     summarize_correlation_matrix,
 )
+from quantpits.ensemble.comparison import (
+    ComboComparisonRequest,
+    ComboComparisonResult,
+    build_combo_comparison_frame,
+    compare_combos,
+    run_combo_comparison,
+)
 from quantpits.ensemble.config import load_ensemble_run_config
 from quantpits.ensemble.ledger import (
     FusionLedgerEntry,
@@ -41,6 +48,8 @@ from quantpits.ensemble.types import (
 __all__ = [
     "CorrelationAnalysisRequest",
     "CorrelationAnalysisResult",
+    "ComboComparisonRequest",
+    "ComboComparisonResult",
     "EnsembleExecutionHooks",
     "EnsembleFusionService",
     "EnsembleRunConfig",
@@ -53,8 +62,10 @@ __all__ = [
     "PreparedEnsembleRun",
     "append_fusion_ledger",
     "build_model_contribution_payload",
+    "build_combo_comparison_frame",
     "build_fusion_ledger_record",
     "calculate_loo_contribution",
+    "compare_combos",
     "compute_prediction_correlation",
     "load_ensemble_run_config",
     "options_from_namespace",
@@ -62,6 +73,7 @@ __all__ = [
     "prepare_ensemble_run",
     "prepared_plan_json",
     "render_prepared_plan",
+    "run_combo_comparison",
     "run_correlation_analysis",
     "save_ensemble_predictions",
     "save_model_contribution_snapshot",
