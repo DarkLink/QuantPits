@@ -205,4 +205,15 @@ def fingerprint_command_plan(
     payload = _strip_plan_fingerprint(plan.to_public_dict())
     if not include_run_id:
         payload.pop("run_id", None)
+        # A run id is normally embedded in the manifest output filename too.
+        # Normalize every manifest filename rather than matching the current
+        # top-level run id: dataclass callers may replace only ``run_id`` while
+        # retaining the already-built output refs.
+        outputs = payload.get("outputs", [])
+        for output in outputs if isinstance(outputs, list) else ():
+            if not isinstance(output, dict) or output.get("kind") != "manifest":
+                continue
+            path = str(output.get("path", ""))
+            if "/" in path:
+                output["path"] = f"{path.rsplit('/', 1)[0]}/<run_id>.json"
     return short_fingerprint(payload, length=length)

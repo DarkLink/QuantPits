@@ -259,6 +259,10 @@ python -m quantpits.scripts.order_gen --explain-plan
 python -m quantpits.scripts.order_gen
 ```
 
+A real order run records the files actually produced in `output/manifests/order_gen/<run_id>.json` and
+links the run to `data/operator_log.jsonl`. Use `--dry-run` for a full-calculation preview; it writes no
+orders, manifest, or OperatorLog entry.
+
 ---
 
 ### Step 9: Combo Search (non-blocking, can do later)

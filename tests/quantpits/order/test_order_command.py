@@ -77,6 +77,20 @@ def test_model_source_takes_precedence_over_combo(run_config):
     assert any("takes precedence" in warning for warning in source.warnings)
 
 
+def test_model_source_preserves_mode_specific_experiment(run_config):
+    config = replace(
+        run_config,
+        train_records={
+            "experiment_name": "legacy",
+            "static_experiment_name": "static-exp",
+            "models": {"demo_model@static": "model-record"},
+        },
+    )
+    source = resolve_order_source(OrderRunOptions(model="demo_model"), config)
+    assert source.resolved_name == "demo_model@static"
+    assert source.experiment_name == "static-exp"
+
+
 def test_ensemble_source_uses_default_and_supports_record_dict(run_config):
     source = resolve_order_source(OrderRunOptions(), run_config)
     assert source.resolved_name == "demo_combo"
@@ -145,6 +159,18 @@ def test_plan_fingerprint_ignores_run_id(ctx, run_config):
         source=source, validation_result=None,
     )
     assert fingerprint_command_plan(first) == fingerprint_command_plan(second)
+
+
+def test_no_manifest_changes_plan_and_fingerprint(ctx, run_config):
+    regular = prepare_order_run(
+        ctx=ctx, options=OrderRunOptions(run_id="same"), cli_args=(), run_config=run_config
+    )
+    disabled = prepare_order_run(
+        ctx=ctx, options=OrderRunOptions(run_id="same", no_manifest=True), cli_args=("--no-manifest",), run_config=run_config
+    )
+    assert any(item.kind == "manifest" for item in regular.plan.outputs)
+    assert not any(item.kind == "manifest" for item in disabled.plan.outputs)
+    assert regular.plan_fingerprint != disabled.plan_fingerprint
 
 
 def test_json_plan_is_lightweight_and_does_not_mutate_namespace(monkeypatch, ctx, run_config):

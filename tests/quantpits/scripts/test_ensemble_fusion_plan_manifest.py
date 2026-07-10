@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,33 +59,33 @@ def _configs():
     return train_records, model_config, ensemble_config
 
 
-def test_import_ensemble_fusion_does_not_change_cwd(monkeypatch, tmp_path):
+def test_import_ensemble_fusion_does_not_change_cwd(tmp_path):
     workspace = tmp_path / "Demo_Workspace"
     (workspace / "config").mkdir(parents=True)
     (workspace / "data").mkdir()
     (workspace / "output").mkdir()
 
-    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(workspace))
-    monkeypatch.chdir(tmp_path)
-
-    import importlib
-
-    # Save modules before popping so we can restore them; otherwise
-    # subsequent tests that try importlib.reload() will get ImportError.
-    _saved = {}
-    for mod_name in ["quantpits.utils.env", "quantpits.scripts.ensemble_fusion"]:
-        _saved[mod_name] = sys.modules.get(mod_name)
-        sys.modules.pop(mod_name, None)
-
-    try:
-        before = Path.cwd()
-        importlib.import_module("quantpits.scripts.ensemble_fusion")
-        assert Path.cwd() == before
-    finally:
-        _sys = __import__("sys")
-        for mod_name, mod_obj in _saved.items():
-            if mod_obj is not None:
-                _sys.modules[mod_name] = mod_obj
+    repo_root = Path(__file__).resolve().parents[3]
+    env = os.environ.copy()
+    env["QLIB_WORKSPACE_DIR"] = str(workspace)
+    env["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(repo_root), env.get("PYTHONPATH", "")) if value
+    )
+    script = (
+        "from pathlib import Path; "
+        "before = Path.cwd(); "
+        "import quantpits.scripts.ensemble_fusion; "
+        "assert Path.cwd() == before, (before, Path.cwd())"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_explain_plan_does_not_run_heavy_paths(ef_module, capsys):

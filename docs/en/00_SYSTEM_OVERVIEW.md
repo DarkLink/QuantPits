@@ -566,7 +566,8 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `predict_utils.py` | Prediction data load/save, Recorder management | Prediction, Fusion, Ensemble Search |
 | `config_loader.py` | Workspace-level config loading | Global |
 | `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
-| `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | `ensemble_fusion` is integrated; future heavy commands can reuse it |
+| `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | Integrated by `ensemble_fusion` and `order_gen` |
+| `order/` | Order command, prepared source, execution service, pure opinion calculation, atomic persistence, and actual artifact ledger | Order generation |
 | `ensemble/` | Ensemble fusion service, I/O, and reporting layer: explicit config loading, workspace-bound execution paths, plan/render, manifest, OperatorLog linkage, prediction persistence, fusion ledger, correlation/LOO analytics, risk/leaderboard/chart reports, and execution lifecycle | Fusion |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
 | `backtest_utils.py` | Qlib backtest execution and evaluation | Ensemble Search, Fusion, Analysis |
@@ -606,11 +607,11 @@ The command does not write to the workspace. JSON output includes paths, summari
 
 The default manifest path is `output/manifests/{command}/{run_id}.json`, and files are written only when the caller explicitly invokes `write_run_manifest()`. Manifest/public dict output records paths, summaries, fingerprints, records, and warnings; it does not include full raw configs. Real `ensemble_fusion.py` runs now write `output/manifests/ensemble_fusion/<run_id>.json` by default; dry-runs (`--explain-plan` / `--json-plan`) do not write manifests. `ensemble_fusion.py` keeps plan output workspace-relative and resolves relative output paths under the active workspace only at the real execution boundary.
 
-`order_gen.py` also supports `--explain-plan` / `--json-plan`. These modes only read and validate workspace configuration; they do not initialize Qlib, load predictions or prices, or write files. The existing `--dry-run` remains a full-calculation preview that skips output writes. Importing the order command no longer changes the process cwd, and relative output/record paths are explicitly bound to the active workspace at the real execution boundary. Order generation does not write a RunManifest in this phase.
+`order_gen.py` also supports `--explain-plan` / `--json-plan`. These modes only read and validate workspace configuration; they do not initialize Qlib, load predictions or prices, or write files. `--dry-run` performs the full calculation but writes neither artifacts nor OperatorLog. Real execution uses the prepared recorder/config snapshot, atomically writes actual non-empty order/opinion outputs, writes `output/manifests/order_gen/<run_id>.json` by default, and links OperatorLog; `--no-manifest` disables only the manifest. Importing the command does not change cwd. Manifest/public summaries exclude full predictions, holdings, order rows, and raw config.
 
 `ensemble_fusion` also exposes a typed command boundary: `quantpits/ensemble/command.py` owns the argument contract and prepare/explain/execute routing, `quantpits/ensemble/service.py` owns the execution lifecycle, and the script layer owns process exit semantics only. The engine layer never calls `sys.exit()`, so notebooks, schedulers, tests, and other Python workflows can reuse the command runner and handle structured outcomes or typed domain errors themselves.
 
-`OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, and `plan_fingerprint`. `ensemble_fusion.py` now links these fields to its run manifest; legacy commands that are not yet manifest-integrated keep them as `null`.
+`OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, and `plan_fingerprint`. `ensemble_fusion.py` and `order_gen.py` link these fields to their run manifests; legacy commands that are not yet manifest-integrated keep them as `null`.
 
 ### ⑧ File Archiving Tool
 

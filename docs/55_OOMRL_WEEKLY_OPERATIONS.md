@@ -250,6 +250,10 @@ python -m quantpits.scripts.order_gen --explain-plan
 python -m quantpits.scripts.order_gen
 ```
 
+正式订单运行会把本次实际生成的文件记录到 `output/manifests/order_gen/<run_id>.json`，并关联
+`data/operator_log.jsonl`。需要进行完整计算预览时使用 `--dry-run`；该模式不会写订单、manifest
+或 OperatorLog。
+
 ---
 
 ### 步骤 9：组合搜索（不阻塞订单，可后续做）

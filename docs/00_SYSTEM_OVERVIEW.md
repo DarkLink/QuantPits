@@ -569,7 +569,8 @@ python -m quantpits.scripts.static_train --all-enabled
 | `predict_utils.py` | 预测数据加载/保存、Recorder 管理 | 预测、融合、穷举 |
 | `config_loader.py` | Workspace 级配置加载 | 全局 |
 | `config_contracts/` | Workspace 配置校验、normalize、fingerprint，供运行前检查和后续 plan/manifest 复用 | 全局 |
-| `runtime/` | 通用 `CommandPlan` / `RunManifest` / plan renderer / manifest writer 运行时基础类型 | `ensemble_fusion` 已接入；后续重资产命令逐步复用 |
+| `runtime/` | 通用 `CommandPlan` / `RunManifest` / plan renderer / manifest writer 运行时基础类型 | `ensemble_fusion`、`order_gen` 已接入 |
+| `order/` | Order command、prepared source、执行 service、纯 opinions 计算、原子 persistence 与 actual artifact ledger | 订单生成 |
 | `ensemble/` | Ensemble fusion 的 service、I/O 与报告层：显式配置加载、workspace-bound 执行路径、plan/render、manifest、OperatorLog linkage、预测持久化、fusion ledger、correlation/LOO analytics、risk/leaderboard/chart report 与执行生命周期 | 融合 |
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
 | `backtest_utils.py` | Qlib 回测执行与评估 | 穷举、融合、分析 |
@@ -609,11 +610,11 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 
 默认 manifest 写入位置为 `output/manifests/{command}/{run_id}.json`，仅在调用方显式调用 `write_run_manifest()` 时写入。Manifest/public dict 只记录路径、summary、fingerprint、records 等摘要，不包含完整 raw config。`ensemble_fusion.py` 真实执行默认会写入 `output/manifests/ensemble_fusion/<run_id>.json`；dry-run (`--explain-plan` / `--json-plan`) 不写任何 manifest。`ensemble_fusion.py` 的 plan 输出保持 workspace-relative，真实执行时才将相对输出路径解析到当前激活的 workspace。
 
-`order_gen.py` 同样支持 `--explain-plan` / `--json-plan`：这两个模式只读取并校验 workspace 配置，不初始化 Qlib、不加载预测或价格、不写文件。原有 `--dry-run` 仍是重计算预览，会运行完整订单计算但跳过输出写入。Order 命令导入时不再修改进程 cwd，相对输出和记录路径在真实执行边界显式绑定到当前 workspace；本阶段尚不写 RunManifest。
+`order_gen.py` 同样支持 `--explain-plan` / `--json-plan`：这两个模式只读取并校验 workspace 配置，不初始化 Qlib、不加载预测或价格、不写文件。`--dry-run` 是重计算预览，但连 OperatorLog 也不写。真实执行使用 prepared recorder/config snapshot，按实际非空结果原子写入订单与意见文件，默认写 `output/manifests/order_gen/<run_id>.json` 并关联 OperatorLog；`--no-manifest` 只关闭 manifest。Order 命令导入时不修改 cwd，manifest/public summary 不包含完整预测、持仓、订单行或 raw config。
 
 `ensemble_fusion` 还提供独立的 typed command boundary：`quantpits/ensemble/command.py` 负责参数合同和 prepare/explain/execute 路由，`quantpits/ensemble/service.py` 负责执行生命周期，脚本层只负责 process exit semantics。Engine 层不会调用 `sys.exit()`，因此 notebook、scheduler、测试或其他 Python 流程可以复用 command runner，并自行处理结构化 outcome 与 typed domain error。
 
-`OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint` 字段。`ensemble_fusion.py` 已将这些字段与运行清单关联；未接入 manifest 的旧命令仍保持 `null`。
+`OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint` 字段。`ensemble_fusion.py` 和 `order_gen.py` 已将这些字段与运行清单关联；未接入 manifest 的旧命令仍保持 `null`。
 
 ### ⑧ 文件归档工具
 

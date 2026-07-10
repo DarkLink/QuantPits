@@ -42,6 +42,7 @@ class OrderRunOptions:
     explain_plan: bool = False
     json_plan: bool = False
     run_id: str | None = None
+    no_manifest: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,15 @@ class OrderRunSummary:
     sell_file: str | None
     buy_file: str | None
     dry_run: bool
+    run_id: str | None = None
+    manifest_path: str | None = None
+    opinion_csv_file: str | None = None
+    opinion_json_file: str | None = None
+    target_buy_count: int = 0
+    estimated_sell_amount: float = 0.0
+    estimated_buy_min: float | None = None
+    estimated_buy_max: float | None = None
+    actual_outputs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -144,6 +154,7 @@ def build_order_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--explain-plan", action="store_true", help="仅打印执行计划，不初始化 Qlib，不写文件")
     parser.add_argument("--json-plan", action="store_true", help="以 JSON 输出执行计划；隐含 explain-plan")
     parser.add_argument("--run-id", type=str, default=None, help="显式指定运行 ID，用于计划身份")
+    parser.add_argument("--no-manifest", action="store_true", help="执行订单生成但不写 RunManifest")
     return parser
 
 
@@ -239,7 +250,11 @@ def resolve_order_source(options: OrderRunOptions, config: OrderRunConfig) -> Re
         experiment_name = config.train_records.get("experiment_name")
         if resolved_name:
             experiments = config.train_records.get("experiments", {})
-            experiment_name = experiments.get(resolved_name, experiment_name)
+            experiment_name = experiments.get(resolved_name)
+            if not experiment_name:
+                from quantpits.utils.train_utils import get_experiment_name_for_model
+
+                experiment_name = get_experiment_name_for_model(config.train_records, resolved_name)
         return ResolvedOrderSource(
             mode="model",
             requested_name=options.model,
@@ -316,7 +331,7 @@ def _preview_outputs(options: OrderRunOptions) -> tuple[str, ...]:
     )
 
 
-def _steps(dry_run: bool) -> tuple[CommandStep, ...]:
+def _steps(dry_run: bool, no_manifest: bool) -> tuple[CommandStep, ...]:
     names = (
         ("validate-configs", "validate workspace configuration contracts", False),
         ("resolve-prediction-source", "resolve the model or ensemble recorder", False),
@@ -335,6 +350,18 @@ def _steps(dry_run: bool) -> tuple[CommandStep, ...]:
         [
             CommandStep("write-model-opinions", "write model opinion reports", can_skip=dry_run, skip_reason=reason),
             CommandStep("write-order-files", "write buy and sell suggestion files", can_skip=dry_run, skip_reason=reason),
+            CommandStep(
+                "write-run-manifest",
+                "write the actual run artifact manifest",
+                can_skip=dry_run or no_manifest,
+                skip_reason="--dry-run" if dry_run else ("--no-manifest" if no_manifest else ""),
+            ),
+            CommandStep(
+                "append-operator-log",
+                "append the real execution result to OperatorLog",
+                can_skip=dry_run,
+                skip_reason=reason,
+            ),
         ]
     )
     return tuple(steps)
@@ -362,6 +389,15 @@ def build_order_command_plan(
 
     preview = _preview_outputs(options)
     outputs = () if options.dry_run else tuple(OutputRef(path, kind="report", overwrite=True) for path in preview)
+    if not options.dry_run and not options.no_manifest:
+        outputs += (
+            OutputRef(
+                f"output/manifests/order_gen/{run_id}.json",
+                kind="manifest",
+                description="run manifest",
+                overwrite=True,
+            ),
+        )
     params = config.strategy_config.get("strategy", {}).get("params", {})
     merged = config.merged_config
     cashflows = config.cashflow_config.get("cashflows", {})
@@ -381,6 +417,7 @@ def build_order_command_plan(
         "output_dir": options.output_dir,
         "dry_run": options.dry_run,
         "verbose": options.verbose,
+        "no_manifest": options.no_manifest,
         "market": merged.get("market", "csi300"),
         "strategy_name": config.strategy_config.get("strategy", {}).get("name", "topk_dropout"),
         "topk": params.get("topk", 20),
@@ -403,8 +440,10 @@ def build_order_command_plan(
             StateRef("mlflow", action="read", description="selected prediction recorder"),
             StateRef("qlib-calendar", action="read", description="trading calendar"),
             StateRef("qlib-market-data", action="read", description="price and price-limit data"),
-        ),
-        steps=_steps(options.dry_run),
+        ) + (() if options.dry_run else (
+            StateRef("data/operator_log.jsonl", action="write", description="operator execution log"),
+        )),
+        steps=_steps(options.dry_run, options.no_manifest),
         config_fingerprints=fingerprints,
         warnings=warnings,
         metadata=metadata,

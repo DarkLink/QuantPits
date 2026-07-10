@@ -36,6 +36,9 @@ python quantpits/scripts/order_gen.py --json-plan
 
 # 6. Verbose outputs examining detailed ranks + multi-model opinions
 python quantpits/scripts/order_gen.py --verbose
+
+# 7. Execute without a RunManifest (orders and OperatorLog are still written)
+python quantpits/scripts/order_gen.py --no-manifest
 ```
 
 ---
@@ -44,12 +47,13 @@ python quantpits/scripts/order_gen.py --verbose
 
 Order generation provides two different preview mechanisms:
 
-| Mode | Qlib | Predictions/prices | Order calculation | Writes | Intended use |
-|------|:---:|:---:|:---:|:---:|------|
-| `--explain-plan` | No | No | No | No | Human review of inputs, source selection, steps, and expected outputs |
-| `--json-plan` | No | No | No | No | Structured plan consumption by CI, agents, or other tools |
-| `--dry-run` | Yes | Yes | Yes | No | Calculate real orders for final human review |
-| Default execution | Yes | Yes | Yes | Conditional | Generate order and model-opinion artifacts |
+| Mode | Qlib | Calculation | Order/opinion files | Manifest | OperatorLog |
+|------|:---:|:---:|:---:|:---:|:---:|
+| `--explain-plan` | No | No | No | No | No |
+| `--json-plan` | No | No | No | No | No |
+| `--dry-run` | Yes | Yes | No | No | No |
+| Default execution | Yes | Yes | Actual non-empty results only | Best effort | Yes |
+| `--no-manifest` | Yes | Yes | Actual non-empty results only | No | Yes |
 
 Plan modes read workspace configuration only, produce a stable fingerprint, and explain `--model` / `--combo` source selection. They do not run the safeguard, initialize Qlib, access recorders/calendars/market data, or create output directories. Relative `--output-dir` and `--record-file` values are resolved under the active workspace rather than the caller's current working directory.
 
@@ -66,7 +70,13 @@ python quantpits/scripts/order_gen.py --json-plan --run-id order-review
 python quantpits/scripts/order_gen.py --dry-run --verbose
 ```
 
-`--run-id` identifies a plan; the semantic plan fingerprint excludes run-id changes by default. Order generation does not write a RunManifest in this phase.
+`--run-id` identifies a run; the semantic plan fingerprint excludes run-id changes by default. Real execution writes
+`output/manifests/order_gen/<run_id>.json` by default. A manifest lists only files committed by that run: empty buy/sell
+results and missing opinion results are not reported as artifacts. Each order/opinion file is committed atomically with a
+sibling temporary file and replacement.
+
+Planning and execution share one prepared prediction source. Execution loads the recorder id resolved during planning
+instead of reopening mappings to select a source again, and model opinions reuse the same configuration snapshot.
 
 ---
 
@@ -186,7 +196,8 @@ output/
 ├── sell_suggestion_{source}_{date}.csv       # Sell permutation targets
 ├── buy_suggestion_{source}_{date}.csv        # Buy permutation allocations
 ├── model_opinions_{date}.csv                 # Aggregated prediction multi-matrix
-└── model_opinions_{date}.json                # Matrix component schemas
+├── model_opinions_{date}.json                # Matrix component schemas
+└── manifests/order_gen/{run_id}.json         # Actual artifacts and safe run summary
 ```
 
 (`{source}` scales dynamically mapping toward `ensemble`, active algorithm parameters `gru`, or explicit `custom` flags.)
@@ -228,6 +239,7 @@ Optional Overrides:
   --explain-plan           Print a lightweight plan without Qlib initialization or writes
   --json-plan              Emit a machine-readable JSON plan; implies explain-plan
   --run-id TEXT            Set an explicit plan run ID
+  --no-manifest            Execute without a RunManifest; OperatorLog is still written
 ```
 
 ---

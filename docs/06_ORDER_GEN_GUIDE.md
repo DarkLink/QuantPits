@@ -36,6 +36,9 @@ python quantpits/scripts/order_gen.py --json-plan
 
 # 6. 查看详细排名 + 多模型判断
 python quantpits/scripts/order_gen.py --verbose
+
+# 7. 正式执行但不写 RunManifest（仍写订单和 OperatorLog）
+python quantpits/scripts/order_gen.py --no-manifest
 ```
 
 ---
@@ -44,12 +47,13 @@ python quantpits/scripts/order_gen.py --verbose
 
 订单命令提供两种用途不同的预览方式：
 
-| 模式 | Qlib | 预测/价格读取 | 订单计算 | 写文件 | 用途 |
-|------|:---:|:---:|:---:|:---:|------|
-| `--explain-plan` | 否 | 否 | 否 | 否 | 人工检查输入、来源选择、步骤和预期输出 |
-| `--json-plan` | 否 | 否 | 否 | 否 | CI、agent 或其他工具读取结构化计划 |
-| `--dry-run` | 是 | 是 | 是 | 否 | 使用真实数据计算并人工核对最终订单 |
-| 默认执行 | 是 | 是 | 是 | 条件写入 | 正式生成订单和多模型判断文件 |
+| 模式 | Qlib | 订单计算 | 订单/意见文件 | Manifest | OperatorLog |
+|------|:---:|:---:|:---:|:---:|:---:|
+| `--explain-plan` | 否 | 否 | 否 | 否 | 否 |
+| `--json-plan` | 否 | 否 | 否 | 否 | 否 |
+| `--dry-run` | 是 | 是 | 否 | 否 | 否 |
+| 默认执行 | 是 | 是 | 按实际非空结果写入 | 是（best-effort） | 是 |
+| `--no-manifest` | 是 | 是 | 按实际非空结果写入 | 否 | 是 |
 
 计划模式只读取 workspace 配置，输出稳定 fingerprint，并解释 `--model` / `--combo` 的来源选择。它不会运行 safeguard、初始化 Qlib、访问 recorder/calendar/行情，也不会创建输出目录。相对的 `--output-dir` 和 `--record-file` 始终按当前 workspace 解析，而不是按调用命令时的 cwd 解析。
 
@@ -66,7 +70,12 @@ python quantpits/scripts/order_gen.py --json-plan --run-id order-review
 python quantpits/scripts/order_gen.py --dry-run --verbose
 ```
 
-`--run-id` 仅用于计划身份；semantic plan fingerprint 默认不受 run id 变化影响。本阶段 order 命令不会写 RunManifest。
+`--run-id` 仅用于运行身份；semantic plan fingerprint 默认不受 run id 变化影响。正式执行默认写入
+`output/manifests/order_gen/<run_id>.json`。Manifest 只列出本次实际成功提交的文件；空买单、空卖单或
+不存在的意见结果不会被误报为产物。订单/意见文件采用同目录临时文件加原子替换的方式逐文件提交。
+
+计划解析与真实执行共享同一个 prepared prediction source。真实执行按计划中已经解析的 recorder id
+加载预测，不会在执行中重新读取映射并选择另一个来源；多模型意见也复用同一次配置快照。
 
 ---
 
@@ -186,7 +195,8 @@ output/
 ├── sell_suggestion_{source}_{date}.csv       # 卖出订单
 ├── buy_suggestion_{source}_{date}.csv        # 买入订单
 ├── model_opinions_{date}.csv                 # 多模型判断表
-└── model_opinions_{date}.json                # 模型组成信息
+├── model_opinions_{date}.json                # 模型组成信息
+└── manifests/order_gen/{run_id}.json         # 本次实际产物与安全摘要
 ```
 
 其中 `{source}` 为 `ensemble`、模型名（如 `gru`）或 `custom`。
@@ -228,6 +238,7 @@ python quantpits/scripts/order_gen.py --help
   --explain-plan           仅打印轻量执行计划，不初始化 Qlib、不写文件
   --json-plan              输出机器可读 JSON 计划；隐含 explain-plan
   --run-id TEXT            显式指定计划运行 ID
+  --no-manifest            正式执行但不写 RunManifest（OperatorLog 仍写入）
 ```
 
 ---

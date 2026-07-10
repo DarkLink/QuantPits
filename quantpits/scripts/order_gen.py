@@ -36,11 +36,10 @@ Order Generation - 基于融合/单模型预测生成买卖订单
 import os
 import sys
 import json
-from datetime import datetime
+from pathlib import Path
 from quantpits.utils import env
 from quantpits.utils.workspace import WorkspaceContext
 
-import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -105,12 +104,18 @@ def get_cashflow_today(cashflow_config, anchor_date):
 # ============================================================================
 # Stage 1: 加载预测数据
 # ============================================================================
-def load_predictions(model_name=None, anchor_date=None, record_file=None, combo_name=None, *, ctx=None):
+def load_predictions(model_name=None, anchor_date=None, record_file=None, combo_name=None, *, ctx=None, source=None):
     """
     加载预测数据。
 
     优先级: model_name > 自动搜索 ensemble 记录
     """
+    if source is not None:
+        from quantpits.order.execution import load_resolved_prediction
+
+        loaded = load_resolved_prediction(source)
+        return loaded.data, loaded.description
+
     from qlib.workflow import R
     workspace = _compat_workspace_context(ctx)
     
@@ -267,249 +272,83 @@ def generate_model_opinions(focus_instruments, current_holding_instruments,
                             top_k, drop_n, buy_suggestion_factor,
                             sorted_df, output_dir, next_trade_date_string,
                             dry_run=False, record_file=None, *, ctx=None):
-    """
-    加载所有 combo 和单一模型的预测，对每个标的生成判断。
+    """Compatibility wrapper around the pure opinion engine."""
+    from quantpits.order.command import OrderRunConfig
+    from quantpits.order.opinions import ModelOpinionsRequest, build_model_opinions
+    from quantpits.order.persistence import (
+        OrderPersistenceRequest,
+        build_order_artifact_paths,
+        persist_order_artifacts,
+    )
 
-    判断逻辑（与 analyze_positions 一致）：
-      - 持仓在候选池内 → HOLD
-      - 持仓池外, 最差 DropN → SELL
-      - 持仓池外, 非最差 → HOLD
-      - 非持仓, 排名靠前 → BUY / BUY*
-      - 非持仓, 排名靠后 → --
-
-    Args:
-        focus_instruments: list, 关注标的列表
-        current_holding_instruments: list, 当前持仓代码列表
-        top_k: TopK 阈值
-        drop_n: DropN 阈值
-        buy_suggestion_factor: 买入倍数
-        sorted_df: DataFrame, analyze_positions 输出的排序数据（已与价格合并）
-        output_dir: 输出目录
-        next_trade_date_string: 下一交易日
-        dry_run: 是否 dry-run 模式
-
-    Returns:
-        opinions_df, combo_info
-    """
     workspace = _compat_workspace_context(ctx)
 
-    # 有效标的集合（只考虑有价格数据的）
-    valid_instruments = set(sorted_df.index.tolist())
+    def read_json(path):
+        if not path.exists():
+            return {}
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
 
-    # 加载 ensemble 配置
-    combos = {}
-    ensemble_config_file = workspace.config_path("ensemble_config.json")
-    if ensemble_config_file.exists():
-        with ensemble_config_file.open('r', encoding='utf-8') as f:
-            config = json.load(f)
-        if 'combos' in config:
-            combos = config['combos']
-        elif 'models' in config:
-            combos = {'legacy': {
-                'models': config['models'],
-                'default': True,
-            }}
+    train_path = Path(record_file) if record_file else workspace.path("latest_train_records.json")
+    if not train_path.is_absolute():
+        train_path = workspace.path(train_path.as_posix())
+    if not train_path.exists():
+        train_path = workspace.config_path("latest_train_records.json")
 
-    # 收集所有预测源: (label, source, source_type, details)
-    sources = []
-    combo_info = {}
+    run_config = OrderRunConfig(
+        merged_config={},
+        cashflow_config={},
+        strategy_config={},
+        ensemble_config=read_json(workspace.config_path("ensemble_config.json")),
+        ensemble_records=read_json(workspace.config_path("ensemble_records.json")),
+        train_records=read_json(train_path),
+    )
 
-    from qlib.workflow import R
+    def load_prediction(record_id, experiment_name):
+        from qlib.workflow import R
 
-    # 1) Combo 预测
-    ensemble_records_file = workspace.config_path("ensemble_records.json")
-    ensemble_records = {}
-    if os.path.exists(ensemble_records_file):
-        with open(ensemble_records_file, 'r') as f:
-            ensemble_records = json.load(f)
-            
-    combos_recorded = ensemble_records.get("combos", {})
-    for combo_name, cfg in combos.items():
-        combo_info[combo_name] = cfg.get('models', [])
-        record_id = combos_recorded.get(combo_name) or combos_recorded.get(f"ensemble_{combo_name}") or combos_recorded.get(combo_name.replace("combo_", ""))
-        # if not found, maybe it's the default combo
-        if not record_id and cfg.get('default', False):
-            record_id = ensemble_records.get("default_record_id")
-            
-        if record_id:
-            try:
-                recorder = R.get_recorder(recorder_id=record_id, experiment_name="Ensemble_Fusion")
-                pred_pkl = recorder.load_object('pred.pkl')
-                if pred_pkl is not None and len(pred_pkl) > 0:
-                    sources.append((f"combo_{combo_name}", pred_pkl, 'model_pkl', combo_name))
-            except Exception:
-                pass
+        return R.get_recorder(
+            recorder_id=record_id,
+            experiment_name=experiment_name,
+        ).load_object("pred.pkl")
 
-    # 2) 单一模型预测 (Qlib Recorder)
-    all_single_models = set()
-    for cfg in combos.values():
-        all_single_models.update(cfg.get('models', []))
-        
-    for model_name in sorted(all_single_models):
-        try:
-            train_records_file = record_file or workspace.path('latest_train_records.json')
-            if not os.path.exists(train_records_file):
-                train_records_file = workspace.config_path('latest_train_records.json')
-                
-            if os.path.exists(train_records_file):
-                with open(train_records_file, 'r') as f:
-                    train_records = json.load(f)
-                record_id = train_records.get('models', {}).get(model_name)
-                if record_id:
-                    from quantpits.utils.train_utils import get_experiment_name_for_model
-                    experiment_name = get_experiment_name_for_model(train_records, model_name)
-                    if not experiment_name:
-                        experiment_name = 'prod_train'
-                    recorder = R.get_recorder(recorder_id=record_id,
-                                              experiment_name=experiment_name)
-                    pred_pkl = recorder.load_object('pred.pkl')
-                    if pred_pkl is not None and len(pred_pkl) > 0:
-                        sources.append((f"model_{model_name}", pred_pkl, 'model_pkl', model_name))
-        except Exception:
-            pass
-
-    if not sources:
+    result = build_model_opinions(
+        ModelOpinionsRequest(
+            focus_instruments=tuple(focus_instruments),
+            current_holding_instruments=tuple(current_holding_instruments),
+            top_k=top_k,
+            drop_n=drop_n,
+            buy_suggestion_factor=buy_suggestion_factor,
+            sorted_predictions=sorted_df,
+            trade_date=next_trade_date_string,
+            run_config=run_config,
+            load_prediction=load_prediction,
+        )
+    )
+    if result is None:
         print("  未找到额外预测文件，跳过多模型判断")
         return None, {}
 
-    # 在所有来源前插入 order_basis（使用 sorted_df，与实际订单完全一致）
-    sources.insert(0, ("order_basis", None, 'sorted_df', 'order_basis'))
-
-    print(f"  预测源: {len(sources)} 个 "
-          f"(order_basis: 1, combo: {sum(1 for s in sources if s[2] == 'combo')}, "
-          f"model: {sum(1 for s in sources if s[2] in ('model', 'model_pkl'))})")
-
-    # 对每个预测源，模拟 analyze_positions 的换仓逻辑
-    holding_set = set(current_holding_instruments)
-
-    # 预加载所有预测源（过滤到有效标的集合，与 analyze_positions 对齐）
-    pred_cache = {}  # label -> sorted DataFrame or None
-    for label, pred_source, source_type, detail in sources:
-        if source_type == 'sorted_df':
-            # 直接使用 analyze_positions 的输出（已排序、已合并价格）
-            pred_cache[label] = sorted_df[['score']].sort_values('score', ascending=False)
-            continue
-        try:
-            pred_cache[label] = _load_pred_latest_day(
-                pred_source, valid_instruments=valid_instruments
-            )
-        except Exception:
-            pred_cache[label] = None
-
-    # 对每个预测源，模拟完整的换仓决策（与 analyze_positions 一致）
-    source_decisions = {}  # label -> {instrument: action}
-    for label, pred_source, source_type, detail in sources:
-        sorted_preds = pred_cache.get(label)
-        if sorted_preds is None:
-            source_decisions[label] = {}
-            continue
-
-        decisions = {}
-        all_instruments = sorted_preds.index.tolist()  # 已按 score 降序
-
-        # 1) 确定候选池 = top (TopK + DropN * factor)
-        pool_size = top_k + drop_n * buy_suggestion_factor
-        pool_instruments = set(all_instruments[:pool_size])
-
-        # 2) 持仓中在池内的 → 暂定 HOLD
-        held_in_pool = [inst for inst in all_instruments if inst in holding_set and inst in pool_instruments]
-        # 持仓中在池外的 → 卖出候选（取最差 DropN）
-        held_outside_pool = [inst for inst in all_instruments if inst in holding_set and inst not in pool_instruments]
-        sell_set = set(held_outside_pool[-drop_n:]) if held_outside_pool else set()
-
-        # 3) 持仓决策：卖出 or 持有
-        held_in_ranking = [inst for inst in all_instruments if inst in holding_set]
-        for inst in held_in_ranking:
-            decisions[inst] = 'SELL' if inst in sell_set else 'HOLD'
-
-        # 4) 买入决策
-        hold_final_set = set(held_in_ranking) - sell_set
-        buy_count = max(0, top_k - len(hold_final_set))
-
-        # 非持仓的池内标的，按排名取 buy_count * factor 个
-        non_held_in_pool = [inst for inst in all_instruments[:pool_size] if inst not in holding_set]
-        buy_primary = set(non_held_in_pool[:buy_count])
-        buy_backup = set(non_held_in_pool[buy_count:buy_count * buy_suggestion_factor])
-
-        for inst in non_held_in_pool:
-            if inst in buy_primary:
-                decisions[inst] = 'BUY'
-            elif inst in buy_backup:
-                decisions[inst] = 'BUY*'
-            else:
-                decisions[inst] = '--'
-
-        # 池外的非持仓
-        for inst in all_instruments[pool_size:]:
-            if inst not in holding_set:
-                decisions[inst] = '--'
-
-        # 附加排名信息
-        ranks = {inst: idx + 1 for idx, inst in enumerate(all_instruments)}
-        for inst in decisions:
-            if inst in ranks and decisions[inst] != '-':
-                decisions[inst] = f"{decisions[inst]} ({ranks[inst]})"
-
-        source_decisions[label] = decisions
-
-    # 组装 opinions 表
-    opinion_rows = []
-    for instrument in focus_instruments:
-        row = {'instrument': instrument}
-        for label, pred_source, source_type, detail in sources:
-            decisions = source_decisions.get(label, {})
-            row[label] = decisions.get(instrument, '-')
-        opinion_rows.append(row)
-
-    opinions_df = pd.DataFrame(opinion_rows)
-    if not opinions_df.empty:
-        opinions_df = opinions_df.set_index('instrument')
-
-    # 构造 combo 信息
-    model_to_combos = {}
-    for combo_name, models in combo_info.items():
-        for m in models:
-            model_to_combos.setdefault(m, []).append(combo_name)
-
-    # 保存
-    csv_file = os.path.join(output_dir, f"model_opinions_{next_trade_date_string}.csv")
-    json_file = os.path.join(output_dir, f"model_opinions_{next_trade_date_string}.json")
-
-    json_data = {
-        'trade_date': next_trade_date_string,
-        'combo_composition': combo_info,
-        'model_to_combos': model_to_combos,
-        'thresholds': {
-            'TopK': top_k, 'DropN': drop_n,
-            'buy_suggestion_factor': buy_suggestion_factor,
-        },
-        'legend': {
-            'BUY': '非持仓, 排名靠前的买入候选 (数量 = 卖出数)',
-            'BUY*': '非持仓, 备选买入 (应对停牌等情况)',
-            'HOLD': '持仓, 继续持有',
-            'SELL': '持仓, TopK 之外的最差 DropN',
-            '--': '非持仓, 不在买入候选范围',
-            '-': '无数据',
-            '说明': '决策后的括号内数字表示该模型或组合下的预测排名',
-        },
-        'sources': [(label,
-                     'sorted_df (与订单一致)' if f is None
-                     else (os.path.basename(f) if isinstance(f, str) else f'pkl:{detail}'),
-                     stype) for label, f, stype, detail in sources],
-    }
-
+    paths = build_order_artifact_paths(output_dir, next_trade_date_string, "ensemble")
     if dry_run:
-        print(f"  [DRY-RUN] 不写入: {csv_file}")
-        print(f"  [DRY-RUN] 不写入: {json_file}")
+        print(f"  [DRY-RUN] 不写入: {paths.opinion_csv}")
+        print(f"  [DRY-RUN] 不写入: {paths.opinion_json}")
     else:
-        os.makedirs(output_dir, exist_ok=True)
-        opinions_df.to_csv(csv_file)
-        with open(json_file, 'w') as f:
-            json.dump(json_data, f, indent=4, ensure_ascii=False)
-        print(f"  多模型判断表: {csv_file}")
-        print(f"  模型信息汇总: {json_file}")
-
-    return opinions_df, combo_info
+        persist_order_artifacts(
+            OrderPersistenceRequest(
+                ctx=workspace,
+                output_dir=Path(output_dir),
+                trade_date=next_trade_date_string,
+                source_label="ensemble",
+                sell_orders=(),
+                buy_orders=(),
+                opinions=result,
+            )
+        )
+        print(f"  多模型判断表: {paths.opinion_csv}")
+        print(f"  模型信息汇总: {paths.opinion_json}")
+    return result.dataframe, result.combo_composition
 
 
 # ============================================================================
@@ -531,22 +370,23 @@ def save_orders(sell_orders, buy_orders, next_trade_date_string, output_dir,
     Returns:
         sell_file, buy_file: 保存的文件路径（dry-run 时返回目标路径但不实际写入）
     """
+    from quantpits.order.persistence import atomic_write_csv, build_order_artifact_paths
+
     sell_df = pd.DataFrame(sell_orders)
     buy_df = pd.DataFrame(buy_orders)
-
-    sell_file = os.path.join(output_dir, f"sell_suggestion_{source_label}_{next_trade_date_string}.csv")
-    buy_file = os.path.join(output_dir, f"buy_suggestion_{source_label}_{next_trade_date_string}.csv")
+    paths = build_order_artifact_paths(output_dir, next_trade_date_string, source_label)
+    sell_file = paths.sell_csv.as_posix()
+    buy_file = paths.buy_csv.as_posix()
 
     if dry_run:
         print(f"\n[DRY-RUN] 以下文件不会被写入:")
         print(f"  卖出订单: {sell_file}")
         print(f"  买入订单: {buy_file}")
     else:
-        os.makedirs(output_dir, exist_ok=True)
         if not sell_df.empty:
-            sell_df.to_csv(sell_file, index=False)
+            atomic_write_csv(sell_df, paths.sell_csv, index=False)
         if not buy_df.empty:
-            buy_df.to_csv(buy_file, index=False)
+            atomic_write_csv(buy_df, paths.buy_csv, index=False)
         print(f"\n📁 订单文件已保存:")
         print(f"  卖出订单: {sell_file}")
         print(f"  买入订单: {buy_file}")
@@ -554,256 +394,48 @@ def save_orders(sell_orders, buy_orders, next_trade_date_string, output_dir,
     return sell_file, buy_file
 
 
-def run_order_generation(prepared):
-    """Run the legacy Stage 0-6 order workflow with explicit runtime context."""
-    from quantpits.order.command import OrderRunSummary
+def get_next_trade_date(anchor_date):
+    """Compatibility wrapper for the typed calendar boundary."""
+    from quantpits.order.execution import resolve_next_trade_date
+
+    return resolve_next_trade_date(anchor_date)
+
+
+def _load_opinion_prediction(record_id, experiment_name):
+    from qlib.workflow import R
+
+    return R.get_recorder(recorder_id=record_id, experiment_name=experiment_name).load_object("pred.pkl")
+
+
+def default_order_execution_hooks():
+    """Late-bind script compatibility hooks for the reusable order service."""
+    from quantpits.order.execution import LoadedOrderPrediction, OrderExecutionHooks
+    from quantpits.order.opinions import build_model_opinions
+    from quantpits.order.persistence import persist_order_artifacts
     from quantpits.utils import strategy
 
-    args = prepared.execution_options
-    config = prepared.config.merged_config
-    cashflow_config = prepared.config.cashflow_config
-    strategy_config = prepared.config.strategy_config
+    def load_source(source):
+        data, description = load_predictions(source=source)
+        return LoadedOrderPrediction(data=data, source=source, description=description)
 
-    # ---- Stage 0: 初始化 ----
-    print(f"\n{'#'*60}")
-    print("# Order Generation — 订单生成")
-    print(f"# {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'#'*60}")
-
-    if args.dry_run:
-        print("\n⚠️  DRY-RUN 模式: 不会写入任何文件")
-
-    init_qlib()
-    anchor_date = get_anchor_date()
-    order_gen = strategy.create_order_generator(strategy_config)
-    
-    # 策略参数（由 Strategy Provider 统一管理，底层已切到 config_loader）
-    st_params = strategy.get_strategy_params(strategy_config)
-    top_k = st_params.get('topk', 20)
-    drop_n = st_params.get('n_drop', 3)
-    buy_suggestion_factor = st_params.get('buy_suggestion_factor', 2)
-
-    # 运行时状态变量（来自 config_loader 整合后的 config）
-    market = config.get('market', 'csi300')
-    current_cash = float(config.get('current_cash', 0))
-    current_holding = config.get('current_holding', [])
-    cash_flow_today = get_cashflow_today(cashflow_config, anchor_date)
-
-    print(f"\n{'='*60}")
-    print("Stage 0: 配置加载")
-    print(f"{'='*60}")
-    print(f"锚点日期   : {anchor_date}")
-    print(f"市场       : {market}")
-    print(f"TopK       : {top_k}")
-    print(f"DropN      : {drop_n}")
-    print(f"买入倍数   : {buy_suggestion_factor}")
-    print(f"当前现金   : {current_cash:,.2f}")
-    print(f"当前持仓   : {len(current_holding)} 个")
-    if cash_flow_today != 0:
-        print(f"当日出入金 : {cash_flow_today:+,.2f}")
-
-    # ---- Stage 1: 加载预测 ----
-    print(f"\n{'='*60}")
-    print("Stage 1: 加载预测数据")
-
-    pred_df, source_desc = load_predictions(
-        model_name=args.model,
-        combo_name=args.combo,
-        anchor_date=anchor_date,
-        record_file=args.record_file,
-        ctx=prepared.ctx,
+    return OrderExecutionHooks(
+        init_qlib=init_qlib,
+        get_anchor_date=get_anchor_date,
+        get_next_trade_date=get_next_trade_date,
+        load_predictions=load_source,
+        get_price_data=get_price_data,
+        create_order_generator=strategy.create_order_generator,
+        get_strategy_params=strategy.get_strategy_params,
+        build_model_opinions=build_model_opinions,
+        persist_artifacts=persist_order_artifacts,
     )
 
-    print(f"预测来源   : {source_desc}")
-    print(f"预测数据量 : {len(pred_df)} 条")
 
-    latest_date = pred_df.index.get_level_values('datetime').max()
-    n_instruments = pred_df.xs(latest_date, level='datetime').shape[0] if \
-        len(pred_df.index.get_level_values('datetime').unique()) > 1 else len(pred_df)
-    print(f"最新日期   : {latest_date}")
-    print(f"当日标的数 : {n_instruments}")
+def run_order_generation(prepared):
+    """Run order generation through the reusable service boundary."""
+    from quantpits.order.service import OrderGenerationService
 
-    # ---- Stage 2: 价格数据 ----
-    print(f"\n{'='*60}")
-    print("Stage 2: 获取价格数据")
-    print(f"{'='*60}")
-
-    # 获取预测数据涉及到的所有标的，确保价格数据能覆盖它们
-    latest_pred_day = pred_df.index.get_level_values('datetime').max()
-    pred_instruments = pred_df.xs(latest_pred_day, level='datetime').index.tolist() \
-        if len(pred_df.index.get_level_values('datetime').unique()) > 1 else pred_df.index.tolist()
-
-    price_df = get_price_data(anchor_date, market, instruments=pred_instruments)
-    print(f"价格数据   : {len(price_df)} 条 (基于预测标的获取)")
-
-    # ---- 获取下一交易日 ----
-    from qlib.data import D
-    target_dates = D.calendar(start_time=anchor_date, future=True)[:2]
-    if len(target_dates) >= 2:
-        next_trade_date = target_dates[1]
-    else:
-        next_trade_date = target_dates[0]
-    next_trade_date_string = next_trade_date.strftime('%Y-%m-%d')
-    print(f"下一交易日 : {next_trade_date_string}")
-
-    # ---- Stage 3: 持仓分析 ----
-    print(f"\n{'='*60}")
-    print("Stage 3: 排序与持仓分析")
-    print(f"{'='*60}")
-
-    hold_final, sell_candidates, buy_candidates, sorted_df, buy_count = order_gen.analyze_positions(
-        pred_df, price_df, current_holding
-    )
-
-    print(f"继续持有   : {len(hold_final)} 个")
-    print(f"计划卖出   : {len(sell_candidates)} 个")
-    print(f"需要买入   : {buy_count} 个")
-    print(f"买入候选   : {len(buy_candidates)} 个")
-
-    if args.verbose:
-        print(f"\n--- 继续持有 ---")
-        if len(hold_final) > 0:
-            print(hold_final[['score', 'current_close']].to_string())
-
-        print(f"\n--- 卖出候选 ---")
-        if len(sell_candidates) > 0:
-            print(sell_candidates[['score', 'current_close']].to_string())
-
-        print(f"\n--- 买入候选 ---")
-        if len(buy_candidates) > 0:
-            print(buy_candidates[['score', 'current_close']].to_string())
-
-    # ---- Stage 3.5: 多模型判断表 ----
-    print(f"\n{'='*60}")
-    print("Stage 3.5: 多模型判断表")
-    print(f"{'='*60}")
-
-    # 收集关注标的（持仓 + 买入候选 + 卖出候选）
-    focus_instruments = []
-    for df in [hold_final, sell_candidates, buy_candidates]:
-        if len(df) > 0:
-            idx = df.index.get_level_values('instrument') if 'instrument' in df.index.names else df.index
-            focus_instruments.extend(idx.tolist())
-    focus_instruments = list(dict.fromkeys(focus_instruments))  # 去重保序
-
-    # 当前持仓代码列表
-    current_holding_instruments = [h['instrument'] for h in current_holding]
-
-    opinions_df, combo_info = generate_model_opinions(
-        focus_instruments, current_holding_instruments,
-        top_k, drop_n, buy_suggestion_factor,
-        sorted_df, args.output_dir, next_trade_date_string, dry_run=args.dry_run,
-        record_file=args.record_file, ctx=prepared.ctx,
-    )
-
-    if opinions_df is not None and not opinions_df.empty and args.verbose:
-        print(f"\n--- 多模型判断（关注标的） ---")
-        print(opinions_df.to_string())
-        if combo_info:
-            print(f"\n--- Combo 组成 ---")
-            for name, models in combo_info.items():
-                print(f"  {name}: {', '.join(models)}")
-
-    # ---- Stage 4: 卖出订单 ----
-    print(f"\n{'='*60}")
-    print("Stage 4: 生成卖出订单")
-    print(f"{'='*60}")
-
-    sell_orders, sell_amount = order_gen.generate_sell_orders(
-        sell_candidates, current_holding, next_trade_date_string
-    )
-
-    if sell_orders:
-        sell_df = pd.DataFrame(sell_orders)
-        print(f"\n卖出订单 ({len(sell_orders)} 笔，预估回收 {sell_amount:,.2f}):")
-        print(sell_df.to_string(index=False))
-    else:
-        print("无卖出订单")
-
-    # ---- Stage 5: 买入订单 ----
-    print(f"\n{'='*60}")
-    print("Stage 5: 生成买入订单")
-    print(f"{'='*60}")
-
-    available_cash = current_cash + sell_amount + cash_flow_today
-    print(f"可用现金   : {current_cash:,.2f} (余额)")
-    if sell_amount > 0:
-        print(f"           + {sell_amount:,.2f} (预估卖出回收)")
-    if cash_flow_today != 0:
-        print(f"           + {cash_flow_today:+,.2f} (出入金)")
-    print(f"           = {available_cash:,.2f} (总可用)")
-    if buy_count > 0:
-        print(f"每股预算   : {available_cash / buy_count:,.2f}")
-
-    buy_orders = order_gen.generate_buy_orders(
-        buy_candidates, buy_count, available_cash, next_trade_date_string
-    )
-
-    if buy_orders:
-        buy_df = pd.DataFrame(buy_orders)
-        amounts = sorted([o['estimated_amount'] for o in buy_orders])
-        # 预估区间：取 top buy_count 个最小/最大金额
-        min_n = amounts[:buy_count]
-        max_n = amounts[-buy_count:] if len(amounts) >= buy_count else amounts
-        min_total = sum(min_n)
-        max_total = sum(max_n)
-        print(f"\n买入备选 ({len(buy_orders)} 笔, 实际买入 {buy_count} 个):")
-        print(buy_df.to_string(index=False))
-        if min_total == max_total:
-            print(f"\n💰 预估支出 : {min_total:,.2f}")
-        else:
-            print(f"\n💰 预估支出区间 : {min_total:,.2f} ~ {max_total:,.2f}")
-    else:
-        print("无买入订单")
-
-    # ---- Stage 6: 保存 ----
-    print(f"\n{'='*60}")
-    print("Stage 6: 保存订单")
-    print(f"{'='*60}")
-
-    # 确定文件命名标签
-    if args.model:
-        source_label = args.model
-    else:
-        source_label = "ensemble"
-
-    sell_file, buy_file = save_orders(
-        sell_orders, buy_orders, next_trade_date_string,
-        args.output_dir, source_label, dry_run=args.dry_run
-    )
-
-    # ---- 完成 ----
-    print(f"\n{'#'*60}")
-    print("# ✅ 订单生成完成!")
-    print(f"{'#'*60}")
-    print(f"📅 交易日   : {next_trade_date_string}")
-    print(f"📊 预测来源 : {source_desc.split(chr(10))[0]}")
-    print(f"📌 继续持有 : {len(hold_final)}")
-    print(f"📤 卖出     : {len(sell_orders)}")
-    print(f"📥 买入     : {len(buy_orders)}")
-    if buy_orders:
-        amounts = sorted([o['estimated_amount'] for o in buy_orders])
-        min_total = sum(amounts[:buy_count])
-        max_total = sum(amounts[-buy_count:]) if len(amounts) >= buy_count else sum(amounts)
-        if min_total == max_total:
-            print(f"💰 预估支出 : {min_total:,.2f}")
-        else:
-            print(f"💰 预估支出 : {min_total:,.2f} ~ {max_total:,.2f}")
-    if sell_orders:
-        print(f"💰 预估回收 : {sell_amount:,.2f}")
-
-    return OrderRunSummary(
-        anchor_date=anchor_date,
-        trade_date=next_trade_date_string,
-        source_label=source_label,
-        source_description=source_desc.split(chr(10))[0],
-        holding_count=len(hold_final),
-        sell_count=len(sell_orders),
-        buy_count=len(buy_orders),
-        sell_file=sell_file,
-        buy_file=buy_file,
-        dry_run=args.dry_run,
-    )
+    return OrderGenerationService(default_order_execution_hooks()).execute(prepared)
 
 
 def _default_order_run_config(ctx, options):
@@ -839,6 +471,7 @@ def main(argv=None):
         build_order_arg_parser,
         run_order_command,
     )
+    from quantpits.order.execution import OrderExecutionError
 
     parser = build_order_arg_parser()
     cli_args = tuple(sys.argv[1:] if argv is None else argv)
@@ -851,6 +484,9 @@ def main(argv=None):
     except OrderPlanError as exc:
         parser.error(str(exc))
         return
+    except OrderExecutionError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from None
 
     if outcome.rendered_output is not None:
         print(outcome.rendered_output)
