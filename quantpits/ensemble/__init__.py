@@ -38,6 +38,14 @@ from quantpits.ensemble.comparison import (
     run_combo_comparison,
 )
 from quantpits.ensemble.config import load_ensemble_run_config
+from quantpits.ensemble.execution import (
+    EnsembleExecutionContext,
+    LoadedPredictionBundle,
+    combo_manifest_records,
+    required_models_from_combos,
+    success_manifest_records,
+    valid_models_for_combo,
+)
 from quantpits.ensemble.ledger import (
     FusionLedgerEntry,
     append_fusion_ledger,
@@ -91,11 +99,13 @@ __all__ = [
     "ChartGenerationRequest",
     "ChartGenerationResult",
     "EnsembleExecutionHooks",
+    "EnsembleExecutionContext",
     "EnsembleFusionService",
     "EnsembleRunConfig",
     "EnsembleRunOptions",
     "EnsembleRunSummary",
     "FusionLedgerEntry",
+    "LoadedPredictionBundle",
     "ModelContributionSaveResult",
     "PredictionSaveRequest",
     "PredictionSaveResult",
@@ -114,6 +124,7 @@ __all__ = [
     "build_risk_leaderboard",
     "calculate_loo_contribution",
     "calculate_safe_risk",
+    "combo_manifest_records",
     "compare_combos",
     "compute_prediction_correlation",
     "default_single_combo_pipeline_hooks",
@@ -128,6 +139,7 @@ __all__ = [
     "prepare_ensemble_run",
     "prepared_plan_json",
     "print_backtest_performance_summary",
+    "required_models_from_combos",
     "render_prepared_plan",
     "risk_analysis_and_leaderboard",
     "run_backtest",
@@ -140,4 +152,6 @@ __all__ = [
     "save_ensemble_predictions",
     "save_model_contribution_snapshot",
     "summarize_correlation_matrix",
+    "success_manifest_records",
+    "valid_models_for_combo",
 ]

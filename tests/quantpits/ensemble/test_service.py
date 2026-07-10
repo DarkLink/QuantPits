@@ -1,6 +1,7 @@
 import json
 import sys
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -245,3 +246,85 @@ def test_service_execute_failure_after_partial_combo_records_count(tmp_path):
     )
     assert manifest["status"] == "failed"
     assert manifest["records"]["n_combos"] == 1
+
+
+def test_service_execute_multi_combo_calls_comparison(tmp_path):
+    ctx = _workspace(tmp_path)
+    config = replace(
+        _run_config(),
+        ensemble_config={
+            "combos": {
+                "combo_a": {"models": ["m1"], "method": "equal", "default": True},
+                "combo_b": {"models": ["m1"], "method": "equal", "default": False},
+            }
+        },
+    )
+    prepared = prepare_ensemble_run(
+        ctx=ctx,
+        options=EnsembleRunOptions(from_config_all=True, run_id="compare-run"),
+        cli_args=("--from-config-all",),
+        run_config=config,
+        validate=False,
+    )
+    calls = []
+
+    def run_combo(**kwargs):
+        result = _result()
+        result["name"] = kwargs["combo_name"]
+        return result
+
+    hooks = EnsembleExecutionHooks(
+        init_qlib=lambda: None,
+        load_selected_predictions=lambda *a, **k: (_norm_df(), {}, ["m1@static"]),
+        filter_norm_df_by_args=lambda norm_df, args: norm_df,
+        run_single_combo=run_combo,
+        compare_combos=lambda *a, **k: calls.append(a),
+    )
+
+    summary = EnsembleFusionService(hooks).execute(prepared)
+
+    assert len(summary.combo_results) == 2
+    assert len(calls) == 1
+    assert calls[0][1] == "2026-07-09"
+
+
+def test_service_execute_no_required_models_still_exits(tmp_path):
+    ctx = _workspace(tmp_path)
+    prepared = replace(
+        _prepared(ctx, options=EnsembleRunOptions(from_config=True, run_id="no-model-run")),
+        combos=(
+            SimpleNamespace(
+                name="empty_combo",
+                models=(),
+                method="equal",
+                manual_weights=None,
+                is_default=True,
+                warnings=(),
+            ),
+        ),
+    )
+    hooks = EnsembleExecutionHooks(
+        init_qlib=lambda: None,
+        load_selected_predictions=lambda *a, **k: (_norm_df(), {}, []),
+        filter_norm_df_by_args=lambda norm_df, args: norm_df,
+        run_single_combo=lambda **kwargs: _result(),
+        compare_combos=lambda *a, **k: None,
+    )
+
+    with pytest.raises(SystemExit):
+        EnsembleFusionService(hooks).execute(prepared)
+
+
+def test_service_execute_empty_filtered_predictions_still_exits(tmp_path):
+    ctx = _workspace(tmp_path)
+    prepared = _prepared(ctx, options=EnsembleRunOptions(from_config=True, run_id="empty-filter-run"))
+    hooks = EnsembleExecutionHooks(
+        init_qlib=lambda: None,
+        load_selected_predictions=lambda *a, **k: (_norm_df(), {}, ["m1@static"]),
+        filter_norm_df_by_args=lambda norm_df, args: norm_df.iloc[0:0],
+        run_single_combo=lambda **kwargs: _result(),
+        compare_combos=lambda *a, **k: None,
+    )
+
+    with pytest.raises(SystemExit):
+        EnsembleFusionService(hooks).execute(prepared)
