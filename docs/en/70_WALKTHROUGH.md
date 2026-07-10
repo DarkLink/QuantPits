@@ -491,10 +491,13 @@ Files updated:
 Generate buy/sell order suggestions based on fused predictions and current holdings.
 
 ```bash
+# Inspect the lightweight plan without loading predictions or market data
+python quantpits/scripts/order_gen.py --explain-plan
+
 # Use ensemble fusion predictions (most common)
 python quantpits/scripts/order_gen.py
 
-# Preview with multi-model judgment table
+# Run the full calculation with real data without writing files
 python quantpits/scripts/order_gen.py --dry-run --verbose
 
 # Use a single model's prediction

@@ -491,10 +491,13 @@ python quantpits/scripts/prod_post_trade.py --verbose
 基于融合预测 + 当前持仓，生成本期的买卖订单建议。
 
 ```bash
+# 先做轻量执行计划检查（不加载预测或行情）
+python quantpits/scripts/order_gen.py --explain-plan
+
 # 使用 ensemble 融合预测（最常用）
 python quantpits/scripts/order_gen.py
 
-# 先预览，查看多模型判断表
+# 使用真实数据完整计算，但不写文件
 python quantpits/scripts/order_gen.py --dry-run --verbose
 
 # 使用单模型预测

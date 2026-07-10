@@ -28,9 +28,45 @@ python quantpits/scripts/order_gen.py --model gru
 # 3. 先预览，不写入文件
 python quantpits/scripts/order_gen.py --dry-run
 
-# 4. 查看详细排名 + 多模型判断
+# 4. 轻量检查执行计划（不初始化 Qlib、不加载预测或价格）
+python quantpits/scripts/order_gen.py --explain-plan
+
+# 5. 输出机器可读的执行计划
+python quantpits/scripts/order_gen.py --json-plan
+
+# 6. 查看详细排名 + 多模型判断
 python quantpits/scripts/order_gen.py --verbose
 ```
+
+---
+
+## 执行计划与 Dry Run
+
+订单命令提供两种用途不同的预览方式：
+
+| 模式 | Qlib | 预测/价格读取 | 订单计算 | 写文件 | 用途 |
+|------|:---:|:---:|:---:|:---:|------|
+| `--explain-plan` | 否 | 否 | 否 | 否 | 人工检查输入、来源选择、步骤和预期输出 |
+| `--json-plan` | 否 | 否 | 否 | 否 | CI、agent 或其他工具读取结构化计划 |
+| `--dry-run` | 是 | 是 | 是 | 否 | 使用真实数据计算并人工核对最终订单 |
+| 默认执行 | 是 | 是 | 是 | 条件写入 | 正式生成订单和多模型判断文件 |
+
+计划模式只读取 workspace 配置，输出稳定 fingerprint，并解释 `--model` / `--combo` 的来源选择。它不会运行 safeguard、初始化 Qlib、访问 recorder/calendar/行情，也不会创建输出目录。相对的 `--output-dir` 和 `--record-file` 始终按当前 workspace 解析，而不是按调用命令时的 cwd 解析。
+
+```bash
+source workspaces/Demo_Workspace/run_env.sh
+
+# 人类可读计划
+python quantpits/scripts/order_gen.py --explain-plan --run-id order-review
+
+# JSON 计划；stdout 为单一 JSON payload
+python quantpits/scripts/order_gen.py --json-plan --run-id order-review
+
+# 真实计算预览，仍会访问 Qlib/预测/行情，但不落盘
+python quantpits/scripts/order_gen.py --dry-run --verbose
+```
+
+`--run-id` 仅用于计划身份；semantic plan fingerprint 默认不受 run id 变化影响。本阶段 order 命令不会写 RunManifest。
 
 ---
 
@@ -185,8 +221,13 @@ python quantpits/scripts/order_gen.py --help
 可选参数:
   --model TEXT             使用单模型预测（从 Qlib 记录加载）
   --output-dir TEXT        输出目录 (默认 output)
-  --dry-run               仅打印订单计划，不写入文件
-  --verbose               显示详细的排名和价格信息
+  --record-file TEXT       训练记录文件，用于加载单模型预测
+  --dry-run                执行完整订单计算，但不写入文件
+  --verbose                显示详细的排名和价格信息
+  --combo TEXT             指定融合组合名称
+  --explain-plan           仅打印轻量执行计划，不初始化 Qlib、不写文件
+  --json-plan              输出机器可读 JSON 计划；隐含 explain-plan
+  --run-id TEXT            显式指定计划运行 ID
 ```
 
 ---

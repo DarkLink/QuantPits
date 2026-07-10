@@ -15,8 +15,11 @@ Order Generation - 基于融合/单模型预测生成买卖订单
   # 使用单模型预测（不融合）
   python quantpits/scripts/order_gen.py --model gru
 
-  # 指定预测文件
-  python quantpits/scripts/order_gen.py --prediction-file output/predictions/ensemble_2026-02-06.csv
+  # 指定融合组合
+  python quantpits/scripts/order_gen.py --combo combo_A
+
+  # 轻量查看执行计划（不初始化 Qlib）
+  python quantpits/scripts/order_gen.py --explain-plan
 
   # 仅预览
   python quantpits/scripts/order_gen.py --dry-run
@@ -24,18 +27,18 @@ Order Generation - 基于融合/单模型预测生成买卖订单
 参数：
   --model            使用单模型预测（从 Qlib 记录加载）
   --output-dir       输出目录 (默认 output)
-  --dry-run          仅打印订单计划，不写入文件
+  --dry-run          执行完整订单计算，但不写入文件
   --verbose          显示详细的排名和价格信息
+  --explain-plan     仅打印轻量执行计划，不初始化 Qlib
+  --json-plan        输出机器可读 JSON 计划
 """
 
 import os
 import sys
 import json
-import glob
-import argparse
 from datetime import datetime
 from quantpits.utils import env
-os.chdir(env.ROOT_DIR)
+from quantpits.utils.workspace import WorkspaceContext
 
 import numpy as np
 import pandas as pd
@@ -43,7 +46,6 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # 路径设置
 # ---------------------------------------------------------------------------
-# 已在上方导入并切换目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
 
@@ -68,14 +70,22 @@ def get_anchor_date():
     return last_trade_date.strftime('%Y-%m-%d')
 
 
-def load_configs():
+def _compat_workspace_context(ctx=None):
+    if ctx is not None:
+        return ctx
+    return WorkspaceContext.from_root(ROOT_DIR)
+
+
+def load_configs(*, ctx=None):
     """使用 config_loader 加载统一配置并读取 cashflow.json"""
     from quantpits.utils.config_loader import load_workspace_config
-    config = load_workspace_config(ROOT_DIR)
+    workspace = _compat_workspace_context(ctx)
+    config = load_workspace_config(workspace.root)
 
     cashflow_config = {}
-    if os.path.exists(CASHFLOW_FILE):
-        with open(CASHFLOW_FILE, 'r') as f:
+    cashflow_file = workspace.config_path("cashflow.json")
+    if cashflow_file.exists():
+        with cashflow_file.open('r', encoding='utf-8') as f:
             cashflow_config = json.load(f)
 
     return config, cashflow_config
@@ -95,17 +105,22 @@ def get_cashflow_today(cashflow_config, anchor_date):
 # ============================================================================
 # Stage 1: 加载预测数据
 # ============================================================================
-def load_predictions(model_name=None, anchor_date=None, record_file=None, combo_name=None):
+def load_predictions(model_name=None, anchor_date=None, record_file=None, combo_name=None, *, ctx=None):
     """
     加载预测数据。
 
     优先级: model_name > 自动搜索 ensemble 记录
     """
     from qlib.workflow import R
+    workspace = _compat_workspace_context(ctx)
     
     if model_name:
         from quantpits.utils.train_utils import resolve_model_key, get_experiment_name_for_model
-        record_file = record_file or os.path.join(ROOT_DIR, "latest_train_records.json")
+        record_file = record_file or workspace.path("latest_train_records.json")
+        if not os.path.exists(record_file):
+            fallback_record_file = workspace.config_path("latest_train_records.json")
+            if fallback_record_file.exists():
+                record_file = fallback_record_file
         if not os.path.exists(record_file):
             raise FileNotFoundError(f"无法找到训练记录文件: {record_file}")
         with open(record_file, 'r') as f:
@@ -125,7 +140,7 @@ def load_predictions(model_name=None, anchor_date=None, record_file=None, combo_
         return pred_df, f"单模型: {full_key} (Record: {record_id})"
 
     # 自动搜索 ensemble 记录
-    records_file = os.path.join(ROOT_DIR, "config", "ensemble_records.json")
+    records_file = workspace.config_path("ensemble_records.json")
     if not os.path.exists(records_file):
          raise FileNotFoundError("未找到 ensemble_records.json，请先运行 ensemble_fusion.py")
     
@@ -251,7 +266,7 @@ def _load_pred_latest_day(df, valid_instruments=None):
 def generate_model_opinions(focus_instruments, current_holding_instruments,
                             top_k, drop_n, buy_suggestion_factor,
                             sorted_df, output_dir, next_trade_date_string,
-                            dry_run=False, record_file=None):
+                            dry_run=False, record_file=None, *, ctx=None):
     """
     加载所有 combo 和单一模型的预测，对每个标的生成判断。
 
@@ -276,13 +291,16 @@ def generate_model_opinions(focus_instruments, current_holding_instruments,
     Returns:
         opinions_df, combo_info
     """
+    workspace = _compat_workspace_context(ctx)
+
     # 有效标的集合（只考虑有价格数据的）
     valid_instruments = set(sorted_df.index.tolist())
 
     # 加载 ensemble 配置
     combos = {}
-    if os.path.exists(ENSEMBLE_CONFIG_FILE):
-        with open(ENSEMBLE_CONFIG_FILE, 'r') as f:
+    ensemble_config_file = workspace.config_path("ensemble_config.json")
+    if ensemble_config_file.exists():
+        with ensemble_config_file.open('r', encoding='utf-8') as f:
             config = json.load(f)
         if 'combos' in config:
             combos = config['combos']
@@ -299,7 +317,7 @@ def generate_model_opinions(focus_instruments, current_holding_instruments,
     from qlib.workflow import R
 
     # 1) Combo 预测
-    ensemble_records_file = os.path.join(ROOT_DIR, "config", "ensemble_records.json")
+    ensemble_records_file = workspace.config_path("ensemble_records.json")
     ensemble_records = {}
     if os.path.exists(ensemble_records_file):
         with open(ensemble_records_file, 'r') as f:
@@ -329,9 +347,9 @@ def generate_model_opinions(focus_instruments, current_holding_instruments,
         
     for model_name in sorted(all_single_models):
         try:
-            train_records_file = record_file or os.path.join(ROOT_DIR, 'latest_train_records.json')
+            train_records_file = record_file or workspace.path('latest_train_records.json')
             if not os.path.exists(train_records_file):
-                train_records_file = os.path.join(ROOT_DIR, 'config', 'latest_train_records.json')
+                train_records_file = workspace.config_path('latest_train_records.json')
                 
             if os.path.exists(train_records_file):
                 with open(train_records_file, 'r') as f:
@@ -536,39 +554,15 @@ def save_orders(sell_orders, buy_orders, next_trade_date_string, output_dir,
     return sell_file, buy_file
 
 
-# ============================================================================
-# Main
-# ============================================================================
-def main():
-    from quantpits.utils import env
-    env.safeguard("Order Generation")
-    parser = argparse.ArgumentParser(
-        description='Order Generation - 基于融合/单模型预测生成买卖订单',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例：
-  # 使用最新融合预测
-  python quantpits/scripts/order_gen.py
+def run_order_generation(prepared):
+    """Run the legacy Stage 0-6 order workflow with explicit runtime context."""
+    from quantpits.order.command import OrderRunSummary
+    from quantpits.utils import strategy
 
-  # 使用单模型预测（不融合）
-  python quantpits/scripts/order_gen.py --model gru
-"""
-    )
-    parser.add_argument('--model', type=str,
-                        help='使用单模型预测（从 Qlib 记录加载）')
-    parser.add_argument('--output-dir', type=str, default='output',
-                        help='输出目录 (默认 output)')
-    parser.add_argument('--record-file', type=str, default=None,
-                        help='训练记录文件，用于加载单模型 PKL 预测 '
-                             '(默认 config/latest_train_records.json)')
-    parser.add_argument('--dry-run', action='store_true',
-                        help='仅打印订单计划，不写入文件')
-    parser.add_argument('--verbose', action='store_true',
-                        help='显示详细的排名和价格信息')
-    parser.add_argument('--combo', type=str, default=None,
-                        help='指定要使用的融合组合名称 (从 ensemble_records.json 加载)')
-
-    args = parser.parse_args()
+    args = prepared.execution_options
+    config = prepared.config.merged_config
+    cashflow_config = prepared.config.cashflow_config
+    strategy_config = prepared.config.strategy_config
 
     # ---- Stage 0: 初始化 ----
     print(f"\n{'#'*60}")
@@ -581,10 +575,6 @@ def main():
 
     init_qlib()
     anchor_date = get_anchor_date()
-    config, cashflow_config = load_configs()
-
-    from quantpits.utils import strategy
-    strategy_config = strategy.load_strategy_config()
     order_gen = strategy.create_order_generator(strategy_config)
     
     # 策略参数（由 Strategy Provider 统一管理，底层已切到 config_loader）
@@ -620,7 +610,8 @@ def main():
         model_name=args.model,
         combo_name=args.combo,
         anchor_date=anchor_date,
-        record_file=args.record_file
+        record_file=args.record_file,
+        ctx=prepared.ctx,
     )
 
     print(f"预测来源   : {source_desc}")
@@ -702,7 +693,7 @@ def main():
         focus_instruments, current_holding_instruments,
         top_k, drop_n, buy_suggestion_factor,
         sorted_df, args.output_dir, next_trade_date_string, dry_run=args.dry_run,
-        record_file=args.record_file
+        record_file=args.record_file, ctx=prepared.ctx,
     )
 
     if opinions_df is not None and not opinions_df.empty and args.verbose:
@@ -800,6 +791,69 @@ def main():
             print(f"💰 预估支出 : {min_total:,.2f} ~ {max_total:,.2f}")
     if sell_orders:
         print(f"💰 预估回收 : {sell_amount:,.2f}")
+
+    return OrderRunSummary(
+        anchor_date=anchor_date,
+        trade_date=next_trade_date_string,
+        source_label=source_label,
+        source_description=source_desc.split(chr(10))[0],
+        holding_count=len(hold_final),
+        sell_count=len(sell_orders),
+        buy_count=len(buy_orders),
+        sell_file=sell_file,
+        buy_file=buy_file,
+        dry_run=args.dry_run,
+    )
+
+
+def _default_order_run_config(ctx, options):
+    from quantpits.order.command import load_order_run_config
+    from quantpits.utils import strategy
+
+    merged_config, cashflow_config = load_configs(ctx=ctx)
+    strategy_config = strategy.load_strategy_config(ctx.root)
+    return load_order_run_config(
+        ctx,
+        options,
+        merged_config=merged_config,
+        cashflow_config=cashflow_config,
+        strategy_config=strategy_config,
+    )
+
+
+def default_order_command_dependencies():
+    from quantpits.order.command import OrderCommandDependencies
+
+    return OrderCommandDependencies(
+        get_workspace_context=env.get_workspace_context,
+        load_run_config=_default_order_run_config,
+        safeguard=env.safeguard,
+        execute=run_order_generation,
+    )
+
+
+def main(argv=None):
+    from quantpits.order.command import (
+        OrderCommandRequest,
+        OrderPlanError,
+        build_order_arg_parser,
+        run_order_command,
+    )
+
+    parser = build_order_arg_parser()
+    cli_args = tuple(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(argv)
+    try:
+        outcome = run_order_command(
+            OrderCommandRequest(args=args, cli_args=cli_args),
+            default_order_command_dependencies(),
+        )
+    except OrderPlanError as exc:
+        parser.error(str(exc))
+        return
+
+    if outcome.rendered_output is not None:
+        print(outcome.rendered_output)
 
 
 if __name__ == "__main__":

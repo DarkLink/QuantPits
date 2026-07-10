@@ -252,6 +252,9 @@ python -m quantpits.scripts.static_train \
 # Fuse model predictions into ensemble signals
 python -m quantpits.scripts.ensemble_fusion
 
+# Inspect order inputs, prediction source, and expected outputs without initializing Qlib
+python -m quantpits.scripts.order_gen --explain-plan
+
 # Generate buy/sell orders
 python -m quantpits.scripts.order_gen
 ```

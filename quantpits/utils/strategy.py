@@ -25,14 +25,15 @@ from quantpits.utils import env
 # ==============================================================================
 # 配置文件加载
 # ==============================================================================
-def load_strategy_config():
+def load_strategy_config(workspace_path=None):
     """
     加载策略配置。使用 config_loader.load_workspace_config 统筹加载。
     """
     from quantpits.utils.config_loader import load_workspace_config
     
     # load_workspace_config 已经包含了对 strategy_config.yaml 的读取以及对 TopK/DropN 的 Promote
-    full_config = load_workspace_config(env.ROOT_DIR)
+    workspace_root = workspace_path if workspace_path is not None else env.ROOT_DIR
+    full_config = load_workspace_config(workspace_root)
     
     # 构造 strategy.py 所需的返回结构
     config = {

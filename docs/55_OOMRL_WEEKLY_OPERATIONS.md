@@ -243,6 +243,9 @@ python -m quantpits.scripts.static_train \
 # 融合模型预测为组合信号（用现有的 ensemble_config.json combo 配置）
 python -m quantpits.scripts.ensemble_fusion
 
+# 轻量检查订单输入、预测来源和预期输出（不初始化 Qlib）
+python -m quantpits.scripts.order_gen --explain-plan
+
 # 生成买卖订单
 python -m quantpits.scripts.order_gen
 ```

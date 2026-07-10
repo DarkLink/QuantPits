@@ -28,9 +28,45 @@ python quantpits/scripts/order_gen.py --model gru
 # 3. Dry-run inspection (Exhibits mapping without writing serialization to disk)
 python quantpits/scripts/order_gen.py --dry-run
 
-# 4. Verbose outputs examining detailed ranks + multi-model opinions 
+# 4. Inspect a lightweight plan without initializing Qlib
+python quantpits/scripts/order_gen.py --explain-plan
+
+# 5. Emit the plan as machine-readable JSON
+python quantpits/scripts/order_gen.py --json-plan
+
+# 6. Verbose outputs examining detailed ranks + multi-model opinions
 python quantpits/scripts/order_gen.py --verbose
 ```
+
+---
+
+## Execution Plans and Dry Runs
+
+Order generation provides two different preview mechanisms:
+
+| Mode | Qlib | Predictions/prices | Order calculation | Writes | Intended use |
+|------|:---:|:---:|:---:|:---:|------|
+| `--explain-plan` | No | No | No | No | Human review of inputs, source selection, steps, and expected outputs |
+| `--json-plan` | No | No | No | No | Structured plan consumption by CI, agents, or other tools |
+| `--dry-run` | Yes | Yes | Yes | No | Calculate real orders for final human review |
+| Default execution | Yes | Yes | Yes | Conditional | Generate order and model-opinion artifacts |
+
+Plan modes read workspace configuration only, produce a stable fingerprint, and explain `--model` / `--combo` source selection. They do not run the safeguard, initialize Qlib, access recorders/calendars/market data, or create output directories. Relative `--output-dir` and `--record-file` values are resolved under the active workspace rather than the caller's current working directory.
+
+```bash
+source workspaces/Demo_Workspace/run_env.sh
+
+# Human-readable plan
+python quantpits/scripts/order_gen.py --explain-plan --run-id order-review
+
+# JSON plan; stdout is one JSON payload
+python quantpits/scripts/order_gen.py --json-plan --run-id order-review
+
+# Full calculation preview: reads Qlib data but writes nothing
+python quantpits/scripts/order_gen.py --dry-run --verbose
+```
+
+`--run-id` identifies a plan; the semantic plan fingerprint excludes run-id changes by default. Order generation does not write a RunManifest in this phase.
 
 ---
 
@@ -185,8 +221,13 @@ python quantpits/scripts/order_gen.py --help
 Optional Overrides:
   --model TEXT             Utilize explicitly defined algorithm (Loaded from Qlib records)
   --output-dir TEXT        Output targets (Default output)
-  --dry-run               Terminal outputs solely bypassing file execution
-  --verbose               Activate heavy debug/trace components exhibiting rank lists
+  --record-file TEXT       Train-record mapping used for single-model predictions
+  --dry-run                Run the full calculation without writing files
+  --verbose                Activate heavy debug/trace components exhibiting rank lists
+  --combo TEXT             Select an ensemble combo
+  --explain-plan           Print a lightweight plan without Qlib initialization or writes
+  --json-plan              Emit a machine-readable JSON plan; implies explain-plan
+  --run-id TEXT            Set an explicit plan run ID
 ```
 
 ---
