@@ -50,6 +50,8 @@
 
 Post-trade 使用统一 intake control plane，但保留三类证据的权威边界：settlement 负责现金/持仓状态，order 负责委托意图，trade 负责逐笔成交。默认 `prod_post_trade --scope all` 同时处理三类证据，避免执行分析缺少委托或成交日志；source fingerprint ledger 支持后到历史文件并阻止已摄取文件静默漂移。
 
+账户状态由纯 `Decimal` 状态引擎按完整批次计算，先核对成交数量和估值完整性，再以 cursor-last 顺序提交派生日志与 `prod_config.json`。`--dry-run` 执行同一套状态计算但不写文件；当前保证可重跑恢复，不宣称跨文件原子事务。
+
 ```mermaid
 flowchart TB
     subgraph TRAIN["① 训练（按需）"]

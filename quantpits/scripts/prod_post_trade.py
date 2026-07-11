@@ -77,6 +77,7 @@ def _load_command_run_config(ctx, options):
     from quantpits.post_trade.command import PostTradeRunConfig
 
     prod = load_prod_config()
+    raw_prod = json.loads(ctx.config_path("prod_config.json").read_text(encoding="utf-8"))
     cashflow = load_cashflow_config()
     state_cursor = prod.get("last_processed_date", prod.get("current_date"))
     if not state_cursor:
@@ -91,6 +92,7 @@ def _load_command_run_config(ctx, options):
         broker_name=options.broker or prod.get("broker", "gtja"),
         state_cursor=state_cursor,
         legacy_execution_cursor=legacy_cursor,
+        prod_state_document=raw_prod,
     )
 
 
@@ -604,9 +606,21 @@ def main():
     # Strict preflight and execution-evidence ingestion happen before legacy state writers.
     try:
         adapter = get_adapter(prepared.config.broker_name)
+        from quantpits.post_trade.service import PostTradeService
+        from quantpits.post_trade.valuation import QlibValuationProvider
+        state_service = PostTradeService(QlibValuationProvider())
+
+        def _run_state(effective_prepared, parsed):
+            dates = tuple(
+                item.trade_date for item in effective_prepared.catalog.settlement_sources
+                if item.status in {"present", "assumed_empty"}
+            )
+            return state_service.run_state(effective_prepared, parsed, dates)
+
         summary = execute_prepared(
             prepared, adapter, init_qlib=init_qlib,
             resolve_trade_dates=lambda start, end: get_trade_dates(start, end, strict=True),
+            state_callback=_run_state,
         )
     except Exception as exc:
         from quantpits.post_trade.contracts import PostTradeExecutionError
@@ -616,95 +630,23 @@ def main():
         raise
     if args.dry_run:
         print(render_prepared(summary.prepared))
-        print("\n[DRY-RUN] Strict broker intake validation passed. No files written.")
+        if summary.state_result is not None:
+            print("\n[DRY-RUN] Strict broker intake validation passed. State calculation passed: %s" % json.dumps(summary.state_result.public_summary(), sort_keys=True))
+        else:
+            print("\n[DRY-RUN] Strict broker intake validation passed. No files written.")
         return
-    global _PREPARED_SETTLEMENTS
-    _PREPARED_SETTLEMENTS = {
-        date: item.dataframe for (stream, date), item in (summary.parsed_inputs or {}).items()
-        if stream == "settlement"
-    }
 
-    # --- 加载配置 ---
-    config = load_prod_config()
-    cashflow_config = load_cashflow_config()
+    # Execution-only is a strict terminal route: it never initializes or
+    # mutates account state.
+    if prepared.options.scope == "execution":
+        print("Execution evidence ingestion completed.")
+        return
 
-    last_processed_date = config.get("last_processed_date", config["current_date"])
-    model = config.get("model", "GATs")
-    market = config.get("market")
-    if not market:
-        market = "csi300"
-        print(f"⚠️  Warning: 'market' not found in prod_config.json. Defaulting to '{market}'.")
-    
-    benchmark = config.get("benchmark")
-    if not benchmark:
-        benchmark = "SH000300"
-        print(f"⚠️  Warning: 'benchmark' not found in prod_config.json. Defaulting to '{benchmark}'.")
-    
-    # 确定券商适配器
-    broker_name = prepared.config.broker_name
-    print(f"Using broker adapter: {adapter.name} ({broker_name})")
-
-    current_cash = Decimal(str(config["current_cash"]))
-    current_holding = config["current_holding"]
-
-    # 转换持仓为 Decimal
-    for item in current_holding:
-        item["amount"] = Decimal(str(item["amount"]))
-        item["value"] = Decimal(str(item["value"]))
-
-    print(f"Last processed date: {last_processed_date}")
-    print(f"Current cash: {current_cash}")
-    print(f"Current holdings: {len(current_holding)} positions")
-
-    # --- 获取需要处理的日期范围 ---
-    start_date = args.start_date or (
-        datetime.strptime(last_processed_date, "%Y-%m-%d") + timedelta(days=1)
-    ).strftime("%Y-%m-%d")
-    end_date = args.end_date or datetime.now().strftime("%Y-%m-%d")
-
-    trade_dates = get_trade_dates(start_date, end_date)
-
-    print(f"\nDate range: {start_date} to {end_date}")
-    print(f"Trade dates to process: {trade_dates}")
-
-    # --- 预览 cashflow ---
-    has_cashflows = False
-    for i, date_str in enumerate(trade_dates):
-        cf = get_cashflow_for_date(cashflow_config, date_str, is_first_day=(i == 0))
-        if cf != 0:
-            has_cashflows = True
-            cf_type = "入金" if cf > 0 else "出金"
-            print(f"  Cashflow on {date_str}: {cf:+} ({cf_type})")
-    if not has_cashflows:
-        print("  No cashflows in this period.")
-
-    # --- 批量处理 ---
+    state_result = summary.state_result
+    trade_dates = list(state_result.change_set.processed_dates) if state_result else []
     if not trade_dates:
         print("\nNo trade dates to process.")
         return
-
-    for i, date_str in enumerate(trade_dates):
-        cashflow_today = get_cashflow_for_date(
-            cashflow_config, date_str, is_first_day=(i == 0)
-        )
-        current_cash, current_holding, current_closing_value = process_single_day(
-            date_str,
-            current_cash,
-            current_holding,
-            model=model,
-            market=market,
-            benchmark=benchmark,
-            cashflow_today=cashflow_today,
-            adapter=adapter,
-            verbose=args.verbose,
-        )
-
-    # --- 更新配置文件 ---
-    config["current_cash"] = float(current_cash)
-    config["current_holding"] = current_holding
-    config["current_date"] = trade_dates[-1]
-    config["last_processed_date"] = trade_dates[-1]
-    save_prod_config(config)
 
     # --- 执行交易分类 ---
     try:
@@ -726,9 +668,8 @@ def main():
     print(f"\n{'='*50}")
     print(f"Batch processing completed!")
     print(f"Processed {len(trade_dates)} trade dates")
-    print(f"Final cash: {current_cash}")
-    print(f"Final closing value: {current_closing_value}")
-    print(f"Final holdings: {len(current_holding)} positions")
+    print("State invariants: passed")
+    print(f"Final holdings: {len(state_result.change_set.final_state.positions)} positions")
     print(f"{'='*50}")
 
 

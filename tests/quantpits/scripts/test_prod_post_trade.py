@@ -281,8 +281,10 @@ def test_main(mock_save_class, mock_classify, mock_adapter, mock_save, mock_proc
     with patch.object(sys, 'argv', ['prod_post_trade.py', '--end-date', '2026-03-02', '--allow-missing-settlement']):
         post_trade.main()
         
-    mock_process.assert_called_once()
-    mock_save.assert_called_once()
+    # The primary path now uses the deterministic state service; the legacy
+    # helpers remain import-compatible but are no longer orchestration hooks.
+    mock_process.assert_not_called()
+    mock_save.assert_not_called()
     mock_classify.assert_called_once()
     mock_save_class.assert_called_once()
 

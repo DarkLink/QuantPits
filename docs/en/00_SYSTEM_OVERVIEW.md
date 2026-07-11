@@ -50,6 +50,8 @@ Every step in this system is **optional and combinable**. Only "Prediction" and 
 
 Post-trade uses one intake control plane while preserving three authority boundaries: settlement owns cash/holding state, orders capture execution intent, and trades capture intraday fills. The default `prod_post_trade --scope all` processes all three so execution analytics cannot silently miss order/fill logs. A source-fingerprint ledger discovers late historical exports and fails closed on content drift.
 
+Account state is calculated as a complete batch by a pure `Decimal` engine. Filled quantities and valuation completeness are checked before derived logs and `prod_config.json` are committed in cursor-last order. `--dry-run` performs the same calculation without writes; this is a recoverable protocol, not a multi-file atomic transaction.
+
 ```mermaid
 flowchart TB
     subgraph TRAIN["① Train (On-demand)"]

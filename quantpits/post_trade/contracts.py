@@ -92,3 +92,61 @@ class ExecutionEvidenceGapError(PostTradeInputError):
 
 class IngestionPersistenceError(PostTradeExecutionError):
     pass
+
+
+class PostTradeStateError(PostTradeExecutionError):
+    """Base class for deterministic account-state failures."""
+
+
+class PostTradeStateInputError(PostTradeStateError):
+    pass
+
+
+class SettlementNormalizationError(PostTradeStateInputError):
+    pass
+
+
+class SettlementDateMismatchError(SettlementNormalizationError):
+    pass
+
+
+class UnsupportedSettlementEventError(SettlementNormalizationError):
+    pass
+
+
+class ExecutionReconciliationError(PostTradeStateInputError):
+    pass
+
+
+class PositionNotFoundError(PostTradeStateError):
+    pass
+
+
+class PositionQuantityError(PostTradeStateError):
+    pass
+
+
+class PositionCostError(PostTradeStateError):
+    pass
+
+
+class CashReconciliationError(PostTradeStateError):
+    pass
+
+
+class ValuationMissingError(PostTradeStateError):
+    pass
+
+
+class ValuationSchemaError(PostTradeStateError):
+    pass
+
+
+class PostTradeStateConflictError(PostTradeStateError):
+    pass
+
+
+class PostTradeStatePersistenceError(PostTradeStateError):
+    def __init__(self, message, *, committed_outputs=()):
+        super().__init__(message)
+        self.committed_outputs = tuple(committed_outputs)

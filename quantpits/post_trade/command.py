@@ -46,6 +46,15 @@ class PostTradeRunConfig:
     broker_name: str
     state_cursor: str
     legacy_execution_cursor: Optional[str]
+    prod_state_document: Optional[dict] = None
+
+    @property
+    def runtime_config(self):
+        return self.prod_config
+
+    @property
+    def raw_prod_config(self):
+        return self.prod_state_document if self.prod_state_document is not None else self.prod_config
 
 
 @dataclass(frozen=True)
@@ -155,7 +164,16 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
     steps += [CommandStep("strict-parse-sources", "Open and validate pending broker exports", expensive=True), CommandStep("validate-cross-stream-completeness", "Check authority and execution-evidence consistency")]
     if options.scope in {"all", "execution"}:
         steps.append(CommandStep("ingest-execution-evidence", "Atomically merge raw order/trade evidence"))
-    if options.scope in {"all", "state"}: steps.extend([CommandStep("run-legacy-settlement-state-update", "Run existing cash/holding state workflow", expensive=True), CommandStep("run-trade-classification", "Update settlement trade classification", expensive=True)])
+    if options.scope in {"all", "state"}:
+        steps.extend([
+            CommandStep("reconcile-execution-quantities", "Reconcile filled quantities before state update", expensive=True),
+            CommandStep("load-valuation-snapshots", "Load exact holding and benchmark valuations", expensive=True),
+            CommandStep("calculate-state-change-set", "Calculate deterministic multi-day account state", expensive=True),
+            CommandStep("validate-state-invariants", "Validate cash, position, and valuation invariants"),
+            CommandStep("persist-derived-state-outputs", "Atomically replace derived state outputs"),
+            CommandStep("commit-account-state-cursor", "Commit prod_config cursor as the last mandatory write"),
+            CommandStep("run-trade-classification", "Update settlement trade classification", expensive=True),
+        ])
     if options.scope in {"all", "execution"}:
         steps.append(CommandStep("update-legacy-execution-cursor", "Best-effort compatibility cursor mirror"))
     warnings = [issue.code + ": " + issue.message for issue in catalog.issues]
@@ -277,7 +295,10 @@ def execute_prepared(
             )),
             issues=tuple(catalog.issues) + assumed_issues,
         )
-    parsed = parse_pending_sources(catalog, adapter)
+    parsed = parse_pending_sources(
+        catalog, adapter,
+        reparse_execution_dates=settlement_dates if prepared.options.scope == "all" else (),
+    )
     validate_cross_stream(
         parsed, scope=prepared.options.scope,
         settlement_required_dates=settlement_dates,
@@ -292,13 +313,16 @@ def execute_prepared(
             metadata=dict(effective_plan.metadata, plan_fingerprint=prepared.plan_fingerprint),
         )
         effective_prepared = replace(prepared, catalog=catalog, plan=effective_plan)
-    if prepared.options.dry_run:
-        return PostTradeRunSummary(effective_prepared, parsed_inputs=parsed)
     verify_parsed_sources(parsed)
+    if prepared.options.dry_run:
+        state_result = None
+        if prepared.options.scope in {"all", "state"} and state_callback:
+            state_result = state_callback(effective_prepared, parsed)
+        return PostTradeRunSummary(effective_prepared, state_result=state_result, parsed_inputs=parsed)
     ingestion = None
     if prepared.options.scope in {"all", "execution"}:
         ingestion = ingest_execution_evidence(prepared.ctx, parsed, run_id=prepared.options.run_id or prepared.plan_fingerprint)
     state_result = None
     if prepared.options.scope in {"all", "state"} and state_callback:
-        state_result = state_callback(prepared, parsed)
+        state_result = state_callback(effective_prepared, parsed)
     return PostTradeRunSummary(effective_prepared, ingestion, state_result, parsed)

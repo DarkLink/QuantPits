@@ -23,3 +23,9 @@ __all__ = [
     "PostTradeIntakeIssue", "PostTradePlanError", "PostTradeSourceRef",
     "SourceChangedError",
 ]
+"""Workspace-safe post-trade intake and deterministic account state."""
+
+from quantpits.post_trade.service import PostTradeService, PostTradeStateResult
+from quantpits.post_trade.state import AccountState, Position, PostTradeStateChangeSet
+
+__all__ = ["AccountState", "Position", "PostTradeService", "PostTradeStateChangeSet", "PostTradeStateResult"]

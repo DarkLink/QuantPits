@@ -103,7 +103,7 @@ python quantpits/scripts/prod_post_trade.py --json-plan
 # Override targeted Broker via CLI flag (defaults to config JSON setting, falls back to `gtja`)
 python quantpits/scripts/prod_post_trade.py --broker gtja
 
-# Strict dry-run: opens and validates broker inputs but writes nothing.
+# Strict dry-run: parses, reconciles, values, and calculates full state without writes.
 python quantpits/scripts/prod_post_trade.py --dry-run
 
 # Explicit partial workflows; the plan warns about the skipped authority.
@@ -127,7 +127,7 @@ Execution ingestion uses source path + SHA-256 receipts in `post_trade_ingestion
 
 ## Procedural Engine
 
-For each processing day chronologically, the script computes boundaries as follows:
+For each processing day, the command builds an immutable state change before persistence:
 
 ```mermaid
 flowchart TD
@@ -148,6 +148,15 @@ flowchart TD
 ```text
 cash_after = cash_before + Total_Sell_Value - Total_Buy_Gross + Dividends_Interest + Targeted_Cashflow
 ```
+
+Account arithmetic uses `Decimal`. Partial sales remove average-cost basis: a
+100-share position costing 1000 retains cost 600 after selling 40 shares;
+proceeds are never subtracted directly from position cost. Negative dividend-tax
+adjustments use their actual cash effect.
+
+Every ending position and the benchmark must have a valid close. Missing
+valuation fails before the first state write instead of silently dropping a
+position or writing a fake zero benchmark.
 
 ### Database Descriptions
 
@@ -224,7 +233,7 @@ Optional Overrides:
   --start-date TEXT Start date; state/all cannot precede the next state date
   --end-date TEXT   Override cursor target date (YYYY-MM-DD); bypasses fetching current day
   --allow-missing-settlement  Explicitly acknowledge no activity for missing statements
-  --dry-run         Strict parse/completeness preflight; writes nothing
+  --dry-run         Full parse, reconciliation, valuation and state calculation; writes nothing
   --explain-plan    Light text plan; no Qlib initialization or Excel parsing
   --json-plan       Light JSON plan; stdout is one JSON payload
   --broker TEXT     Override target Broker sequence behavior mappings
@@ -244,3 +253,9 @@ Optional Overrides:
 
 > [!WARNING]
 > Name the three exports `YYYY-MM-DD-table.xlsx`, `YYYY-MM-DD-order.xlsx`, and `YYYY-MM-DD-trade.xlsx`. Missing settlement fails by default; no empty template is substituted unless `--allow-missing-settlement` explicitly acknowledges no activity.
+
+> [!WARNING]
+> Real state execution currently uses a recoverable cursor-last protocol:
+> derived CSV files are atomically replaced one file at a time and
+> `prod_config.json` advances last. This is not a multi-file atomic transaction;
+> transactional cashflow archival and a crash journal remain follow-up work.

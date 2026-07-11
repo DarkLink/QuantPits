@@ -117,11 +117,11 @@ def verify_source(source: PostTradeSourceRef) -> None:
 def verify_parsed_sources(parsed: Mapping[Tuple[str, str], ParsedPostTradeInput]) -> None:
     """Recheck every physical source immediately before the first writer."""
     for item in parsed.values():
-        if item.source.status not in {"assumed_empty", "already_ingested"}:
+        if item.source.status != "assumed_empty":
             verify_source(item.source)
 
 
-def parse_pending_sources(catalog: PostTradeInputCatalog, adapter: object) -> Dict[Tuple[str, str], ParsedPostTradeInput]:
+def parse_pending_sources(catalog: PostTradeInputCatalog, adapter: object, *, reparse_execution_dates=()) -> Dict[Tuple[str, str], ParsedPostTradeInput]:
     parsed: Dict[Tuple[str, str], ParsedPostTradeInput] = {}
     methods = {"settlement": "parse_settlement", "order": "parse_orders", "trade": "parse_trades"}
     for stream in ("settlement", "order", "trade"):
@@ -130,7 +130,7 @@ def parse_pending_sources(catalog: PostTradeInputCatalog, adapter: object) -> Di
                 frame = pd.DataFrame()
                 parsed[(stream, source.trade_date)] = ParsedPostTradeInput(source, frame, 0)
                 continue
-            if source.status == "already_ingested" and stream != "settlement":
+            if source.status == "already_ingested" and stream != "settlement" and source.trade_date not in set(reparse_execution_dates):
                 # The receipt is authoritative for presence; raw rows remain in
                 # cumulative logs and must not be reparsed or re-ingested.
                 parsed[(stream, source.trade_date)] = ParsedPostTradeInput(source, pd.DataFrame(), 0)

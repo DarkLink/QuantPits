@@ -103,7 +103,7 @@ python quantpits/scripts/prod_post_trade.py --json-plan
 # 指定券商进行处理 (默认读取 prod_config.json 中的配置，兜底为 gtja)
 python quantpits/scripts/prod_post_trade.py --broker gtja
 
-# 严格 dry-run：打开并验证输入，但不写文件
+# 严格 dry-run：解析、对账、估值并计算完整状态，但不写文件
 python quantpits/scripts/prod_post_trade.py --dry-run
 
 # 明确只处理某一侧（计划会给出另一侧被跳过的 warning）
@@ -127,7 +127,7 @@ execution ingestion 使用 `post_trade_ingestion_state.json` 中的 source path 
 
 ## 处理逻辑
 
-对每个交易日，脚本按以下顺序处理：
+对每个交易日，命令先构造不可变状态变化，再进入写盘阶段：
 
 ```mermaid
 flowchart TD
@@ -149,14 +149,18 @@ flowchart TD
 cash_after = cash_before + 卖出收入 - 买入支出 + 红利利息 + cashflow
 ```
 
+账户计算统一使用 `Decimal`。部分卖出按平均成本移除对应成本：持仓 100 股、成本 1000，卖出 40 股后剩余成本为 600，而不是用卖出回款直接冲减成本。红利税补缴等负现金调整也按实际 `资金发生数` 计入。
+
+所有期末持仓和基准都必须有有效收盘价；缺失估值会在写盘前失败，不再静默丢失持仓或写入假的零基准。
+
 ### 数据文件说明
 
 | 文件 | 内容 | 更新方式 |
 |------|------|----------|
-| `trade_log_full.csv` | 全部交易记录 | 追加 + 去重 |
+| `trade_log_full.csv` | 全部交易记录 | 按处理日期确定性替换 |
 | `trade_classification.csv` | 核心量化/手工买卖归因打标 | 自动依赖建议文件推算 |
-| `holding_log_full.csv` | 每日持仓快照 | 追加 + 去重 |
-| `daily_amount_log_full.csv` | 每日资金汇总 | 追加 + 去重 |
+| `holding_log_full.csv` | 每日持仓快照 | 按处理日期确定性替换 |
+| `daily_amount_log_full.csv` | 每日资金汇总 | 每日一行、按日期替换 |
 | `trade_detail_*.csv` | 单日交易详情 | 每日覆写 |
 
 ### 券商交割单适配器 (Broker Adapter)
@@ -224,7 +228,7 @@ python quantpits/scripts/prod_post_trade.py --help
   --start-date TEXT 起始日期；state/all 不得早于 state cursor 的下一日
   --end-date TEXT   结束日期 (YYYY-MM-DD)，默认为今天
   --allow-missing-settlement  显式确认缺失交割单的日期无活动
-  --dry-run         严格解析和完整性预检，不写入任何文件
+  --dry-run         完整解析、对账、估值和状态计算，不写入任何文件
   --explain-plan    轻量文本计划；不初始化 Qlib、不打开 Excel
   --json-plan       轻量 JSON 计划；stdout 只输出一个 JSON payload
   --broker TEXT     券商标识 (默认优先读取 prod_config.json 中的 broker，兜底为 gtja)
@@ -244,3 +248,6 @@ python quantpits/scripts/prod_post_trade.py --help
 
 > [!WARNING]
 > 三类文件必须严格命名为 `YYYY-MM-DD-table.xlsx`、`YYYY-MM-DD-order.xlsx`、`YYYY-MM-DD-trade.xlsx`。缺失 settlement 默认失败，不会隐式使用空模板；只有显式 `--allow-missing-settlement` 才能确认无活动。
+
+> [!WARNING]
+> 当前真实提交采用可重跑的 cursor-last 协议：派生 CSV 先以单文件原子替换写入，`prod_config.json` 最后推进。它不是跨文件原子事务；cashflow 事务归档和 crash journal 留待后续阶段。
