@@ -15,7 +15,6 @@ Production Post-Trade 批量处理脚本
 
 import os
 import sys
-import os
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
@@ -34,19 +33,19 @@ from quantpits.scripts.brokers import get_adapter
 from quantpits.scripts.brokers.base import SELL_TYPES, BUY_TYPES, INTEREST_TYPES
 
 from quantpits.utils import env
-os.chdir(env.ROOT_DIR)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-CONFIG_DIR = "config"
-DATA_DIR = "data"
+CONFIG_DIR = os.path.join(env.ROOT_DIR, "config")
+DATA_DIR = os.path.join(env.ROOT_DIR, "data")
 PROD_CONFIG_FILE = os.path.join(env.ROOT_DIR, "config", "prod_config.json")
 CASHFLOW_CONFIG_FILE = os.path.join(CONFIG_DIR, "cashflow.json")
 TRADE_LOG_FILE = os.path.join(DATA_DIR, "trade_log_full.csv")
 HOLDING_LOG_FILE = os.path.join(DATA_DIR, "holding_log_full.csv")
 DAILY_LOG_FILE = os.path.join(DATA_DIR, "daily_amount_log_full.csv")
 EMPTY_TRADE_FILE = os.path.join(DATA_DIR, "emp-table.xlsx")
+_PREPARED_SETTLEMENTS = {}
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +54,6 @@ EMPTY_TRADE_FILE = os.path.join(DATA_DIR, "emp-table.xlsx")
 def load_prod_config():
     """使用 config_loader 加载统一配置"""
     from quantpits.utils.config_loader import load_workspace_config
-    # env.ROOT_DIR 已经自动由 os.chdir 设置
     return load_workspace_config(env.ROOT_DIR)
 
 
@@ -72,6 +70,28 @@ def load_cashflow_config():
     with open(CASHFLOW_CONFIG_FILE, "r") as f:
         config = json.load(f)
     return config
+
+
+def _load_command_run_config(ctx, options):
+    """Build the prepared snapshot through legacy patchable loaders."""
+    from quantpits.post_trade.command import PostTradeRunConfig
+
+    prod = load_prod_config()
+    cashflow = load_cashflow_config()
+    state_cursor = prod.get("last_processed_date", prod.get("current_date"))
+    if not state_cursor:
+        raise ValueError("prod_config.json does not define current_date/last_processed_date")
+    legacy_path = ctx.data_path(".order_trade_state.json")
+    legacy_cursor = None
+    if legacy_path.exists():
+        legacy_cursor = json.loads(legacy_path.read_text(encoding="utf-8")).get("last_processed_date")
+    return PostTradeRunConfig(
+        prod_config=prod,
+        cashflow_config=cashflow,
+        broker_name=options.broker or prod.get("broker", "gtja"),
+        state_cursor=state_cursor,
+        legacy_execution_cursor=legacy_cursor,
+    )
 
 
 def get_cashflow_for_date(cashflow_config, date_str, is_first_day=False):
@@ -140,13 +160,19 @@ def init_qlib():
     env.init_qlib()
 
 
-def get_trade_dates(start_date, end_date):
+def get_trade_dates(start_date, end_date, *, strict=False):
     """使用 qlib 日历获取交易日列表"""
     from qlib.data import D
     try:
         trade_dates = D.calendar(start_time=start_date, end_time=end_date)
         return [d.strftime("%Y-%m-%d") for d in trade_dates]
-    except Exception:
+    except Exception as exc:
+        if strict:
+            from quantpits.post_trade.contracts import PostTradeExecutionError
+            raise PostTradeExecutionError(
+                "Failed to resolve Qlib trading calendar for %s..%s: %s"
+                % (start_date, end_date, exc)
+            ) from exc
         return []
 
 
@@ -167,6 +193,12 @@ def add_prefix(instrument):
 
 def load_trade_file(date_string, model, adapter):
     """加载交易文件，如不存在则使用空模板。使用具体的券商适配器进行读取。"""
+    prepared = _PREPARED_SETTLEMENTS.get(date_string)
+    if prepared is not None:
+        df = prepared.copy()
+        if not df.empty:
+            df["model"] = model
+        return df
     file_path = os.path.join(DATA_DIR, f"{date_string}-table.xlsx")
     if not os.path.exists(file_path):
         file_path = EMPTY_TRADE_FILE
@@ -523,7 +555,7 @@ def process_single_day(current_date_string, current_cash, current_holding,
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def parse_args():
+def build_parser():
     parser = argparse.ArgumentParser(
         description="Production Post-Trade 批量处理 — 处理实盘交易数据",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -539,41 +571,58 @@ Cashflow 配置 (config/cashflow.json):
   旧格式: {"cash_flow_today": 50000}  (仅在首日应用)
         """,
     )
-    parser.add_argument(
-        "--end-date",
-        type=str,
-        default=None,
-        help="结束日期 (YYYY-MM-DD)，默认为今天",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="仅打印处理计划，不写入任何文件",
-    )
-    parser.add_argument(
-        "--broker",
-        type=str,
-        default=None,
-        help="券商标识 (默认优先读取 prod_config.json 中的 broker，兜底为 gtja)",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="详细输出每日交易明细",
-    )
-    return parser.parse_args()
+    from quantpits.post_trade.command import add_post_trade_arguments
+    return add_post_trade_arguments(parser, default_scope="all")
+
+
+def parse_args(argv=None):
+    return build_parser().parse_args(argv)
 
 
 def main():
-    from quantpits.utils import env
-    env.safeguard("Prod Post Trade")
-    
-    # 初始化 Qlib
-    init_qlib()
-
     args = parse_args()
+    from quantpits.post_trade.command import (
+        PostTradeCommandDependencies, execute_prepared, options_from_namespace,
+        prepare_post_trade_run, render_prepared,
+    )
+    try:
+        options = options_from_namespace(args)
+        prepared = prepare_post_trade_run(
+            env.get_workspace_context(), options, cli_args=tuple(sys.argv[1:]),
+            dependencies=PostTradeCommandDependencies(load_run_config=_load_command_run_config),
+        )
+    except ValueError as exc:
+        build_parser().error(str(exc))
+    if args.explain_plan or args.json_plan:
+        print(render_prepared(prepared))
+        return
+    if not args.dry_run:
+        env.safeguard("Prod Post Trade")
 
     cwd = os.getcwd()
+
+    # Strict preflight and execution-evidence ingestion happen before legacy state writers.
+    try:
+        adapter = get_adapter(prepared.config.broker_name)
+        summary = execute_prepared(
+            prepared, adapter, init_qlib=init_qlib,
+            resolve_trade_dates=lambda start, end: get_trade_dates(start, end, strict=True),
+        )
+    except Exception as exc:
+        from quantpits.post_trade.contracts import PostTradeExecutionError
+        if isinstance(exc, (PostTradeExecutionError, ValueError)):
+            print("[ERROR] %s" % exc)
+            raise SystemExit(1)
+        raise
+    if args.dry_run:
+        print(render_prepared(summary.prepared))
+        print("\n[DRY-RUN] Strict broker intake validation passed. No files written.")
+        return
+    global _PREPARED_SETTLEMENTS
+    _PREPARED_SETTLEMENTS = {
+        date: item.dataframe for (stream, date), item in (summary.parsed_inputs or {}).items()
+        if stream == "settlement"
+    }
 
     # --- 加载配置 ---
     config = load_prod_config()
@@ -592,12 +641,7 @@ def main():
         print(f"⚠️  Warning: 'benchmark' not found in prod_config.json. Defaulting to '{benchmark}'.")
     
     # 确定券商适配器
-    broker_name = args.broker or config.get("broker", "gtja")
-    try:
-        adapter = get_adapter(broker_name)
-    except ValueError as e:
-        print(f"[ERROR] {e}")
-        sys.exit(1)
+    broker_name = prepared.config.broker_name
     print(f"Using broker adapter: {adapter.name} ({broker_name})")
 
     current_cash = Decimal(str(config["current_cash"]))
@@ -613,7 +657,7 @@ def main():
     print(f"Current holdings: {len(current_holding)} positions")
 
     # --- 获取需要处理的日期范围 ---
-    start_date = (
+    start_date = args.start_date or (
         datetime.strptime(last_processed_date, "%Y-%m-%d") + timedelta(days=1)
     ).strftime("%Y-%m-%d")
     end_date = args.end_date or datetime.now().strftime("%Y-%m-%d")
@@ -633,13 +677,6 @@ def main():
             print(f"  Cashflow on {date_str}: {cf:+} ({cf_type})")
     if not has_cashflows:
         print("  No cashflows in this period.")
-
-    # --- Dry-run 模式 ---
-    if args.dry_run:
-        print(f"\n{'='*50}")
-        print("[DRY-RUN] Would process the above dates. No files written.")
-        print(f"{'='*50}")
-        return
 
     # --- 批量处理 ---
     if not trade_dates:

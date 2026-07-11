@@ -27,10 +27,7 @@ if PROJECT_ROOT not in sys.path:
 from quantpits.scripts.brokers import get_adapter
 from quantpits.utils import env
 
-# 需要先进入对应 workspace，这通常由 env.ROOT_DIR 管理
-os.chdir(env.ROOT_DIR)
-
-DATA_DIR = "data"
+DATA_DIR = os.path.join(env.ROOT_DIR, "data")
 ORDER_LOG_FILE = os.path.join(DATA_DIR, "raw_order_log_full.csv")
 TRADE_LOG_FILE = os.path.join(DATA_DIR, "raw_trade_log_full.csv")
 ORDER_TRADE_STATE_FILE = os.path.join(DATA_DIR, ".order_trade_state.json")
@@ -39,6 +36,23 @@ def load_prod_config():
     """使用 config_loader 加载统一配置以获取进度日期等信息"""
     from quantpits.utils.config_loader import load_workspace_config
     return load_workspace_config(env.ROOT_DIR)
+
+
+def _load_command_run_config(ctx, options):
+    """Build execution preparation through legacy patchable config helpers."""
+    from quantpits.post_trade.command import PostTradeRunConfig
+
+    prod = load_prod_config()
+    state_cursor = prod.get("last_processed_date", prod.get("current_date"))
+    if not state_cursor:
+        raise ValueError("prod_config.json does not define current_date/last_processed_date")
+    return PostTradeRunConfig(
+        prod_config=prod,
+        cashflow_config={},
+        broker_name=options.broker or prod.get("broker", "gtja"),
+        state_cursor=state_cursor,
+        legacy_execution_cursor=load_order_trade_last_date(None),
+    )
 
 
 def load_order_trade_last_date(fallback_date):
@@ -114,50 +128,42 @@ def process_analytics_for_day(date_str, adapter, dry_run=False):
         print(f"  Trades: File not found ({date_str}-trade.xlsx)")
 
 def main():
-    env.safeguard("Prod Post Trade Analytics")
-    env.init_qlib()
-
     parser = argparse.ArgumentParser(description="处理每日订单和成交用于分析")
-    parser.add_argument("--end-date", type=str, default=None, help="结束日期")
-    parser.add_argument("--dry-run", action="store_true", help="仅预览")
-    parser.add_argument("--broker", type=str, default="gtja", help="券商标识")
+    from quantpits.post_trade.command import (
+        PostTradeCommandDependencies, add_post_trade_arguments, execute_prepared, options_from_namespace,
+        prepare_post_trade_run, render_prepared,
+    )
+    add_post_trade_arguments(parser, default_scope="execution")
     args = parser.parse_args()
-
-    config = load_prod_config()
-
-    broker_name = args.broker or config.get("broker", "gtja")
     try:
-        adapter = get_adapter(broker_name)
-    except ValueError as e:
-        print(f"[ERROR] {e}")
-        sys.exit(1)
-
-    # 使用独立的 order/trade 状态日期，避免被 prod_post_trade.py（交割）覆盖
-    config_date = config.get("last_processed_date", config["current_date"])
-    last_processed_date = load_order_trade_last_date(config_date)
-
-    start_date = (datetime.strptime(last_processed_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-    end_date = args.end_date or datetime.now().strftime("%Y-%m-%d")
-
-    trade_dates = get_trade_dates(start_date, end_date)
-
-    print(f"Last processed date (order/trade): {last_processed_date}")
-    print(f"Order/Trade Date range: {start_date} to {end_date}")
-
-    if not trade_dates:
-        print("\nNo trade dates to process.")
+        options = options_from_namespace(args)
+        if options.scope != "execution":
+            raise ValueError("analytics compatibility command only supports --scope execution")
+        prepared = prepare_post_trade_run(
+            env.get_workspace_context(), options, cli_args=tuple(sys.argv[1:]),
+            dependencies=PostTradeCommandDependencies(load_run_config=_load_command_run_config),
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.explain_plan or args.json_plan:
+        print(render_prepared(prepared))
         return
-
-    for date_str in trade_dates:
-        process_analytics_for_day(date_str, adapter, dry_run=args.dry_run)
-
-    # 保存 analytics 自己的进度
     if not args.dry_run:
-        save_order_trade_last_date(trade_dates[-1])
-
-    print(f"\n{'='*50}")
-    print("Analytics Batch processing completed!")
-    print(f"{'='*50}")
+        env.safeguard("Prod Post Trade Analytics")
+    try:
+        summary = execute_prepared(prepared, get_adapter(prepared.config.broker_name))
+    except Exception as exc:
+        from quantpits.post_trade.contracts import PostTradeExecutionError
+        if isinstance(exc, (PostTradeExecutionError, ValueError)):
+            print("[ERROR] %s" % exc)
+            raise SystemExit(1)
+        raise
+    if args.dry_run:
+        print(render_prepared(summary.prepared))
+        print("\n[DRY-RUN] Strict execution-evidence validation passed. No files written.")
+    else:
+        count = len(summary.ingestion.ingested_sources) if summary.ingestion else 0
+        print("\nAnalytics ingestion completed: %d source receipts." % count)
 
 if __name__ == "__main__":
     main()

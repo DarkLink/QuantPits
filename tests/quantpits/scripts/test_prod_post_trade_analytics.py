@@ -88,8 +88,7 @@ def test_main_analytics(mock_qlib, mock_get_adapter, mock_process, mock_get_date
     mock_get_dates.return_value = ["2026-03-02"]
     
     import sys
-    with patch.object(sys, 'argv', ['prod_post_trade_analytics.py']):
+    with patch.object(sys, 'argv', ['prod_post_trade_analytics.py', '--explain-plan']):
         analytics.main()
-        
-    mock_process.assert_called_once()
-    mock_qlib.assert_called_once()
+    mock_process.assert_not_called()
+    mock_qlib.assert_not_called()

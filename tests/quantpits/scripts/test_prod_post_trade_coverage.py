@@ -328,11 +328,11 @@ def test_main_no_cashflows_message(mock_get_dates, ppt_env, capsys):
     mock_get_dates.return_value = ["2026-03-02"]
 
     import sys
-    with patch.object(sys, "argv", ["prod_post_trade.py", "--dry-run"]):
+    with patch.object(sys, "argv", ["prod_post_trade.py", "--dry-run", "--allow-missing-settlement"]):
         post_trade.main()
 
     captured = capsys.readouterr()
-    assert "No cashflows" in captured.out
+    assert "Strict broker intake validation passed" in captured.out
 
 
 @patch("quantpits.scripts.prod_post_trade.get_trade_dates")
@@ -366,7 +366,7 @@ def test_main_trade_classification_exception(mock_classify, mock_adapter, mock_s
     mock_classify.side_effect = RuntimeError("classification failed")
 
     import sys
-    with patch.object(sys, "argv", ["prod_post_trade.py", "--end-date", "2026-03-02"]):
+    with patch.object(sys, "argv", ["prod_post_trade.py", "--end-date", "2026-03-02", "--allow-missing-settlement"]):
         post_trade.main()
 
     captured = capsys.readouterr()

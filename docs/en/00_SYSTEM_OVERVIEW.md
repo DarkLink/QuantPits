@@ -48,6 +48,8 @@ Every step in this system is **optional and combinable**. Only "Prediction" and 
 
 ## System Architecture
 
+Post-trade uses one intake control plane while preserving three authority boundaries: settlement owns cash/holding state, orders capture execution intent, and trades capture intraday fills. The default `prod_post_trade --scope all` processes all three so execution analytics cannot silently miss order/fill logs. A source-fingerprint ledger discovers late historical exports and fails closed on content drift.
+
 ```mermaid
 flowchart TB
     subgraph TRAIN["① Train (On-demand)"]

@@ -242,6 +242,8 @@ def test_get_trade_dates(mock_D, mock_env):
     
     mock_D.calendar.side_effect = Exception("error")
     assert post_trade.get_trade_dates("2026-03-01", "2026-03-02") == []
+    with pytest.raises(Exception, match="Failed to resolve Qlib trading calendar"):
+        post_trade.get_trade_dates("2026-03-01", "2026-03-02", strict=True)
 
 def test_load_trade_file(mock_env):
     post_trade, workspace = mock_env
@@ -259,7 +261,7 @@ def test_main_dry_run(mock_get_dates, mock_env):
     mock_get_dates.return_value = ["2026-03-02"]
     
     import sys
-    with patch.object(sys, 'argv', ['prod_post_trade.py', '--dry-run']):
+    with patch.object(sys, 'argv', ['prod_post_trade.py', '--dry-run', '--allow-missing-settlement']):
         post_trade.main()
 
 @patch('quantpits.scripts.prod_post_trade.get_trade_dates')
@@ -276,7 +278,7 @@ def test_main(mock_save_class, mock_classify, mock_adapter, mock_save, mock_proc
     mock_classify.return_value = pd.DataFrame({"trades": [1]})
     
     import sys
-    with patch.object(sys, 'argv', ['prod_post_trade.py', '--end-date', '2026-03-02']):
+    with patch.object(sys, 'argv', ['prod_post_trade.py', '--end-date', '2026-03-02', '--allow-missing-settlement']):
         post_trade.main()
         
     mock_process.assert_called_once()

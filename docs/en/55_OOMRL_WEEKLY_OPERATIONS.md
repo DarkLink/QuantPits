@@ -57,7 +57,7 @@ cd <project_root>
 source workspaces/Demo_Workspace/run_env.sh
 
 # Import broker settlement files, update cash and holdings
-python -m quantpits.scripts.prod_post_trade
+python -m quantpits.scripts.prod_post_trade --scope all
 ```
 
 This updates `cash` and `holdings` in `prod_config.json`, which is required for downstream analysis.
@@ -386,7 +386,7 @@ conda activate qlib_cupy
 source workspaces/Demo_Workspace/run_env.sh
 
 # 1-2. Data + settlement
-python -m quantpits.scripts.prod_post_trade
+python -m quantpits.scripts.prod_post_trade --scope all
 
 # 3. Analysis
 python -m quantpits.scripts.run_deep_analysis --critic --window-analysis

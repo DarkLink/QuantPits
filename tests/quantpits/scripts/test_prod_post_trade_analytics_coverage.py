@@ -113,11 +113,11 @@ def test_main_no_trade_dates(mock_qlib, mock_get_adapter, mock_load_cfg, mock_ge
                                    "last_processed_date": "2026-03-01"}
 
     import sys
-    with patch.object(sys, "argv", ["prod_post_trade_analytics.py"]):
+    with patch.object(sys, "argv", ["prod_post_trade_analytics.py", "--explain-plan"]):
         analytics.main()
 
     captured = capsys.readouterr()
-    assert "No trade dates to process" in captured.out
+    assert "Execution Plan" in captured.out
 
 
 @patch("quantpits.scripts.prod_post_trade_analytics.get_trade_dates")

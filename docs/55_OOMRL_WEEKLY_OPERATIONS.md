@@ -57,7 +57,7 @@ cd <project_root>
 source workspaces/Demo_Workspace/run_env.sh
 
 # 导入券商结算文件，更新现金和持仓
-python -m quantpits.scripts.prod_post_trade
+python -m quantpits.scripts.prod_post_trade --scope all
 ```
 
 这一步会更新 `prod_config.json` 中的 `cash` 和 `holdings`，是后续分析的基础。
@@ -376,7 +376,7 @@ conda activate qlib_cupy
 source workspaces/Demo_Workspace/run_env.sh
 
 # 1-2. 数据 + 结算
-python -m quantpits.scripts.prod_post_trade
+python -m quantpits.scripts.prod_post_trade --scope all
 
 # 3. 分析
 python -m quantpits.scripts.run_deep_analysis --critic --window-analysis

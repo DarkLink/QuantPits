@@ -21,6 +21,8 @@ REQUIRED_COLUMNS = [
     "资金发生数",  # float/Decimal, 实际发生的资金变动 (买入为负/正取决于券商，程序中统一按此字段结合业务处理)
     "交收日期"     # str/datetime, 后续流程可处理，一般转成 "YYYY-MM-DD"
 ]
+ORDER_REQUIRED_COLUMNS = ["委托日期", "委托时间", "交易类别", "证券代码", "委托数量", "成交数量", "撤单数量", "委托状态"]
+TRADE_REQUIRED_COLUMNS = ["成交时间", "交易类别", "证券代码", "成交数量", "成交价格", "成交金额"]
 
 
 class BaseBrokerAdapter(ABC):
@@ -58,6 +60,34 @@ class BaseBrokerAdapter(ABC):
         默认返回空 DataFrame，供子类按需实现。
         """
         return pd.DataFrame()
+
+    def parse_settlement(self, file_path):
+        """Strict settlement parser. Concrete adapters should override it."""
+        frame = self.read_settlement(str(file_path))
+        return self.validate_stream(frame, "settlement")
+
+    def parse_orders(self, file_path):
+        frame = self.read_orders(str(file_path))
+        return self.validate_stream(frame, "order")
+
+    def parse_trades(self, file_path):
+        frame = self.read_trades(str(file_path))
+        return self.validate_stream(frame, "trade")
+
+    def validate_stream(self, df: pd.DataFrame, stream: str) -> pd.DataFrame:
+        from quantpits.post_trade.contracts import BrokerSchemaError
+        required = {"settlement": REQUIRED_COLUMNS, "order": ORDER_REQUIRED_COLUMNS, "trade": TRADE_REQUIRED_COLUMNS}[stream]
+        if df.empty:
+            # An Excel export with a valid header and no rows is valid evidence.
+            missing = [column for column in required if column not in df.columns]
+            if not missing:
+                return df
+        missing = [column for column in required if column not in df.columns]
+        if stream == "trade" and not ({"成交日期", "日期"} & set(df.columns)):
+            missing.append("成交日期|日期")
+        if missing:
+            raise BrokerSchemaError("[%s] %s schema missing columns: %s" % (self.name, stream, missing))
+        return df
 
     def validate(self, df: pd.DataFrame) -> pd.DataFrame:
         """

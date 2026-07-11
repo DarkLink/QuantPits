@@ -1,5 +1,6 @@
 import pandas as pd
 from .base import BaseBrokerAdapter
+from quantpits.post_trade.contracts import BrokerParseError
 
 
 class GtjaAdapter(BaseBrokerAdapter):
@@ -16,26 +17,41 @@ class GtjaAdapter(BaseBrokerAdapter):
     def name(self) -> str:
         return "gtja"
 
+    def _read_excel(self, file_path) -> pd.DataFrame:
+        try:
+            return pd.read_excel(file_path, sheet_name="Sheet1", skiprows=5, dtype={"证券代码": str})
+        except Exception as exc:
+            raise BrokerParseError("[%s] cannot parse %s: %s" % (self.name, file_path, exc)) from exc
+
+    @staticmethod
+    def _clean(frame: pd.DataFrame, *, filter_codes: bool) -> pd.DataFrame:
+        df = frame.copy()
+        for col in df.columns:
+            if df[col].dtype == "object":
+                df[col] = df[col].astype(str).str.lstrip("\t").str.strip()
+        if filter_codes and "证券代码" in df.columns:
+            codes = df["证券代码"].astype(str).str.lstrip("\t").str.strip()
+            valid = ~codes.str.lower().isin(["nan", "none", ""])
+            df = df.loc[valid].copy()
+            df["证券代码"] = codes.loc[valid].apply(lambda value: value.split(".")[0].zfill(6))
+            df = df[df["证券代码"].str.startswith(("6", "0", "3"))].copy()
+        return df
+
+    def parse_settlement(self, file_path) -> pd.DataFrame:
+        return self.validate_stream(self._clean(self._read_excel(file_path), filter_codes=True), "settlement")
+
+    def parse_orders(self, file_path) -> pd.DataFrame:
+        return self.validate_stream(self._clean(self._read_excel(file_path), filter_codes=True), "order")
+
+    def parse_trades(self, file_path) -> pd.DataFrame:
+        return self.validate_stream(self._clean(self._read_excel(file_path), filter_codes=True), "trade")
+
     def read_settlement(self, file_path: str) -> pd.DataFrame:
         """
         读取并清洗国泰君安交割单
         """
         try:
-            # 读取文件，强制把证券代码读成字符串防止前导0丢失
-            df = pd.read_excel(
-                file_path, 
-                sheet_name="Sheet1", 
-                skiprows=5, 
-                dtype={"证券代码": str}
-            )
-            
-            # 清洗字符串，剥离系统导出的尾随或前导制表符 '\t'
-            for col in df.columns:
-                if df[col].dtype == "object":
-                    df[col] = df[col].astype(str).str.lstrip("\t")
-            
-            # 校验并返回
-            return self.validate(df)
+            return self.parse_settlement(file_path)
             
         except Exception as e:
             print(f"  [WARN] [{self.name}] Error loading {file_path}: {e}")
@@ -43,28 +59,7 @@ class GtjaAdapter(BaseBrokerAdapter):
 
     def _read_and_filter(self, file_path: str) -> pd.DataFrame:
         try:
-            df = pd.read_excel(
-                file_path, 
-                sheet_name="Sheet1", 
-                skiprows=5, 
-                dtype={"证券代码": str}
-            )
-            for col in df.columns:
-                if df[col].dtype == "object":
-                    df[col] = df[col].astype(str).str.lstrip("\t").str.strip()
-            
-            if "证券代码" in df.columns:
-                # 1. 除去真正的 NaN/None
-                df = df[df["证券代码"].notna()].copy()
-                # 2. 转换为字符串并清洗
-                df["证券代码"] = df["证券代码"].astype(str).str.lstrip("\t").str.strip()
-                # 3. 除去字符串形式的 "nan" 或 "None"
-                df = df[~df["证券代码"].isin(["nan", "None", ""])].copy()
-                # 4. 格式化并过滤
-                df["证券代码"] = df["证券代码"].apply(lambda x: x.split(".")[0].zfill(6))
-                df = df[df["证券代码"].str.startswith(("6", "0"))].copy()
-            
-            return df
+            return self._clean(self._read_excel(file_path), filter_codes=True)
         except Exception as e:
             print(f"  [WARN] [{self.name}] Error loading {file_path}: {e}")
             return pd.DataFrame()
