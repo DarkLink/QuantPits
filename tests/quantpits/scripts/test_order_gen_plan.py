@@ -25,10 +25,12 @@ def test_main_json_plan_does_not_execute(order_gen_workspace, capsys):
         ensemble_records={},
         train_records={},
     )
-    with (
-        patch.object(order_gen, "_default_order_run_config", return_value=config),
-        patch.object(order_gen, "run_order_generation") as execute,
-        patch("quantpits.order.command.validate_workspace", return_value=None),
+    with patch.object(
+        order_gen, "_default_order_run_config", return_value=config
+    ), patch.object(
+        order_gen, "run_order_generation"
+    ) as execute, patch(
+        "quantpits.order.command.validate_workspace", return_value=None
     ):
         order_gen.main(["--json-plan", "--run-id", "demo-run"])
     payload = json.loads(capsys.readouterr().out)

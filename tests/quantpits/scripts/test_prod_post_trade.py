@@ -57,6 +57,20 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(prod_post_trade, 'HOLDING_LOG_FILE', str(data_dir / "holding_log_full.csv"))
     monkeypatch.setattr(prod_post_trade, 'DAILY_LOG_FILE', str(data_dir / "daily_amount_log_full.csv"))
     monkeypatch.setattr(prod_post_trade, 'EMPTY_TRADE_FILE', str(data_dir / "emp-table.xlsx"))
+
+    # CLI orchestration tests must not depend on a developer's local Qlib data.
+    # Keep the deterministic state service active while replacing only its
+    # external initialization and market-data boundary.
+    from quantpits.post_trade.state import ValuationSnapshot
+    from quantpits.post_trade.valuation import QlibValuationProvider
+
+    monkeypatch.setattr(prod_post_trade, "init_qlib", lambda: None)
+
+    def snapshot(_provider, trade_date, instruments, benchmark):
+        closes = tuple((instrument, Decimal("10")) for instrument in instruments)
+        return ValuationSnapshot(trade_date, closes, Decimal("3000"))
+
+    monkeypatch.setattr(QlibValuationProvider, "snapshot", snapshot)
     
     yield prod_post_trade, workspace
 

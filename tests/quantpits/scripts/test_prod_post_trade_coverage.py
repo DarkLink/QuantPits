@@ -73,6 +73,19 @@ def ppt_env(monkeypatch, tmp_path):
     monkeypatch.setattr(prod_post_trade, "DAILY_LOG_FILE",
                         str(workspace / "data" / "daily_amount_log_full.csv"))
 
+    # These tests exercise CLI control flow, not the external Qlib data store.
+    # Preserve the real state service and isolate only its market-data boundary.
+    from quantpits.post_trade.state import ValuationSnapshot
+    from quantpits.post_trade.valuation import QlibValuationProvider
+
+    monkeypatch.setattr(prod_post_trade, "init_qlib", lambda: None)
+
+    def snapshot(_provider, trade_date, instruments, benchmark):
+        closes = tuple((instrument, Decimal("10")) for instrument in instruments)
+        return ValuationSnapshot(trade_date, closes, Decimal("3000"))
+
+    monkeypatch.setattr(QlibValuationProvider, "snapshot", snapshot)
+
     return prod_post_trade, workspace
 
 
