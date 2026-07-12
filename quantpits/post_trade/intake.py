@@ -171,7 +171,9 @@ def _has_trade_activity(frame: pd.DataFrame) -> bool:
 def _has_fills(frame: pd.DataFrame) -> bool:
     if frame.empty or "成交数量" not in frame.columns:
         return False
-    return pd.to_numeric(frame["成交数量"], errors="coerce").fillna(0).gt(0).any()
+    from quantpits.scripts.brokers.base import BUY_TYPES, SELL_TYPES
+    execution_rows = frame["交易类别"].isin(BUY_TYPES + SELL_TYPES) if "交易类别" in frame.columns else True
+    return (pd.to_numeric(frame["成交数量"], errors="coerce").fillna(0).gt(0) & execution_rows).any()
 
 
 def validate_cross_stream(
@@ -186,7 +188,7 @@ def validate_cross_stream(
         settlement = parsed.get(("settlement", date))
         order = parsed.get(("order", date))
         trade = parsed.get(("trade", date))
-        if trade is not None and order is None:
+        if trade is not None and order is None and _has_fills(trade.dataframe):
             raise ExecutionEvidenceGapError("Trade evidence exists without order evidence for %s" % date)
         if order is not None and trade is None and _has_fills(order.dataframe):
             raise ExecutionEvidenceGapError("Filled orders exist without trade evidence for %s" % date)

@@ -46,6 +46,27 @@ def test_negative_dividend_tax_and_date_normalization():
     assert result.after.cash == Decimal("95.00")
 
 
+def test_bonus_share_listing_increases_quantity_without_changing_cost_or_cash():
+    frame = pd.DataFrame({
+        "证券代码": ["600426"], "交易类别": ["上海A股红股上市入账"],
+        "成交价格": [0], "成交数量": [180], "成交金额": [0],
+        "资金发生数": [0], "交收日期": [20260709],
+    })
+    events, warnings = normalize_settlement_frame(frame, "2026-07-09")
+    before = AccountState(
+        "2026-07-08", Decimal("100"),
+        (Position("SH600426", Decimal("600"), Decimal("17404.20")),),
+    )
+    valuation = ValuationSnapshot("2026-07-09", (("SH600426", Decimal("18.63")),), Decimal("4000"))
+
+    result = transition_day(before, "2026-07-09", events, Decimal("0"), valuation)
+
+    assert not warnings
+    assert result.after.cash == Decimal("100.00")
+    assert result.after.positions[0].quantity == Decimal("780")
+    assert result.after.positions[0].cost == Decimal("17404.20")
+
+
 def test_missing_close_never_drops_position():
     before = AccountState("2026-01-01", Decimal("100"), (Position("SZ000001", Decimal("1"), Decimal("10")),))
     with pytest.raises(ValuationMissingError):

@@ -10,6 +10,9 @@ INTEREST_TYPES = [
     "上海A股红利税补缴", "深圳A股红利税补缴",
     "利息归本",
 ]
+POSITION_ADJUSTMENT_TYPES = [
+    "上海A股红股上市入账", "深圳A股红股上市入账",
+]
 
 # 标准列名（保留中文以兼容下游所有依赖文件，如 trade_classifier, execution_analyzer 等）
 REQUIRED_COLUMNS = [

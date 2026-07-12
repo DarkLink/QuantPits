@@ -23,3 +23,11 @@ def test_three_stream_quantities_match():
 def test_three_stream_mismatch_fails_closed():
     with pytest.raises(ExecutionReconciliationError):
         reconcile_quantities(_frame(10), _frame(9), (_event(10),))
+
+
+def test_bonus_share_trade_row_is_not_execution_fill():
+    corporate_action = pd.DataFrame({
+        "日期": ["2026-07-09"], "交易类别": ["上海A股红股上市入账"],
+        "证券代码": ["600426"], "成交数量": [180],
+    })
+    assert reconcile_quantities(pd.DataFrame(), corporate_action, (), trade_date="2026-07-09") == ()

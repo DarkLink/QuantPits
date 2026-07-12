@@ -16,11 +16,13 @@ from quantpits.post_trade.contracts import (
     SettlementDateMismatchError, SettlementNormalizationError,
     UnsupportedSettlementEventError, ValuationMissingError,
 )
-from quantpits.scripts.brokers.base import BUY_TYPES, INTEREST_TYPES, SELL_TYPES
+from quantpits.scripts.brokers.base import (
+    BUY_TYPES, INTEREST_TYPES, POSITION_ADJUSTMENT_TYPES, SELL_TYPES,
+)
 
 MONEY_QUANTUM = Decimal("0.01")
 ROUNDING_MODE = ROUND_HALF_UP
-EventKind = Literal["buy", "sell", "cash_adjustment"]
+EventKind = Literal["buy", "sell", "cash_adjustment", "position_adjustment"]
 
 
 def decimal_value(value, *, field="value") -> Decimal:
@@ -176,19 +178,23 @@ def normalize_settlement_frame(frame, trade_date: str) -> Tuple[Tuple[Settlement
             kind, instrument = "buy", normalize_instrument(row["证券代码"])
         elif category in INTEREST_TYPES:
             kind, instrument, quantity = "cash_adjustment", None, Decimal("0")
+        elif category in POSITION_ADJUSTMENT_TYPES:
+            kind, instrument = "position_adjustment", normalize_instrument(row["证券代码"])
         elif cash == 0:
             warnings.append("Ignored zero-cash settlement category: %s" % category)
             continue
         else:
             raise UnsupportedSettlementEventError("Unsupported material settlement category: %s" % category)
-        if kind in {"buy", "sell"} and quantity <= 0:
-            raise SettlementNormalizationError("Trade quantity must be positive")
+        if kind in {"buy", "sell", "position_adjustment"} and quantity <= 0:
+            raise SettlementNormalizationError("Position-changing quantity must be positive")
+        if kind == "position_adjustment" and (price != 0 or gross != 0 or cash != 0):
+            raise SettlementNormalizationError("Position adjustment must have zero price, gross amount, and cash effect")
         if kind == "buy" and cash > 0:
             raise SettlementNormalizationError("Buy cash effect must be non-positive")
         if kind == "sell" and cash < 0:
             raise SettlementNormalizationError("Sell cash effect must be non-negative")
         events.append(SettlementEvent(trade_date, instrument, kind, quantity, price, gross, cash, row_number, category))
-    order = {"sell": 0, "buy": 1, "cash_adjustment": 2}
+    order = {"sell": 0, "buy": 1, "position_adjustment": 2, "cash_adjustment": 3}
     events.sort(key=lambda x: (order[x.kind], x.instrument or "", x.source_row))
     return tuple(events), tuple(warnings)
 
@@ -223,6 +229,13 @@ def transition_day(before: AccountState, trade_date: str, events: Sequence[Settl
                 positions[event.instrument] = Position(event.instrument, old.quantity + event.quantity, money(old.cost + bought_cost))
             else:
                 positions[event.instrument] = Position(event.instrument, event.quantity, money(bought_cost))
+        elif event.kind == "position_adjustment":
+            old = positions.get(event.instrument)
+            if old is None:
+                raise PositionNotFoundError("Cannot adjust an instrument not held: %s" % event.instrument)
+            positions[event.instrument] = Position(
+                event.instrument, old.quantity + event.quantity, old.cost,
+            )
     cash = money(cash + external_cashflow)
     expected = money(before.cash + settlement_cash + external_cashflow)
     if cash != expected:

@@ -92,6 +92,18 @@ def test_execution_scope_still_rejects_trade_without_order(tmp_path):
         validate_cross_stream(parsed, scope="execution")
 
 
+def test_bonus_share_trade_does_not_require_order(tmp_path):
+    source = PostTradeSourceRef("trade", "2026-07-09", tmp_path / "trade.xlsx", "data/trade.xlsx", "present")
+    parsed = {
+        ("trade", "2026-07-09"): ParsedPostTradeInput(
+            source,
+            pd.DataFrame({"交易类别": ["上海A股红股上市入账"], "成交数量": [180]}),
+            1,
+        ),
+    }
+    validate_cross_stream(parsed, scope="all")
+
+
 def test_settlement_interest_only_does_not_require_execution_evidence(tmp_path):
     source = PostTradeSourceRef("settlement", "2026-01-01", tmp_path / "table.xlsx", "data/table.xlsx", "present")
     parsed = {

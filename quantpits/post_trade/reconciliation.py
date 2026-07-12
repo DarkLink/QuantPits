@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from quantpits.post_trade.contracts import ExecutionReconciliationError
 from quantpits.post_trade.state import SettlementEvent, decimal_value, normalize_date, normalize_instrument
-from quantpits.scripts.brokers.base import BUY_TYPES, SELL_TYPES
+from quantpits.scripts.brokers.base import BUY_TYPES, POSITION_ADJUSTMENT_TYPES, SELL_TYPES
 
 BUY_LABELS = set(BUY_TYPES) | {"证券买入", "买入"}
 SELL_LABELS = set(SELL_TYPES) | {"证券卖出", "卖出"}
@@ -29,6 +29,8 @@ def _frame_quantities(frame, *, default_date=None):
     for _, row in frame.iterrows():
         quantity = decimal_value(row.get("成交数量", 0), field="execution quantity")
         if quantity == 0:
+            continue
+        if str(row.get("交易类别", "")).strip() in POSITION_ADJUSTMENT_TYPES:
             continue
         date_value = row.get("成交日期", row.get("日期", row.get("委托日期", default_date)))
         key = (normalize_date(date_value), normalize_instrument(row["证券代码"]), normalize_side(row["交易类别"]))

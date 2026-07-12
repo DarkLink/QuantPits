@@ -72,6 +72,8 @@ class PostTradeService:
                         current_quantities.pop(event.instrument, None)
                 elif event.kind == "buy":
                     current_quantities[event.instrument] = current_quantities.get(event.instrument, 0) + event.quantity
+                elif event.kind == "position_adjustment":
+                    current_quantities[event.instrument] = current_quantities.get(event.instrument, 0) + event.quantity
             valuations[date] = self.valuation_provider.snapshot(date, tuple(sorted(current_quantities)), config.runtime_config.get("benchmark", "SH000300"))
         return build_change_set(initial, trade_dates, events_by_date, config.cashflow_config, valuations, config.raw_prod_config, warnings_by_date)
 
