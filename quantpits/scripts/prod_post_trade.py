@@ -24,6 +24,7 @@ if PROJECT_ROOT not in sys.path:
 import json
 import argparse
 import copy
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -581,8 +582,139 @@ def parse_args(argv=None):
     return build_parser().parse_args(argv)
 
 
+def _append_operator_log(ctx, prepared, *, manifest_path=None, journal=None, result=None):
+    """Best-effort, privacy-safe activity closure for every real invocation."""
+    try:
+        from quantpits.utils.operator_log import OperatorLog
+        with OperatorLog(
+            "prod_post_trade", args=list(sys.argv[1:]),
+            log_file=ctx.data_path("operator_log.jsonl").as_posix(),
+            run_id=prepared.plan.run_id, manifest_path=manifest_path,
+            plan_fingerprint=prepared.plan_fingerprint,
+            transaction_id=journal.transaction_id if journal else None,
+        ) as log:
+            log.set_result(result or {
+                "scope": prepared.options.scope,
+                "transaction_id": journal.transaction_id if journal else None,
+                "classification_status": journal.classification.status if journal else "not_applicable",
+            })
+    except Exception as exc:
+        print("[WARN] Failed to append OperatorLog: %s" % exc)
+
+
+def _run_classification(ctx, manager, journal):
+    """Run or resume the transaction-bound, best-effort dependent step."""
+    manager.verify_committed(journal)
+    journal = manager.set_classification(journal, status="running")
+    warning = None
+    try:
+        from quantpits.scripts.analysis.trade_classifier import classify_trades, save_classification
+        dates = list(journal.processed_dates)
+        print("\n%s" % ("=" * 50))
+        print("Running Trade Classification Engine for %d dates..." % len(dates))
+        frame = classify_trades(verbose=False, trade_dates=dates)
+        outputs = ()
+        if not frame.empty:
+            path = ctx.data_path("trade_classification.csv")
+            save_classification(frame, path=path, append=True, trade_dates=dates)
+            outputs = (path.relative_to(ctx.root).as_posix(),)
+            print("Trade classification updated.")
+        else:
+            print("No new trades required classification.")
+        fingerprints = ()
+        if outputs:
+            from quantpits.post_trade.transaction import sha256_file
+            fingerprints = tuple((output, sha256_file(ctx.root / output)) for output in outputs)
+        journal = manager.set_classification(
+            journal, status="success", output_paths=outputs,
+            output_fingerprints=fingerprints,
+        )
+    except Exception as exc:
+        warning = "%s: %s" % (
+            type(exc).__name__, str(exc).replace(ctx.root.as_posix(), "<workspace>")
+        )
+        journal = manager.set_classification(journal, status="failed", error=warning[:1000])
+        print("\n[WARN] Failed to run trade classification: %s" % exc)
+    return journal, warning
+
+
+def _write_run_audit(prepared, summary, *, started_at, journal=None, warning=None,
+                     status="success", error=None, linked_transaction_id=None):
+    manifest_display = None
+    if not prepared.options.no_manifest:
+        from quantpits.post_trade.audit import write_post_trade_manifest
+        try:
+            manifest_path_value, _ = write_post_trade_manifest(
+                prepared, summary, started_at=started_at, status=status, error=error,
+                warnings=(warning,) if warning else (), journal=journal,
+                linked_transaction_id=linked_transaction_id,
+            )
+            manifest_display = manifest_path_value.relative_to(prepared.ctx.root).as_posix()
+        except Exception as exc:
+            print("[WARN] Failed to write post-trade manifest: %s" % exc)
+    return manifest_display
+
+
 def main():
     args = parse_args()
+    ctx = env.get_workspace_context()
+    raw_argv = tuple(sys.argv[1:])
+
+    def _explicit_option(*names):
+        return any(
+            value == name or value.startswith(name + "=")
+            for value in raw_argv for name in names
+        )
+    if args.transaction_status:
+        if args.dry_run or args.retry_classification:
+            build_parser().error("--transaction-status cannot be combined with execution modes")
+        from quantpits.post_trade.transaction import PostTradeTransactionManager
+        print(json.dumps(PostTradeTransactionManager(ctx).status_summary(), ensure_ascii=False, indent=2, sort_keys=True))
+        return
+    if args.retry_classification:
+        if (
+            args.dry_run or args.explain_plan or args.json_plan
+            or _explicit_option("--scope", "--start-date", "--end-date")
+        ):
+            build_parser().error("--retry-classification cannot be combined with plan/dry-run modes")
+        env.safeguard("Post Trade Classification Retry")
+        from quantpits.post_trade.transaction import PostTradeTransactionManager
+        from quantpits.post_trade.command import (
+            PostTradeCommandDependencies, PostTradeRunSummary, options_from_namespace,
+            prepare_post_trade_run,
+        )
+        from quantpits.runtime import generate_run_id
+        manager = PostTradeTransactionManager(ctx)
+        with manager.lock():
+            journal = manager.load(args.retry_classification)
+            if journal.status not in {"state_committed", "completed"} or journal.classification.status == "success":
+                from quantpits.post_trade.contracts import PostTradeClassificationRetryError
+                raise PostTradeClassificationRetryError("Transaction classification is not retryable")
+            retry_id = generate_run_id("post_trade_classification_retry")
+            retry_args = argparse.Namespace(**vars(args)); retry_args.run_id = retry_id
+            retry_args.retry_classification = None
+            options = options_from_namespace(retry_args)
+            prepared = prepare_post_trade_run(
+                ctx, options, cli_args=tuple(sys.argv[1:]),
+                dependencies=PostTradeCommandDependencies(load_run_config=_load_command_run_config),
+            )
+            started_at = datetime.now().isoformat()
+            journal, warning = _run_classification(ctx, manager, journal)
+            summary = PostTradeRunSummary(prepared)
+            manifest_display = _write_run_audit(
+                prepared, summary, started_at=started_at, journal=journal,
+                warning=warning, linked_transaction_id=journal.transaction_id,
+            )
+            journal = manager.complete(journal, manifest_path=manifest_display)
+            _append_operator_log(
+                ctx, prepared, manifest_path=manifest_display, journal=journal,
+                result={"scope": "classification_retry", "linked_transaction_id": journal.transaction_id,
+                        "classification_status": journal.classification.status},
+            )
+            if warning:
+                from quantpits.post_trade.contracts import PostTradeClassificationRetryError
+                raise PostTradeClassificationRetryError(warning)
+        return
     from quantpits.post_trade.command import (
         PostTradeCommandDependencies, execute_prepared, options_from_namespace,
         prepare_post_trade_run, render_prepared,
@@ -590,7 +722,7 @@ def main():
     try:
         options = options_from_namespace(args)
         prepared = prepare_post_trade_run(
-            env.get_workspace_context(), options, cli_args=tuple(sys.argv[1:]),
+            ctx, options, cli_args=tuple(sys.argv[1:]),
             dependencies=PostTradeCommandDependencies(load_run_config=_load_command_run_config),
         )
     except ValueError as exc:
@@ -601,33 +733,149 @@ def main():
     if not args.dry_run:
         env.safeguard("Prod Post Trade")
 
-    cwd = os.getcwd()
-
     # Strict preflight and execution-evidence ingestion happen before legacy state writers.
+    started_at = datetime.now().isoformat()
+    transaction_manager = None
+    lock_context = None
+    summary = None
+    dry_run_recovery_required = False
+    if not args.dry_run:
+        from quantpits.post_trade.transaction import PostTradeTransactionManager
+        transaction_manager = PostTradeTransactionManager(ctx)
+        lock_context = transaction_manager.lock()
+        lock_context.__enter__()
+    else:
+        # Dry-run remains byte-stable: inspect journals without creating or
+        # acquiring the workspace lock, and refuse ambiguous calculation.
+        from quantpits.post_trade.transaction import PostTradeTransactionManager
+        transaction_manager = PostTradeTransactionManager(ctx)
+        dry_run_recovery_required = bool(transaction_manager.active())
     try:
+        if dry_run_recovery_required:
+            from quantpits.post_trade.contracts import PostTradeRecoveryRequiredError
+            raise PostTradeRecoveryRequiredError(
+                "An unfinished post-trade transaction requires recovery before dry-run"
+            )
         adapter = get_adapter(prepared.config.broker_name)
-        from quantpits.post_trade.service import PostTradeService
-        from quantpits.post_trade.valuation import QlibValuationProvider
-        state_service = PostTradeService(QlibValuationProvider())
 
         def _run_state(effective_prepared, parsed):
+            from quantpits.post_trade.service import PostTradeService
+            from quantpits.post_trade.valuation import QlibValuationProvider
             dates = tuple(
                 item.trade_date for item in effective_prepared.catalog.settlement_sources
                 if item.status in {"present", "assumed_empty"}
             )
-            return state_service.run_state(effective_prepared, parsed, dates)
+            return PostTradeService(QlibValuationProvider()).run_state(
+                effective_prepared, parsed, dates
+            )
 
-        summary = execute_prepared(
-            prepared, adapter, init_qlib=init_qlib,
-            resolve_trade_dates=lambda start, end: get_trade_dates(start, end, strict=True),
-            state_callback=_run_state,
-        )
+        if args.dry_run:
+            summary = execute_prepared(
+                prepared, adapter, init_qlib=init_qlib,
+                resolve_trade_dates=lambda start, end: get_trade_dates(start, end, strict=True),
+                state_callback=_run_state,
+            )
+        else:
+            active = transaction_manager.active() if prepared.options.scope in {"all", "state"} else ()
+            if len(active) > 1:
+                from quantpits.post_trade.contracts import PostTradeRecoveryRequiredError
+                raise PostTradeRecoveryRequiredError("Multiple unfinished post-trade transactions require inspection")
+            if active:
+                journal = transaction_manager.recover(active[0].transaction_id)
+                print("Recovered post-trade transaction: %s" % journal.transaction_id)
+                if journal.classification.status in {"pending", "running"}:
+                    journal, warning = _run_classification(ctx, transaction_manager, journal)
+                else:
+                    warning = journal.classification.last_error
+                from quantpits.post_trade.command import PostTradeRunSummary
+                recovery_prepared = replace(
+                    prepared,
+                    options=replace(prepared.options, run_id=journal.run_id),
+                    plan=replace(prepared.plan, run_id=journal.run_id),
+                )
+                recovery_summary = PostTradeRunSummary(recovery_prepared)
+                manifest_display = _write_run_audit(
+                    recovery_prepared, recovery_summary, started_at=started_at,
+                    journal=journal, warning=warning,
+                )
+                journal = transaction_manager.complete(journal, manifest_path=manifest_display)
+                _append_operator_log(
+                    ctx, recovery_prepared, manifest_path=manifest_display, journal=journal,
+                    result={"scope": journal.scope, "recovered": True,
+                            "processed_date_count": len(journal.processed_dates),
+                            "classification_status": journal.classification.status},
+                )
+                return
+            summary = execute_prepared(
+                prepared, adapter, init_qlib=init_qlib,
+                resolve_trade_dates=lambda start, end: get_trade_dates(start, end, strict=True),
+                state_callback=_run_state,
+            )
+            # Keep classification, manifest and activity closure inside the
+            # same real-run workspace lock as ingestion/state persistence.
+            journal = None
+            warning = None
+            state_result = summary.state_result
+            if state_result and state_result.artifacts and state_result.artifacts.transaction_id:
+                journal = transaction_manager.load(state_result.artifacts.transaction_id)
+                journal, warning = _run_classification(ctx, transaction_manager, journal)
+            manifest_display = _write_run_audit(
+                prepared, summary, started_at=started_at, journal=journal, warning=warning,
+            )
+            if journal:
+                journal = transaction_manager.complete(journal, manifest_path=manifest_display)
+            _append_operator_log(
+                ctx, prepared, manifest_path=manifest_display, journal=journal,
+                result={"scope": prepared.options.scope,
+                        "processed_date_count": len(journal.processed_dates) if journal else 0,
+                        "transaction_id": journal.transaction_id if journal else None,
+                        "classification_status": journal.classification.status if journal else "not_applicable"},
+            )
     except Exception as exc:
-        from quantpits.post_trade.contracts import PostTradeExecutionError
+        from quantpits.post_trade.contracts import PostTradeExecutionError, PostTradePartialExecutionError
         if isinstance(exc, (PostTradeExecutionError, ValueError)):
+            failure_summary = exc.summary if isinstance(exc, PostTradePartialExecutionError) else summary
+            if failure_summary is None:
+                from quantpits.post_trade.command import PostTradeRunSummary
+                failure_summary = PostTradeRunSummary(prepared)
+            root_cause = exc.cause if isinstance(exc, PostTradePartialExecutionError) else exc
+            failure_journal = None
+            actual_state_paths = ()
+            transaction_id = getattr(root_cause, "transaction_id", None)
+            if transaction_id and transaction_manager is not None:
+                try:
+                    failure_journal = transaction_manager.load(transaction_id)
+                    actual_state_paths = transaction_manager.verified_target_paths(failure_journal)
+                except Exception:
+                    failure_journal = None
+                    actual_state_paths = tuple(getattr(root_cause, "committed_outputs", ()))
+            if not args.dry_run and not prepared.options.no_manifest:
+                try:
+                    from quantpits.post_trade.audit import redact_error, write_post_trade_manifest
+                    write_post_trade_manifest(
+                        prepared, failure_summary, started_at=started_at,
+                        status="failed", error=redact_error(ctx, exc),
+                        journal=failure_journal, actual_state_paths=actual_state_paths,
+                    )
+                except Exception as manifest_exc:
+                    print("[WARN] Failed to write post-trade failure manifest: %s" % manifest_exc)
+            if not args.dry_run:
+                _append_operator_log(
+                    ctx, prepared,
+                    result={"scope": prepared.options.scope, "status": "failed",
+                            "execution_ingestion_status": "committed" if failure_summary.ingestion is not None else "not_run"},
+                    journal=failure_journal,
+                )
             print("[ERROR] %s" % exc)
+            if lock_context is not None:
+                lock_context.__exit__(type(exc), exc, exc.__traceback__)
+                lock_context = None
             raise SystemExit(1)
         raise
+    finally:
+        if lock_context is not None:
+            lock_context.__exit__(None, None, None)
+            lock_context = None
     if args.dry_run:
         print(render_prepared(summary.prepared))
         if summary.state_result is not None:
@@ -636,8 +884,7 @@ def main():
             print("\n[DRY-RUN] Strict broker intake validation passed. No files written.")
         return
 
-    # Execution-only is a strict terminal route: it never initializes or
-    # mutates account state.
+    # Execution-only audit already closed under the workspace lock.
     if prepared.options.scope == "execution":
         print("Execution evidence ingestion completed.")
         return
@@ -647,22 +894,6 @@ def main():
     if not trade_dates:
         print("\nNo trade dates to process.")
         return
-
-    # --- 执行交易分类 ---
-    try:
-        from quantpits.scripts.analysis.trade_classifier import classify_trades, save_classification
-        print(f"\n{'='*50}")
-        print(f"Running Trade Classification Engine for {len(trade_dates)} dates...")
-        classified_df = classify_trades(verbose=False, trade_dates=trade_dates)
-        if not classified_df.empty:
-            save_classification(classified_df, append=True, trade_dates=trade_dates)
-            print("Trade classification updated.")
-        else:
-            print("No new trades required classification.")
-    except Exception as e:
-        print(f"\n[WARN] Failed to run trade classification: {e}")
-        import traceback
-        traceback.print_exc()
 
     # --- 完成 ---
     print(f"\n{'='*50}")

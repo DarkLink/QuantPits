@@ -1,31 +1,21 @@
-"""Post-trade intake, planning, and execution-evidence ingestion."""
+"""Post-trade intake, deterministic state, and recoverable transaction APIs."""
 
 from .contracts import (
-    BrokerParseError,
-    BrokerSchemaError,
-    ExecutionEvidenceGapError,
-    IngestionPersistenceError,
-    ParsedPostTradeInput,
-    PostTradeExecutionError,
-    PostTradeInputCatalog,
-    PostTradeInputError,
-    PostTradeInputMissingError,
-    PostTradeIntakeIssue,
-    PostTradePlanError,
-    PostTradeSourceRef,
+    BrokerParseError, BrokerSchemaError, ExecutionEvidenceGapError,
+    IngestionPersistenceError, ParsedPostTradeInput, PostTradeExecutionError,
+    PostTradeInputCatalog, PostTradeInputError, PostTradeInputMissingError,
+    PostTradeIntakeIssue, PostTradePlanError, PostTradeSourceRef,
     SourceChangedError,
 )
+from .service import PostTradeService, PostTradeStateResult
+from .state import AccountState, Position, PostTradeStateChangeSet
 
 __all__ = [
-    "BrokerParseError", "BrokerSchemaError", "ExecutionEvidenceGapError",
-    "IngestionPersistenceError", "ParsedPostTradeInput", "PostTradeExecutionError",
+    "AccountState", "BrokerParseError", "BrokerSchemaError",
+    "ExecutionEvidenceGapError", "IngestionPersistenceError",
+    "ParsedPostTradeInput", "Position", "PostTradeExecutionError",
     "PostTradeInputCatalog", "PostTradeInputError", "PostTradeInputMissingError",
-    "PostTradeIntakeIssue", "PostTradePlanError", "PostTradeSourceRef",
+    "PostTradeIntakeIssue", "PostTradePlanError", "PostTradeService",
+    "PostTradeSourceRef", "PostTradeStateChangeSet", "PostTradeStateResult",
     "SourceChangedError",
 ]
-"""Workspace-safe post-trade intake and deterministic account state."""
-
-from quantpits.post_trade.service import PostTradeService, PostTradeStateResult
-from quantpits.post_trade.state import AccountState, Position, PostTradeStateChangeSet
-
-__all__ = ["AccountState", "Position", "PostTradeService", "PostTradeStateChangeSet", "PostTradeStateResult"]

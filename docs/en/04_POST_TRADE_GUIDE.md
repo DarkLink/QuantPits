@@ -84,7 +84,7 @@ Legacy logic will inject the unallocated integer entirety toward the **first seq
 
 ### Post-Processing Archival
 
-The current compatibility state workflow reads cashflows but does not archive them automatically. Consumed-only archival and transactional state persistence are intentionally deferred to the state-transaction phase.
+Real state/all runs archive only active cashflows whose dates are actually processed, inside the same recoverable local transaction. Future entries remain active, explicit zero entries are consumed by key presence, and `prod_config.json` is always committed last.
 
 ---
 
@@ -115,6 +115,15 @@ python quantpits/scripts/prod_post_trade.py --end-date 2026-02-10
 
 # Verbosity Trace: Ouputs individual transaction ledger items implicitly to stdout
 python quantpits/scripts/prod_post_trade.py --verbose
+
+# Read-only transaction inspection
+python quantpits/scripts/prod_post_trade.py --transaction-status
+
+# Retry classification for an already committed transaction
+python quantpits/scripts/prod_post_trade.py --retry-classification TRANSACTION_ID
+
+# Execute without RunManifest (OperatorLog remains enabled)
+python quantpits/scripts/prod_post_trade.py --no-manifest
 ```
 
 Missing settlement evidence is an error by default; the primary command no longer silently substitutes `emp-table.xlsx`. Use `--allow-missing-settlement` only after explicitly confirming no activity. Evidence of fills still blocks that acknowledgement.
@@ -249,7 +258,7 @@ Optional Overrides:
 > This script **strictly processes live trading data**. It is completely independent and decoupled from training (`static_train.py --full`), prediction (`static_train.py --predict-only`), backtesting (`brute_force_ensemble.py`), and other modules.
 
 > [!TIP]
-> Inspect `--explain-plan` first, then use `--dry-run` for strict input validation before a real run.
+> Inspect `--explain-plan` first, then use `--dry-run` for strict input validation before a real run. Dry-run creates no lock or files; if an unfinished transaction exists, it refuses recalculation and requires recovery first.
 
 > [!WARNING]
 > Name the three exports `YYYY-MM-DD-table.xlsx`, `YYYY-MM-DD-order.xlsx`, and `YYYY-MM-DD-trade.xlsx`. Missing settlement fails by default; no empty template is substituted unless `--allow-missing-settlement` explicitly acknowledges no activity.
@@ -257,5 +266,16 @@ Optional Overrides:
 > [!WARNING]
 > Real state execution currently uses a recoverable cursor-last protocol:
 > derived CSV files are atomically replaced one file at a time and
-> `prod_config.json` advances last. This is not a multi-file atomic transaction;
-> transactional cashflow archival and a crash journal remain follow-up work.
+### Recoverable transaction and run audit
+
+Account state uses a workspace-local transaction journal. Exact target bytes are staged under `data/.post_trade_transactions/<run_id>/staged/` before any target is replaced. Every artifact records baseline and target SHA-256 values. Recovery accepts only the baseline or target version; a third version becomes `conflicted` and is never overwritten. `cashflow.json` follows derived logs, and `prod_config.json` is always the final required target.
+
+This is a recoverable single-workspace local-filesystem protocol, not a distributed transaction. Execution ingestion keeps its separate receipt commit domain. RunManifest records execution, account-state transaction, and classification statuses independently. The journal retains the light plan fingerprint, the resolved strict-parse/valuation execution fingerprint, and SHA-256 fingerprints for actual classification outputs. Real runs write `output/manifests/post-trade/<run_id>.json` and `data/operator_log.jsonl` by default. Public audit data contains only date ranges, counts, relative paths, and fingerprints—never account values, holdings, broker rows, or machine-local absolute paths.
+
+Interrupted-run procedure:
+
+1. Do not edit `prod_config.json`, `cashflow.json`, or state logs.
+2. Run `--transaction-status`.
+3. Rerun the normal command to recover `prepared/committing` transactions. If state is committed while classification remains `pending/running`, the same recovery path verifies every target fingerprint before resuming classification and audit closure.
+4. Stop on `conflicted`; inspect fingerprints and do not force overwrite.
+5. If state committed but classification failed, run `--retry-classification TRANSACTION_ID`.

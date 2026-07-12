@@ -20,6 +20,7 @@ class StateOutputPayloads:
     holding_log: bytes
     daily_log: bytes
     prod_config: bytes
+    cashflow_config: bytes = b""
 
 
 def _csv_bytes(frame: pd.DataFrame) -> bytes:
@@ -38,7 +39,7 @@ def _replace_dates(existing, current, dates, column="成交日期"):
     return combined.sort_values(sort, kind="stable").reset_index(drop=True) if sort else combined.reset_index(drop=True)
 
 
-def build_state_output_payloads(ctx, change_set: PostTradeStateChangeSet, settlement_frames: Mapping[str, pd.DataFrame], *, model="GATs") -> StateOutputPayloads:
+def build_state_output_payloads(ctx, change_set: PostTradeStateChangeSet, settlement_frames: Mapping[str, pd.DataFrame], *, model="GATs", cashflow_config=None) -> StateOutputPayloads:
     dates = set(change_set.processed_dates)
     detail_pairs, trade_frames, holding_rows, daily_rows = [], [], [], []
     transition_map = {item.trade_date: item for item in change_set.transitions}
@@ -67,4 +68,10 @@ def build_state_output_payloads(ctx, change_set: PostTradeStateChangeSet, settle
     trade_log = _replace_dates(_read_csv(ctx.data_path("trade_log_full.csv")), trade_current, dates)
     holding_log = _replace_dates(_read_csv(ctx.data_path("holding_log_full.csv")), holding_current, dates)
     daily_log = _replace_dates(_read_csv(ctx.data_path("daily_amount_log_full.csv")), daily_current, dates)
-    return StateOutputPayloads(tuple(detail_pairs), _csv_bytes(trade_log), _csv_bytes(holding_log), _csv_bytes(daily_log), json.dumps(dict(change_set.next_prod_config), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8"))
+    from quantpits.post_trade.cashflow import build_cashflow_commit
+    cashflow = build_cashflow_commit(cashflow_config or {}, change_set.processed_dates)
+    return StateOutputPayloads(
+        tuple(detail_pairs), _csv_bytes(trade_log), _csv_bytes(holding_log), _csv_bytes(daily_log),
+        (json.dumps(dict(change_set.next_prod_config), ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        cashflow.to_bytes(),
+    )

@@ -34,9 +34,11 @@ class QlibValuationProvider:
         closes = {}
         if instruments:
             frame = D.features(instruments=list(instruments), fields=[field], start_time=trade_date, end_time=trade_date)
-            if frame is None:
+            if frame is None or frame.empty:
                 raise ValuationMissingError("No valuation data for %s" % trade_date)
             reset = frame.reset_index()
+            if "instrument" not in reset.columns:
+                raise ValuationSchemaError("Valuation data has no instrument column")
             value_col = field if field in reset.columns else reset.columns[-1]
             for instrument, group in reset.groupby("instrument"):
                 if len(group) != 1:
@@ -48,5 +50,7 @@ class QlibValuationProvider:
         benchmark_frame = D.features(instruments=[benchmark], fields=[field], start_time=trade_date, end_time=trade_date)
         if benchmark_frame is None or len(benchmark_frame) != 1:
             raise ValuationMissingError("Missing benchmark close for %s" % trade_date)
-        benchmark_value = decimal_value(benchmark_frame.reset_index().iloc[0][field], field="benchmark")
+        benchmark_reset = benchmark_frame.reset_index()
+        benchmark_col = field if field in benchmark_reset.columns else benchmark_reset.columns[-1]
+        benchmark_value = decimal_value(benchmark_reset.iloc[0][benchmark_col], field="benchmark")
         return ValuationSnapshot(trade_date, tuple(sorted(closes.items())), benchmark_value)

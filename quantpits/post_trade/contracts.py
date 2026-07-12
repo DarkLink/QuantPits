@@ -66,6 +66,15 @@ class PostTradeExecutionError(RuntimeError):
     pass
 
 
+class PostTradePartialExecutionError(PostTradeExecutionError):
+    """Execution failed after some durable outputs may already exist."""
+
+    def __init__(self, message, *, summary, cause):
+        super().__init__(message)
+        self.summary = summary
+        self.cause = cause
+
+
 class PostTradeInputError(PostTradeExecutionError):
     pass
 
@@ -150,3 +159,58 @@ class PostTradeStatePersistenceError(PostTradeStateError):
     def __init__(self, message, *, committed_outputs=()):
         super().__init__(message)
         self.committed_outputs = tuple(committed_outputs)
+
+
+class PostTradeTransactionError(PostTradeExecutionError):
+    """Base class for recoverable local-filesystem transaction failures."""
+
+
+class PostTradeTransactionSchemaError(PostTradeTransactionError):
+    pass
+
+
+class PostTradeTransactionConflictError(PostTradeTransactionError):
+    pass
+
+
+class PostTradeTransactionCorruptError(PostTradeTransactionError):
+    pass
+
+
+class PostTradeTransactionRecoveryError(PostTradeTransactionError):
+    def __init__(self, message, *, transaction_id=None, committed_outputs=()):
+        super().__init__(message)
+        self.transaction_id = transaction_id
+        self.committed_outputs = tuple(committed_outputs)
+
+
+class PostTradeConcurrentRunError(PostTradeTransactionError):
+    pass
+
+
+class PostTradeRecoveryRequiredError(PostTradeTransactionError):
+    pass
+
+
+class PostTradeCashflowError(PostTradeExecutionError):
+    pass
+
+
+class PostTradeCashflowConflictError(PostTradeCashflowError):
+    pass
+
+
+class PostTradeReceiptLedgerError(PostTradeExecutionError):
+    pass
+
+
+class PostTradeReceiptLedgerSchemaError(PostTradeReceiptLedgerError):
+    pass
+
+
+class PostTradeAuditError(PostTradeExecutionError):
+    pass
+
+
+class PostTradeClassificationRetryError(PostTradeExecutionError):
+    pass

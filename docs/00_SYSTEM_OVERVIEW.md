@@ -50,6 +50,8 @@
 
 Post-trade 使用统一 intake control plane，但保留三类证据的权威边界：settlement 负责现金/持仓状态，order 负责委托意图，trade 负责逐笔成交。默认 `prod_post_trade --scope all` 同时处理三类证据，避免执行分析缺少委托或成交日志；source fingerprint ledger 支持后到历史文件并阻止已摄取文件静默漂移。
 
+账户状态提交使用 staged bytes、baseline/target fingerprint 与 durable journal 的本地可恢复事务；cashflow 只消费已处理日期，prod cursor 最后推进。execution ingestion 保持独立提交域，但 execution/state/classification 会进入同一个 RunManifest 和 OperatorLog 审计生命周期。
+
 账户状态由纯 `Decimal` 状态引擎按完整批次计算，先核对成交数量和估值完整性，再以 cursor-last 顺序提交派生日志与 `prod_config.json`。`--dry-run` 执行同一套状态计算但不写文件；当前保证可重跑恢复，不宣称跨文件原子事务。
 
 ```mermaid
@@ -618,7 +620,7 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 
 `ensemble_fusion` 还提供独立的 typed command boundary：`quantpits/ensemble/command.py` 负责参数合同和 prepare/explain/execute 路由，`quantpits/ensemble/service.py` 负责执行生命周期，脚本层只负责 process exit semantics。Engine 层不会调用 `sys.exit()`，因此 notebook、scheduler、测试或其他 Python 流程可以复用 command runner，并自行处理结构化 outcome 与 typed domain error。
 
-`OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint` 字段。`ensemble_fusion.py` 和 `order_gen.py` 已将这些字段与运行清单关联；未接入 manifest 的旧命令仍保持 `null`。
+`OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint`、`transaction_id` 字段。`ensemble_fusion.py`、`order_gen.py` 和 post-trade 已将相关字段与运行清单关联；未使用 transaction 的命令保持 `null`。
 
 ### ⑧ 文件归档工具
 

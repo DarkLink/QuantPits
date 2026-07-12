@@ -14,6 +14,7 @@ from quantpits.post_trade.contracts import (
     ExecutionEvidenceGapError, ParsedPostTradeInput, PostTradeInputCatalog,
     PostTradeIntakeIssue, PostTradeSourceRef, SourceChangedError,
 )
+from quantpits.post_trade.contracts import PostTradeReceiptLedgerSchemaError
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_file
 
 _PATTERNS = {
@@ -30,16 +31,33 @@ def _display_path(ctx: WorkspaceContext, path: Path) -> str:
         return path.as_posix()
 
 
-def load_ingestion_receipts(path: Path) -> Mapping[str, Mapping[str, object]]:
+def load_ingestion_receipts(path: Path, *, strict: bool = False) -> Mapping[str, Mapping[str, object]]:
     if not path.exists():
         return {}
     import json
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        if strict: raise PostTradeReceiptLedgerSchemaError("Malformed ingestion receipt ledger") from exc
+        return {}
+    if not isinstance(payload, dict) or payload.get("schema_version", 1) != 1:
+        if strict: raise PostTradeReceiptLedgerSchemaError("Unsupported ingestion receipt ledger")
         return {}
     sources = payload.get("sources", {})
-    return sources if isinstance(sources, dict) else {}
+    if not isinstance(sources, dict):
+        if strict: raise PostTradeReceiptLedgerSchemaError("Receipt sources must be an object")
+        return {}
+    if strict:
+        for key, receipt in sources.items():
+            if not isinstance(receipt, dict) or receipt.get("stream") not in {"order", "trade"}:
+                raise PostTradeReceiptLedgerSchemaError("Invalid ingestion receipt: %s" % key)
+            required = ("trade_date", "path", "sha256", "row_count", "run_id")
+            if any(name not in receipt for name in required) or len(str(receipt["sha256"])) != 64:
+                raise PostTradeReceiptLedgerSchemaError("Incomplete ingestion receipt: %s" % key)
+            expected = "%s:%s" % (receipt["stream"], receipt["path"])
+            if key != expected or Path(str(receipt["path"])).is_absolute() or ".." in Path(str(receipt["path"])).parts:
+                raise PostTradeReceiptLedgerSchemaError("Receipt key/path mismatch: %s" % key)
+    return sources
 
 
 def discover_inputs(

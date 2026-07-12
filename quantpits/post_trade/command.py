@@ -15,11 +15,12 @@ from quantpits.post_trade.contracts import (
 )
 from quantpits.post_trade.contracts import PostTradeInputMissingError, PostTradeSourceRef
 from quantpits.post_trade.intake import (
-    discover_inputs, parse_pending_sources, validate_cross_stream,
+    discover_inputs, load_ingestion_receipts, parse_pending_sources, validate_cross_stream,
     verify_parsed_sources,
 )
 from quantpits.post_trade.ingestion import IngestionResult, ingest_execution_evidence
 from quantpits.runtime import CommandPlan, CommandStep, InputRef, OutputRef, StateRef
+from quantpits.runtime import generate_run_id
 from quantpits.runtime.command import fingerprint_command_plan
 from quantpits.runtime.render import render_command_plan
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_file
@@ -37,6 +38,7 @@ class PostTradeRunOptions:
     allow_missing_settlement: bool = False
     verbose: bool = False
     run_id: Optional[str] = None
+    no_manifest: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,9 @@ def add_post_trade_arguments(parser: argparse.ArgumentParser, *, default_scope: 
     modes.add_argument("--explain-plan", action="store_true")
     modes.add_argument("--json-plan", action="store_true")
     parser.add_argument("--run-id")
+    parser.add_argument("--no-manifest", action="store_true")
+    parser.add_argument("--transaction-status", action="store_true", help="Show recoverable transaction status without writing")
+    parser.add_argument("--retry-classification", metavar="TRANSACTION_ID", help="Retry classification for a committed transaction")
     parser.add_argument("--verbose", action="store_true")
     return parser
 
@@ -148,7 +153,9 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
         inputs.extend(InputRef(x.display_path, kind="data", fingerprint=x.fingerprint, required=False, description=stream) for x in catalog.sources_for(stream))
     states = []
     outputs = []
+    states.append(StateRef("data/.post_trade.lock", "write", "real-run process lock"))
     if options.scope in {"all", "state"}:
+        states.append(StateRef("data/.post_trade_transactions/", "read_write", "recoverable account-state transaction"))
         states.append(StateRef("config/cashflow.json", "read"))
         for name in ("trade_log_full.csv", "holding_log_full.csv", "daily_amount_log_full.csv", "trade_classification.csv"):
             states.append(StateRef("data/%s" % name, "read_write"))
@@ -166,14 +173,19 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
         steps.append(CommandStep("ingest-execution-evidence", "Atomically merge raw order/trade evidence"))
     if options.scope in {"all", "state"}:
         steps.extend([
+            CommandStep("inspect-unfinished-transactions", "Recover an unfinished account-state transaction before new calculation"),
             CommandStep("reconcile-execution-quantities", "Reconcile filled quantities before state update", expensive=True),
             CommandStep("load-valuation-snapshots", "Load exact holding and benchmark valuations", expensive=True),
             CommandStep("calculate-state-change-set", "Calculate deterministic multi-day account state", expensive=True),
             CommandStep("validate-state-invariants", "Validate cash, position, and valuation invariants"),
-            CommandStep("persist-derived-state-outputs", "Atomically replace derived state outputs"),
+            CommandStep("stage-transaction-payloads", "Stage exact account-state and cashflow target bytes"),
+            CommandStep("persist-derived-state-outputs", "Recoverably replace derived state outputs"),
+            CommandStep("commit-cashflow-consumption", "Consume cashflow entries for processed dates"),
             CommandStep("commit-account-state-cursor", "Commit prod_config cursor as the last mandatory write"),
             CommandStep("run-trade-classification", "Update settlement trade classification", expensive=True),
         ])
+    if not options.no_manifest:
+        outputs.append(OutputRef("output/manifests/post-trade/<run-id>.json", kind="manifest", description="actual-output run audit", overwrite=True))
     if options.scope in {"all", "execution"}:
         steps.append(CommandStep("update-legacy-execution-cursor", "Best-effort compatibility cursor mirror"))
     warnings = [issue.code + ": " + issue.message for issue in catalog.issues]
@@ -194,13 +206,15 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
         "allow_missing_settlement": options.allow_missing_settlement,
         "calendar_resolution": "deferred" if options.scope in {"all", "state"} else "not_required",
     }
-    return CommandPlan(command="post-trade", workspace=ctx.root.name, run_id=options.run_id or "post-trade-plan", mode=options.scope, args=cli_args, inputs=tuple(inputs), outputs=tuple(outputs), states=tuple(states), steps=tuple(steps), warnings=tuple(warnings), metadata=metadata)
+    return CommandPlan(command="post-trade", workspace=ctx.root.name, run_id=options.run_id or generate_run_id("post_trade"), mode=options.scope, args=cli_args, inputs=tuple(inputs), outputs=tuple(outputs), states=tuple(states), steps=tuple(steps), warnings=tuple(warnings), metadata=metadata)
 
 
 def prepare_post_trade_run(
     ctx: WorkspaceContext, options: PostTradeRunOptions, *, cli_args: Sequence[str] = (),
     dependencies: Optional[PostTradeCommandDependencies] = None,
 ) -> PreparedPostTradeRun:
+    if options.run_id is None:
+        options = replace(options, run_id=generate_run_id("post_trade"))
     deps = dependencies or PostTradeCommandDependencies()
     config_loader = deps.load_run_config or load_run_config
     discovery = deps.discover_inputs or discover_inputs
@@ -263,6 +277,9 @@ def execute_prepared(
     resolve_trade_dates: Optional[Callable[[str, str], Sequence[str]]] = None,
     state_callback: Optional[Callable[[PreparedPostTradeRun, dict], Any]] = None,
 ) -> PostTradeRunSummary:
+    # Light discovery tolerates a damaged receipt ledger so explain-plan can
+    # report sources. Strict/dry execution fails closed before any writer.
+    load_ingestion_receipts(prepared.ctx.data_path("post_trade_ingestion_state.json"), strict=True)
     if prepared.options.scope in {"all", "state"} and init_qlib:
         init_qlib()
     catalog = prepared.catalog
@@ -324,5 +341,14 @@ def execute_prepared(
         ingestion = ingest_execution_evidence(prepared.ctx, parsed, run_id=prepared.options.run_id or prepared.plan_fingerprint)
     state_result = None
     if prepared.options.scope in {"all", "state"} and state_callback:
-        state_result = state_callback(effective_prepared, parsed)
+        try:
+            state_result = state_callback(effective_prepared, parsed)
+        except Exception as exc:
+            from quantpits.post_trade.contracts import PostTradePartialExecutionError
+            partial = PostTradeRunSummary(effective_prepared, ingestion, None, parsed)
+            raise PostTradePartialExecutionError(
+                "Post-trade state execution failed after intake: %s" % exc,
+                summary=partial,
+                cause=exc,
+            ) from exc
     return PostTradeRunSummary(effective_prepared, ingestion, state_result, parsed)

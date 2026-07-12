@@ -5,7 +5,9 @@ import pytest
 from quantpits.post_trade.command import (
     PostTradeRunOptions, execute_prepared, prepare_post_trade_run, render_prepared,
 )
-from quantpits.post_trade.contracts import PostTradePlanError, SourceChangedError
+from quantpits.post_trade.contracts import (
+    PostTradePartialExecutionError, PostTradePlanError, SourceChangedError,
+)
 from quantpits.utils.workspace import WorkspaceContext
 
 
@@ -78,6 +80,7 @@ def test_plan_exposes_stable_source_status_counts(tmp_path):
     assert set(counts["order"]) == {
         "present", "missing", "assumed_empty", "already_ingested", "changed"
     }
+    assert any(state.path == "data/.post_trade.lock" for state in prepared.plan.states)
 
 
 def test_scope_catalogs_only_include_owned_streams(tmp_path):
@@ -145,3 +148,36 @@ def test_dry_run_is_byte_stable_and_detects_pre_writer_source_drift(tmp_path):
     with pytest.raises(SourceChangedError):
         execute_prepared(real, MutatingAdapter())
     assert sentinel.read_bytes() == before
+
+
+def test_state_failure_preserves_committed_ingestion_ledger(tmp_path):
+    ctx = _ctx(tmp_path)
+    for suffix in ("table", "order", "trade"):
+        ctx.data_path("2026-01-02-%s.xlsx" % suffix).write_bytes(suffix.encode())
+
+    class Adapter:
+        def parse_settlement(self, _):
+            return pd.DataFrame()
+
+        def parse_orders(self, _):
+            return pd.DataFrame({"成交数量": [0]})
+
+        def parse_trades(self, _):
+            return pd.DataFrame({"成交数量": [0]})
+
+    prepared = prepare_post_trade_run(
+        ctx,
+        PostTradeRunOptions(scope="all", start_date="2026-01-02", end_date="2026-01-02"),
+    )
+
+    with pytest.raises(PostTradePartialExecutionError) as caught:
+        execute_prepared(
+            prepared, Adapter(), init_qlib=lambda: None,
+            resolve_trade_dates=lambda *_: ("2026-01-02",),
+            state_callback=lambda *_: (_ for _ in ()).throw(RuntimeError("state failed")),
+        )
+
+    summary = caught.value.summary
+    assert summary.ingestion is not None
+    assert summary.ingestion.ingested_sources
+    assert ctx.data_path("post_trade_ingestion_state.json") in summary.ingestion.outputs

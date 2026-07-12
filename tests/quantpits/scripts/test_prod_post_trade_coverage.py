@@ -351,6 +351,76 @@ def test_main_no_trade_dates(mock_get_dates, ppt_env, capsys):
     assert "No trade dates" in captured.out or "trade dates" in captured.out.lower()
 
 
+def test_main_execution_scope_never_constructs_state_dependencies(ppt_env):
+    """Execution-only is a terminal audited route with no Qlib/state service."""
+    post_trade, workspace = ppt_env
+    import sys
+    with patch("quantpits.post_trade.service.PostTradeService") as state_service, \
+         patch("quantpits.post_trade.valuation.QlibValuationProvider") as valuation_provider, \
+         patch("quantpits.scripts.prod_post_trade.init_qlib") as qlib_init, \
+         patch.object(sys, "argv", ["prod_post_trade.py", "--scope", "execution"]):
+        post_trade.main()
+    state_service.assert_not_called()
+    valuation_provider.assert_not_called()
+    qlib_init.assert_not_called()
+    assert list((workspace / "output/manifests/post-trade").glob("*.json"))
+    assert (workspace / "data/operator_log.jsonl").exists()
+
+
+def test_execution_scope_does_not_recover_account_state_transaction(ppt_env):
+    post_trade, workspace = ppt_env
+    from quantpits.post_trade.transaction import PostTradeTransactionManager
+    from quantpits.utils.workspace import WorkspaceContext
+    manager = PostTradeTransactionManager(WorkspaceContext.from_root(workspace))
+    manager.prepare(
+        transaction_id="state-unfinished", run_id="state-unfinished", scope="state",
+        light_fingerprint="light", resolved_fingerprint="resolved",
+        cursor_before="2026-03-01", cursor_after="2026-03-02",
+        processed_dates=("2026-03-02",), consumed_cashflow_dates=(),
+        payloads=((500, "prod_config_cursor", workspace / "config/prod_config.json", b"{}\n"),),
+    )
+    import sys
+    with patch.object(PostTradeTransactionManager, "recover") as recover, \
+         patch.object(sys, "argv", ["prod_post_trade.py", "--scope", "execution"]):
+        post_trade.main()
+    recover.assert_not_called()
+    assert manager.load("state-unfinished").status == "prepared"
+
+
+def test_main_dry_run_refuses_unfinished_transaction_without_lock_write(ppt_env, capsys):
+    post_trade, workspace = ppt_env
+    from quantpits.post_trade.transaction import PostTradeTransactionManager
+    from quantpits.utils.workspace import WorkspaceContext
+    manager = PostTradeTransactionManager(WorkspaceContext.from_root(workspace))
+    manager.prepare(
+        transaction_id="unfinished", run_id="unfinished", scope="state",
+        light_fingerprint="light", resolved_fingerprint="resolved",
+        cursor_before="2026-03-01", cursor_after="2026-03-02",
+        processed_dates=("2026-03-02",), consumed_cashflow_dates=(),
+        payloads=((500, "prod_config_cursor", workspace / "config/prod_config.json", b"{}\n"),),
+    )
+    lock_path = workspace / "data/.post_trade.lock"
+    import sys
+    with patch.object(sys, "argv", ["prod_post_trade.py", "--dry-run", "--allow-missing-settlement"]):
+        with pytest.raises(SystemExit) as caught:
+            post_trade.main()
+    assert caught.value.code == 1
+    assert "requires recovery before dry-run" in capsys.readouterr().out
+    assert not lock_path.exists()
+
+
+def test_retry_classification_rejects_state_selection_arguments(ppt_env):
+    post_trade, _ = ppt_env
+    import sys
+    with patch.object(sys, "argv", [
+        "prod_post_trade.py", "--retry-classification", "tx-1",
+        "--scope", "state",
+    ]):
+        with pytest.raises(SystemExit) as caught:
+            post_trade.main()
+    assert caught.value.code == 2
+
+
 @patch("quantpits.scripts.prod_post_trade.get_trade_dates")
 @patch("quantpits.scripts.prod_post_trade.process_single_day")
 @patch("quantpits.scripts.prod_post_trade.save_prod_config")

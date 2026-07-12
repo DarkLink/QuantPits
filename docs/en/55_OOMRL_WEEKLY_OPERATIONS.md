@@ -58,6 +58,9 @@ source workspaces/Demo_Workspace/run_env.sh
 
 # Import broker settlement files, update cash and holdings
 python -m quantpits.scripts.prod_post_trade --scope all
+
+# After an interrupted run, inspect first; the normal command recovers the transaction and closes pending/running classification
+python -m quantpits.scripts.prod_post_trade --transaction-status
 ```
 
 This updates `cash` and `holdings` in `prod_config.json`, which is required for downstream analysis.

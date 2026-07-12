@@ -58,6 +58,9 @@ source workspaces/Demo_Workspace/run_env.sh
 
 # 导入券商结算文件，更新现金和持仓
 python -m quantpits.scripts.prod_post_trade --scope all
+
+# 若上次运行中断，先只读检查；正常命令会恢复 transaction，并继续闭合 pending/running classification
+python -m quantpits.scripts.prod_post_trade --transaction-status
 ```
 
 这一步会更新 `prod_config.json` 中的 `cash` 和 `holdings`，是后续分析的基础。

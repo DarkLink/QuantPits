@@ -84,7 +84,7 @@ QuantPits/
 
 ### 处理后归档
 
-当前兼容状态流程读取 cashflow，但不会自动归档。消费范围受控的归档和事务写入将在后续 state-transaction 阶段完成；不要假设普通运行已经移动条目。
+真实 state/all 运行会在同一个可恢复本地事务中，仅归档本批次实际处理日期对应的 active cashflow。未来日期保持 active；显式零值也按“键存在”消费；`prod_config.json` 始终最后提交。
 
 ---
 
@@ -115,6 +115,15 @@ python quantpits/scripts/prod_post_trade.py --end-date 2026-02-10
 
 # 详细输出：显示每笔交易明细
 python quantpits/scripts/prod_post_trade.py --verbose
+
+# 只读查看 transaction 状态
+python quantpits/scripts/prod_post_trade.py --transaction-status
+
+# 仅重试已提交 transaction 的分类步骤
+python quantpits/scripts/prod_post_trade.py --retry-classification TRANSACTION_ID
+
+# 执行但不写 RunManifest（OperatorLog 仍保留）
+python quantpits/scripts/prod_post_trade.py --no-manifest
 ```
 
 缺失交割单默认是错误，不再静默使用 `emp-table.xlsx`。确认某些交易日确实无活动时，可显式使用 `--allow-missing-settlement`；若 order/trade 已证明存在成交，该参数仍不能绕过一致性检查。
@@ -244,10 +253,22 @@ python quantpits/scripts/prod_post_trade.py --help
 > 本脚本**仅处理实盘交易数据**，与训练 (`static_train.py --full`)、预测 (`static_train.py --predict-only`)、回测 (`brute_force_ensemble.py`) 等模块完全独立，互不耦合。
 
 > [!TIP]
-> 建议先用 `--explain-plan` 查看轻量计划，再用 `--dry-run` 完成严格输入预检。
+> 建议先用 `--explain-plan` 查看轻量计划，再用 `--dry-run` 完成严格输入预检。`--dry-run` 不创建锁或任何文件；若发现未完成 transaction，会拒绝重新计算并要求先恢复。
 
 > [!WARNING]
 > 三类文件必须严格命名为 `YYYY-MM-DD-table.xlsx`、`YYYY-MM-DD-order.xlsx`、`YYYY-MM-DD-trade.xlsx`。缺失 settlement 默认失败，不会隐式使用空模板；只有显式 `--allow-missing-settlement` 才能确认无活动。
 
 > [!WARNING]
-> 当前真实提交采用可重跑的 cursor-last 协议：派生 CSV 先以单文件原子替换写入，`prod_config.json` 最后推进。它不是跨文件原子事务；cashflow 事务归档和 crash journal 留待后续阶段。
+### 可恢复事务与运行审计
+
+账户状态使用 workspace-local transaction journal：所有目标 bytes 先写入 `data/.post_trade_transactions/<run_id>/staged/`，journal 持久化后才替换目标。每个 artifact 都记录 baseline/target SHA-256；恢复只接受当前内容等于 baseline 或 target，第三版本会进入 `conflicted`，不会覆盖人工修改。`cashflow.json` 在派生日志之后提交，`prod_config.json` 始终最后提交。
+
+这是一套单 workspace、本地文件系统的可恢复协议，不是分布式事务。execution ingestion 仍有独立 receipt 提交域；RunManifest 会分别记录 execution、state transaction 和 classification 状态。journal 同时保留 light plan、严格解析/估值后的 resolved execution，以及实际 classification 输出的 SHA-256 fingerprint。真实运行默认写 `output/manifests/post-trade/<run_id>.json` 与 `data/operator_log.jsonl`，公开审计信息只包含日期范围、计数、相对路径和 fingerprint，不包含账户金额、持仓、券商原始行或本机绝对路径。
+
+中断处理：
+
+1. 不要手工编辑 `prod_config.json`、`cashflow.json` 或状态日志；
+2. 运行 `--transaction-status`；
+3. `prepared/committing` 可通过再次运行正常命令恢复；若 state 已提交但 classification 仍为 `pending/running`，同一恢复流程会先校验全部 target fingerprint，再继续 classification 与审计闭环；
+4. `conflicted` 必须停止并检查 fingerprint，不能强制覆盖；
+5. state 已提交但 classification 失败时，使用 `--retry-classification TRANSACTION_ID`。

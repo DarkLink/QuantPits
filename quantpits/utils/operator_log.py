@@ -15,7 +15,8 @@ class OperatorLog:
                  log_file: str = None,
                  run_id: str = None,
                  manifest_path: str = None,
-                 plan_fingerprint: str = None):
+                 plan_fingerprint: str = None,
+                 transaction_id: str = None):
         """
         script_name: 脚本名，如 "static_train", "brute_force_fast"
         args:        CLI 参数列表（不含脚本路径）
@@ -34,6 +35,7 @@ class OperatorLog:
         self.run_id = run_id
         self.manifest_path = manifest_path
         self.plan_fingerprint = plan_fingerprint
+        self.transaction_id = transaction_id
         # Resolve log_file lazily so module is importable without active workspace
         if log_file is not None:
             self.log_file = log_file
@@ -96,6 +98,7 @@ class OperatorLog:
                 "run_id": self.run_id,
                 "manifest_path": self.manifest_path,
                 "plan_fingerprint": self.plan_fingerprint,
+                "transaction_id": self.transaction_id,
                 "result_summary": self.result_summary,
                 "exception": exception_info
             }

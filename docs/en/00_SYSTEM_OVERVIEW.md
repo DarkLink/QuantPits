@@ -50,6 +50,8 @@ Every step in this system is **optional and combinable**. Only "Prediction" and 
 
 Post-trade uses one intake control plane while preserving three authority boundaries: settlement owns cash/holding state, orders capture execution intent, and trades capture intraday fills. The default `prod_post_trade --scope all` processes all three so execution analytics cannot silently miss order/fill logs. A source-fingerprint ledger discovers late historical exports and fails closed on content drift.
 
+Account-state commits use staged bytes, baseline/target fingerprints, and a durable local recovery journal. Cashflows are consumed only for processed dates and the production cursor advances last. Execution ingestion remains a separate commit domain, while execution/state/classification share one RunManifest and OperatorLog audit lifecycle.
+
 Account state is calculated as a complete batch by a pure `Decimal` engine. Filled quantities and valuation completeness are checked before derived logs and `prod_config.json` are committed in cursor-last order. `--dry-run` performs the same calculation without writes; this is a recoverable protocol, not a multi-file atomic transaction.
 
 ```mermaid
@@ -615,7 +617,7 @@ The default manifest path is `output/manifests/{command}/{run_id}.json`, and fil
 
 `ensemble_fusion` also exposes a typed command boundary: `quantpits/ensemble/command.py` owns the argument contract and prepare/explain/execute routing, `quantpits/ensemble/service.py` owns the execution lifecycle, and the script layer owns process exit semantics only. The engine layer never calls `sys.exit()`, so notebooks, schedulers, tests, and other Python workflows can reuse the command runner and handle structured outcomes or typed domain errors themselves.
 
-`OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, and `plan_fingerprint`. `ensemble_fusion.py` and `order_gen.py` link these fields to their run manifests; legacy commands that are not yet manifest-integrated keep them as `null`.
+`OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, `plan_fingerprint`, and `transaction_id`. `ensemble_fusion.py`, `order_gen.py`, and post-trade link the relevant fields to their run manifests; commands without a transaction keep it as `null`.
 
 ### ⑧ File Archiving Tool
 
