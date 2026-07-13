@@ -46,6 +46,7 @@ QuantPits/
             ├── trade_classification.csv  # 交易分类打标（累计：量化信号、替代、手工）
             ├── holding_log_full.csv      # 持仓日志（累计）
             ├── daily_amount_log_full.csv # 每日资金汇总（累计）
+            ├── valuation_evidence.jsonl  # 估值来源、日期与价格口径证据
             ├── raw_order_log_full.csv    # 委托证据（累计）
             ├── raw_trade_log_full.csv    # 逐笔成交证据（累计）
             └── post_trade_ingestion_state.json # source fingerprint receipts
@@ -162,6 +163,25 @@ cash_after = cash_before + 卖出收入 - 买入支出 + 红利利息 + cashflow
 
 所有期末持仓和基准都必须有有效收盘价；缺失估值会在写盘前失败，不再静默丢失持仓或写入假的零基准。
 
+账户估值会同时读取 `$close`、`$factor` 和 `Div($close,$factor)`。持仓证券会验证 close/factor 派生关系；指数基准保留三字段但按 provider-reported 口径记录，不把个股 factor 公式强加给指数。未来真实 state transaction 会把原始字段、factor、派生价格、用途和价格口径写入 `data/valuation_evidence.jsonl`。该 sidecar 与状态日志一起恢复提交，位于 daily log 之后、cashflow 与 cursor 之前；旧 CSV schema 不变。
+
+### 估值日期与券商资产快照
+
+估值证据严格区分 `market_date`（价格对应日期）、`observed_at`（查询/导出时间）和 `effective_date`（账户状态日期）。券商周末资产快照可能提前展示除权/除息价格，因此不能覆盖上一个交易日的 Qlib 历史收盘价，也不能通过减去每股红利构造替代价。资产快照是独立观察通道，不属于 settlement/order/trade intake，不推进 cursor。
+
+默认只读对账示例：
+
+```bash
+python -m quantpits.tools.reconcile_post_trade_account \
+  --workspace workspaces/Demo_Workspace \
+  --broker gtja --snapshot-file data/example-asset.xlsx \
+  --account-date 2026-01-09 \
+  --snapshot-effective-date 2026-01-09 \
+  --snapshot-market-date 2026-01-09 --json
+```
+
+不传 `--write-report` 时只输出 stdout。日期或价格口径不可比时返回退出码 2，不生成部分账户 NAV，也不修改历史状态。公共结果不包含账户号、姓名、营业部、股东账号或原始备注。
+
 ### 数据文件说明
 
 | 文件 | 内容 | 更新方式 |
@@ -170,6 +190,7 @@ cash_after = cash_before + 卖出收入 - 买入支出 + 红利利息 + cashflow
 | `trade_classification.csv` | 核心量化/手工买卖归因打标 | 自动依赖建议文件推算 |
 | `holding_log_full.csv` | 每日持仓快照 | 按处理日期确定性替换 |
 | `daily_amount_log_full.csv` | 每日资金汇总 | 每日一行、按日期替换 |
+| `valuation_evidence.jsonl` | 估值 provenance sidecar | 按市场日期替换并事务提交 |
 | `trade_detail_*.csv` | 单日交易详情 | 每日覆写 |
 
 ### 券商交割单适配器 (Broker Adapter)

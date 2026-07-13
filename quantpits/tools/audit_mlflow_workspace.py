@@ -6,7 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
-from quantpits.runtime.mlflow_integrity import inspect_mlflow_workspace
+from quantpits.runtime.mlflow_integrity import (
+    MlflowIntegrityReport, inspect_mlflow_workspace,
+    inspect_tracking_backend_presence,
+)
 from quantpits.utils.workspace import WorkspaceContext
 
 
@@ -63,6 +66,19 @@ def run(args: argparse.Namespace) -> int:
     import mlflow
 
     mlflow.set_tracking_uri(ctx.mlflow_uri)
+    presence = inspect_tracking_backend_presence(ctx.mlflow_uri, workspace_root=ctx.root)
+    if not presence.metadata_ready:
+        report = MlflowIntegrityReport(
+            ctx.root, presence.resource, issues=(presence.issue,) if presence.issue else (),
+        )
+        payload = report.to_public_dict()
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print(f"Workspace: {payload['workspace']}")
+            for issue in payload["issues"]:
+                print(f"{issue['severity'].upper()} {issue['code']}: {issue['message']}")
+        return 2
     expected = list(args.recorder_experiment)
     requests = [
         (recorder_id, expected[index] if index < len(expected) else None)

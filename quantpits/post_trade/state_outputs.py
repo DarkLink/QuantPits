@@ -21,6 +21,7 @@ class StateOutputPayloads:
     daily_log: bytes
     prod_config: bytes
     cashflow_config: bytes = b""
+    valuation_evidence: bytes = b""
 
 
 def _csv_bytes(frame: pd.DataFrame) -> bytes:
@@ -70,8 +71,14 @@ def build_state_output_payloads(ctx, change_set: PostTradeStateChangeSet, settle
     daily_log = _replace_dates(_read_csv(ctx.data_path("daily_amount_log_full.csv")), daily_current, dates)
     from quantpits.post_trade.cashflow import build_cashflow_commit
     cashflow = build_cashflow_commit(cashflow_config or {}, change_set.processed_dates)
+    from quantpits.post_trade.valuation_provenance import merge_valuation_evidence
+    evidence_path = ctx.data_path("valuation_evidence.jsonl")
+    existing_evidence = evidence_path.read_bytes() if evidence_path.exists() else b""
+    evidence = merge_valuation_evidence(
+        existing_evidence, tuple(item.valuation for item in change_set.transitions)
+    )
     return StateOutputPayloads(
         tuple(detail_pairs), _csv_bytes(trade_log), _csv_bytes(holding_log), _csv_bytes(daily_log),
         (json.dumps(dict(change_set.next_prod_config), ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-        cashflow.to_bytes(),
+        cashflow.to_bytes(), evidence,
     )

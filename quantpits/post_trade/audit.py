@@ -41,8 +41,12 @@ def write_post_trade_manifest(
         for artifact in journal.artifacts:
             if allowed is None or artifact.path in allowed:
                 outputs.append(OutputRef(artifact.path, kind="state", overwrite=True))
+    if journal is not None:
+        existing = {item.path for item in outputs}
         for path in journal.classification.output_paths:
-            outputs.append(OutputRef(path, kind="data", overwrite=True))
+            if path not in existing:
+                outputs.append(OutputRef(path, kind="data", description="trade classification", overwrite=True))
+                existing.add(path)
     manifest_file = manifest_path(prepared.ctx, "post-trade", prepared.plan.run_id)
     outputs.append(OutputRef(display_path(prepared.ctx, manifest_file), kind="manifest", overwrite=True))
     records = {

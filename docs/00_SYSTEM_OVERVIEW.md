@@ -16,6 +16,7 @@
 1. 创建新工作区：使用 `python quantpits/tools/init_workspace.py --source workspaces/A --target workspaces/B` 快速搭建。
 2. 激活工作区：进入系统目录，`source workspaces/<你的工作区>/run_env.sh` 设置 `QLIB_WORKSPACE_DIR`。
 3. 运行前校验配置：`python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only` 会只读检查核心 workspace 配置、输出 normalized fingerprint 和 warning/error。
+   MLflow 谱系可用 `python -m quantpits.tools.audit_mlflow_workspace --workspace workspaces/Demo_Workspace` 只读审计；若 backend 尚不存在，审计只报告 `tracking_backend_missing`，不会初始化数据库。首次真实 ensemble 执行仅在 safeguard/Qlib 初始化后创建一个 workspace-contained 的目标 experiment，plan/audit 永不创建。
 4. (可选) 自定义数据源：在 `run_env.sh` 中取消注释 `QLIB_DATA_DIR` / `QLIB_REGION`，即可为该工作区指向不同的 Qlib 数据目录（默认 `~/.qlib/qlib_data/cn_data`、`cn`）。
 5. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
    > [!IMPORTANT]
@@ -26,6 +27,8 @@
 ---
 
 ## 核心设计理念
+
+生产账户估值与模型特征/回测价格属于不同用途边界。Post-Trade 使用显式 `account_valuation` provenance，并将市场日期、观察时间和账户生效日期分开记录；券商资产快照仅用于只读对账，不改变 settlement/order/trade 的权威边界。
 
 本系统的每一步都是**可选、可组合**的。只有"预测"和"订单生成"是例行操作，其余步骤根据需要触发：
 

@@ -34,6 +34,14 @@ class RecorderIdentityError(MlflowWorkspaceIntegrityError):
 
 
 @dataclass(frozen=True)
+class TrackingBackendPresence:
+    resource: "MlflowResourceRef"
+    exists: bool
+    metadata_ready: bool
+    issue: "MlflowIntegrityIssue | None" = None
+
+
+@dataclass(frozen=True)
 class MlflowIntegrityIssue:
     code: str
     severity: str
@@ -191,6 +199,75 @@ def resolve_mlflow_resource_uri(
         contained=contained,
         scheme=scheme or "local",
     )
+
+
+def inspect_tracking_backend_presence(
+    uri: str, *, workspace_root: str | Path
+) -> TrackingBackendPresence:
+    """Inspect a local tracking backend without initializing MLflow metadata.
+
+    This helper intentionally performs filesystem checks only.  In particular it
+    must run before constructing ``MlflowClient`` because SQLAlchemy initializes a
+    missing SQLite database as a side effect.
+    """
+
+    ref = resolve_mlflow_resource_uri(uri, workspace_root=workspace_root, resource_kind="tracking")
+    if not ref.contained or ref.canonical_path is None:
+        issue = MlflowIntegrityIssue(
+            "unsupported_tracking_scheme" if ref.canonical_path is None else "tracking_outside_workspace",
+            "error", "tracking",
+            "MLflow tracking backend is unsupported or outside the active workspace.",
+        )
+        return TrackingBackendPresence(ref, False, False, issue)
+    path = ref.canonical_path
+    if ref.scheme == "sqlite":
+        exists = path.is_file()
+        ready = exists and path.stat().st_size > 0
+    else:
+        exists = path.is_dir()
+        # A file-store is metadata-ready only after its meta root exists.
+        ready = exists and ((path / "0" / "meta.yaml").is_file() or any(path.glob("*/meta.yaml")))
+    issue = None
+    if not ready:
+        issue = MlflowIntegrityIssue(
+            "tracking_backend_missing", "error", "tracking",
+            "MLflow tracking metadata does not exist; read-only audit did not initialize it.",
+        )
+    return TrackingBackendPresence(ref, exists, ready, issue)
+
+
+def ensure_writable_experiment(
+    name: str, *, workspace_root: str | Path, client: Any, artifact_root: str | Path
+) -> ExperimentIntegrity:
+    """Create one contained writable experiment only when no active target exists."""
+
+    root = Path(workspace_root).resolve()
+    active = [
+        item for item in client.experiments_by_name(name)
+        if str(_field(item, "lifecycle_stage", default="active")) == "active"
+    ]
+    if len(active) > 1:
+        raise DuplicateMlflowExperimentError("Writable experiment has duplicate active targets")
+    if not active:
+        artifact = Path(artifact_root).resolve()
+        try:
+            artifact.relative_to(root)
+        except ValueError as exc:
+            raise ExternalMlflowArtifactError("Target artifact root is outside workspace") from exc
+        client.create_experiment(name, artifact.as_uri())
+        active = [
+            item for item in client.experiments_by_name(name)
+            if str(_field(item, "lifecycle_stage", default="active")) == "active"
+        ]
+    if len(active) != 1:
+        raise MlflowWorkspaceIntegrityError("Writable experiment bootstrap did not resolve exactly one target")
+    selected = active[0]
+    experiment_id = str(_field(selected, "experiment_id", "id"))
+    location = str(_field(selected, "artifact_location", default=""))
+    ref = resolve_mlflow_resource_uri(location, workspace_root=root, resource_kind="experiment")
+    if not ref.contained:
+        raise ExternalMlflowArtifactError("Writable experiment artifact location is outside workspace")
+    return ExperimentIntegrity(name, (experiment_id,), experiment_id, ref, "write")
 
 
 class MlflowMetadataClient(Protocol):

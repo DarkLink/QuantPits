@@ -15,6 +15,7 @@ from quantpits.post_trade.contracts import (
     PositionQuantityError, PostTradeStateInputError,
     SettlementDateMismatchError, SettlementNormalizationError,
     UnsupportedSettlementEventError, ValuationMissingError,
+    ValuationSchemaError,
 )
 from quantpits.scripts.brokers.base import (
     BUY_TYPES, INTEREST_TYPES, POSITION_ADJUSTMENT_TYPES, SELL_TYPES,
@@ -112,6 +113,20 @@ class ValuationSnapshot:
     trade_date: str
     closes: Tuple[Tuple[str, Decimal], ...]
     benchmark: Decimal
+    quote_evidence: Tuple[object, ...] = ()
+    benchmark_evidence: Optional[object] = None
+
+    def __post_init__(self):
+        names = tuple(name for name, _ in self.closes)
+        if len(names) != len(set(names)):
+            raise ValuationSchemaError("Duplicate valuation instruments")
+        if self.quote_evidence:
+            evidence = {item.instrument: item for item in self.quote_evidence}
+            if set(evidence) != set(names) or len(evidence) != len(self.quote_evidence):
+                raise ValuationSchemaError("Valuation evidence does not match close instruments")
+            for instrument, close in self.closes:
+                if evidence[instrument].price != close:
+                    raise ValuationSchemaError("Valuation evidence price differs from operational close")
 
     def close_map(self) -> Mapping[str, Decimal]:
         return MappingProxyType(dict(self.closes))
@@ -254,7 +269,7 @@ def build_change_set(initial: AccountState, dates: Sequence[str], events_by_date
     dated = cashflows.get("cashflows", {})
     for index, date in enumerate(dates):
         external = decimal_value(dated.get(date, old_cashflow if index == 0 and old_cashflow is not None else 0), field="cashflow")
-        if external:
+        if date in dated or (index == 0 and old_cashflow not in (None, 0, 0.0, "0")):
             consumed.append(date)
         if date not in valuations:
             raise ValuationMissingError("Missing valuation snapshot for %s" % date)

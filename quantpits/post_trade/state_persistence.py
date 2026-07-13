@@ -21,7 +21,7 @@ class StateArtifactLedger:
 
 
 def capture_state_fingerprints(ctx):
-    names = (("config", "prod_config.json"), ("config", "cashflow.json"), ("data", "trade_log_full.csv"), ("data", "holding_log_full.csv"), ("data", "daily_amount_log_full.csv"))
+    names = (("config", "prod_config.json"), ("config", "cashflow.json"), ("data", "trade_log_full.csv"), ("data", "holding_log_full.csv"), ("data", "daily_amount_log_full.csv"), ("data", "valuation_evidence.jsonl"))
     return tuple((kind + "/" + name, fingerprint_file(ctx.root / kind / name) if (ctx.root / kind / name).exists() else None) for kind, name in names)
 
 
@@ -51,6 +51,7 @@ def transaction_payloads(ctx, payloads: StateOutputPayloads):
         (100, "trade_log", ctx.data_path("trade_log_full.csv"), payloads.trade_log),
         (200, "holding_log", ctx.data_path("holding_log_full.csv"), payloads.holding_log),
         (300, "daily_log", ctx.data_path("daily_amount_log_full.csv"), payloads.daily_log),
+        (350, "valuation_evidence", ctx.data_path("valuation_evidence.jsonl"), payloads.valuation_evidence),
         (400, "cashflow_config", ctx.config_path("cashflow.json"), payloads.cashflow_config),
         (500, "prod_config_cursor", ctx.config_path("prod_config.json"), payloads.prod_config),
     ])

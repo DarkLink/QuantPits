@@ -46,6 +46,7 @@ QuantPits/
             ├── trade_classification.csv  # Trade classification tags (Cumulative: Signal, Substitute, Manual)
             ├── holding_log_full.csv      # Cumulative snapshot holding logs
             ├── daily_amount_log_full.csv # Cumulative capital balance trajectory
+            ├── valuation_evidence.jsonl  # Valuation source, date, and price-basis evidence
             ├── raw_order_log_full.csv    # Cumulative order evidence
             ├── raw_trade_log_full.csv    # Cumulative intraday fill evidence
             └── post_trade_ingestion_state.json # Source fingerprint receipts
@@ -167,6 +168,25 @@ Every ending position and the benchmark must have a valid close. Missing
 valuation fails before the first state write instead of silently dropping a
 position or writing a fake zero benchmark.
 
+Account valuation queries `$close`, `$factor`, and `Div($close,$factor)` together. It validates the close/factor derivation for held securities; benchmark indices retain all three fields as provider-reported evidence because index factor semantics are not forced through the equity formula. Future real state transactions persist raw fields, factor, derived price, purpose, and basis evidence in `data/valuation_evidence.jsonl`. The sidecar participates in recovery after the daily log and before cashflow/cursor targets; legacy CSV schemas remain unchanged.
+
+### Valuation dates and broker asset snapshots
+
+Evidence keeps `market_date` (price date), `observed_at` (query/export time), and `effective_date` (account-state date) separate. A weekend broker snapshot may display a corporate-action price adjusted in advance. It must not overwrite the previous trading day's Qlib historical close, and the system never fabricates a replacement by subtracting a dividend. Asset snapshots are an independent observation channel, not settlement/order/trade intake, and advance no cursor.
+
+Read-only reconciliation example:
+
+```bash
+python -m quantpits.tools.reconcile_post_trade_account \
+  --workspace workspaces/Demo_Workspace \
+  --broker gtja --snapshot-file data/example-asset.xlsx \
+  --account-date 2026-01-09 \
+  --snapshot-effective-date 2026-01-09 \
+  --snapshot-market-date 2026-01-09 --json
+```
+
+Without `--write-report`, the command writes only stdout. Incompatible dates or price bases return exit code 2, never a partial account NAV, and never mutate historical state. Public output excludes account number, customer name, branch, shareholder account, and raw notes.
+
 ### Database Descriptions
 
 | Target Element | Contents | Overwrite Protocol |
@@ -175,6 +195,7 @@ position or writing a fake zero benchmark.
 | `trade_classification.csv` | Quantitative signal vs Manual trade classification mappings | Regenerated via suggestions |
 | `holding_log_full.csv` | Inter-day positional footprint snapshots | Append + Deduplication |
 | `daily_amount_log_full.csv` | Aggregate account capitalization tracking | Append + Deduplication |
+| `valuation_evidence.jsonl` | Valuation provenance sidecar | Deterministic market-date replacement in the state transaction |
 | `trade_detail_*.csv` | Discrete slice of single day trade logs | Daily Full Overwrite |
 
 ### Broker Adapters Framework

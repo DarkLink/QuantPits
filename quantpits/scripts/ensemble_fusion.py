@@ -148,14 +148,25 @@ def inspect_ensemble_mlflow_preflight(
                 "artifact_uri": run.info.artifact_uri,
             }
 
+        def create_experiment(self, name, artifact_location):
+            return self.client.create_experiment(name, artifact_location=artifact_location)
+
     requests = [
         (train_records["models"][model], get_experiment_name_for_model(train_records, model))
         for model in selected_models
     ]
     read_names = [name for _, name in requests]
+    client = _Client()
+    from quantpits.runtime.mlflow_integrity import ensure_writable_experiment
+    ensure_writable_experiment(
+        target_experiment,
+        workspace_root=workspace_root,
+        client=client,
+        artifact_root=Path(workspace_root) / "output" / "mlflow_artifacts" / target_experiment,
+    )
     return inspect_mlflow_workspace(
         workspace_root=workspace_root,
-        client=_Client(),
+        client=client,
         experiment_names=read_names,
         recorder_requests=requests,
         write_experiments=(target_experiment,),

@@ -4,6 +4,8 @@
 
 核心入口脚本为：`quantpits/scripts/run_analysis.py`
 
+> Post-Trade 估值分析应优先检查 `valuation_evidence.jsonl` 的日期与价格口径。若对账报告的 `analytics_eligibility` 为 `review_required` 或 `blocked`，不得把不可比的券商展示价与历史 Qlib NAV 差异解释成策略收益、回撤或执行损失。
+
 ---
 
 ## 一、模块功能概览

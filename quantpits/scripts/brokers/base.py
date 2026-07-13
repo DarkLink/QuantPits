@@ -77,6 +77,9 @@ class BaseBrokerAdapter(ABC):
         frame = self.read_trades(str(file_path))
         return self.validate_stream(frame, "trade")
 
+    def parse_account_snapshot(self, file_path, **kwargs):
+        raise NotImplementedError("Broker does not support account snapshots")
+
     def validate_stream(self, df: pd.DataFrame, stream: str) -> pd.DataFrame:
         from quantpits.post_trade.contracts import BrokerSchemaError
         required = {"settlement": REQUIRED_COLUMNS, "order": ORDER_REQUIRED_COLUMNS, "trade": TRADE_REQUIRED_COLUMNS}[stream]

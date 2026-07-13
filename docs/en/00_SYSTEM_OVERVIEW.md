@@ -16,6 +16,7 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 1. Create a new workspace: Use `python quantpits/tools/init_workspace.py --source workspaces/A --target workspaces/B` for quick scaffolding.
 2. Activate a workspace: Enter the system directory and run `source workspaces/<Your_Workspace>/run_env.sh` to set `QLIB_WORKSPACE_DIR`.
 3. Validate configs before running: `python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspace --read-only` performs a read-only check of core workspace configs and reports normalized fingerprints plus warnings/errors.
+   Use `python -m quantpits.tools.audit_mlflow_workspace --workspace workspaces/Demo_Workspace` for a read-only lineage audit. A missing backend reports `tracking_backend_missing` without initializing a database. Only a safeguarded real ensemble execution may create one workspace-contained target experiment after Qlib initialization; plans and audits never create it.
 4. (Optional) Custom data source: Uncomment `QLIB_DATA_DIR` / `QLIB_REGION` in `run_env.sh` to point the workspace at a different Qlib data directory (defaults to `~/.qlib/qlib_data/cn_data` and `cn`).
 5. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace, and `env.init_qlib()` will initialize Qlib with the configured data path.
    > [!IMPORTANT]
@@ -26,6 +27,8 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 ---
 
 ## Core Design Philosophy
+
+Production account valuation and model-feature/backtest prices have separate purpose boundaries. Post-trade records explicit `account_valuation` provenance and keeps market date, observation time, and account effective date distinct. Broker asset snapshots are read-only reconciliation evidence and do not change settlement/order/trade authority.
 
 Every step in this system is **optional and combinable**. Only "Prediction" and "Order Generation" are mandatory routine steps, while others are triggered as needed:
 

@@ -24,6 +24,8 @@ class Client:
 def test_audit_cli_json_is_read_only_and_redacted(tmp_path, monkeypatch, capsys):
     root = tmp_path / "Demo_Workspace"
     root.mkdir()
+    (root / "mlruns" / "0").mkdir(parents=True)
+    (root / "mlruns" / "0" / "meta.yaml").write_text("name: Default\n", encoding="utf-8")
     monkeypatch.setattr(tool, "_MlflowClientAdapter", lambda: Client(root))
     monkeypatch.setattr("mlflow.set_tracking_uri", lambda uri: None)
     before = sorted(path.relative_to(root) for path in root.rglob("*"))
@@ -41,6 +43,8 @@ def test_audit_cli_json_is_read_only_and_redacted(tmp_path, monkeypatch, capsys)
 def test_audit_cli_all_runs_uses_expensive_scan_only_when_requested(tmp_path, monkeypatch, capsys):
     root = tmp_path / "Demo_Workspace"
     root.mkdir()
+    (root / "mlruns" / "0").mkdir(parents=True)
+    (root / "mlruns" / "0" / "meta.yaml").write_text("name: Default\n", encoding="utf-8")
     client = Client(root)
     monkeypatch.setattr(tool, "_MlflowClientAdapter", lambda: client)
     monkeypatch.setattr("mlflow.set_tracking_uri", lambda uri: None)
@@ -50,3 +54,14 @@ def test_audit_cli_all_runs_uses_expensive_scan_only_when_requested(tmp_path, mo
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert [item["recorder_id"] for item in payload["recorders"]] == ["all-run"]
+
+
+def test_missing_backend_audit_does_not_construct_client_or_create_files(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "Demo_Workspace"; root.mkdir()
+    monkeypatch.setattr("mlflow.set_tracking_uri", lambda uri: None)
+    monkeypatch.setattr(tool, "_MlflowClientAdapter", lambda: (_ for _ in ()).throw(AssertionError("client constructed")))
+    code = tool.run(tool.build_parser().parse_args(["--workspace", str(root), "--json"]))
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["issues"][0]["code"] == "tracking_backend_missing"
+    assert list(root.iterdir()) == []

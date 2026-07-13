@@ -18,3 +18,4 @@ def test_outputs_replace_same_date_and_include_cashflow_target(tmp_path):
     payloads = build_state_output_payloads(ctx, change, {"2026-01-02": pd.DataFrame()}, cashflow_config={"cashflows": {"2026-01-02": 0}})
     assert payloads.daily_log.decode("utf-8-sig").count("2026-01-02") == 1
     assert b'"processed"' in payloads.cashflow_config
+    assert b'"market_date":"2026-01-02"' in payloads.valuation_evidence

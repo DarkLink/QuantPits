@@ -4,6 +4,8 @@ This module exists to provide professional, multi-dimensional auditing perspecti
 
 The centralized entry access script operates as: `quantpits/scripts/run_analysis.py`
 
+> Post-trade valuation analysis should first inspect date and price-basis evidence in `valuation_evidence.jsonl`. If reconciliation reports `analytics_eligibility` as `review_required` or `blocked`, an incomparable broker display price versus historical Qlib NAV must not be interpreted as strategy return, drawdown, or execution loss.
+
 ---
 
 ## I. Overview of Module Architecture

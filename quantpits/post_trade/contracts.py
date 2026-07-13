@@ -151,6 +151,14 @@ class ValuationSchemaError(PostTradeStateError):
     pass
 
 
+class BrokerAccountSnapshotError(PostTradeInputError):
+    pass
+
+
+class AccountReconciliationError(PostTradeExecutionError):
+    pass
+
+
 class PostTradeStateConflictError(PostTradeStateError):
     pass
 

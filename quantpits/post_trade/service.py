@@ -89,6 +89,9 @@ class PostTradeService:
             from quantpits.post_trade.contracts import PostTradeStateConflictError
             raise PostTradeStateConflictError("Post-trade state inputs changed before commit")
         cashflow = build_cashflow_commit(prepared.config.cashflow_config, change_set.processed_dates)
+        if tuple(change_set.consumed_cashflow_dates) != tuple(cashflow.consumed_dates):
+            from quantpits.post_trade.contracts import PostTradeCashflowConflictError
+            raise PostTradeCashflowConflictError("Cashflow consumption metadata differs across state and commit layers")
         payloads = build_state_output_payloads(
             prepared.ctx, change_set, settlement,
             model=prepared.config.runtime_config.get("model", "GATs"),
@@ -119,6 +122,10 @@ class PostTradeService:
                 "valuation": (
                     tuple((instrument, str(close)) for instrument, close in transition.valuation.closes),
                     str(transition.valuation.benchmark),
+                    tuple(
+                        tuple(sorted(item.to_public_dict().items()))
+                        for item in transition.valuation.quote_evidence
+                    ),
                 ),
             }
             for transition in change_set.transitions

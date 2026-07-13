@@ -1,9 +1,35 @@
 from pathlib import Path
 
 from quantpits.runtime.mlflow_integrity import (
+    ensure_writable_experiment,
+    inspect_tracking_backend_presence,
     inspect_mlflow_workspace,
     resolve_mlflow_resource_uri,
 )
+
+
+def test_missing_backend_presence_is_pure(tmp_path):
+    root = tmp_path / "Demo_Workspace"; root.mkdir()
+    target = root / "mlflow.db"
+    result = inspect_tracking_backend_presence("sqlite:///%s" % target, workspace_root=root)
+    assert not result.metadata_ready
+    assert result.issue.code == "tracking_backend_missing"
+    assert not target.exists()
+
+
+def test_safe_target_experiment_bootstrap(tmp_path):
+    root = tmp_path / "Demo_Workspace"; root.mkdir()
+    client = Client(root)
+    def create(name, location):
+        client.experiments.append({"name": name, "experiment_id": "7", "artifact_location": location})
+    client.create_experiment = create
+    result = ensure_writable_experiment(
+        "Ensemble_Fusion", workspace_root=root, client=client,
+        artifact_root=root / "output" / "mlflow_artifacts" / "Ensemble_Fusion",
+    )
+    assert result.selected_id == "7"
+    assert result.artifact_location.contained
+    assert not (root / "mlruns").exists()
 
 
 class Client:
