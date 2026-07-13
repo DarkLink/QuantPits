@@ -324,7 +324,7 @@ def concatenate_rolling_predictions(state, model_names, rolling_exp_name,
 # ==========================================================================
 
 def save_rolling_records(combined_records, combined_exp_name, anchor_date,
-                         mode='rolling'):
+                         mode='rolling', verify_recorders=False, config_payload=None):
     """Save rolling training records to unified latest_train_records.json.
 
     Uses model@<mode> key format (e.g. model@rolling, model@cpcv_rolling).
@@ -358,7 +358,29 @@ def save_rolling_records(combined_records, combined_exp_name, anchor_date,
         "anchor_date": anchor_date,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "models": rolling_models,
+        "model_records": {},
     }
+
+    # The combined recorder is the authoritative rolling output.  Publish a
+    # ready V2 entry only when its persisted prediction can be inspected;
+    # legacy/mocked callers fall back to the compatibility adapter in merge.
+    if verify_recorders:
+        from qlib.workflow import R
+        from quantpits.training.records import build_model_record_entry
+        from quantpits.utils import env
+        from quantpits.utils.workspace import fingerprint_value
+        operation = "cpcv_rolling_combine" if mode == "cpcv_rolling" else "rolling_combine"
+        for key, recorder_id in rolling_models.items():
+            recorder = R.get_recorder(recorder_id=recorder_id, experiment_name=combined_exp_name)
+            records["model_records"][key] = build_model_record_entry(
+                key=key, operation=operation, experiment_name=combined_exp_name,
+                recorder=recorder, requested_anchor=anchor_date,
+                dataset_test_end=anchor_date,
+                workspace_root=env.ROOT_DIR,
+                config_fingerprint=fingerprint_value(
+                    config_payload or {"anchor_date": anchor_date, "mode": mode}
+                ),
+            ).to_dict()
 
     merge_train_records(records)
 

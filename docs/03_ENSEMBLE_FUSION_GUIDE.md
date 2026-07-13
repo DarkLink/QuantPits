@@ -275,6 +275,10 @@ Stage 8: 可视化 (可跳过)
 
 生产融合采用 fail-closed 语义：配置声明的每个模型必须能解析到唯一 recorder，`pred.pkl` 必须存在且实际预测结束日期必须等于训练记录的 `anchor_date`。声明成员、解析成员、成功加载成员和预测矩阵列必须完全一致；不会再以少数成功模型静默运行原 combo。需要研究一个明确子集时，请用 `--models` 如实声明该子集。
 
+当训练记录为 V2 时，融合优先读取 `model_records[model@mode]` 的 per-model experiment、
+recorder、operation、source lineage 和声明的预测结束日期，并再次与实际 MLflow recorder
+及 `pred.pkl` 核对。顶层 experiment/anchor 仅为兼容字段，不能修复或覆盖显式 V2 身份。
+
 `enabled` 缺省为 `true`。`--from-config-all` 默认跳过 `enabled: false` 的组合；研究运行 disabled combo 时必须显式加入 `--include-disabled-combos`。生产 default 必须是唯一的 enabled default。
 
 真实执行会分别检查 MLflow tracking backend、目标 experiment artifact location、每个源 recorder artifact URI，以及新建输出 recorder。所有本地资源必须位于当前 workspace 的 canonical path 内；重复的可写 experiment 名称会在创建输出前终止。`--explain-plan` 只展示静态声明，并将 MLflow containment 和模型 freshness 标为执行期验证，不会假装已经检查后台。

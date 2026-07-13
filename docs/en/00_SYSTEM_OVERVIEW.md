@@ -294,6 +294,10 @@ python -m quantpits.scripts.static_train --all-enabled
 | `static_train.py --full` | Full training of all enabled models | **Full Overwrite** of `latest_train_records.json` |
 | `static_train.py` | Selective training by name/algo/tags | **Incremental Merge** to `latest_train_records.json` |
 
+Training Record V2 stores authoritative experiment, recorder, operation, prediction coverage, and
+source lineage per `model@mode` under `model_records`. The legacy `models` map and top-level fields
+remain compatibility projections.
+
 - Models are uniformly managed in `config/model_registry.yaml`
 - Date parameters are controlled by `config/model_config.json`
 - Backtest strategy parameters (benchmark, frequency, capital) are controlled by `config/strategy_config.yaml` (preview)

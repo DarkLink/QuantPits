@@ -200,9 +200,11 @@ def run_full_train_cpcv(args):
         "cpcv_experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "models": {}
+        "models": {},
+        "model_records": {},
     }
     model_performances = {}
+    failed_models = []
 
     total = len(enabled_models)
     for idx, (model_name, model_info) in enumerate(enabled_models.items(), 1):
@@ -220,13 +222,19 @@ def run_full_train_cpcv(args):
         if result['success']:
             model_key = make_model_key(model_name, 'cpcv')
             current_records['models'][model_key] = result['record_id']
+            if result.get('record_entry'):
+                current_records['model_records'][model_key] = result['record_entry']
             if result['performance']:
                 model_performances[model_name] = result['performance']
         else:
+            failed_models.append(model_name)
             print(f"  FAILED: {model_name} — {result.get('error', 'Unknown')}")
 
-    # Overwrite records (auto-backup)
-    overwrite_train_records(current_records)
+    incomplete = failed_models or set(current_records['model_records']) != set(current_records['models'])
+    if incomplete:
+        print("  FAILED: full CPCV publication incomplete; current records preserved")
+    else:
+        overwrite_train_records(current_records)
 
     # Save performance
     perf_file = os.path.join(ROOT_DIR, "output",
@@ -347,7 +355,8 @@ def run_incremental_train_cpcv(args, targets):
         "cpcv_experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "models": {}
+        "models": {},
+        "model_records": {},
     }
     new_performances = {}
 
@@ -367,6 +376,8 @@ def run_incremental_train_cpcv(args, targets):
         if result['success']:
             model_key = make_model_key(model_name, 'cpcv')
             new_records['models'][model_key] = result['record_id']
+            if result.get('record_entry'):
+                new_records['model_records'][model_key] = result['record_entry']
             if result['performance']:
                 new_performances[model_name] = result['performance']
             run_state['completed'].append(model_name)
@@ -477,18 +488,19 @@ def run_predict_only_cpcv(args):
 
     freq = params.get('freq', 'week').upper()
     experiment_name = args.experiment_name or f"Prod_Predict_CPCV_{freq}"
-    source_experiment = source_records.get('cpcv_experiment_name') or source_records.get('experiment_name', '')
-
     new_records = {
         "experiment_name": experiment_name,
-        "cpcv_experiment_name": source_experiment,
+        "cpcv_experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "models": {}
+        "models": {},
+        "model_records": {},
     }
 
     total = len(cpcv_models)
     for idx, (model_key, record_id) in enumerate(cpcv_models.items(), 1):
+        from quantpits.utils.train_utils import get_experiment_name_for_model
+        source_experiment = get_experiment_name_for_model(source_records, model_key)
         model_name = parse_model_key(model_key)[0]
         print(f"\n{'─'*60}")
         print(f"  [{idx}/{total}] CPCV Predict: {model_name}")
@@ -508,6 +520,8 @@ def run_predict_only_cpcv(args):
 
         if result['success']:
             new_records['models'][model_key] = result['record_id']
+            if result.get('record_entry'):
+                new_records['model_records'][model_key] = result['record_entry']
         else:
             print(f"  FAILED: {model_name} — {result.get('error', 'Unknown')}")
 

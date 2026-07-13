@@ -367,7 +367,7 @@ def run_cold_start(args, targets, rolling_cfg):
     # Save records
     if combined_records:
         save_rolling_records(combined_records, combined_exp_name, anchor_date,
-                             mode=mode_suffix)
+                             mode=mode_suffix, verify_recorders=True, config_payload=params_base)
         if args.backtest:
             run_combined_backtest(
                 list(combined_records.keys()), combined_records,
@@ -495,7 +495,7 @@ def run_daily(args, targets, rolling_cfg):
 
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name, anchor_date,
-                                 mode=mode_suffix)
+                                 mode=mode_suffix, verify_recorders=True, config_payload=params_base)
             if args.backtest:
                 run_combined_backtest(
                     list(combined_records.keys()), combined_records,
@@ -528,7 +528,7 @@ def run_daily(args, targets, rolling_cfg):
             )
             if combined_records:
                 save_rolling_records(combined_records, combined_exp_name,
-                                     anchor_date, mode=mode_suffix)
+                                     anchor_date, mode=mode_suffix, verify_recorders=True, config_payload=params_base)
                 if args.backtest:
                     run_combined_backtest(model_names, combined_records,
                                           combined_exp_name, params_base)
@@ -628,7 +628,7 @@ def run_predict_only(args, targets, rolling_cfg):
         )
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name,
-                                 anchor_date, mode=mode_suffix)
+                                 anchor_date, mode=mode_suffix, verify_recorders=True, config_payload=params_base)
             if args.backtest:
                 run_combined_backtest(model_names, combined_records,
                                       combined_exp_name, params_base)

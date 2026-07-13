@@ -126,6 +126,11 @@ python quantpits/scripts/rolling_train.py --backtest-only \
 
 不同模式的 Key 共存于 `latest_train_records.json`。`--cold-start` 只清空当前模式的 state 文件，不影响其他模式的记录。
 
+V2 记录为 rolling 与 CPCV rolling 分别保留模型级输出 experiment/recorder 身份；
+`cpcv_rolling_experiment_name` 兼容字段在后续无关 merge 中也必须保留。
+真实 rolling 命令会验证 combined recorder、持久化预测覆盖和 artifact workspace containment；
+验证失败时不会降级发布未验证的 current pointer。
+
 ```bash
 # 下游使用
 python quantpits/scripts/brute_force_fast.py --training-mode rolling

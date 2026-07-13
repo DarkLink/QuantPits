@@ -128,6 +128,11 @@ python quantpits/scripts/rolling_train.py --backtest-only \
 
 Keys coexist in `latest_train_records.json`. `--cold-start` only clears the current method's state file.
 
+V2 keeps output experiment/recorder identity per rolling and CPCV-rolling model. The derived
+`cpcv_rolling_experiment_name` compatibility field is preserved across unrelated merges.
+Real rolling commands verify the combined recorder, persisted prediction coverage, and artifact
+workspace containment. Verification failure does not downgrade into an unverified current pointer.
+
 ```bash
 # Downstream
 python quantpits/scripts/brute_force_fast.py --training-mode rolling

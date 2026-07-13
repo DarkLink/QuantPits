@@ -13,6 +13,30 @@ The training system consists of three main scripts that share the same utility m
 
 Both scripts automatically back up the history to `data/history/` before modifying `latest_train_records.json`.
 
+### Training Record V2
+
+New records use `schema_version: 2`. `model_records` is the authoritative identity map: every
+`model@mode` entry carries its actual output experiment, recorder, operation, prediction coverage,
+and optional source-recorder lineage. Top-level `models`, `*_experiment_name`, and `anchor_date`
+remain compatibility projections and must not override per-model V2 identity.
+
+Legacy V1 files remain readable as `legacy_unverified`. Audit or preview them without mutation:
+
+```bash
+python -m quantpits.tools.audit_training_records \
+  --workspace workspaces/Demo_Workspace --json
+```
+
+Default JSON contains only counts and stable issue codes. Add `--preview` explicitly in a controlled
+terminal to include the in-memory migration proposal.
+Use `--verify-mlflow` to validate experiment/recorder identity and workspace containment;
+`--verify-predictions` additionally checks persisted `pred.pkl` coverage. The audit never initializes
+a missing backend. Full training publishes the current registry only when every selected model
+succeeds and produces a verified entry.
+
+A producer should publish `ready` only after validating the output recorder and persisted
+`pred.pkl`. Failed or skipped operations must not replace an existing current pointer.
+
 ---
 
 ## File Structure

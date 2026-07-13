@@ -87,7 +87,10 @@ def reconcile_account(account_state, valuation, broker_snapshot, *, cash_toleran
         elif broker and broker.corporate_action_status != "none": reason = "price_basis_unknown"
         elif name not in close_map or broker is None: reason = "missing_instrument"
         price_rows.append(_comparison("price:%s" % name, close_map.get(name), broker.display_price if broker else None, value_tolerance, reason))
-    comparable_prices = bool(price_rows) and all(item.status in {"matched", "mismatch"} for item in price_rows)
+    cash_only = not internal_positions and not broker_positions
+    comparable_prices = cash_only or (
+        bool(price_rows) and all(item.status in {"matched", "mismatch"} for item in price_rows)
+    )
     comparable_state = state_ok and cash.status in {"matched", "mismatch"} and all(item.status in {"matched", "mismatch"} for item in quantities)
     if comparable_state and comparable_prices:
         internal_nav = account_state.cash + sum((internal_positions[name].quantity * close_map[name] for name in internal_positions), Decimal("0"))
@@ -100,6 +103,6 @@ def reconcile_account(account_state, valuation, broker_snapshot, *, cash_toleran
     return AccountReconciliationReport(
         1, account_state.as_of_date, broker_snapshot.observed_at, broker_snapshot.effective_date,
         "comparable" if state_ok else "not_comparable",
-        "comparable" if comparable_prices else "not_comparable",
+        "not_applicable" if cash_only else ("comparable" if comparable_prices else "not_comparable"),
         cash, tuple(quantities), tuple(price_rows), nav, tuple(issues), eligibility,
     )

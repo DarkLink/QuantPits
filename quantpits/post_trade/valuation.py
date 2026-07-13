@@ -39,6 +39,16 @@ class MappingValuationProvider:
 
 
 class QlibValuationProvider:
+    @staticmethod
+    def _validated_derived_quote(raw, factor, derived, instrument, tolerance=Decimal("0.000001")):
+        if factor == 0:
+            raise ValuationSchemaError("Factor must be nonzero for %s" % instrument)
+        if abs((raw / factor) - derived) > tolerance:
+            raise ValuationSchemaError(
+                "Raw close/factor does not match derived close for %s" % instrument
+            )
+        return derived
+
     def snapshot(self, trade_date, instruments, benchmark):
         from qlib.data import D
         fields = ["$close", "$factor", "Div($close,$factor)"]
@@ -61,8 +71,7 @@ class QlibValuationProvider:
                 raw = decimal_value(group.iloc[0]["$close"], field="raw close")
                 factor = decimal_value(group.iloc[0]["$factor"], field="factor")
                 value = decimal_value(group.iloc[0][derived], field="close")
-                if factor == 0 or abs((raw / factor) - value) > Decimal("0.000001"):
-                    raise ValuationSchemaError("Raw close/factor does not match derived close for %s" % normalized)
+                self._validated_derived_quote(raw, factor, value, normalized)
                 closes[normalized] = value
                 evidence[normalized] = ValuationQuoteEvidence(
                     normalized, value, "account_valuation", trade_date, None, trade_date,
@@ -81,12 +90,13 @@ class QlibValuationProvider:
         benchmark_raw = decimal_value(benchmark_reset.iloc[0]["$close"], field="benchmark raw close")
         benchmark_factor = decimal_value(benchmark_reset.iloc[0]["$factor"], field="benchmark factor")
         benchmark_value = decimal_value(benchmark_reset.iloc[0][derived], field="benchmark")
-        if benchmark_factor == 0:
-            raise ValuationSchemaError("Benchmark factor must be nonzero")
+        self._validated_derived_quote(
+            benchmark_raw, benchmark_factor, benchmark_value, normalize_instrument(benchmark)
+        )
         benchmark_evidence = ValuationQuoteEvidence(
             normalize_instrument(benchmark), benchmark_value, "account_valuation", trade_date,
             None, trade_date, "qlib_local", derived,
-            "provider_derived_index_close", "provider_reported", benchmark_raw, benchmark_factor,
+            "unadjusted_close_from_close_div_factor", "formula_verified", benchmark_raw, benchmark_factor,
         )
         return ValuationSnapshot(
             trade_date, tuple(sorted(closes.items())), benchmark_value,

@@ -300,6 +300,8 @@ python -m quantpits.scripts.static_train --all-enabled
 - 日期参数由 `config/model_config.json` 控制
 - 回测策略参数（含基准、交易频率、资金量）由 `config/strategy_config.yaml` 控制
 - 训练记录修改前自动备份到 `data/history/`
+- Training Record V2 以 `model_records[model@mode]` 保存每个模型的权威 experiment、recorder、
+  operation、预测覆盖与 source lineage；旧 `models` 和顶层字段仅为兼容视图。
 - 增量训练支持 `--resume`（断点续训）和 `--dry-run`（预览）
 
 ### ⑨ 滚动训练模块

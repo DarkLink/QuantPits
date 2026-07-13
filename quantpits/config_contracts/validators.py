@@ -311,9 +311,21 @@ def validate_latest_train_records(data: Dict[str, Any], *, path: str = "latest_t
             if not isinstance(record_id, str) or not record_id:
                 messages.append(_msg("error", "invalid-train-record-id", path, "Train record ids must be non-empty strings."))
     _validate_date_field(messages, data, "anchor_date", path)
-    for field in ("experiment_name", "static_experiment_name", "rolling_experiment_name", "cpcv_experiment_name"):
+    for field in ("experiment_name", "static_experiment_name", "rolling_experiment_name", "cpcv_experiment_name", "cpcv_rolling_experiment_name"):
         if field in data and not isinstance(data[field], str):
             messages.append(_msg("error", "invalid-experiment-name", path, f"{field} must be a string."))
+    if data.get("schema_version") == 2:
+        model_records = data.get("model_records")
+        if not isinstance(model_records, dict):
+            messages.append(_msg("error", "missing-model-records-v2", path, "V2 records require model_records mapping."))
+        elif isinstance(models, dict) and set(model_records) != set(models):
+            messages.append(_msg("error", "model-record-key-mismatch", path, "models and model_records must contain identical keys."))
+        else:
+            try:
+                from quantpits.training.records import snapshot_from_dict
+                snapshot_from_dict(data)
+            except (TypeError, ValueError, KeyError):
+                messages.append(_msg("error", "invalid-model-record-v2", path, "V2 model_records failed contract validation."))
     return messages
 
 

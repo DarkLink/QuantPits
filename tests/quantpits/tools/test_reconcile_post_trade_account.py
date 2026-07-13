@@ -40,3 +40,13 @@ def test_snapshot_path_must_be_workspace_contained(tmp_path):
         pass
     else:
         raise AssertionError("external snapshot path was accepted")
+
+
+def test_reconciliation_dates_and_run_id_are_strict():
+    import pytest
+    with pytest.raises(ValueError):
+        tool._validated_date("2026-02-30", "account_date", required=True)
+    with pytest.raises(ValueError):
+        tool._validated_date("2026-1-02", "account_date", required=True)
+    with pytest.raises(ValueError):
+        tool._validated_run_id("../escape")

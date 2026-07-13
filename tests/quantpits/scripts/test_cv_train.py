@@ -482,7 +482,7 @@ class TestRunFullTrainCpcv:
 
         mock_init.assert_called_once()
         assert mock_train.call_count == 3
-        mock_overwrite.assert_called_once()
+        mock_overwrite.assert_not_called()
 
     @patch('quantpits.utils.env.init_qlib')
     @patch('quantpits.utils.train_utils.calculate_dates')
@@ -604,7 +604,7 @@ class TestRunFullTrainCpcv:
 
         ct.run_full_train_cpcv(args)
         assert mock_train.call_count == 3
-        mock_overwrite.assert_called_once()
+        mock_overwrite.assert_not_called()
 
     @patch('quantpits.utils.env.init_qlib')
     @patch('quantpits.utils.train_utils.calculate_dates')
@@ -736,9 +736,7 @@ class TestRunFullTrainCpcv:
         args.no_pretrain = False
 
         ct.run_full_train_cpcv(args)
-        mock_overwrite.assert_called_once()
-        records_arg = mock_overwrite.call_args[0][0]
-        assert records_arg['models'] == {}
+        mock_overwrite.assert_not_called()
 
     @patch('quantpits.utils.env.init_qlib')
     @patch('quantpits.utils.train_utils.calculate_dates')

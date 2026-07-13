@@ -180,10 +180,12 @@ def run_full_train(args):
         "static_experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "models": {}
+        "models": {},
+        "model_records": {},
     }
 
     model_performances = {}
+    failed_models = []
 
     total = len(enabled_models)
     for idx, (model_name, model_info) in enumerate(enabled_models.items(), 1):
@@ -200,16 +202,25 @@ def run_full_train(args):
         if result['success']:
             model_key = make_model_key(model_name, 'static')
             current_records['models'][model_key] = result['record_id']
+            if result.get('record_entry'):
+                current_records['model_records'][model_key] = result['record_entry']
             if result['performance']:
                 model_performances[model_name] = result['performance']
         else:
+            failed_models.append(model_name)
             print(f"❌ 模型 {model_name} 训练失败: {result.get('error', 'Unknown')}")
 
-    # 全量覆写记录（自动备份历史）
-    overwrite_train_records(current_records)
+    # Full publication is all-or-nothing. Preserve the previous registry if
+    # any selected model failed or lacked verified recorder evidence.
+    incomplete = failed_models or set(current_records['model_records']) != set(current_records['models'])
+    if incomplete:
+        print("❌ 全量训练未完整成功，保留现有训练记录，不发布部分结果")
+    else:
+        overwrite_train_records(current_records)
 
     # 保存模型成绩对比
     perf_file = f"output/model_performance_{params['anchor_date']}.json"
+    os.makedirs(os.path.dirname(perf_file), exist_ok=True)
     backup_file_with_date(perf_file, prefix=f"model_performance_{params['anchor_date']}")
     with open(perf_file, 'w') as f:
         json.dump(model_performances, f, indent=4)
@@ -320,7 +331,8 @@ def run_incremental_train(args, targets):
         "static_experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "models": {}
+        "models": {},
+        "model_records": {},
     }
     new_performances = {}
 
@@ -341,6 +353,8 @@ def run_incremental_train(args, targets):
         if result['success']:
             model_key = make_model_key(model_name, 'static')
             new_records['models'][model_key] = result['record_id']
+            if result.get('record_entry'):
+                new_records['model_records'][model_key] = result['record_entry']
             if result['performance']:
                 new_performances[model_name] = result['performance']
 
@@ -485,7 +499,8 @@ def run_predict_only(args, targets):
         "static_experiment_name": experiment_name,
         "anchor_date": params['anchor_date'],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "models": {}
+        "models": {},
+        "model_records": {},
     }
     new_performances = {}
     failed_models = {}
@@ -506,6 +521,8 @@ def run_predict_only(args, targets):
         if result['success']:
             model_key = make_model_key(model_name, 'static')
             new_records['models'][model_key] = result['record_id']
+            if result.get('record_entry'):
+                new_records['model_records'][model_key] = result['record_entry']
             if result['performance']:
                 new_performances[model_name] = result['performance']
         else:

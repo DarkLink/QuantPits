@@ -80,3 +80,47 @@ def test_every_state_artifact_recovers_after_replace_before_journal_update(tmp_p
     assert recovered.status == "state_committed"
     for _, _, path, payload in specs:
         assert path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("crash_role", (
+    "trade_detail", "trade_log", "holding_log", "daily_log",
+    "valuation_evidence", "cashflow_config", "prod_config_cursor",
+))
+@pytest.mark.parametrize("boundary", (
+    "before_target_write", "after_target_write_before_verification",
+    "after_verification_before_journal", "after_journal_before_next_target",
+))
+def test_every_state_artifact_recovers_from_every_commit_boundary(tmp_path, crash_role, boundary):
+    root = tmp_path / ("Demo_%s_%s" % (crash_role, boundary))
+    (root / "config").mkdir(parents=True); (root / "data").mkdir()
+    triggered = {"value": False}
+    def hook(event, artifact):
+        if not triggered["value"] and event == boundary and artifact.role == crash_role:
+            triggered["value"] = True
+            raise OSError("injected commit boundary")
+    manager = PostTradeTransactionManager(WorkspaceContext.from_root(root), event_hook=hook)
+    specs = (
+        (10, "trade_detail", root / "data/detail.csv", b"detail"),
+        (100, "trade_log", root / "data/trade.csv", b"trade"),
+        (200, "holding_log", root / "data/holding.csv", b"holding"),
+        (300, "daily_log", root / "data/daily.csv", b"daily"),
+        (350, "valuation_evidence", root / "data/valuation_evidence.jsonl", b"evidence"),
+        (400, "cashflow_config", root / "config/cashflow.json", b"cashflow"),
+        (500, "prod_config_cursor", root / "config/prod_config.json", b"cursor"),
+    )
+    journal = manager.prepare(
+        transaction_id="crash-run", run_id="crash-run", scope="state",
+        light_fingerprint="light", resolved_fingerprint="resolved",
+        cursor_before="2026-01-01", cursor_after="2026-01-02",
+        processed_dates=("2026-01-02",), consumed_cashflow_dates=(), payloads=specs,
+    )
+    with pytest.raises(OSError, match="commit boundary"):
+        manager.commit(journal)
+    assert triggered["value"]
+    recovered = PostTradeTransactionManager(WorkspaceContext.from_root(root)).recover("crash-run")
+    assert recovered.status == "state_committed"
+    for _, _, path, payload in specs:
+        assert path.read_bytes() == payload
+    # Recovery is idempotent and retains exact target bytes.
+    repeated = PostTradeTransactionManager(WorkspaceContext.from_root(root)).recover("crash-run")
+    assert repeated.status == "state_committed"

@@ -29,8 +29,10 @@ from quantpits.utils.constants import TRADING_DAYS_PER_YEAR, TRADING_WEEKS_PER_Y
 # ================= 路径常量 =================
 import gc
 import traceback
+import tempfile
 
 from quantpits.utils import env
+from quantpits.utils.workspace import fingerprint_value
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
@@ -61,6 +63,25 @@ PRETRAINED_DIR = os.path.join(ROOT_DIR, "data", "pretrained")
 KNOWN_TRAINING_MODES = ['static', 'rolling', 'cpcv', 'cpcv_rolling']
 DEFAULT_TRAINING_MODE = 'static'
 MODE_SEPARATOR = '@'
+
+
+def _atomic_json_write(path, value):
+    """Write JSON durably without exposing a partially written registry."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, staged = tempfile.mkstemp(prefix=".%s." % os.path.basename(path), dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=4, ensure_ascii=False)
+            handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
+        os.replace(staged, path)
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY); os.fsync(dir_fd); os.close(dir_fd)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
 
 
 # ================= Model Key Helpers =================
@@ -148,6 +169,13 @@ def get_experiment_name_for_model(records_dict, model_key):
     Returns:
         str: 该模型对应的 experiment_name
     """
+    # V2 identity is authoritative and must never be overridden by a stale
+    # top-level compatibility field.
+    model_records = records_dict.get("model_records", {})
+    if isinstance(model_records, dict) and model_key in model_records:
+        from quantpits.training.records import resolve_model_record
+        return resolve_model_record(records_dict, model_key).experiment_name
+
     _, mode = parse_model_key(model_key)
     
     # 优先尝试模式特定的 experiment_name
@@ -1501,6 +1529,16 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             result['success'] = True
             result['record_id'] = rid
             result['performance'] = performance
+            from quantpits.training.records import build_model_record_entry
+            result['record_entry'] = build_model_record_entry(
+                key=make_model_key(model_name, mode), operation="train",
+                experiment_name=experiment_name, recorder=recorder,
+                requested_anchor=params['anchor_date'],
+                dataset_test_end=params.get('test_end_time'),
+                fit_start=params.get('fit_start_time'), fit_end=params.get('fit_end_time'),
+                workspace_root=env.ROOT_DIR,
+                config_fingerprint=fingerprint_value(params),
+            ).to_dict()
     
     except Exception as e:
         result['error'] = str(e)
@@ -1848,6 +1886,15 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
             result['n_folds'] = len(folds)
             result['fold_scores'] = fold_scores
             result['performance'] = performance
+            from quantpits.training.records import build_model_record_entry
+            result['record_entry'] = build_model_record_entry(
+                key=make_model_key(model_name, mode), operation="train",
+                experiment_name=experiment_name, recorder=recorder,
+                requested_anchor=params['anchor_date'],
+                dataset_test_end=params.get('test_end_time'),
+                workspace_root=env.ROOT_DIR,
+                config_fingerprint=fingerprint_value(params),
+            ).to_dict()
 
             # Write aggregate CPCV convergence entry to training_history.jsonl
             fold_scores_clean = [s for s in fold_scores if s is not None]
@@ -2122,6 +2169,18 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
             result['success'] = True
             result['record_id'] = recorder.id
             result['performance'] = performance
+            from quantpits.training.records import build_model_record_entry
+            result['record_entry'] = build_model_record_entry(
+                key=make_model_key(model_name, 'cpcv'), operation="cpcv_predict",
+                experiment_name=experiment_name, recorder=recorder,
+                requested_anchor=params['anchor_date'],
+                dataset_test_end=params.get('test_end_time'),
+                source_recorder_id=model_info.get('record_id'),
+                source_experiment_name=source_experiment_name,
+                source_operation="train",
+                workspace_root=env.ROOT_DIR,
+                config_fingerprint=fingerprint_value(params),
+            ).to_dict()
 
             # Track CPCV predict-only event in prediction_history.jsonl
             pred_entry = {
@@ -2234,6 +2293,47 @@ def merge_train_records(new_records, record_file=None):
     """
     if record_file is None:
         record_file = RECORD_OUTPUT_FILE
+
+    new_models = new_records.get('models', {})
+    existing_preview = {}
+    if os.path.exists(record_file):
+        with open(record_file, 'r', encoding='utf-8') as handle:
+            existing_preview = json.load(handle)
+    existing_models = existing_preview.get('models', {})
+    canonical_publish = bool(new_models) and all(
+        MODE_SEPARATOR in key for key in tuple(existing_models) + tuple(new_models)
+    )
+    if canonical_publish:
+        from quantpits.training.record_repository import TrainingRecordRepository
+        from quantpits.training.records import ModelRecordEntry, ModelRecordOutcome
+        outcomes = []
+        incoming = new_records.get('model_records', {})
+        for model_key, recorder_id in new_models.items():
+            raw = incoming.get(model_key)
+            if raw is not None:
+                entry = ModelRecordEntry.from_dict(raw)
+            else:
+                model_name, mode = parse_model_key(model_key)
+                experiment = (
+                    new_records.get('%s_experiment_name' % mode)
+                    or new_records.get('experiment_name')
+                )
+                if not experiment:
+                    raise ValueError('missing experiment identity for %s' % model_key)
+                entry = ModelRecordEntry(
+                    model_key, model_name, mode,
+                    {'rolling': 'rolling_combine', 'cpcv_rolling': 'cpcv_rolling_combine'}.get(mode, 'legacy_import'),
+                    'legacy_unverified', str(recorder_id), str(experiment),
+                    requested_anchor=new_records.get('anchor_date') or None,
+                )
+            outcomes.append(ModelRecordOutcome(model_key, entry.operation, 'success', entry))
+        backup_file_with_date(record_file, prefix='train_records')
+        snapshot = TrainingRecordRepository(record_file).merge(outcomes)
+        merged = snapshot.to_dict()
+        print("\n📋 训练记录合并完成:")
+        print("  ✅ 发布 (%s): %s" % (len(outcomes), ', '.join(item.key for item in outcomes)))
+        print("  📁 文件: %s" % record_file)
+        return merged
     
     with file_lock(record_file):
         # 先备份现有文件
@@ -2259,21 +2359,71 @@ def merge_train_records(new_records, record_file=None):
                 added.append(model_name)
             merged_models[model_name] = rid
         
+        # Build/merge authoritative per-model records.  Legacy producers do
+        # not yet carry verified persisted evidence, so their entries are
+        # explicitly marked legacy_unverified rather than falsely ready.
+        from quantpits.training.records import ModelRecordEntry, snapshot_from_dict
+
+        existing_entries = {}
+        if existing:
+            try:
+                existing_entries = snapshot_from_dict(existing).entry_map
+            except ValueError:
+                # Preserve the legacy failure behavior for malformed records:
+                # do not publish a partially reconstructed V2 registry.
+                raise
+        incoming_records = new_records.get("model_records", {})
+        for model_key, rid in new_models.items():
+            if model_key in incoming_records:
+                entry = ModelRecordEntry.from_dict(incoming_records[model_key])
+            else:
+                canonical_key = make_model_key(model_key)
+                model_name, mode = parse_model_key(canonical_key)
+                experiment_name = (
+                    new_records.get("%s_experiment_name" % mode)
+                    or new_records.get("experiment_name")
+                    or get_experiment_name_for_model(existing, canonical_key)
+                )
+                if not experiment_name:
+                    raise ValueError("missing experiment identity for %s" % canonical_key)
+                operation = {
+                    "rolling": "rolling_combine",
+                    "cpcv_rolling": "cpcv_rolling_combine",
+                }.get(mode, "legacy_import")
+                entry = ModelRecordEntry(
+                    key=canonical_key,
+                    model_name=model_name,
+                    training_mode=mode,
+                    operation=operation,
+                    status="legacy_unverified",
+                    recorder_id=str(rid),
+                    experiment_name=str(experiment_name),
+                    requested_anchor=new_records.get("anchor_date") or None,
+                )
+            existing_entries[entry.key] = entry
+
         # 构建合并后的记录
         merged = {
             "experiment_name": new_records.get('experiment_name', existing.get('experiment_name', '')),
             "static_experiment_name": new_records.get('static_experiment_name', existing.get('static_experiment_name', '')),
             "rolling_experiment_name": new_records.get('rolling_experiment_name', existing.get('rolling_experiment_name', '')),
             "cpcv_experiment_name": new_records.get('cpcv_experiment_name', existing.get('cpcv_experiment_name', '')),
+            "cpcv_rolling_experiment_name": new_records.get('cpcv_rolling_experiment_name', existing.get('cpcv_rolling_experiment_name', '')),
             "anchor_date": new_records.get('anchor_date', existing.get('anchor_date', '')),
             "timestamp": new_records.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             "last_incremental_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "models": merged_models
+            "models": merged_models,
         }
+        # Bare-key legacy registries remain V1 until an explicit migration;
+        # canonical producer registries receive the V2 authoritative view.
+        if all(MODE_SEPARATOR in key for key in merged_models):
+            merged["schema_version"] = 2
+            merged["model_records"] = {
+                key: existing_entries[key].to_dict() for key in sorted(existing_entries)
+            }
         
         # 保存
-        with open(record_file, 'w') as f:
-            json.dump(merged, f, indent=4)
+        _atomic_json_write(record_file, merged)
         
         # 打印合并摘要
         preserved = [m for m in merged_models if m not in new_models]
@@ -2300,14 +2450,48 @@ def overwrite_train_records(records, record_file=None):
     """
     if record_file is None:
         record_file = RECORD_OUTPUT_FILE
+    models = records.get('models', {})
+    model_records = records.get('model_records', {})
+    if models and set(model_records) == set(models) and all(MODE_SEPARATOR in key for key in models):
+        from quantpits.training.record_repository import TrainingRecordRepository
+        from quantpits.training.records import ModelRecordEntry, ModelRecordOutcome
+        outcomes = []
+        for key in sorted(models):
+            entry = ModelRecordEntry.from_dict(model_records[key])
+            outcomes.append(ModelRecordOutcome(key, entry.operation, 'success', entry))
+        backup_file_with_date(record_file, prefix='train_records')
+        snapshot = TrainingRecordRepository(record_file).overwrite(outcomes)
+        print(f"📋 训练记录已全量覆写: {record_file}")
+        return snapshot.to_dict()
+    # Keep the legacy empty-file behavior for old callers/tests.  Typed V2
+    # publishers use TrainingRecordRepository.overwrite(), which rejects an
+    # incomplete or empty full run.
+    if not records.get("models"):
+        published = dict(records)
+    else:
+        from quantpits.training.records import snapshot_from_dict
+        source = dict(records)
+        if set(source.get("model_records", {})) == set(source.get("models", {})):
+            source["schema_version"] = 2
+        else:
+            # Compatibility path for mocked/legacy producers that have not
+            # supplied verified per-model evidence.
+            source.pop("model_records", None)
+            source.pop("schema_version", None)
+        snapshot = snapshot_from_dict(source)
+        published = snapshot.to_dict()
+        # Preserve harmless legacy metadata used by operational readers.
+        for field in ("timestamp", "last_incremental_update"):
+            if field in records:
+                published[field] = records[field]
+
     
     with file_lock(record_file):
         # 备份现有文件
         backup_file_with_date(record_file, prefix="train_records")
         
         # 全量覆写
-        with open(record_file, 'w') as f:
-            json.dump(records, f, indent=4)
+        _atomic_json_write(record_file, published)
         
         print(f"📋 训练记录已全量覆写: {record_file}")
 
@@ -2588,7 +2772,10 @@ def predict_single_model(model_name, model_info, params, experiment_name,
         return result
 
     source_record_id = source_models[resolved_key]
-    source_experiment = source_records.get('experiment_name', 'Weekly_Production_Train')
+    source_experiment = (
+        get_experiment_name_for_model(source_records, resolved_key)
+        or 'Weekly_Production_Train'
+    )
 
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
@@ -2692,10 +2879,22 @@ def predict_single_model(model_name, model_info, params, experiment_name,
             result['success'] = True
             result['record_id'] = rid
             result['performance'] = performance
-
-            # Track predict-only event in prediction_history.jsonl
             # Determine source mode from the resolved key (e.g. lstm@static → static)
             _, source_mode = parse_model_key(resolved_key)
+            from quantpits.training.records import build_model_record_entry
+            result['record_entry'] = build_model_record_entry(
+                key=make_model_key(model_name, source_mode), operation="predict_only",
+                experiment_name=experiment_name, recorder=recorder,
+                requested_anchor=params['anchor_date'],
+                dataset_test_end=params.get('test_end_time'),
+                source_recorder_id=source_record_id,
+                source_experiment_name=source_experiment,
+                source_operation="train",
+                workspace_root=env.ROOT_DIR,
+                config_fingerprint=fingerprint_value(params),
+            ).to_dict()
+
+            # Track predict-only event in prediction_history.jsonl
             pred_entry = {
                 "model_name": model_name,
                 "mode": source_mode,

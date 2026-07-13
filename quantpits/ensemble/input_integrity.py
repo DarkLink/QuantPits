@@ -11,7 +11,7 @@ import pandas as pd
 from quantpits.runtime.mlflow_integrity import resolve_mlflow_resource_uri
 from quantpits.ensemble.execution import EnsembleExecutionError
 from quantpits.utils.predict_utils import rank_norm, zscore_norm
-from quantpits.utils.train_utils import get_experiment_name_for_model
+from quantpits.training.records import resolve_model_record
 
 
 class EnsembleInputIntegrityError(EnsembleExecutionError):
@@ -46,6 +46,14 @@ class LoadedModelEvidence:
     status: str
     error_type: str | None = None
     error_message: str | None = None
+    record_schema: int = 1
+    operation: str | None = None
+    requested_anchor: str | None = None
+    declared_prediction_end: str | None = None
+    dataset_test_end: str | None = None
+    source_recorder_id: str | None = None
+    source_experiment_name: str | None = None
+    identity_status: str | None = None
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -112,15 +120,22 @@ def load_strict_prediction_bundle(
             recorder_id=recorder_id, experiment_name=experiment_name
         )
 
-    models = train_records.get("models", {})
     frames: list[pd.DataFrame] = []
     metrics: dict[str, float] = {}
     evidence: list[LoadedModelEvidence] = []
     expected = pd.Timestamp(expected_anchor).normalize()
 
     for model_key in selected_models:
-        record_id = str(models.get(model_key, ""))
-        experiment_name = get_experiment_name_for_model(train_records, model_key)
+        try:
+            resolved = resolve_model_record(train_records, model_key)
+            record_id = resolved.recorder_id
+            experiment_name = resolved.experiment_name
+            entry = resolved.entry
+        except Exception:
+            resolved = None
+            entry = None
+            record_id = ""
+            experiment_name = ""
         base = dict(
             declared_name=model_key,
             resolved_key=model_key,
@@ -131,6 +146,14 @@ def load_strict_prediction_bundle(
             prediction_start=None,
             prediction_end=None,
             prediction_rows=0,
+            record_schema=resolved.record_schema if resolved else int(train_records.get("schema_version", 1)),
+            operation=entry.operation if entry else None,
+            requested_anchor=entry.requested_anchor if entry else None,
+            declared_prediction_end=entry.prediction_end if entry else None,
+            dataset_test_end=entry.dataset_test_end if entry else None,
+            source_recorder_id=entry.source_recorder_id if entry else None,
+            source_experiment_name=entry.source_experiment_name if entry else None,
+            identity_status=entry.status if entry else None,
         )
         try:
             if not record_id:
@@ -160,6 +183,8 @@ def load_strict_prediction_bundle(
             if end != expected:
                 evidence.append(LoadedModelEvidence(**base, status="stale"))
                 continue
+            if entry and entry.prediction_end and end.strftime("%Y-%m-%d") != entry.prediction_end:
+                raise ValueError("declared prediction end differs from persisted pred.pkl")
             raw_metrics = recorder.list_metrics()
             metrics[model_key] = next(
                 (float(value) for key, value in raw_metrics.items() if "ICIR" in key), 0.0

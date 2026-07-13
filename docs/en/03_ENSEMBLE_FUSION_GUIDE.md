@@ -246,6 +246,11 @@ Actual execution also updates workspace state files: `config/ensemble_records.js
 
 Production fusion is fail-closed. Every declared model must resolve to one exact recorder, `pred.pkl` must exist, and its actual prediction end date must equal the training record `anchor_date`. Declared, resolved, loaded, and prediction-frame members must match exactly; a combo is never silently executed with the subset that happened to load. Use `--models` to honestly name an intentional research subset.
 
+For Training Record V2, fusion resolves each member from `model_records[model@mode]` and carries
+its experiment, recorder, operation, source lineage, and declared prediction end into evidence. It
+still verifies the actual MLflow recorder and persisted `pred.pkl`; top-level compatibility fields
+never override explicit V2 identity.
+
 `enabled` defaults to `true`. `--from-config-all` skips `enabled: false` combos. Running a disabled combo requires the explicit `--include-disabled-combos` research opt-in. The production default must be the single enabled default.
 
 Real execution separately checks the MLflow tracking backend, writable experiment artifact location, every source recorder artifact URI, and the new output recorder. Local resources must be contained by the canonical active workspace path. Duplicate writable experiment names stop execution before output creation. `--explain-plan` remains lightweight: it shows static declarations and marks MLflow containment and freshness as deferred execution checks.

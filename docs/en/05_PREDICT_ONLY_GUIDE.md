@@ -47,6 +47,11 @@ python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
 > [!IMPORTANT]
 > Post-execution, the corresponding entries targeting active models within `latest_train_records.json` overwrite their respective `experiment_name` and `record_id` parameters mapped out to this explicit new execution trace. Downstream nodes parsing this dictionary seamlessly consume the updated hashes.
 
+Training Record V2 separates the prediction output recorder from its immediate source recorder.
+In particular, a CPCV predict-only entry points to the actual `Prod_Predict_CPCV_*` output
+experiment rather than retaining the source training experiment. Top-level fields are compatibility
+views only.
+
 ---
 
 ## Comprehensive Parameter Overrides

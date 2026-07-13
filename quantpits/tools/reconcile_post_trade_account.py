@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -38,6 +40,27 @@ def _contained(ctx, value):
     try: path.relative_to(ctx.root)
     except ValueError as exc: raise ValueError("Snapshot file must be inside workspace") from exc
     return path
+
+
+def _validated_date(value, field, required=False):
+    if value in (None, ""):
+        if required:
+            raise ValueError("%s is required" % field)
+        return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)):
+        raise ValueError("%s must be YYYY-MM-DD" % field)
+    try:
+        datetime.strptime(str(value), "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("%s must be a valid calendar date" % field) from exc
+    return str(value)
+
+
+def _validated_run_id(value):
+    value = value or "manual"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value) or ".." in value:
+        raise ValueError("Invalid run id")
+    return value
 
 
 def _load_state(ctx, account_date):
@@ -76,14 +99,17 @@ def _load_valuation(ctx, account_date):
 
 def run(args):
     ctx = WorkspaceContext.from_root(args.workspace)
+    account_date = _validated_date(args.account_date, "account_date", required=True)
+    effective_date = _validated_date(args.snapshot_effective_date, "snapshot_effective_date")
+    market_date = _validated_date(args.snapshot_market_date, "snapshot_market_date")
     snapshot_path = _contained(ctx, args.snapshot_file)
     if not snapshot_path.is_file(): raise FileNotFoundError("Snapshot file does not exist")
     snapshot = GtjaAdapter().parse_account_snapshot(
-        snapshot_path, effective_date=args.snapshot_effective_date,
-        market_date=args.snapshot_market_date,
+        snapshot_path, effective_date=effective_date,
+        market_date=market_date,
     )
     report = reconcile_account(
-        _load_state(ctx, args.account_date), _load_valuation(ctx, args.account_date), snapshot,
+        _load_state(ctx, account_date), _load_valuation(ctx, account_date), snapshot,
         cash_tolerance=Decimal(args.cash_tolerance), value_tolerance=Decimal(args.value_tolerance),
     )
     payload = report.to_public_dict()
@@ -96,9 +122,10 @@ def run(args):
         print("Analytics eligibility: %s" % report.analytics_eligibility)
     if args.write_report:
         from quantpits.post_trade.ingestion import _atomic_bytes
-        run_id = args.run_id or "manual"
-        if any(value in run_id for value in ("/", "..")): raise ValueError("Invalid run id")
-        output = ctx.output_path("reconciliation", "post_trade_account_%s_%s.json" % (args.account_date, run_id))
+        run_id = _validated_run_id(args.run_id)
+        output = ctx.output_path("reconciliation", "post_trade_account_%s_%s.json" % (account_date, run_id)).resolve()
+        try: output.relative_to(ctx.output_dir.resolve())
+        except ValueError as exc: raise ValueError("Report path escaped workspace output") from exc
         _atomic_bytes(output, (rendered + "\n").encode("utf-8"))
     return 0 if report.analytics_eligibility == "eligible" else 2
 

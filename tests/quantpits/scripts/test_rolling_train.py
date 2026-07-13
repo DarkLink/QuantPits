@@ -751,6 +751,7 @@ class TestMainFlows:
              mock.patch.object(rt, 'RollingState') as mock_state_cls, \
              mock.patch.object(rt, 'predict_with_latest_model') as mock_predict, \
              mock.patch.object(rt, 'concatenate_rolling_predictions') as mock_concat, \
+             mock.patch.object(rt, 'save_rolling_records'), \
              mock.patch.object(rt, 'generate_rolling_windows') as mock_gen:
             
             mock_base.return_value = {'anchor_date': '2024-02-01', 'freq': 'week'}
@@ -1487,6 +1488,7 @@ class TestMoreMainFlows:
              mock.patch('rolling_train.get_base_params') as mock_base, \
              mock.patch('rolling_train.train_window_model', return_value={'success': True, 'record_id': 'r1'}), \
              mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m1': 'cr1'}), \
+             mock.patch('rolling_train.save_rolling_records'), \
              mock.patch('rolling_train.RollingState') as mock_state_cls:
             
             mock_base.return_value = {'anchor_date': '2024-02-01', 'freq': 'week'}
@@ -1509,6 +1511,7 @@ class TestMoreMainFlows:
              mock.patch('rolling_train.get_base_params') as mock_base, \
              mock.patch('rolling_train.train_window_model', return_value={'success': True, 'record_id': 'r1'}), \
              mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m2': 'cr2'}), \
+             mock.patch('rolling_train.save_rolling_records'), \
              mock.patch('rolling_train.RollingState') as mock_state_cls:
             
             mock_base.return_value = {'anchor_date': '2024-02-01', 'freq': 'week'}
@@ -1633,6 +1636,7 @@ class TestMoreMainFlows:
              mock.patch('rolling_train.train_window_model', return_value={'success': False, 'error': 'Unknown'}), \
              mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m1': 'cr1'}), \
              mock.patch('rolling_train.run_combined_backtest') as mock_bt, \
+             mock.patch('rolling_train.save_rolling_records'), \
              mock.patch('rolling_train.RollingState') as mock_state_cls:
             
             mock_base.return_value = {'anchor_date': '2024-02-01', 'freq': 'week'}
@@ -1653,7 +1657,8 @@ class TestMoreMainFlows:
              mock.patch('rolling_train.get_base_params') as mock_base, \
              mock.patch('rolling_train.RollingState') as mock_state_cls, \
              mock.patch('rolling_train.train_window_model', return_value={'success': False, 'error': 'Disk OOM'}), \
-             mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m1': 'cr1'}):
+             mock.patch('rolling_train.concatenate_rolling_predictions', return_value={'m1': 'cr1'}), \
+             mock.patch('rolling_train.save_rolling_records'):
             
             mock_base.return_value = {'anchor_date': '2024-06-01', 'freq': 'week'}
             mock_state = mock_state_cls.return_value
@@ -1795,6 +1800,5 @@ class TestParseArgsExtra:
             assert args.no_pretrain is True
             assert args.show_state is True
             assert args.clear_state is True
-
 
 

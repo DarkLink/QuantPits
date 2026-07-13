@@ -225,7 +225,7 @@ python -m quantpits.scripts.run_deep_analysis --stage custom_liquidity_check --s
 
 | 数据源 | 提供内容 |
 |--------|----------|
-| `latest_train_records.json` | 模型→模式映射 (`lstm_Alpha158@static`)，anchor_date，experiment_name |
+| `latest_train_records.json` | 模型→模式映射；V2 的 `model_records` 提供 per-model experiment、operation、prediction coverage 与 source lineage |
 | `training_history.jsonl` | 静态/CV 训练的最近训练日期、模式、收敛状态（Phase 2b） |
 | `prediction_history.jsonl` | 静态/CV 训练的最近仅预测事件（Phase 2b） |
 | `data/rolling_training_history.jsonl` | 滚动训练事件（slide + CPCV），与静态文件分离（Phase 2c） |
@@ -521,3 +521,7 @@ python -m quantpits.scripts.run_feedback_loop \
 ```
 
 `models` 键使用 `模型名@训练模式` 复合键。`TrainingModeContext` 解析 `@` 分隔符以构建 `models_by_name` 映射，支持跨模式查询。
+
+Training Record V2 中 `model_records` 是当前模型身份的权威来源；顶层 anchor/experiment 仅为
+兼容视图。Deep Analysis 若需要判断 freshness 或来源，应使用模型级字段，并继续以实际
+recorder/历史证据校验，不能用全局 anchor 推断所有模型都已更新。

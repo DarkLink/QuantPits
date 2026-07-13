@@ -174,11 +174,19 @@ class TestRunFullTrain:
                                mock_train, mock_dates, mock_init, mock_env):
         st, _ = mock_env
         mock_dates.return_value = {"freq": "week", "anchor_date": "2026-03-01"}
-        mock_train.return_value = {
-            "success": True,
-            "record_id": "rid1",
-            "performance": {"IC_Mean": 0.1, "ICIR": 0.5}
-        }
+        def verified(model_name, *args, **kwargs):
+            key = model_name + "@static"
+            return {
+                "success": True, "record_id": "rid-" + model_name,
+                "performance": {"IC_Mean": 0.1, "ICIR": 0.5},
+                "record_entry": {
+                    "key": key, "model_name": model_name, "training_mode": "static",
+                    "operation": "train", "status": "ready",
+                    "recorder_id": "rid-" + model_name, "experiment_name": "Prod_Train_WEEK",
+                    "requested_anchor": "2026-03-01", "prediction_end": "2026-03-01",
+                },
+            }
+        mock_train.side_effect = verified
 
         args = MagicMock()
         args.cache_size = 0
@@ -235,7 +243,7 @@ class TestRunFullTrain:
         st.run_full_train(args)
 
         assert mock_train.call_count == 2
-        mock_overwrite.assert_called_once()
+        mock_overwrite.assert_not_called()
 
 
 # ===================================================================

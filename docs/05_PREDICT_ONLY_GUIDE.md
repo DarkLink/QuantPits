@@ -47,6 +47,10 @@ python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
 > [!IMPORTANT]
 > 预测结束后，`latest_train_records.json` 中相关模型的 `experiment_name` 和 `record_id` 会更新为新值。下游的穷举/融合脚本直接读取此文件即可，无需任何修改。
 
+Training Record V2 会分别保存预测输出 recorder 与其直接 source recorder 的 experiment/
+recorder 身份。尤其 CPCV predict-only 的当前 experiment 是实际输出所在的
+`Prod_Predict_CPCV_*`，不能继续沿用源训练 experiment。旧顶层字段仅为兼容视图。
+
 ---
 
 ## 完整参数

@@ -13,6 +13,29 @@
 
 两个脚本都会在修改 `latest_train_records.json` 之前自动备份历史到 `data/history/`。
 
+### Training Record V2
+
+新写入的训练记录使用 `schema_version: 2`。`model_records` 是权威身份表，每个
+`model@mode` 分别记录实际输出 experiment、recorder、operation、预测覆盖日期及可选的
+source recorder 谱系；顶层 `models`、`*_experiment_name` 和 `anchor_date` 仅作为旧消费者的
+兼容视图。读取 V2 时不得用顶层字段覆盖模型级身份。
+
+旧 V1 文件仍可只读加载，并标记为 `legacy_unverified`。可使用以下命令进行只读审计和
+V2 迁移预览；命令不会改写记录或初始化缺失的 MLflow backend：
+
+```bash
+python -m quantpits.tools.audit_training_records \
+  --workspace workspaces/Demo_Workspace --json
+```
+
+默认 JSON 只输出计数与稳定问题码；只有在受控终端显式添加 `--preview` 才会包含内存迁移草案。
+可选的 `--verify-mlflow` 会验证 experiment/recorder 与 workspace containment；
+`--verify-predictions` 还会读取实际 `pred.pkl` 并核对模型级 prediction end。缺失 backend
+不会被审计命令初始化。全量训练只有在所有目标都成功并生成 verified entry 时才更新 current registry。
+
+生产者只有在输出 recorder 与持久化 `pred.pkl` 验证完成后才应发布 `ready` 条目。失败或
+跳过的模型不得替换已有 current pointer。
+
 ---
 
 ## 文件结构

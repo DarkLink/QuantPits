@@ -235,7 +235,7 @@ As of Phase 2b, the Deep Analysis system has full training mode awareness. `Trai
 
 | Source | Provides |
 |--------|----------|
-| `latest_train_records.json` | Model→mode mapping (`lstm_Alpha158@static`), anchor_date, experiment_name |
+| `latest_train_records.json` | Model→mode mapping; V2 `model_records` adds per-model experiment, operation, prediction coverage, and source lineage |
 | `training_history.jsonl` | Per-model last train date, mode, convergence status (Phase 2b) |
 | `prediction_history.jsonl` | Per-model last predict-only event (Phase 2b) |
 | `data/rolling_training_history.jsonl` | Rolling training events (slide + CPCV), separate from static (Phase 2c) |
@@ -534,3 +534,8 @@ Workspace root file recording the latest training/prediction cycle's model regis
 ```
 
 `models` keys use the `modelname@trainingmode` compound key convention. `TrainingModeContext` parses the `@` separator to build the `models_by_name` mapping for cross-mode queries.
+
+In Training Record V2, `model_records` is authoritative for current model identity; top-level
+anchor and experiment fields are compatibility views. Freshness or lineage analysis should consume
+the per-model fields and still verify actual recorder/history evidence rather than assuming one
+global anchor applies to every model.

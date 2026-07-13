@@ -185,9 +185,10 @@ def _atomic(path: Path, payload: bytes):
 
 
 class PostTradeTransactionManager:
-    def __init__(self, ctx: WorkspaceContext):
+    def __init__(self, ctx: WorkspaceContext, event_hook=None):
         self.ctx = ctx
         self.root = ctx.data_path(".post_trade_transactions")
+        self._event_hook = event_hook or (lambda event, artifact: None)
 
     def journal_path(self, transaction_id: str) -> Path:
         if not transaction_id or "/" in transaction_id or ".." in transaction_id:
@@ -275,9 +276,12 @@ class PostTradeTransactionManager:
             elif current == artifact.baseline_sha256:
                 if sha256_file(staged) != artifact.target_sha256:
                     raise PostTradeTransactionCorruptError("Staged payload is corrupt: %s" % artifact.role)
+                self._event_hook("before_target_write", artifact)
                 _atomic(target, staged.read_bytes())
+                self._event_hook("after_target_write_before_verification", artifact)
                 if sha256_file(target) != artifact.target_sha256:
                     raise PostTradeTransactionCorruptError("Target verification failed: %s" % artifact.role)
+                self._event_hook("after_verification_before_journal", artifact)
             else:
                 conflicted = replace(journal, status="conflicted", error="third_version:%s" % artifact.role, updated_at=datetime.now().isoformat())
                 self.write_journal(conflicted)
@@ -286,6 +290,7 @@ class PostTradeTransactionManager:
                 committed.append(artifact.path)
                 journal = replace(journal, committed_artifacts=tuple(committed), updated_at=datetime.now().isoformat())
                 self.write_journal(journal)
+            self._event_hook("after_journal_before_next_target", artifact)
         journal = replace(journal, status="state_committed", updated_at=datetime.now().isoformat())
         self.write_journal(journal)
         for artifact in journal.artifacts:
