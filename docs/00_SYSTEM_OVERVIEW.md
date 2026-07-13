@@ -624,6 +624,11 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 
 `order_gen.py` 同样支持 `--explain-plan` / `--json-plan`：这两个模式只读取并校验 workspace 配置，不初始化 Qlib、不加载预测或价格、不写文件。`--dry-run` 是重计算预览，但连 OperatorLog 也不写。真实执行使用 prepared recorder/config snapshot，按实际非空结果原子写入订单与意见文件，默认写 `output/manifests/order_gen/<run_id>.json` 并关联 OperatorLog；`--no-manifest` 只关闭 manifest。Order 命令导入时不修改 cwd，manifest/public summary 不包含完整预测、持仓、订单行或 raw config。
 
+`static_train.py` 与 `cv_train.py` 也采用共用的 plan-first command/service boundary。
+`--explain-plan` / `--json-plan` 在 safeguard 和 Qlib/MLflow 初始化前返回，不写文件且不改变 cwd；
+真实执行默认写对应 training manifest 并关联 OperatorLog。Training Record V2 使用严格 schema
+分派，ensemble 会再次核对 recorder 的 workspace/experiment/artifact 和实际预测覆盖。
+
 `ensemble_fusion` 还提供独立的 typed command boundary：`quantpits/ensemble/command.py` 负责参数合同和 prepare/explain/execute 路由，`quantpits/ensemble/service.py` 负责执行生命周期，脚本层只负责 process exit semantics。Engine 层不会调用 `sys.exit()`，因此 notebook、scheduler、测试或其他 Python 流程可以复用 command runner，并自行处理结构化 outcome 与 typed domain error。
 
 `OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint`、`transaction_id` 字段。`ensemble_fusion.py`、`order_gen.py` 和 post-trade 已将相关字段与运行清单关联；未使用 transaction 的命令保持 `null`。

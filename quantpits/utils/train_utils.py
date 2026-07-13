@@ -2322,7 +2322,12 @@ def merge_train_records(new_records, record_file=None):
                     raise ValueError('missing experiment identity for %s' % model_key)
                 entry = ModelRecordEntry(
                     model_key, model_name, mode,
-                    {'rolling': 'rolling_combine', 'cpcv_rolling': 'cpcv_rolling_combine'}.get(mode, 'legacy_import'),
+                    # This compatibility path has only the legacy recorder ID
+                    # and experiment name; it has not inspected persisted
+                    # prediction evidence.  Do not claim the stronger rolling
+                    # combine operation here.  Real rolling publication passes
+                    # model_records built from verified recorders above.
+                    'legacy_import',
                     'legacy_unverified', str(recorder_id), str(experiment),
                     requested_anchor=new_records.get('anchor_date') or None,
                 )

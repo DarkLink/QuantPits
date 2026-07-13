@@ -187,17 +187,18 @@ def init_qlib():
     _qlib_initialized = True
 
 
-def safeguard(script_name="Pipeline"):
+def safeguard(script_name="Pipeline", workspace_root: str | Path | None = None):
     """
     Safety lock to prevent accidental execution in the wrong workspace.
     Prints the active workspace and pauses for 3 seconds.
     """
-    workspace_name = os.path.basename(ROOT_DIR)
+    displayed_root = str(resolve_workspace_root(workspace_root))
+    workspace_name = os.path.basename(displayed_root)
     print("=" * 60)
     print(f"🚦  SAFEGUARD ACTIVATED  🚦")
     print(f"[{script_name}] is about to run.")
     print(f"Active Workspace: \033[1;31;40m{workspace_name}\033[0m")
-    print(f"Workspace Path  : {ROOT_DIR}")
+    print(f"Workspace Path  : {displayed_root}")
     print(f"Qlib Data Dir   : {QLIB_DATA_DIR}")
     print(f"Qlib Region     : {QLIB_REGION}")
     print("=" * 60)

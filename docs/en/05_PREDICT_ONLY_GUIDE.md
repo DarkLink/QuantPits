@@ -26,6 +26,9 @@ python quantpits/scripts/static_train.py --predict-only --tag tree
 
 # Run sequence preview inspection tracing mapping behavior
 python quantpits/scripts/static_train.py --predict-only --all-enabled --dry-run
+
+# Structured lightweight plan (one JSON document on stdout)
+python -m quantpits.scripts.static_train --predict-only --all-enabled --json-plan
 ```
 
 ---
@@ -66,7 +69,12 @@ views only.
 | `--all-enabled` | - | Instructs execution across all architectures denoting active booleans |
 | `--skip` | None | Negates explicitly queried model components internally |
 | `--source-records` | `latest_train_records.json` | The active persistence reference |
-| `--dry-run` | - | Outputs intended mapping without structural state alteration |
+| `--dry-run` | - | Compatibility alias for a lightweight no-write plan |
+| `--explain-plan` | - | Human-readable lightweight plan |
+| `--json-plan` | - | One JSON plan document |
+| `--workspace` | Active workspace | Explicit workspace root |
+| `--run-id` | Generated | Align plan, manifest, and OperatorLog identity |
+| `--no-manifest` | false | Disable the manifest for real execution |
 | `--experiment-name` | `Prod_Predict` | Native MLflow tag container name overrides (will include frequency suffix) |
 | `--list` | - | Render active model registry lists sequentially |
 

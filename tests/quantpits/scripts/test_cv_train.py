@@ -83,6 +83,16 @@ def mock_env(monkeypatch, tmp_path):
     (workspace / "config" / "lightgbm_Alpha158.yaml").write_text("model: {class: LightGBM}\n")
     (workspace / "config" / "xgb_Alpha158.yaml").write_text("model: {class: XGB}\n")
     (workspace / "config" / "lstm_Alpha360.yaml").write_text("model: {class: LSTM}\n")
+    (workspace / "latest_train_records.json").write_text(json.dumps({
+        "experiment_name": "Source",
+        "anchor_date": "2026-03-01",
+        "models": {
+            "gru_Alpha158@cpcv": "r1",
+            "lightgbm_Alpha158@cpcv": "r2",
+            "lstm_Alpha360@cpcv": "r3",
+            "xgb_Alpha158@cpcv": "r4",
+        },
+    }))
 
     # Add scripts to path so bare imports in script modules work
     scripts_dir = os.path.join(os.getcwd(), "quantpits", "scripts")
@@ -1563,15 +1573,12 @@ class TestMain:
                     mock_run.assert_called_once()
 
     def test_main_incremental_no_targets(self, mock_env):
-        """Line 517-518: incremental mode with no target selection -> sys.exit(1)."""
+        """Incremental mode without a selector returns the stable usage code."""
         ct, _ = mock_env
         with patch.object(sys, 'argv', ['script.py']):
             with patch('quantpits.utils.train_utils.resolve_target_models',
                        return_value=None):
-                with patch('sys.exit', side_effect=SystemExit(1)) as mock_exit:
-                    with pytest.raises(SystemExit):
-                        ct.main()
-                    mock_exit.assert_called_once_with(1)
+                assert ct.main() == 1
 
     def test_main_all_skipped(self, mock_env):
         """Lines 517-518: --skip removes all selected models -> sys.exit(1)."""
@@ -1580,10 +1587,7 @@ class TestMain:
                                         '--skip', 'gru_Alpha158']):
             with patch('quantpits.utils.train_utils.resolve_target_models',
                        return_value={"gru_Alpha158": {}}):
-                with patch('sys.exit', side_effect=SystemExit(1)) as mock_exit:
-                    with pytest.raises(SystemExit):
-                        ct.main()
-                    mock_exit.assert_called_once_with(1)
+                assert ct.main() == 1
 
     def test_main_predict_only_precedence_over_full(self, mock_env):
         """--predict-only checked before --full."""
@@ -1634,15 +1638,12 @@ class TestEdgeCases:
 
     @patch('quantpits.utils.train_utils.print_model_table')
     def test_main_empty_sys_argv_exits(self, mock_table, mock_env):
-        """main() with no model selection flags -> sys.exit(1)."""
+        """main() with no model selection flags returns the usage code."""
         ct, _ = mock_env
         with patch.object(sys, 'argv', ['script.py']):
             with patch('quantpits.utils.train_utils.resolve_target_models',
                        return_value=None):
-                with patch('sys.exit', side_effect=SystemExit(1)) as mock_exit:
-                    with pytest.raises(SystemExit):
-                        ct.main()
-                    mock_exit.assert_called_once_with(1)
+                assert ct.main() == 1
 
     @patch('quantpits.utils.train_utils.print_model_table')
     def test_main_list_with_filters_present(self, mock_table, mock_env):

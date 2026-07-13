@@ -443,6 +443,8 @@ class TestSaveRollingRecords:
         data = json.loads(records_file.read_text())
         assert "models" in data
         assert "model_a@rolling" in data["models"]
+        assert data["model_records"]["model_a@rolling"]["operation"] == "legacy_import"
+        assert data["model_records"]["model_a@rolling"]["status"] == "legacy_unverified"
 
     def test_cpcv_mode_key_format(self, monkeypatch, tmp_path):
         from quantpits.scripts.rolling.orchestration import save_rolling_records

@@ -623,6 +623,12 @@ The default manifest path is `output/manifests/{command}/{run_id}.json`, and fil
 
 `order_gen.py` also supports `--explain-plan` / `--json-plan`. These modes only read and validate workspace configuration; they do not initialize Qlib, load predictions or prices, or write files. `--dry-run` performs the full calculation but writes neither artifacts nor OperatorLog. Real execution uses the prepared recorder/config snapshot, atomically writes actual non-empty order/opinion outputs, writes `output/manifests/order_gen/<run_id>.json` by default, and links OperatorLog; `--no-manifest` disables only the manifest. Importing the command does not change cwd. Manifest/public summaries exclude full predictions, holdings, order rows, and raw config.
 
+`static_train.py` and `cv_train.py` now share a plan-first command/service boundary. `--explain-plan`
+and `--json-plan` return before safeguard and Qlib/MLflow initialization, write nothing, and do not
+change cwd. Real execution writes the corresponding training manifest and links OperatorLog by
+default. Training Record V2 uses strict schema dispatch, while ensemble execution rechecks
+workspace/experiment/artifact identity and actual prediction coverage.
+
 `ensemble_fusion` also exposes a typed command boundary: `quantpits/ensemble/command.py` owns the argument contract and prepare/explain/execute routing, `quantpits/ensemble/service.py` owns the execution lifecycle, and the script layer owns process exit semantics only. The engine layer never calls `sys.exit()`, so notebooks, schedulers, tests, and other Python workflows can reuse the command runner and handle structured outcomes or typed domain errors themselves.
 
 `OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, `plan_fingerprint`, and `transaction_id`. `ensemble_fusion.py`, `order_gen.py`, and post-trade link the relevant fields to their run manifests; commands without a transaction keep it as `null`.

@@ -36,6 +36,29 @@ python -m quantpits.tools.audit_training_records \
 生产者只有在输出 recorder 与持久化 `pred.pkl` 验证完成后才应发布 `ready` 条目。失败或
 跳过的模型不得替换已有 current pointer。
 
+V2 使用严格版本分派：一旦声明 `schema_version: 2`，一致的 `models` 与 `model_records`
+映射就是必需项，不会退回顶层 V1 字段。`ready` 记录必须包含实际预测的 start/end/rows；
+predict-only 还必须记录直接 source recorder、experiment 与 operation。融合运行时会再次
+核对 recorder 的 experiment/artifact 以及 `pred.pkl` 的覆盖范围，registry 是证据而不是替代验证。
+
+### 轻量执行计划与运行审计
+
+`static_train.py` 与 `cv_train.py` 共用 plan-first command boundary：
+
+```bash
+python -m quantpits.scripts.static_train --full --explain-plan
+python -m quantpits.scripts.static_train --predict-only --all-enabled --json-plan
+python -m quantpits.scripts.cv_train --all-enabled --explain-plan
+```
+
+`--explain-plan` / `--json-plan` 只读取 workspace 内的 registry、配置、workflow 和必要的
+source record；不会初始化 Qlib/MLflow、触发 safeguard、改变 cwd 或写文件。依赖交易日历的
+锚点会显示为 `deferred_to_qlib_calendar`，不会伪造日期。旧 `--dry-run` 兼容为相同轻量计划。
+
+真实执行默认写 `output/manifests/{static_train|cv_train}/<run_id>.json` 并关联
+`data/operator_log.jsonl`。`--run-id` 可固定身份，`--no-manifest` 只关闭 manifest。
+两个命令均支持 `--workspace PATH`。
+
 ---
 
 ## 文件结构

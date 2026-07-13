@@ -8,6 +8,7 @@ from quantpits.ensemble.input_integrity import (
     PredictionLoadIntegrityError,
     load_strict_prediction_bundle,
 )
+from quantpits.training.records import ModelRecordEntry, TrainingRecordSnapshot
 
 
 class Recorder:
@@ -75,3 +76,23 @@ def test_strict_bundle_aggregates_missing_and_external(tmp_path):
         )
     assert len(caught.value.evidence) == 2
     assert all(item.status != "ready" for item in caught.value.evidence)
+
+
+def test_v2_runtime_rechecks_declared_prediction_rows(tmp_path):
+    root = tmp_path / "Demo_Workspace"
+    root.mkdir()
+    artifact = root / "mlruns/1/r1/artifacts"
+    entry = ModelRecordEntry(
+        "m@static", "m", "static", "train", "ready", "r1", "Source",
+        experiment_id="1", artifact_path="mlruns/1/r1/artifacts",
+        requested_anchor="2026-07-10", prediction_start="2026-07-10",
+        prediction_end="2026-07-10", prediction_rows=2,
+    )
+    records = TrainingRecordSnapshot((entry,)).to_dict()
+    recorder = Recorder("r1", f"file://{artifact}", _pred())
+    with pytest.raises(PredictionLoadIntegrityError) as caught:
+        load_strict_prediction_bundle(
+            records, ["m@static"], workspace_root=root, expected_anchor="2026-07-10",
+            recorder_getter=lambda *args: recorder,
+        )
+    assert caught.value.evidence[0].status == "invalid_schema"

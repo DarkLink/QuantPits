@@ -37,6 +37,32 @@ succeeds and produces a verified entry.
 A producer should publish `ready` only after validating the output recorder and persisted
 `pred.pkl`. Failed or skipped operations must not replace an existing current pointer.
 
+V2 uses strict version dispatch. Once `schema_version: 2` is declared, matching `models` and
+`model_records` mappings are mandatory; readers never fall back to top-level V1 fields. A `ready`
+entry must describe actual prediction start/end/rows, while predict-only entries also carry their
+immediate source recorder, experiment, and operation. Ensemble execution rechecks recorder
+experiment/artifact identity and persisted `pred.pkl` coverage. The registry is evidence, not a
+substitute for runtime verification.
+
+### Lightweight plans and run audit
+
+`static_train.py` and `cv_train.py` share a plan-first command boundary:
+
+```bash
+python -m quantpits.scripts.static_train --full --explain-plan
+python -m quantpits.scripts.static_train --predict-only --all-enabled --json-plan
+python -m quantpits.scripts.cv_train --all-enabled --explain-plan
+```
+
+`--explain-plan` and `--json-plan` only read workspace-contained registry, config, workflow, and
+required source-record inputs. They do not initialize Qlib/MLflow, invoke the safeguard, change cwd,
+or write files. Calendar-dependent anchors are reported as `deferred_to_qlib_calendar` rather than
+guessed. Legacy `--dry-run` routes to the same lightweight plan.
+
+Real execution writes `output/manifests/{static_train|cv_train}/<run_id>.json` by default and links
+`data/operator_log.jsonl`. Use `--run-id` for an explicit identity or `--no-manifest` to disable only
+the manifest. Both commands support `--workspace PATH`.
+
 ---
 
 ## File Structure

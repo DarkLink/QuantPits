@@ -11,7 +11,7 @@ import pandas as pd
 from quantpits.runtime.mlflow_integrity import resolve_mlflow_resource_uri
 from quantpits.ensemble.execution import EnsembleExecutionError
 from quantpits.utils.predict_utils import rank_norm, zscore_norm
-from quantpits.training.records import resolve_model_record
+from quantpits.training.records import parse_training_record_document, resolve_model_record
 
 
 class EnsembleInputIntegrityError(EnsembleExecutionError):
@@ -50,6 +50,10 @@ class LoadedModelEvidence:
     operation: str | None = None
     requested_anchor: str | None = None
     declared_prediction_end: str | None = None
+    declared_prediction_start: str | None = None
+    declared_prediction_rows: int | None = None
+    declared_experiment_id: str | None = None
+    declared_artifact_path: str | None = None
     dataset_test_end: str | None = None
     source_recorder_id: str | None = None
     source_experiment_name: str | None = None
@@ -124,6 +128,10 @@ def load_strict_prediction_bundle(
     metrics: dict[str, float] = {}
     evidence: list[LoadedModelEvidence] = []
     expected = pd.Timestamp(expected_anchor).normalize()
+    # Validate the complete document once.  This prevents selecting one valid
+    # entry from an otherwise malformed/cyclic V2 snapshot.
+    parse_training_record_document(train_records)
+    schema_version = 2 if "schema_version" in train_records else 1
 
     for model_key in selected_models:
         try:
@@ -146,10 +154,14 @@ def load_strict_prediction_bundle(
             prediction_start=None,
             prediction_end=None,
             prediction_rows=0,
-            record_schema=resolved.record_schema if resolved else int(train_records.get("schema_version", 1)),
+            record_schema=resolved.record_schema if resolved else schema_version,
             operation=entry.operation if entry else None,
             requested_anchor=entry.requested_anchor if entry else None,
             declared_prediction_end=entry.prediction_end if entry else None,
+            declared_prediction_start=entry.prediction_start if entry else None,
+            declared_prediction_rows=entry.prediction_rows if entry else None,
+            declared_experiment_id=entry.experiment_id if entry else None,
+            declared_artifact_path=entry.artifact_path if entry else None,
             dataset_test_end=entry.dataset_test_end if entry else None,
             source_recorder_id=entry.source_recorder_id if entry else None,
             source_experiment_name=entry.source_experiment_name if entry else None,
@@ -169,13 +181,19 @@ def load_strict_prediction_bundle(
             )
             if not artifact.contained:
                 raise ValueError("recorder artifact URI is outside the active workspace")
+            actual_artifact_path = artifact.public_path()
+            actual_experiment_id = str(info.get("experiment_id", ""))
+            if entry and entry.artifact_path and entry.artifact_path != actual_artifact_path:
+                raise ValueError("declared artifact path differs from persisted recorder")
+            if entry and entry.experiment_id and entry.experiment_id != actual_experiment_id:
+                raise ValueError("declared experiment ID differs from persisted recorder")
             pred = _prediction_frame(recorder.load_object("pred.pkl"), model_key)
             dates = pd.to_datetime(pred.index.get_level_values("datetime"))
             start = pd.Timestamp(dates.min()).normalize()
             end = pd.Timestamp(dates.max()).normalize()
             base.update(
-                experiment_id=str(info.get("experiment_id", "")),
-                artifact_path=artifact.public_path(),
+                experiment_id=actual_experiment_id,
+                artifact_path=actual_artifact_path,
                 prediction_start=start.strftime("%Y-%m-%d"),
                 prediction_end=end.strftime("%Y-%m-%d"),
                 prediction_rows=len(pred),
@@ -185,6 +203,12 @@ def load_strict_prediction_bundle(
                 continue
             if entry and entry.prediction_end and end.strftime("%Y-%m-%d") != entry.prediction_end:
                 raise ValueError("declared prediction end differs from persisted pred.pkl")
+            if entry and entry.prediction_start and start.strftime("%Y-%m-%d") != entry.prediction_start:
+                raise ValueError("declared prediction start differs from persisted pred.pkl")
+            if entry and entry.prediction_rows is not None and len(pred) != entry.prediction_rows:
+                raise ValueError("declared prediction rows differ from persisted pred.pkl")
+            if entry and entry.dataset_test_end and end.strftime("%Y-%m-%d") != entry.dataset_test_end:
+                raise ValueError("dataset test end differs from persisted pred.pkl")
             raw_metrics = recorder.list_metrics()
             metrics[model_key] = next(
                 (float(value) for key, value in raw_metrics.items() if "ICIR" in key), 0.0

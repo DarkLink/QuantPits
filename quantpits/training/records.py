@@ -16,6 +16,15 @@ KNOWN_OPERATIONS = (
     "cpcv_rolling_combine", "legacy_import",
 )
 CURRENT_STATUSES = ("ready", "legacy_unverified")
+OUTCOME_STATUSES = ("success", "failed", "skipped", "preserved")
+
+
+class TrainingRecordSchemaError(ValueError):
+    """Raised when a versioned training-record document is malformed."""
+
+
+class UnsupportedTrainingRecordSchemaError(TrainingRecordSchemaError):
+    """Raised when a document declares an unsupported schema version."""
 
 
 def split_model_key(key: str) -> Tuple[str, str]:
@@ -34,6 +43,16 @@ def _date(value: Optional[str], field: str) -> Optional[str]:
         datetime.strptime(str(value), "%Y-%m-%d")
     except ValueError as exc:
         raise ValueError("%s must be YYYY-MM-DD" % field) from exc
+    return str(value)
+
+
+def _timestamp(value: Optional[str], field: str) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    try:
+        datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("%s must be an ISO-8601 timestamp" % field) from exc
     return str(value)
 
 
@@ -73,14 +92,36 @@ class ModelRecordEntry:
             raise ValueError("recorder_id and experiment_name are required")
         for field in ("requested_anchor", "prediction_start", "prediction_end", "dataset_test_end", "fit_start", "fit_end"):
             _date(getattr(self, field), field)
-        if self.prediction_rows is not None and self.prediction_rows < 0:
-            raise ValueError("prediction_rows must be non-negative")
+        _timestamp(self.produced_at, "produced_at")
+        if self.prediction_rows is not None and (
+            isinstance(self.prediction_rows, bool)
+            or not isinstance(self.prediction_rows, int)
+            or self.prediction_rows < 0
+        ):
+            raise ValueError("prediction_rows must be a non-negative integer")
+        if self.prediction_start and self.prediction_end and self.prediction_start > self.prediction_end:
+            raise ValueError("prediction_start must not exceed prediction_end")
+        if self.fit_start and self.fit_end and self.fit_start > self.fit_end:
+            raise ValueError("fit_start must not exceed fit_end")
         if bool(self.source_recorder_id) != bool(self.source_experiment_name):
             raise ValueError("source recorder and experiment identity must be provided together")
+        if bool(self.source_recorder_id) != bool(self.source_operation):
+            raise ValueError("source operation must accompany source recorder identity")
         if self.source_operation is not None and self.source_operation not in KNOWN_OPERATIONS:
             raise ValueError("unsupported source operation")
         if self.source_recorder_id == self.recorder_id:
             raise ValueError("record cannot source itself")
+        if self.status == "ready":
+            if not self.requested_anchor or not self.prediction_start or not self.prediction_end:
+                raise ValueError("ready record requires requested and actual prediction coverage")
+            if not self.prediction_rows:
+                raise ValueError("ready record requires positive prediction_rows")
+            if self.prediction_end != self.requested_anchor:
+                raise ValueError("ready prediction end must equal requested anchor")
+            if self.dataset_test_end and self.dataset_test_end != self.prediction_end:
+                raise ValueError("dataset test end must equal ready prediction end")
+        if self.operation in ("predict_only", "cpcv_predict") and not self.source_recorder_id:
+            raise ValueError("predict operations require complete source identity")
 
     def to_dict(self) -> Dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
@@ -101,10 +142,24 @@ class ModelRecordOutcome:
 
     def __post_init__(self):
         split_model_key(self.key)
-        if self.outcome not in ("success", "failed", "skipped", "preserved"):
+        if self.requested_operation not in KNOWN_OPERATIONS:
+            raise ValueError("unsupported requested operation")
+        if self.outcome not in OUTCOME_STATUSES:
             raise ValueError("unsupported record outcome")
-        if self.outcome == "success" and self.entry is None:
-            raise ValueError("successful outcome requires an entry")
+        if self.outcome == "success":
+            if self.entry is None:
+                raise ValueError("successful outcome requires an entry")
+            if self.entry.key != self.key:
+                raise ValueError("outcome key differs from entry key")
+            if self.entry.operation != self.requested_operation:
+                raise ValueError("outcome operation differs from entry operation")
+            if not (
+                self.entry.status == "ready"
+                or (self.entry.status == "legacy_unverified" and self.entry.operation == "legacy_import")
+            ):
+                raise ValueError("successful outcome requires ready evidence or an explicit legacy import")
+        elif self.entry is not None:
+            raise ValueError("non-success outcome cannot publish an entry")
 
 
 @dataclass(frozen=True)
@@ -128,6 +183,7 @@ class TrainingRecordSnapshot:
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate current model record")
         _validate_source_lineage(self.entries)
+        _timestamp(self.updated_at, "updated_at")
 
     @property
     def entry_map(self) -> Dict[str, ModelRecordEntry]:
@@ -139,18 +195,21 @@ class TrainingRecordSnapshot:
         for entry in entries.values():
             modes[entry.training_mode].add(entry.experiment_name)
         all_experiments = {entry.experiment_name for entry in entries.values()}
-        anchors = [entry.prediction_end or entry.requested_anchor for entry in entries.values()]
+        anchors = [
+            entry.prediction_end if entry.status == "ready" else entry.requested_anchor
+            for entry in entries.values()
+        ]
         anchors = sorted(value for value in anchors if value)
-        updated_at = self.updated_at or datetime.now().replace(microsecond=0).isoformat()
         result: Dict[str, Any] = {
             "schema_version": 2,
-            "updated_at": updated_at,
-            "timestamp": updated_at.replace("T", " "),
             "models": {key: entries[key].recorder_id for key in sorted(entries)},
             "model_records": {key: entries[key].to_dict() for key in sorted(entries)},
             "experiment_name": next(iter(all_experiments)) if len(all_experiments) == 1 else "",
             "anchor_date": anchors[-1] if anchors else "",
         }
+        if self.updated_at:
+            result["updated_at"] = self.updated_at
+            result["timestamp"] = self.updated_at.replace("T", " ")
         for mode in KNOWN_MODES:
             values = modes[mode]
             result["%s_experiment_name" % mode] = next(iter(values)) if len(values) == 1 else ""
@@ -171,38 +230,60 @@ def legacy_entry(key: str, recorder_id: str, records: Mapping[str, Any]) -> Mode
     )
 
 
-def snapshot_from_dict(records: Mapping[str, Any]) -> TrainingRecordSnapshot:
+def _schema_version(records: Mapping[str, Any]) -> int:
+    if "schema_version" not in records:
+        return 1
+    value = records["schema_version"]
+    if isinstance(value, bool) or not isinstance(value, int) or value != 2:
+        raise UnsupportedTrainingRecordSchemaError("unsupported training-record schema")
+    return 2
+
+
+def parse_training_record_document(records: Mapping[str, Any]) -> TrainingRecordSnapshot:
+    if not isinstance(records, Mapping):
+        raise TrainingRecordSchemaError("training record must be a mapping")
+    schema = _schema_version(records)
     entries = []
-    if int(records.get("schema_version", 1)) == 2 and isinstance(records.get("model_records"), dict):
+    if schema == 2:
+        if not isinstance(records.get("models"), Mapping):
+            raise TrainingRecordSchemaError("V2 requires a models mapping")
+        if not isinstance(records.get("model_records"), Mapping):
+            raise TrainingRecordSchemaError("V2 requires a model_records mapping")
         for key, value in records["model_records"].items():
+            if not isinstance(value, Mapping):
+                raise TrainingRecordSchemaError("model record entry must be a mapping")
             entry = ModelRecordEntry.from_dict(value)
             if entry.key != key:
                 raise ValueError("model_records key does not match entry key")
             entries.append(entry)
-        compatibility = records.get("models", {})
+        compatibility = dict(records["models"])
         projected = {entry.key: entry.recorder_id for entry in entries}
         if compatibility != projected:
             raise ValueError("models compatibility view differs from model_records")
     else:
-        for key, recorder_id in records.get("models", {}).items():
+        models = records.get("models", {})
+        if not isinstance(models, Mapping):
+            raise TrainingRecordSchemaError("models must be a mapping")
+        for key, recorder_id in models.items():
             entries.append(legacy_entry(key, recorder_id, records))
     return TrainingRecordSnapshot(tuple(sorted(entries, key=lambda item: item.key)), records.get("updated_at"))
 
 
+def snapshot_from_dict(records: Mapping[str, Any]) -> TrainingRecordSnapshot:
+    return parse_training_record_document(records)
+
+
 def resolve_model_record(records: Mapping[str, Any], model_key: str) -> ResolvedModelRecord:
-    if int(records.get("schema_version", 1)) == 2 and isinstance(records.get("model_records"), dict):
-        raw = records["model_records"].get(model_key)
-        if raw is None:
+    schema = _schema_version(records)
+    snapshot = parse_training_record_document(records)
+    if schema == 2:
+        entry = snapshot.entry_map.get(model_key)
+        if entry is None:
             raise KeyError("model has no V2 record: %s" % model_key)
-        entry = ModelRecordEntry.from_dict(raw)
-        compatibility_id = records.get("models", {}).get(model_key)
-        if compatibility_id != entry.recorder_id:
-            raise ValueError("models compatibility recorder differs from V2 identity")
         return ResolvedModelRecord(model_key, entry.recorder_id, entry.experiment_name, entry.status, entry, 2)
-    models = records.get("models", {})
-    if model_key not in models:
+    entry = snapshot.entry_map.get(model_key)
+    if entry is None:
         raise KeyError("model has no recorder ID: %s" % model_key)
-    entry = legacy_entry(model_key, models[model_key], records)
     return ResolvedModelRecord(model_key, entry.recorder_id, entry.experiment_name, entry.status, entry, 1)
 
 

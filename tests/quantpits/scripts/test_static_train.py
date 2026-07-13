@@ -27,6 +27,13 @@ def mock_env(monkeypatch, tmp_path):
             "m3": {"algorithm": "lgb", "dataset": "Alpha360", "enabled": False, "yaml_file": "lgb.yaml", "tags": ["tree"]},
         }
     }))
+    for name in ("gru.yaml", "mlp.yaml", "lgb.yaml"):
+        (workspace / "config" / name).write_text("model: {}\n")
+    (workspace / "latest_train_records.json").write_text(json.dumps({
+        "experiment_name": "Source",
+        "anchor_date": "2026-03-01",
+        "models": {"m1@static": "r1", "m2@static": "r2", "m3@static": "r3"},
+    }))
 
     import importlib
     script_dir = os.path.join(os.getcwd(), "quantpits/scripts")

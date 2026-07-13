@@ -36,13 +36,12 @@ from quantpits.utils import env
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
-sys.path.append(SCRIPT_DIR)
 
 DEFAULT_PREDICT_EXPERIMENT = "Prod_Predict_CPCV"
 
 
 # ================= CLI =================
-def parse_args():
+def build_parser():
     parser = argparse.ArgumentParser(
         description='CPCV Training: Purged Cross-Validation with K-fold ensemble',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -99,6 +98,11 @@ Examples:
     ctrl.add_argument('--cache-size', type=int, default=None, metavar='MB',
                       help='Handler cache max memory (MB). Default: auto-detect '
                            '(50%% free RAM). Set 0 to disable.')
+    ctrl.add_argument('--workspace', default=None, help='Explicit workspace root')
+    ctrl.add_argument('--explain-plan', action='store_true', help='Print a lightweight plan without Qlib or writes')
+    ctrl.add_argument('--json-plan', action='store_true', help='Print the lightweight plan as one JSON document')
+    ctrl.add_argument('--run-id', default=None, help='Explicit run ID for plan/manifest alignment')
+    ctrl.add_argument('--no-manifest', action='store_true', help='Do not write a RunManifest during execution')
 
     info = parser.add_argument_group('Information')
     info.add_argument('--list', action='store_true',
@@ -108,7 +112,11 @@ Examples:
     info.add_argument('--clear-state', action='store_true',
                       help='Clear run state file')
 
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv=None):
+    return build_parser().parse_args(argv)
 
 
 # ================= Helpers =================
@@ -237,7 +245,7 @@ def run_full_train_cpcv(args):
         overwrite_train_records(current_records)
 
     # Save performance
-    perf_file = os.path.join(ROOT_DIR, "output",
+    perf_file = os.path.join(env.ROOT_DIR, "output",
                              f"model_performance_cpcv_{params['anchor_date']}.json")
     os.makedirs(os.path.dirname(perf_file), exist_ok=True)
     backup_file_with_date(perf_file)
@@ -251,6 +259,12 @@ def run_full_train_cpcv(args):
     print(f"CPCV Full training complete. Experiment: {experiment_name}")
     print(f"Records saved to {RECORD_OUTPUT_FILE}")
     print(f"{'='*50}\n")
+    return {
+        "success": not bool(incomplete), "failed": tuple(failed_models),
+        "succeeded": tuple(sorted(current_records["models"])),
+        "published": not bool(incomplete), "anchor_date": params["anchor_date"],
+        "experiment_name": experiment_name,
+    }
 
 
 # ================= Incremental CPCV Training =================
@@ -348,6 +362,8 @@ def run_incremental_train_cpcv(args, targets):
         'failed': {},
         'skipped': [],
     }
+    run_state['run_id'] = getattr(args, 'run_id', None)
+    run_state['plan_fingerprint'] = getattr(args, 'plan_fingerprint', None)
     save_run_state(run_state)
 
     new_records = {
@@ -412,6 +428,12 @@ def run_incremental_train_cpcv(args, targets):
     if cache_mgr is not None:
         print(f"\n  Handler Cache: {cache_mgr}")
     print(f"{'='*60}\n")
+    return {
+        "success": not bool(failed), "failed": tuple(sorted(failed)),
+        "succeeded": tuple(sorted(new_records["models"])),
+        "published": bool(new_records['models']), "anchor_date": params["anchor_date"],
+        "experiment_name": experiment_name,
+    }
 
 
 # ================= CPCV Predict-Only =================
@@ -496,6 +518,7 @@ def run_predict_only_cpcv(args):
         "models": {},
         "model_records": {},
     }
+    failed_models = []
 
     total = len(cpcv_models)
     for idx, (model_key, record_id) in enumerate(cpcv_models.items(), 1):
@@ -523,6 +546,7 @@ def run_predict_only_cpcv(args):
             if result.get('record_entry'):
                 new_records['model_records'][model_key] = result['record_entry']
         else:
+            failed_models.append(model_name)
             print(f"  FAILED: {model_name} — {result.get('error', 'Unknown')}")
 
     if new_records['models']:
@@ -532,10 +556,31 @@ def run_predict_only_cpcv(args):
         print(f"\n  Handler Cache: {cache_mgr}")
 
     print(f"\nCPCV Predict-Only complete. Experiment: {experiment_name}\n")
+    return {
+        "success": not bool(failed_models), "failed": tuple(sorted(failed_models)),
+        "succeeded": tuple(sorted(new_records["models"])),
+        "published": bool(new_records['models']), "anchor_date": params["anchor_date"],
+        "experiment_name": experiment_name,
+    }
 
 
 # ================= Main =================
-def main():
+def _legacy_execute(prepared, args):
+    from quantpits.utils.train_utils import load_model_registry
+    registry = load_model_registry()
+    target_names = {item.model_name for item in prepared.targets}
+    targets = {key: value for key, value in registry.items() if key in target_names}
+    args.source_records = str((prepared.ctx.root / prepared.options.source_records).resolve())
+    args.run_id = prepared.plan.run_id
+    args.plan_fingerprint = prepared.plan_fingerprint
+    if prepared.options.action == "full":
+        return run_full_train_cpcv(args)
+    if prepared.options.action == "predict_only":
+        return run_predict_only_cpcv(args)
+    return run_incremental_train_cpcv(args, targets)
+
+
+def main(argv=None):
     from quantpits.utils.train_utils import (
         load_model_registry,
         print_model_table,
@@ -545,11 +590,12 @@ def main():
         parse_model_key,
     )
 
-    args = parse_args()
-    os.chdir(ROOT_DIR)
+    args = parse_args(argv)
+    ctx = env.get_workspace_context(args.workspace)
 
     # --list
     if args.list:
+        env.set_root_dir(str(ctx.root))
         registry = load_model_registry()
         targets = _resolve_targets(args, registry) if (
             args.models or args.algorithm or args.dataset or
@@ -560,6 +606,7 @@ def main():
 
     # --show-state
     if args.show_state:
+        env.set_root_dir(str(ctx.root))
         state = load_run_state()
         if state:
             print(json.dumps(state, indent=2, default=str))
@@ -569,24 +616,39 @@ def main():
 
     # --clear-state
     if args.clear_state:
+        env.safeguard("CPCV Train: clear state", workspace_root=ctx.root)
+        env.set_root_dir(str(ctx.root))
         clear_run_state()
         print("Run state cleared.")
         return
 
-    # Determine mode
-    if args.predict_only:
-        run_predict_only_cpcv(args)
-    elif args.full:
-        run_full_train_cpcv(args)
-    else:
-        # Incremental CPCV training (default)
-        registry = load_model_registry()
-        targets = _resolve_targets(args, registry)
-        if not targets:
-            print("No models selected. Use --models, --all-enabled, or filters.")
-            sys.exit(1)
-        run_incremental_train_cpcv(args, targets)
+    from quantpits.training.command import (
+        options_from_namespace, prepare_training_run, prepared_plan_json, render_prepared_plan,
+    )
+    from quantpits.training.errors import TrainingCommandError
+    from quantpits.training.service import TrainingExecutionHooks, TrainingExecutionService
+    try:
+        options = options_from_namespace(args, "cpcv")
+        cli_args = tuple(argv if argv is not None else sys.argv[1:])
+        prepared = prepare_training_run(ctx=ctx, options=options, cli_args=cli_args)
+        if options.json_plan:
+            print(json.dumps(prepared_plan_json(prepared), ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
+        if options.explain_plan:
+            print(render_prepared_plan(prepared))
+            return 0
+        env.safeguard("CPCV Train", workspace_root=ctx.root)
+        service = TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=env.set_root_dir,
+            init_qlib=env.init_qlib,
+            execute_legacy=lambda value: _legacy_execute(value, args),
+        ))
+        service.execute(prepared)
+        return 0
+    except TrainingCommandError as exc:
+        print("Error: %s" % exc, file=sys.stderr)
+        return exc.exit_code
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

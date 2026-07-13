@@ -19,7 +19,8 @@ def test_optional_mlflow_and_prediction_verification_is_read_only(tmp_path):
     (tmp_path / "mlflow.db").write_bytes(b"metadata")
     entry = ModelRecordEntry(
         "m@static", "m", "static", "train", "ready", "rid", "exp",
-        requested_anchor="2026-07-10", prediction_end="2026-07-10",
+        requested_anchor="2026-07-10", prediction_start="2026-07-10",
+        prediction_end="2026-07-10", prediction_rows=1,
     )
     path = tmp_path / "latest_train_records.json"
     path.write_text(json.dumps(TrainingRecordSnapshot((entry,)).to_dict()))

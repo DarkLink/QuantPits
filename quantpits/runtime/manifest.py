@@ -74,7 +74,10 @@ def manifest_from_result(result: CommandResult) -> RunManifest:
         status=result.status,
         args=plan.args,
         inputs=plan.inputs,
-        outputs=result.outputs or plan.outputs,
+        # ``CommandResult.outputs`` is the committed-artifact ledger.  An
+        # empty tuple is meaningful (for example, a failure before the first
+        # write) and must never fall back to planned outputs.
+        outputs=result.outputs,
         states=plan.states,
         steps=plan.steps,
         config_fingerprints=plan.config_fingerprints,

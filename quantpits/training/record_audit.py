@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Tuple
 
-from .records import snapshot_from_dict
+from .records import (
+    TrainingRecordSchemaError,
+    UnsupportedTrainingRecordSchemaError,
+    snapshot_from_dict,
+)
 
 
 @dataclass(frozen=True)
@@ -43,15 +47,25 @@ class TrainingRecordAuditReport:
 
 def audit_training_records(records: Mapping[str, Any]) -> TrainingRecordAuditReport:
     issues = []
-    schema = int(records.get("schema_version", 1))
+    raw_schema = records.get("schema_version", 1)
+    schema = raw_schema if isinstance(raw_schema, int) and not isinstance(raw_schema, bool) else 0
     if schema != 2:
         issues.append(RecordAuditIssue("legacy_record_schema", "warning"))
     try:
         snapshot = snapshot_from_dict(records)
-    except (TypeError, ValueError, KeyError) as exc:
+    except UnsupportedTrainingRecordSchemaError:
+        issues.append(RecordAuditIssue("unsupported_record_schema", "error"))
+        return TrainingRecordAuditReport(schema, 0, tuple(issues), {})
+    except TrainingRecordSchemaError as exc:
+        code = "missing_model_records_v2" if schema == 2 and "model_records" in str(exc) else "invalid_training_record"
+        issues.append(RecordAuditIssue(code, "error"))
+        return TrainingRecordAuditReport(schema, 0, tuple(issues), {})
+    except (TypeError, ValueError, KeyError):
         issues.append(RecordAuditIssue("invalid_training_record", "error"))
         return TrainingRecordAuditReport(schema, 0, tuple(issues), {})
+    experiments_by_mode = {}
     for entry in snapshot.entries:
+        experiments_by_mode.setdefault(entry.training_mode, set()).add(entry.experiment_name)
         if not entry.experiment_name:
             issues.append(RecordAuditIssue("missing_experiment_identity", "error", entry.key))
         if entry.status == "legacy_unverified":
@@ -67,4 +81,7 @@ def audit_training_records(records: Mapping[str, Any]) -> TrainingRecordAuditRep
         mode_value = records.get("%s_experiment_name" % entry.training_mode)
         if schema == 1 and mode_value and mode_value != entry.experiment_name:
             issues.append(RecordAuditIssue("mode_experiment_mismatch", "error", entry.key))
+    for mode, experiments in sorted(experiments_by_mode.items()):
+        if len(experiments) > 1:
+            issues.append(RecordAuditIssue("mixed_mode_experiments", "warning", mode))
     return TrainingRecordAuditReport(schema, len(snapshot.entries), tuple(issues), snapshot.to_dict())

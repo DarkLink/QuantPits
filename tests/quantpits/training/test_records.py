@@ -13,8 +13,8 @@ def entry(key="m@cpcv", experiment="predict"):
         key=key, model_name=key.rsplit("@", 1)[0], training_mode=key.rsplit("@", 1)[1],
         operation="cpcv_predict", status="ready", recorder_id="rid",
         experiment_name=experiment, requested_anchor="2026-07-10",
-        prediction_end="2026-07-10", prediction_rows=2,
-        source_recorder_id="source", source_experiment_name="train",
+        prediction_start="2026-07-09", prediction_end="2026-07-10", prediction_rows=2,
+        source_recorder_id="source", source_experiment_name="train", source_operation="train",
     )
 
 
@@ -55,6 +55,7 @@ def test_build_ready_entry_uses_persisted_prediction_coverage():
         key="m@static", operation="predict_only", experiment_name="predict",
         recorder=Recorder(), requested_anchor="2026-07-10", dataset_test_end="2026-07-10",
         source_recorder_id="source", source_experiment_name="train",
+        source_operation="train",
     )
     assert value.status == "ready"
     assert value.prediction_end == "2026-07-10"
@@ -62,10 +63,32 @@ def test_build_ready_entry_uses_persisted_prediction_coverage():
 
 
 def test_snapshot_rejects_source_lineage_cycle():
-    first = ModelRecordEntry("a@static", "a", "static", "predict_only", "ready", "r1", "exp", source_recorder_id="r2", source_experiment_name="exp")
-    second = ModelRecordEntry("b@static", "b", "static", "predict_only", "ready", "r2", "exp", source_recorder_id="r1", source_experiment_name="exp")
+    common = dict(requested_anchor="2026-07-10", prediction_start="2026-07-10", prediction_end="2026-07-10", prediction_rows=1, source_operation="train")
+    first = ModelRecordEntry("a@static", "a", "static", "predict_only", "ready", "r1", "exp", source_recorder_id="r2", source_experiment_name="exp", **common)
+    second = ModelRecordEntry("b@static", "b", "static", "predict_only", "ready", "r2", "exp", source_recorder_id="r1", source_experiment_name="exp", **common)
     with pytest.raises(ValueError, match="cycle"):
         TrainingRecordSnapshot((first, second))
+
+
+def test_explicit_v2_never_falls_back_to_v1():
+    with pytest.raises(ValueError, match="model_records"):
+        snapshot_from_dict({"schema_version": 2, "models": {"m@static": "r"}, "experiment_name": "stale"})
+
+
+def test_outcome_rejects_entry_for_another_model():
+    value = ModelRecordEntry(
+        "b@static", "b", "static", "train", "ready", "r", "e",
+        requested_anchor="2026-07-10", prediction_start="2026-07-10",
+        prediction_end="2026-07-10", prediction_rows=1,
+    )
+    with pytest.raises(ValueError, match="outcome key"):
+        ModelRecordOutcome("a@static", "train", "success", value)
+
+
+def test_snapshot_render_is_deterministic_without_inventing_time():
+    value = TrainingRecordSnapshot((entry(),))
+    assert value.to_dict() == value.to_dict()
+    assert "updated_at" not in value.to_dict()
 
 
 def test_builder_rejects_external_artifact(tmp_path):

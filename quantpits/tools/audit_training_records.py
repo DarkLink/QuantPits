@@ -45,6 +45,9 @@ def _external_issues(records, ctx, verify_predictions=False, client=None, record
         recorder_requests=requests,
     )
     key_by_recorder = {entry.recorder_id: entry.key for entry in snapshot.entries}
+    key_by_recorder.update(
+        {entry.source_recorder_id: entry.key for entry in snapshot.entries if entry.source_recorder_id}
+    )
     issues = [
         RecordAuditIssue(issue.code, issue.severity, key_by_recorder.get(issue.recorder_id or "", ""))
         for issue in mlflow_report.issues
@@ -56,14 +59,20 @@ def _external_issues(records, ctx, verify_predictions=False, client=None, record
         import pandas as pd
         for entry in snapshot.entries:
             try:
-                pred = recorder_getter(entry.recorder_id, entry.experiment_name).load_object("pred.pkl")
+                recorder = recorder_getter(entry.recorder_id, entry.experiment_name)
+                pred = recorder.load_object("pred.pkl")
                 if not isinstance(pred, (pd.Series, pd.DataFrame)) or pred.empty:
                     raise ValueError("invalid prediction")
                 dates = pd.to_datetime(pred.index.get_level_values("datetime"), errors="raise")
+                actual_start = pd.Timestamp(dates.min()).strftime("%Y-%m-%d")
                 actual_end = pd.Timestamp(dates.max()).strftime("%Y-%m-%d")
                 expected = entry.prediction_end or entry.requested_anchor
                 if expected and actual_end != expected:
                     issues.append(RecordAuditIssue("prediction_anchor_mismatch", "error", entry.key))
+                if entry.prediction_start and actual_start != entry.prediction_start:
+                    issues.append(RecordAuditIssue("prediction_start_mismatch", "error", entry.key))
+                if entry.prediction_rows is not None and len(pred) != entry.prediction_rows:
+                    issues.append(RecordAuditIssue("prediction_rows_mismatch", "error", entry.key))
             except Exception:
                 issues.append(RecordAuditIssue("missing_or_invalid_prediction", "error", entry.key))
     return tuple(issues)

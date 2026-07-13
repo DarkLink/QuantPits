@@ -7,8 +7,9 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Mapping, Optional
+from typing import Callable, Iterable, Mapping, Optional
 
 from .records import ModelRecordOutcome, TrainingRecordSnapshot, snapshot_from_dict
 
@@ -29,8 +30,18 @@ def _fingerprint(path: Path) -> Optional[str]:
 
 
 class TrainingRecordRepository:
-    def __init__(self, path):
+    def __init__(self, path, *, clock: Optional[Callable[[], datetime]] = None):
         self.path = Path(path).resolve()
+        self._clock = clock or datetime.now
+
+    @classmethod
+    def for_workspace(cls, ctx, relative_path="latest_train_records.json", **kwargs):
+        path = (ctx.root / relative_path).resolve()
+        try:
+            path.relative_to(ctx.root.resolve())
+        except ValueError as exc:
+            raise ValueError("training-record path must stay inside workspace") from exc
+        return cls(path, **kwargs)
 
     def load(self) -> TrainingRecordSnapshot:
         if not self.path.exists():
@@ -51,29 +62,60 @@ class TrainingRecordRepository:
                 if fcntl is not None:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-    def merge(self, outcomes: Iterable[ModelRecordOutcome]) -> TrainingRecordSnapshot:
+    @staticmethod
+    def _validated_outcomes(outcomes: Iterable[ModelRecordOutcome]):
+        values = tuple(outcomes)
+        keys = [item.key for item in values]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate training-record outcome key")
+        return values
+
+    def merge(
+        self,
+        outcomes: Iterable[ModelRecordOutcome],
+        *,
+        expected_entries: Optional[Mapping[str, Optional[str]]] = None,
+    ) -> TrainingRecordSnapshot:
+        outcomes = self._validated_outcomes(outcomes)
         with self._lock():
             baseline = _fingerprint(self.path)
             entries = self.load().entry_map
+            if expected_entries:
+                for key, recorder_id in expected_entries.items():
+                    current = entries.get(key)
+                    actual = current.recorder_id if current else None
+                    if actual != recorder_id:
+                        raise TrainingRecordConflictError("selected training record changed during run")
             for outcome in outcomes:
                 if outcome.outcome == "success" and outcome.entry is not None:
                     entries[outcome.key] = outcome.entry
-            snapshot = TrainingRecordSnapshot(tuple(entries[key] for key in sorted(entries)))
+            snapshot = self._timestamped(tuple(entries[key] for key in sorted(entries)))
             self._replace(snapshot, baseline)
             return snapshot
 
-    def overwrite(self, outcomes: Iterable[ModelRecordOutcome]) -> TrainingRecordSnapshot:
+    def overwrite(
+        self,
+        outcomes: Iterable[ModelRecordOutcome],
+        *,
+        expected_file_fingerprint: Optional[str] = None,
+    ) -> TrainingRecordSnapshot:
+        outcomes = self._validated_outcomes(outcomes)
+        if any(item.outcome != "success" for item in outcomes):
+            raise ValueError("incomplete full run cannot overwrite current records")
+        entries = [item.entry for item in outcomes if item.entry is not None]
+        if not entries:
+            raise ValueError("empty overwrite requires an explicit migration workflow")
         with self._lock():
             baseline = _fingerprint(self.path)
-            outcomes = tuple(outcomes)
-            if any(item.outcome != "success" for item in outcomes):
-                raise ValueError("incomplete full run cannot overwrite current records")
-            entries = [item.entry for item in outcomes if item.entry is not None]
-            if not entries:
-                raise ValueError("empty overwrite requires an explicit migration workflow")
-            snapshot = TrainingRecordSnapshot(tuple(sorted(entries, key=lambda item: item.key)))
+            if expected_file_fingerprint is not None and baseline != expected_file_fingerprint:
+                raise TrainingRecordConflictError("training record baseline differs from prepared run")
+            snapshot = self._timestamped(tuple(sorted(entries, key=lambda item: item.key)))
             self._replace(snapshot, baseline)
             return snapshot
+
+    def _timestamped(self, entries):
+        updated_at = self._clock().replace(microsecond=0).isoformat()
+        return TrainingRecordSnapshot(tuple(entries), updated_at=updated_at)
 
     def _replace(self, snapshot: TrainingRecordSnapshot, baseline: Optional[str]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

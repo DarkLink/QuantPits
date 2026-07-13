@@ -49,14 +49,12 @@ from quantpits.utils import env
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
-sys.path.append(SCRIPT_DIR)
-# os.chdir(ROOT_DIR)  # Moved to main() to avoid import-time side effects
 
 DEFAULT_PREDICT_EXPERIMENT = "Prod_Predict"
 
 
 # ================= CLI =================
-def parse_args():
+def build_parser():
     parser = argparse.ArgumentParser(
         description='静态训练：全量训练、增量训练、仅预测',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -113,6 +111,11 @@ def parse_args():
     ctrl.add_argument('--cache-size', type=int, default=None, metavar='MB',
                       help='Handler 缓存最大内存 (MB)，默认自动检测 (50%% 空闲 RAM)。'
                            '设为 0 禁用缓存。')
+    ctrl.add_argument('--workspace', default=None, help='显式 workspace 根目录')
+    ctrl.add_argument('--explain-plan', action='store_true', help='只打印轻量执行计划，不初始化 Qlib 或写文件')
+    ctrl.add_argument('--json-plan', action='store_true', help='以单一 JSON 文档输出轻量执行计划')
+    ctrl.add_argument('--run-id', default=None, help='显式运行 ID，用于 plan/manifest 对齐')
+    ctrl.add_argument('--no-manifest', action='store_true', help='真实执行时不写 RunManifest')
 
     info = parser.add_argument_group('信息查看')
     info.add_argument('--list', action='store_true',
@@ -122,7 +125,11 @@ def parse_args():
     info.add_argument('--clear-state', action='store_true',
                       help='清除运行状态文件')
 
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv=None):
+    return build_parser().parse_args(argv)
 
 
 # ================= 全量训练 =================
@@ -219,7 +226,7 @@ def run_full_train(args):
         overwrite_train_records(current_records)
 
     # 保存模型成绩对比
-    perf_file = f"output/model_performance_{params['anchor_date']}.json"
+    perf_file = os.path.join(env.ROOT_DIR, "output", f"model_performance_{params['anchor_date']}.json")
     os.makedirs(os.path.dirname(perf_file), exist_ok=True)
     backup_file_with_date(perf_file, prefix=f"model_performance_{params['anchor_date']}")
     with open(perf_file, 'w') as f:
@@ -240,6 +247,12 @@ def run_full_train(args):
         icir_str = f"{icir:.4f}" if isinstance(icir, float) else icir
         print(f"  {name}: IC={ic_str}, ICIR={icir_str}")
     print(f"{'='*50}\n")
+    return {
+        "success": not bool(incomplete), "failed": tuple(failed_models),
+        "succeeded": tuple(sorted(current_records["models"])),
+        "published": not bool(incomplete), "anchor_date": params["anchor_date"],
+        "experiment_name": experiment_name,
+    }
 
 
 # ================= 增量训练 =================
@@ -323,6 +336,8 @@ def run_incremental_train(args, targets):
         'failed': {},
         'skipped': []
     }
+    run_state['run_id'] = getattr(args, 'run_id', None)
+    run_state['plan_fingerprint'] = getattr(args, 'plan_fingerprint', None)
     save_run_state(run_state)
 
     # 训练结果收集
@@ -410,6 +425,12 @@ def run_incremental_train(args, targets):
     # 训练全部成功时清除运行状态
     if not failed:
         clear_run_state()
+    return {
+        "success": not bool(failed), "failed": tuple(sorted(failed)),
+        "succeeded": tuple(sorted(new_records["models"])),
+        "published": bool(new_records['models']), "anchor_date": params["anchor_date"],
+        "experiment_name": experiment_name,
+    }
 
 
 # ================= 仅预测 =================
@@ -429,6 +450,8 @@ def run_predict_only(args, targets):
 
     # 加载源训练记录
     source_file = args.source_records
+    if not os.path.isabs(source_file):
+        source_file = os.path.join(env.ROOT_DIR, source_file)
     if not os.path.exists(source_file):
         print(f"❌ 源训练记录文件不存在: {source_file}")
         print("   请先运行训练（--full 或 --models）生成 latest_train_records.json")
@@ -576,6 +599,12 @@ def run_predict_only(args, targets):
     print(f"     穷举: python quantpits/scripts/brute_force_fast.py --max-combo-size 3")
     print(f"     融合: python quantpits/scripts/ensemble_fusion.py --models <模型列表>")
     print(f"{'=' * 60}\n")
+    return {
+        "success": not bool(failed_models), "failed": tuple(sorted(failed_models)),
+        "succeeded": tuple(sorted(new_records["models"])),
+        "published": bool(new_records['models']), "anchor_date": params["anchor_date"],
+        "experiment_name": experiment_name,
+    }
 
 
 # ================= 信息命令 =================
@@ -611,74 +640,78 @@ def show_state():
 
 
 # ================= 主入口 =================
-def main():
-    os.chdir(ROOT_DIR)
-    from quantpits.utils import env as _env
-    _env.safeguard("Static Train")
-    args = parse_args()
+def _legacy_execute(prepared, args):
+    from quantpits.utils.train_utils import load_model_registry
+    registry = load_model_registry()
+    target_names = {item.model_name for item in prepared.targets}
+    targets = {key: value for key, value in registry.items() if key in target_names}
+    args.source_records = str((prepared.ctx.root / prepared.options.source_records).resolve())
+    args.run_id = prepared.plan.run_id
+    args.plan_fingerprint = prepared.plan_fingerprint
+    if prepared.options.action == "full":
+        return run_full_train(args)
+    if prepared.options.action == "predict_only":
+        return run_predict_only(args, targets)
+    return run_incremental_train(args, targets)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    ctx = env.get_workspace_context(args.workspace)
 
     # 信息查看类命令（不需要 Qlib 初始化）
     if args.list:
+        env.set_root_dir(str(ctx.root))
         from quantpits.utils.train_utils import show_model_list, RECORD_OUTPUT_FILE
-        source_file = args.source_records if args.predict_only else None
+        source_file = str((ctx.root / args.source_records).resolve()) if args.predict_only else None
         show_model_list(args, source_records_file=source_file)
         return
 
     if args.show_state:
+        env.set_root_dir(str(ctx.root))
         show_state()
         return
 
     if args.clear_state:
+        env.safeguard("Static Train: clear state", workspace_root=ctx.root)
+        env.set_root_dir(str(ctx.root))
         from quantpits.utils.train_utils import clear_run_state
         clear_run_state()
         return
 
-    from quantpits.utils.operator_log import OperatorLog
-    with OperatorLog("static_train", args=sys.argv[1:]) as oplog:
-        # 判断运行模式
-        if args.full:
-            # 全量模式：忽略模型选择参数
-            run_full_train(args)
-            return
-
-        # 增量模式和 predict-only 都需要模型选择
-        has_selection = any([
-            args.models, args.algorithm, args.dataset,
-            args.market, args.tag, args.all_enabled
-        ])
-
-        if not has_selection:
-            print("❌ 请指定要训练/预测的模型")
-            print("   使用 --models, --algorithm, --dataset, --tag, 或 --all-enabled")
-            print("   使用 --full 全量训练所有 enabled 模型")
-            print("   使用 --help 查看完整帮助")
-            print("   使用 --list 查看所有可用模型")
-            return
-
-        from quantpits.utils.train_utils import resolve_target_models
-        targets = resolve_target_models(args)
-        if targets is None or not targets:
-            print("⚠️  没有匹配的模型")
-            return
-
-        if args.predict_only:
-            run_predict_only(args, targets)
-        else:
-            run_incremental_train(args, targets)
-
-        # Update promote status: promoted_pending_retrain → active
-        try:
-            from quantpits.scripts.deep_analysis.promote_config import update_promote_status
-            trained_models = list(targets.keys()) if not args.predict_only else None
-            update_promote_status(ROOT_DIR, model_names=trained_models)
-        except Exception:
-            pass  # Non-critical — don't block main training flow
-
-        oplog.set_result({
-            "n_targets": len(targets),
-            "predict_only": args.predict_only
-        })
+    from quantpits.training.command import (
+        options_from_namespace, prepare_training_run, prepared_plan_json, render_prepared_plan,
+    )
+    from quantpits.training.errors import TrainingCommandError
+    from quantpits.training.service import TrainingExecutionHooks, TrainingExecutionService
+    try:
+        options = options_from_namespace(args, "static")
+        cli_args = tuple(argv if argv is not None else sys.argv[1:])
+        prepared = prepare_training_run(ctx=ctx, options=options, cli_args=cli_args)
+        if options.json_plan:
+            print(json.dumps(prepared_plan_json(prepared), ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
+        if options.explain_plan:
+            print(render_prepared_plan(prepared))
+            return 0
+        env.safeguard("Static Train", workspace_root=ctx.root)
+        service = TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=env.set_root_dir,
+            init_qlib=env.init_qlib,
+            execute_legacy=lambda value: _legacy_execute(value, args),
+        ))
+        service.execute(prepared)
+        if not args.predict_only:
+            try:
+                from quantpits.scripts.deep_analysis.promote_config import update_promote_status
+                update_promote_status(str(ctx.root), model_names=[item.model_name for item in prepared.targets])
+            except Exception:
+                pass
+        return 0
+    except TrainingCommandError as exc:
+        print("❌ %s" % exc, file=sys.stderr)
+        return exc.exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
