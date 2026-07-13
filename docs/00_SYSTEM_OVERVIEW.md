@@ -347,7 +347,8 @@ python -m quantpits.scripts.static_train --all-enabled
 |------|------|
 | `ensemble_fusion.py` | 对选定模型组合进行融合+回测+风险分析 |
 
-- 支持多组合融合：`--from-config-all` 一次运行所有 combo，`--combo` 指定单个
+- 支持多组合融合：`--from-config-all` 一次运行所有 enabled combo，`--combo` 指定单个；disabled combo 需要显式研究 opt-in
+- 融合执行严格验证 workspace 内的 MLflow 谱系、逐模型预测 freshness，以及声明/加载成员完全一致；不允许静默缩减组合
 - 多组合模式生成跨组合对比表和净值对比图
 - 权重模式：`equal`（等权）/ `icir_weighted` / `manual` / `dynamic`
 - 输出融合预测到 Qlib Recorder 的 pred.pkl

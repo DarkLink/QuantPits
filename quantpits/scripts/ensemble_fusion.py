@@ -106,6 +106,62 @@ def load_selected_predictions(train_records, selected_models, norm_method="rank"
     return load_predictions_from_recorder(train_records, selected_models, norm_method=norm_method)
 
 
+_ORIGINAL_LOAD_SELECTED_PREDICTIONS = load_selected_predictions
+
+
+def load_strict_predictions(train_records, selected_models, **kwargs):
+    from quantpits.ensemble.input_integrity import load_strict_prediction_bundle
+
+    return load_strict_prediction_bundle(train_records, selected_models, **kwargs)
+
+
+def inspect_ensemble_mlflow_preflight(
+    *, train_records, selected_models, workspace_root, target_experiment
+):
+    """Inspect exact source recorders and the writable target experiment."""
+    import mlflow
+    from mlflow.tracking import MlflowClient
+
+    from quantpits.runtime.mlflow_integrity import inspect_mlflow_workspace
+    from quantpits.utils.train_utils import get_experiment_name_for_model
+
+    class _Client:
+        def __init__(self):
+            self.client = MlflowClient()
+
+        def tracking_uri(self):
+            return mlflow.get_tracking_uri()
+
+        def experiments_by_name(self, name):
+            return [
+                exp for exp in self.client.search_experiments()
+                if exp.name == name
+            ]
+
+        def recorder(self, recorder_id, experiment_name=None):
+            run = self.client.get_run(recorder_id)
+            exp = self.client.get_experiment(run.info.experiment_id)
+            return {
+                "id": run.info.run_id,
+                "experiment_id": run.info.experiment_id,
+                "experiment_name": exp.name,
+                "artifact_uri": run.info.artifact_uri,
+            }
+
+    requests = [
+        (train_records["models"][model], get_experiment_name_for_model(train_records, model))
+        for model in selected_models
+    ]
+    read_names = [name for _, name in requests]
+    return inspect_mlflow_workspace(
+        workspace_root=workspace_root,
+        client=_Client(),
+        experiment_names=read_names,
+        recorder_requests=requests,
+        write_experiments=(target_experiment,),
+    )
+
+
 def filter_norm_df_by_args(norm_df, args):
     """根据参数截取 norm_df 的时间窗口"""
     dates = norm_df.index.get_level_values("datetime").unique().sort_values()
@@ -228,6 +284,10 @@ def append_to_fusion_ledger(
     sub_model_metrics: dict = None,
     loo_contributions: dict = None,
     cli_args: list = None,
+    source_recorders: dict = None,
+    source_anchors: dict = None,
+    run_id: str = None,
+    plan_fingerprint: str = None,
 ):
     """
     将本次 ensemble_fusion.py 的回测结果追加写入 data/fusion_run_ledger.jsonl。
@@ -266,6 +326,10 @@ def append_to_fusion_ledger(
             sub_model_metrics=sub_model_metrics or {},
             loo_contributions=loo_contributions or {},
             cli_args=tuple(cli_args or ()),
+            source_recorders=source_recorders or {},
+            source_anchors=source_anchors or {},
+            run_id=run_id,
+            plan_fingerprint=plan_fingerprint,
         ),
     )
 
@@ -288,12 +352,16 @@ def _workspace_bound_path(workspace_root: Path, path_value) -> Path:
 def save_predictions(final_score, anchor_date, experiment_name, method,
                      model_names, model_metrics, static_weights, is_dynamic,
                      output_dir, combo_name=None, is_default=False,
-                     prediction_dir=None, save_csv=False, workspace_root=None):
+                     prediction_dir=None, save_csv=False, workspace_root=None,
+                     verify_output=False, source_recorders=None,
+                     source_anchors=None, run_id=None, plan_fingerprint=None,
+                     return_result=False):
     """
     保存融合预测和配置。
     """
     from quantpits.ensemble.persistence import (
         PredictionSaveRequest,
+        inspect_saved_recorder,
         save_ensemble_predictions,
     )
 
@@ -313,9 +381,14 @@ def save_predictions(final_score, anchor_date, experiment_name, method,
             prediction_dir=prediction_dir,
             save_csv=save_csv,
             workspace_root=workspace_root,
-        )
+            source_recorders=source_recorders,
+            source_anchors=source_anchors,
+            run_id=run_id,
+            plan_fingerprint=plan_fingerprint,
+        ),
+        output_inspector=inspect_saved_recorder if verify_output else None,
     )
-    return result.returned_ref
+    return result if return_result else result.returned_ref
 
 
 # ============================================================================
@@ -424,7 +497,9 @@ def _single_combo_pipeline_hooks():
         correlation_analysis=correlation_analysis,
         calculate_weights=calculate_weights,
         generate_ensemble_signal=generate_ensemble_signal,
-        save_predictions=save_predictions,
+        save_predictions=lambda *args, **kwargs: save_predictions(
+            *args, **kwargs, verify_output=True, return_result=True
+        ),
         run_backtest=run_backtest,
         run_detailed_backtest_analysis=run_detailed_backtest_analysis,
         risk_analysis_and_leaderboard=risk_analysis_and_leaderboard,
@@ -490,7 +565,7 @@ def build_arg_parser():
     return build_ensemble_arg_parser()
 
 
-def default_ensemble_hooks():
+def default_ensemble_hooks(*, strict=True):
     from quantpits.ensemble import EnsembleExecutionHooks
 
     return EnsembleExecutionHooks(
@@ -499,6 +574,8 @@ def default_ensemble_hooks():
         filter_norm_df_by_args=filter_norm_df_by_args,
         run_single_combo=run_single_combo,
         compare_combos=compare_combos,
+        inspect_mlflow_preflight=inspect_ensemble_mlflow_preflight if strict else None,
+        load_prediction_bundle=load_strict_predictions if strict else None,
     )
 
 
@@ -517,7 +594,11 @@ def default_ensemble_command_dependencies():
         get_workspace_context=env.get_workspace_context,
         load_run_config=load_run_config,
         safeguard=env.safeguard,
-        service_factory=lambda: EnsembleFusionService(default_ensemble_hooks()),
+        service_factory=lambda: EnsembleFusionService(
+            default_ensemble_hooks(
+                strict=load_selected_predictions is _ORIGINAL_LOAD_SELECTED_PREDICTIONS
+            )
+        ),
     )
 
 
@@ -535,6 +616,7 @@ def main(argv=None):
         run_ensemble_command,
     )
     from quantpits.ensemble.execution import EnsembleExecutionError
+    from quantpits.runtime.mlflow_integrity import MlflowWorkspaceIntegrityError
     from quantpits.utils.ensemble_plan import EnsemblePlanError
 
     try:
@@ -544,7 +626,7 @@ def main(argv=None):
         )
     except (EnsembleCommandUsageError, EnsemblePlanError) as exc:
         parser.error(str(exc))
-    except EnsembleExecutionError as exc:
+    except (EnsembleExecutionError, MlflowWorkspaceIntegrityError) as exc:
         print(f"Error: {exc}")
         raise SystemExit(1) from None
 

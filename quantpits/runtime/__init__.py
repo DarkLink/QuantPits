@@ -18,6 +18,14 @@ from quantpits.runtime.manifest import (
     write_run_manifest,
 )
 from quantpits.runtime.render import command_plan_to_public_dict, render_command_plan
+from quantpits.runtime.mlflow_integrity import (
+    MlflowIntegrityIssue,
+    MlflowIntegrityReport,
+    MlflowResourceRef,
+    inspect_mlflow_workspace,
+    require_mlflow_integrity,
+    resolve_mlflow_resource_uri,
+)
 
 __all__ = [
     "CommandPlan",
@@ -35,4 +43,10 @@ __all__ = [
     "render_command_plan",
     "run_manifest_to_public_dict",
     "write_run_manifest",
+    "MlflowIntegrityIssue",
+    "MlflowIntegrityReport",
+    "MlflowResourceRef",
+    "inspect_mlflow_workspace",
+    "require_mlflow_integrity",
+    "resolve_mlflow_resource_uri",
 ]

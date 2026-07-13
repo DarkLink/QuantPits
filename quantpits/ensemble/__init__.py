@@ -62,6 +62,15 @@ from quantpits.ensemble.ledger import (
     append_fusion_ledger,
     build_fusion_ledger_record,
 )
+from quantpits.ensemble.input_integrity import (
+    ComboMembershipMismatchError,
+    EnsembleInputIntegrityError,
+    LoadedModelEvidence,
+    PredictionFreshnessError,
+    PredictionLoadIntegrityError,
+    StrictPredictionBundle,
+    load_strict_prediction_bundle,
+)
 from quantpits.ensemble.persistence import (
     PredictionSaveRequest,
     PredictionSaveResult,
@@ -117,6 +126,13 @@ __all__ = [
     "EnsembleExecutionHooks",
     "EnsembleExecutionContext",
     "EnsembleExecutionError",
+    "EnsembleInputIntegrityError",
+    "PredictionLoadIntegrityError",
+    "PredictionFreshnessError",
+    "ComboMembershipMismatchError",
+    "LoadedModelEvidence",
+    "StrictPredictionBundle",
+    "load_strict_prediction_bundle",
     "EnsembleFusionService",
     "EnsembleRunConfig",
     "EnsembleRunOptions",

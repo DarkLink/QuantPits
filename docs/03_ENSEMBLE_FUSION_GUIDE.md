@@ -36,7 +36,8 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 |------|-------|------|
 | `--models` | 无 | 逗号分隔的模型名列表（直接指定，优先级最高） |
 | `--from-config` | false | 从 `config/ensemble_config.json` 读取 default combo |
-| `--from-config-all` | false | 运行所有 combo 并生成跨组合对比 |
+| `--from-config-all` | false | 运行所有 enabled combo 并生成跨组合对比 |
+| `--include-disabled-combos` | false | 显式允许研究运行 disabled combo；不会修改配置 |
 | `--combo` | 无 | 运行指定名称的 combo |
 | `--method` | `equal` | 权重模式: `equal` / `icir_weighted` / `manual` / `dynamic` |
 | `--weights` | 无 | 手动权重，如 `"gru:0.6,linear_Alpha158:0.4"` |
@@ -269,6 +270,30 @@ Stage 8: 可视化 (可跳过)
 ## 输出文件
 
 真实执行还会更新 workspace 状态文件：`config/ensemble_records.json` 保存 combo → recorder_id 映射与 default 指针；完成回测后会向 `data/fusion_run_ledger.jsonl` 追加一条融合运行记录，供后续深度分析读取。Dry-run (`--explain-plan` / `--json-plan`) 不会写这些文件。
+
+### 输入完整性与 MLflow 谱系
+
+生产融合采用 fail-closed 语义：配置声明的每个模型必须能解析到唯一 recorder，`pred.pkl` 必须存在且实际预测结束日期必须等于训练记录的 `anchor_date`。声明成员、解析成员、成功加载成员和预测矩阵列必须完全一致；不会再以少数成功模型静默运行原 combo。需要研究一个明确子集时，请用 `--models` 如实声明该子集。
+
+`enabled` 缺省为 `true`。`--from-config-all` 默认跳过 `enabled: false` 的组合；研究运行 disabled combo 时必须显式加入 `--include-disabled-combos`。生产 default 必须是唯一的 enabled default。
+
+真实执行会分别检查 MLflow tracking backend、目标 experiment artifact location、每个源 recorder artifact URI，以及新建输出 recorder。所有本地资源必须位于当前 workspace 的 canonical path 内；重复的可写 experiment 名称会在创建输出前终止。`--explain-plan` 只展示静态声明，并将 MLflow containment 和模型 freshness 标为执行期验证，不会假装已经检查后台。
+
+只读审计示例：
+
+```bash
+python -m quantpits.tools.audit_mlflow_workspace \
+  --workspace workspaces/Demo_Workspace \
+  --experiment Ensemble_Fusion \
+  --write-experiment Ensemble_Fusion \
+  --json
+```
+
+审计输出只展示 workspace 名、相对路径或 `<external>`，不会输出外部绝对路径。该命令不会修复、移动或删除实验元数据。
+
+如果审计发现重复的 active `Ensemble_Fusion`，不要使用忽略开关或由运行命令自动修复。应由人工选择 canonical experiment，备份并记录变更前后的 experiment ID/artifact location，再执行独立的元数据修复或迁移；随后重新运行只读审计。历史 recorder 和已审核订单不得被重写。
+
+`ensemble_records.json` 保留原有 `combos[name] -> recorder_id` 接口，并新增 v2 `combo_meta`：源 recorder、每模型 anchor、输出 experiment/artifact、run ID 和 plan fingerprint。pointer 仅在输出 recorder 通过验证后，以原子替换方式更新。
 
 ### 单组合模式（`--models` 或 `--from-config`）
 

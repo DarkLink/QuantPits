@@ -345,7 +345,8 @@ python -m quantpits.scripts.static_train --all-enabled
 |------|------|
 | `ensemble_fusion.py` | Performs fusion + backtest + risk analysis on selected model combos |
 
-- Supports multi-combo fusion: `--from-config-all` runs all combos at once, `--combo` specifies a single combo
+- Supports multi-combo fusion: `--from-config-all` runs all enabled combos, while disabled combos require explicit research opt-in
+- Ensemble execution strictly verifies workspace-contained MLflow lineage, per-model prediction freshness, and exact declared/loaded membership; silent combo shrinkage is rejected
 - Multi-combo mode generates crossover comparison tables and net value comparison charts
 - Weighting modes: `equal` / `icir_weighted` / `manual` / `dynamic`
 - Outputs fused predictions to Qlib Recorder's pred.pkl

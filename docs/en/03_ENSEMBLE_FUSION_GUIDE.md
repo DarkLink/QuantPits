@@ -36,7 +36,8 @@ python quantpits/scripts/ensemble_fusion.py --from-config-all --explain-plan
 |------|-------|------|
 | `--models` | None | Comma-separated model name list (Directly specified, highest priority) |
 | `--from-config` | false | Reads the `default` combo from `config/ensemble_config.json` |
-| `--from-config-all` | false | Runs all combos and generates cross-combo comparisons |
+| `--from-config-all` | false | Runs all enabled combos and generates cross-combo comparisons |
+| `--include-disabled-combos` | false | Explicitly permits disabled combos for research; does not mutate config |
 | `--combo` | None | Runs a specifically named combo |
 | `--method` | `equal` | Weighting mode: `equal` / `icir_weighted` / `manual` / `dynamic` |
 | `--weights` | None | Manual weights string, e.g., `"gru:0.6,linear_Alpha158:0.4"` |
@@ -240,6 +241,30 @@ Cross-combo Comparison Table + Merged Net Value Crossover Plot
 ## Output Artifacts
 
 Actual execution also updates workspace state files: `config/ensemble_records.json` stores combo → recorder_id mappings and the default pointer, while completed backtests append one record to `data/fusion_run_ledger.jsonl` for downstream deep analysis. Dry-runs (`--explain-plan` / `--json-plan`) do not write these files.
+
+### Input integrity and MLflow lineage
+
+Production fusion is fail-closed. Every declared model must resolve to one exact recorder, `pred.pkl` must exist, and its actual prediction end date must equal the training record `anchor_date`. Declared, resolved, loaded, and prediction-frame members must match exactly; a combo is never silently executed with the subset that happened to load. Use `--models` to honestly name an intentional research subset.
+
+`enabled` defaults to `true`. `--from-config-all` skips `enabled: false` combos. Running a disabled combo requires the explicit `--include-disabled-combos` research opt-in. The production default must be the single enabled default.
+
+Real execution separately checks the MLflow tracking backend, writable experiment artifact location, every source recorder artifact URI, and the new output recorder. Local resources must be contained by the canonical active workspace path. Duplicate writable experiment names stop execution before output creation. `--explain-plan` remains lightweight: it shows static declarations and marks MLflow containment and freshness as deferred execution checks.
+
+Read-only audit example:
+
+```bash
+python -m quantpits.tools.audit_mlflow_workspace \
+  --workspace workspaces/Demo_Workspace \
+  --experiment Ensemble_Fusion \
+  --write-experiment Ensemble_Fusion \
+  --json
+```
+
+Audit output exposes only the workspace name, workspace-relative paths, or `<external>`; it never exposes external absolute paths. The command does not repair, move, or delete MLflow metadata.
+
+If the audit finds duplicate active `Ensemble_Fusion` experiments, do not bypass the gate or let the runtime repair metadata automatically. A human must select the canonical experiment, back up and record before/after experiment IDs and artifact locations, perform a separately reviewed remediation or migration, and rerun the read-only audit. Historical recorders and reviewed orders must not be rewritten.
+
+`ensemble_records.json` keeps the legacy `combos[name] -> recorder_id` contract and adds v2 `combo_meta` lineage: source recorders, per-model anchors, output experiment/artifact, run ID, and plan fingerprint. The pointer is atomically replaced only after output-recorder verification succeeds.
 
 ### Single Combo Mode (`--models` or `--from-config`)
 

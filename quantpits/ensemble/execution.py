@@ -40,6 +40,7 @@ class LoadedPredictionBundle:
     norm_df: Any
     model_metrics: dict
     loaded_models: tuple[str, ...]
+    evidence: tuple[Any, ...] = ()
 
 
 def required_models_from_combos(combos: Sequence[Any]) -> tuple[str, ...]:
@@ -52,10 +53,13 @@ def required_models_from_combos(combos: Sequence[Any]) -> tuple[str, ...]:
 
 
 def valid_models_for_combo(combo: Any, loaded_models: Sequence[str]) -> tuple[str, ...]:
-    """Return combo models available in loaded predictions, preserving combo order."""
+    """Require exact combo membership, preserving the legacy function name."""
+    from quantpits.ensemble.input_integrity import assert_exact_members
 
-    loaded = set(loaded_models)
-    return tuple(model for model in getattr(combo, "models", ()) if model in loaded)
+    required = tuple(getattr(combo, "models", ()))
+    available = tuple(model for model in loaded_models if model in set(required))
+    assert_exact_members(required, available, layer=f"combo {getattr(combo, 'name', None)}")
+    return required
 
 
 def combo_manifest_records(combo_results: Sequence[Mapping[str, Any]]) -> list[dict]:
@@ -65,9 +69,14 @@ def combo_manifest_records(combo_results: Sequence[Mapping[str, Any]]) -> list[d
         {
             "name": item.get("name"),
             "models": item.get("models", []),
+            "declared_models": item.get("declared_models", item.get("models", [])),
+            "resolved_models": item.get("resolved_models", item.get("models", [])),
+            "loaded_models": item.get("loaded_models", item.get("models", [])),
             "method": item.get("method"),
             "is_default": item.get("is_default", False),
             "pred_file": item.get("pred_file"),
+            "recorder_id": item.get("recorder_id"),
+            "output_evidence": item.get("output_evidence", {}),
         }
         for item in combo_results
     ]
@@ -78,6 +87,8 @@ def success_manifest_records(
     anchor_date: str,
     experiment_name: str,
     combo_results: Sequence[Mapping[str, Any]],
+    expected_anchor: str | None = None,
+    input_evidence: Sequence[Any] = (),
 ) -> dict:
     """Build the records payload for a successful ensemble fusion manifest."""
 
@@ -86,4 +97,9 @@ def success_manifest_records(
         "n_combos": len(combo_results),
         "experiment_name": experiment_name,
         "combos": combo_manifest_records(combo_results),
+        "expected_anchor": expected_anchor or anchor_date,
+        "input_models": [
+            item.to_public_dict() if hasattr(item, "to_public_dict") else dict(item)
+            for item in input_evidence
+        ],
     }

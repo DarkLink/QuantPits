@@ -78,7 +78,7 @@ output/ranking/
 
 ```bash
 # Step 1: 运行融合回测
-python quantpits/scripts/ensemble_fusion.py --from-config-all
+python quantpits/scripts/ensemble_fusion.py --from-config-all  # 仅运行 enabled combos
 
 # Step 2: 生成所有 combo 的信号排名
 python quantpits/scripts/signal_ranking.py --all-combos

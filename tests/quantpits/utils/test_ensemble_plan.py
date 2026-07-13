@@ -39,18 +39,15 @@ def ensemble_plan_module(mock_env_constants):
     return ensemble_plan
 
 
-def test_resolve_models_mode_uses_model_keys(ensemble_plan_module):
+def test_resolve_models_mode_rejects_any_missing_model(ensemble_plan_module):
     train_records = {"models": {"gru@static": "rid1", "linear@rolling": "rid2"}}
 
-    combos = ensemble_plan_module.resolve_ensemble_combos(
-        args=_args(models="gru,linear", training_mode="static"),
-        train_records=train_records,
-        ensemble_config={},
-    )
-
-    assert len(combos) == 1
-    assert combos[0].models == ("gru@static",)
-    assert "linear" in combos[0].warnings[0]
+    with pytest.raises(ensemble_plan_module.MissingComboModelError, match="linear"):
+        ensemble_plan_module.resolve_ensemble_combos(
+            args=_args(models="gru,linear", training_mode="static"),
+            train_records=train_records,
+            ensemble_config={},
+        )
 
 
 def test_resolve_from_config_default_combo_override_method(ensemble_plan_module):
@@ -73,7 +70,7 @@ def test_resolve_from_config_default_combo_override_method(ensemble_plan_module)
     assert combos[0].manual_weights == "m1@static:1"
 
 
-def test_resolve_from_config_all_keeps_empty_combo_with_warning(ensemble_plan_module):
+def test_resolve_from_config_all_rejects_missing_combo_member(ensemble_plan_module):
     train_records = {"models": {"m1@static": "rid1"}}
     ensemble_config = {
         "combos": {
@@ -82,15 +79,12 @@ def test_resolve_from_config_all_keeps_empty_combo_with_warning(ensemble_plan_mo
         }
     }
 
-    combos = ensemble_plan_module.resolve_ensemble_combos(
-        args=_args(from_config_all=True),
-        train_records=train_records,
-        ensemble_config=ensemble_config,
-    )
-
-    assert [combo.name for combo in combos] == ["good", "bad"]
-    assert combos[1].models == ()
-    assert "missing" in combos[1].warnings[0]
+    with pytest.raises(ensemble_plan_module.MissingComboModelError, match="missing"):
+        ensemble_plan_module.resolve_ensemble_combos(
+            args=_args(from_config_all=True),
+            train_records=train_records,
+            ensemble_config=ensemble_config,
+        )
 
 
 def test_resolve_combo_mode_success(ensemble_plan_module):
@@ -115,6 +109,24 @@ def test_resolve_combo_mode_success(ensemble_plan_module):
     assert combos[0].name == "chosen"
     assert combos[0].models == ("m1@rolling",)
     assert combos[0].method == "icir_weighted"
+
+
+def test_from_config_all_skips_disabled_and_explicit_opt_in_includes_it(ensemble_plan_module):
+    records = {"models": {"m1@static": "r1", "m2@static": "r2"}}
+    config = {"combos": {
+        "active": {"models": ["m1"], "default": True},
+        "retired": {"models": ["m2"], "enabled": False},
+    }}
+    default = ensemble_plan_module.resolve_ensemble_combos(
+        args=_args(from_config_all=True), train_records=records, ensemble_config=config
+    )
+    opted_in = ensemble_plan_module.resolve_ensemble_combos(
+        args=_args(from_config_all=True, include_disabled_combos=True),
+        train_records=records, ensemble_config=config,
+    )
+    assert [item.name for item in default] == ["active"]
+    assert [item.name for item in opted_in] == ["active", "retired"]
+    assert opted_in[1].enabled is False
 
 
 def test_missing_combo_raises_plan_error(ensemble_plan_module):

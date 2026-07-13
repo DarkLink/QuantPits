@@ -19,13 +19,19 @@ class EnsemblePlanError(ValueError):
     """Raised when an ensemble fusion plan cannot be constructed."""
 
 
+class MissingComboModelError(EnsemblePlanError):
+    """Raised when any declared combo member cannot resolve exactly."""
+
+
 @dataclass(frozen=True)
 class ResolvedCombo:
     name: str | None
     models: tuple[str, ...]
     method: str
+    declared_models: tuple[str, ...] = ()
     manual_weights: str | None = None
     is_default: bool = False
+    enabled: bool = True
     source: str = ""
     warnings: tuple[str, ...] = ()
 
@@ -55,6 +61,21 @@ def _resolve_models(
     return tuple(resolved), tuple(warnings)
 
 
+def _resolve_models_strict(
+    names: Iterable[str], *, train_records: dict, default_mode: str | None, label: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    declared = tuple(names)
+    resolved, warnings = _resolve_models(
+        declared, train_records=train_records, default_mode=default_mode, warning_prefix=label
+    )
+    if warnings:
+        missing = ", ".join(item.rsplit("'", 2)[1] for item in warnings)
+        raise MissingComboModelError(f"{label} has unresolved model(s): {missing}")
+    if len(set(declared)) != len(declared):
+        raise EnsemblePlanError(f"{label} contains duplicate model names")
+    return declared, resolved
+
+
 def _method_for_default_combo(args: argparse.Namespace, combo_cfg: dict) -> str:
     method = combo_cfg.get("method", "equal")
     if getattr(args, "method", "equal") != "equal":
@@ -73,23 +94,23 @@ def resolve_ensemble_combos(
     cli_training_mode = getattr(args, "training_mode", None)
 
     if getattr(args, "models", None):
-        resolved, warnings = _resolve_models(
+        declared, resolved = _resolve_models_strict(
             _split_models(args.models),
             train_records=train_records,
             default_mode=cli_training_mode,
-            warning_prefix="CLI",
+            label="CLI",
         )
         if not resolved:
             raise EnsemblePlanError("No valid models were resolved from --models")
         return (
             ResolvedCombo(
                 name=None,
+                declared_models=declared,
                 models=resolved,
                 method=getattr(args, "method", "equal"),
                 manual_weights=getattr(args, "weights", None),
                 is_default=True,
                 source="models",
-                warnings=warnings,
             ),
         )
 
@@ -104,24 +125,32 @@ def resolve_ensemble_combos(
                 f"(available: {available})"
             )
         cfg = combos[combo_name]
+        enabled = cfg.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise EnsemblePlanError(f"combo '{combo_name}' enabled must be boolean")
+        if not enabled and not getattr(args, "include_disabled_combos", False):
+            raise EnsemblePlanError(
+                f"combo '{combo_name}' is disabled; use --include-disabled-combos for research execution"
+            )
         combo_mode = cfg.get("training_mode", cli_training_mode)
-        resolved, warnings = _resolve_models(
+        declared, resolved = _resolve_models_strict(
             cfg.get("models", []),
             train_records=train_records,
             default_mode=combo_mode,
-            warning_prefix=f"combo '{combo_name}'",
+            label=f"combo '{combo_name}'",
         )
         if not resolved:
             raise EnsemblePlanError(f"No valid models were resolved from combo '{combo_name}'")
         return (
             ResolvedCombo(
                 name=combo_name,
+                declared_models=declared,
                 models=resolved,
                 method=cfg.get("method", "equal"),
                 manual_weights=None,
                 is_default=bool(cfg.get("default", False)),
+                enabled=enabled,
                 source="combo",
-                warnings=warnings,
             ),
         )
 
@@ -130,22 +159,30 @@ def resolve_ensemble_combos(
             raise EnsemblePlanError("ensemble_config.json does not define any combos")
         resolved_combos = []
         for name, cfg in combos.items():
+            enabled = cfg.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise EnsemblePlanError(f"combo '{name}' enabled must be boolean")
+            if cfg.get("default", False) and not enabled:
+                raise EnsemblePlanError(f"combo '{name}' is disabled and cannot be the default")
+            if not enabled and not getattr(args, "include_disabled_combos", False):
+                continue
             combo_mode = cfg.get("training_mode", cli_training_mode)
-            resolved, warnings = _resolve_models(
+            declared, resolved = _resolve_models_strict(
                 cfg.get("models", []),
                 train_records=train_records,
                 default_mode=combo_mode,
-                warning_prefix=f"combo '{name}'",
+                label=f"combo '{name}'",
             )
             resolved_combos.append(
                 ResolvedCombo(
                     name=name,
+                    declared_models=declared,
                     models=resolved,
                     method=cfg.get("method", "equal"),
                     manual_weights=None,
                     is_default=bool(cfg.get("default", False)),
+                    enabled=enabled,
                     source="from-config-all",
-                    warnings=warnings,
                 )
             )
         if not any(combo.models for combo in resolved_combos):
@@ -153,27 +190,32 @@ def resolve_ensemble_combos(
         return tuple(resolved_combos)
 
     if getattr(args, "from_config", False):
-        default_name, default_cfg = get_default_combo(combos)
+        enabled_combos = {name: cfg for name, cfg in combos.items() if cfg.get("enabled", True)}
+        defaults = [(name, cfg) for name, cfg in enabled_combos.items() if cfg.get("default", False)]
+        if len(defaults) != 1:
+            raise EnsemblePlanError("ensemble_config.json must define exactly one enabled default combo")
+        default_name, default_cfg = defaults[0]
         if not default_cfg:
             raise EnsemblePlanError("ensemble_config.json does not define a default combo")
         combo_mode = default_cfg.get("training_mode", cli_training_mode)
-        resolved, warnings = _resolve_models(
+        declared, resolved = _resolve_models_strict(
             default_cfg.get("models", []),
             train_records=train_records,
             default_mode=combo_mode,
-            warning_prefix="default combo",
+            label="default combo",
         )
         if not resolved:
             raise EnsemblePlanError("No valid models were resolved from the default combo")
         return (
             ResolvedCombo(
                 name=default_name,
+                declared_models=declared,
                 models=resolved,
                 method=_method_for_default_combo(args, default_cfg),
                 manual_weights=getattr(args, "weights", None),
                 is_default=True,
+                enabled=True,
                 source="from-config",
-                warnings=warnings,
             ),
         )
 
@@ -328,10 +370,13 @@ def _combo_metadata(combos: Sequence[ResolvedCombo]) -> list[dict[str, Any]]:
     return [
         {
             "name": combo.name,
+            "declared_models": list(combo.declared_models or combo.models),
+            "resolved_models": list(combo.models),
             "models": list(combo.models),
             "method": combo.method,
             "manual_weights": combo.manual_weights,
             "is_default": combo.is_default,
+            "enabled": combo.enabled,
             "source": combo.source,
         }
         for combo in combos
@@ -370,6 +415,10 @@ def build_ensemble_command_plan(
 
     metadata = {
         "resolved_combos": _combo_metadata(combos),
+        "combo_selection_policy": "include-disabled" if getattr(args, "include_disabled_combos", False) else "enabled-only",
+        "strict_membership": True,
+        "expected_anchor": train_records.get("anchor_date"),
+        "lineage_validation": "deferred-to-execution",
         "record_file": record_file,
         "freq": getattr(args, "freq", None) or model_config.get("freq", "week"),
         "no_backtest": bool(getattr(args, "no_backtest", False)),

@@ -1050,7 +1050,9 @@ def test_main_manual_models_missing(mock_env):
                     with patch('quantpits.scripts.ensemble_fusion.run_single_combo', return_value=res):
                         with patch('quantpits.utils.strategy.get_backtest_config', return_value={'account': 100.0}):
                             with patch('builtins.print', side_effect=lambda *a, **k: None):
-                                ef.main()
+                                with pytest.raises(SystemExit) as caught:
+                                    ef.main()
+                                assert caught.value.code == 2
 
 def test_main_combo_skip_no_models(mock_env):
     ef, _ = mock_env
@@ -1063,9 +1065,10 @@ def test_main_combo_skip_no_models(mock_env):
              norm_df = pd.DataFrame({"m1":[0.5]}, index=pd.MultiIndex.from_tuples([(pd.Timestamp("2020-01-01"),"A")], names=["datetime", "instrument"]))
              with patch('quantpits.scripts.ensemble_fusion.load_selected_predictions', return_value=(norm_df, {"m1": 0.1}, ["m1"])):
                  with patch('quantpits.scripts.ensemble_fusion.filter_norm_df_by_args', return_value=norm_df):
-                    with patch('builtins.print', side_effect=lambda *a, **k: None) as mock_p:
-                        ef.main()
-                        assert any("没有有效模型，跳过" in str(arg) for call in mock_p.call_args_list for arg in call[0])
+                    with patch('builtins.print', side_effect=lambda *a, **k: None):
+                        with pytest.raises(SystemExit) as caught:
+                            ef.main()
+                        assert caught.value.code == 1
 
 
 def test_main_combo_missing_and_empty(mock_env):
@@ -1114,7 +1117,9 @@ def test_main_from_config_default_combo(mock_env):
                     with patch('quantpits.scripts.ensemble_fusion.run_single_combo', return_value=res):
                         with patch('quantpits.utils.strategy.get_backtest_config', return_value={'account': 100.0}):
                             with patch('builtins.print'):
-                                ef.main()
+                                with pytest.raises(SystemExit) as caught:
+                                    ef.main()
+                                assert caught.value.code == 2
 
 def test_main_empty_norm_df_after_filter(mock_env):
     ef, _ = mock_env

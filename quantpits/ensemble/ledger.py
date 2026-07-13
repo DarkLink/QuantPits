@@ -22,6 +22,10 @@ class FusionLedgerEntry:
     sub_model_metrics: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     loo_contributions: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     cli_args: Sequence[str] = ()
+    source_recorders: Mapping[str, str] = field(default_factory=dict)
+    source_anchors: Mapping[str, str] = field(default_factory=dict)
+    run_id: str | None = None
+    plan_fingerprint: str | None = None
 
 
 def build_fusion_ledger_record(entry: FusionLedgerEntry) -> dict[str, Any]:
@@ -48,6 +52,10 @@ def build_fusion_ledger_record(entry: FusionLedgerEntry) -> dict[str, Any]:
         "loo_contributions": dict(entry.loo_contributions or {}),
         "source": "ensemble_fusion",
         "cli_args": " ".join(entry.cli_args) if entry.cli_args else None,
+        "source_recorders": dict(entry.source_recorders),
+        "source_anchors": dict(entry.source_anchors),
+        "run_id": entry.run_id,
+        "plan_fingerprint": entry.plan_fingerprint,
     }
 
 

@@ -83,7 +83,7 @@ def test_ensemble_missing_or_multiple_default_is_warning():
 
     assert "missing-default-combo" in _codes(no_default)
     assert "multiple-default-combos" in _codes(multi_default)
-    assert all(message.severity == "warning" for message in no_default + multi_default)
+    assert all(message.severity == "error" for message in no_default + multi_default)
 
 
 def test_model_registry_missing_workflow_is_warning(tmp_path):

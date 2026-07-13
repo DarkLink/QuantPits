@@ -18,6 +18,11 @@ from quantpits.ensemble.execution import (
     success_manifest_records,
     valid_models_for_combo,
 )
+from quantpits.ensemble.input_integrity import (
+    StrictPredictionBundle,
+    assert_exact_members,
+)
+from quantpits.runtime.mlflow_integrity import require_mlflow_integrity
 from quantpits.ensemble.types import (
     EnsembleExecutionHooks,
     EnsembleRunConfig,
@@ -197,6 +202,28 @@ def _failed_result(
             "anchor_date": anchor_date,
             "experiment_name": experiment_name,
             "n_combos": len(combo_results),
+            "combos": [
+                {
+                    "name": combo.name,
+                    "declared_models": list(combo.declared_models or combo.models),
+                    "resolved_models": list(combo.models),
+                    "enabled": combo.enabled,
+                }
+                for combo in prepared.combos
+            ],
+            "input_models": [
+                item.to_public_dict() if hasattr(item, "to_public_dict") else dict(item)
+                for item in getattr(exc, "evidence", ())
+            ],
+            "integrity_issues": [
+                {
+                    "code": issue.code,
+                    "severity": issue.severity,
+                    "resource_kind": issue.resource_kind,
+                    "message": issue.message,
+                }
+                for issue in getattr(getattr(exc, "report", None), "issues", ())
+            ],
         },
         error={"type": type(exc).__name__, "message": str(exc)},
     )
@@ -240,6 +267,8 @@ class EnsembleFusionService:
         args = options_to_namespace(execution_options)
         args.workspace_root = prepared.ctx.root.as_posix()
         args.cli_args = list(prepared.cli_args)
+        args.run_id = prepared.plan.run_id
+        args.plan_fingerprint = prepared.plan_fingerprint
         train_records = prepared.config.train_records
         return EnsembleExecutionContext(
             prepared=prepared,
@@ -285,11 +314,34 @@ class EnsembleFusionService:
             raise NoRequiredModelsError("没有有效的模型")
 
         print(f"\n所有 combo 涉及的模型并集 ({len(all_needed_models)}): {list(all_needed_models)}")
-        norm_df, model_metrics, loaded_models = self.hooks.load_selected_predictions(
-            execution.train_records,
-            list(all_needed_models),
-            norm_method=execution.options.norm_method,
-        )
+        if self.hooks.inspect_mlflow_preflight is not None:
+            report = self.hooks.inspect_mlflow_preflight(
+                train_records=execution.train_records,
+                selected_models=all_needed_models,
+                workspace_root=execution.prepared.ctx.root,
+                target_experiment="Ensemble_Fusion",
+            )
+            require_mlflow_integrity(report)
+        strict_bundle: StrictPredictionBundle | None = None
+        if self.hooks.load_prediction_bundle is not None:
+            strict_bundle = self.hooks.load_prediction_bundle(
+                execution.train_records,
+                all_needed_models,
+                workspace_root=execution.prepared.ctx.root,
+                expected_anchor=execution.anchor_date,
+                norm_method=execution.options.norm_method,
+            )
+            norm_df = strict_bundle.norm_df
+            model_metrics = dict(strict_bundle.model_metrics)
+            loaded_models = strict_bundle.loaded_models
+        else:
+            norm_df, model_metrics, loaded_models = self.hooks.load_selected_predictions(
+                execution.train_records,
+                list(all_needed_models),
+                norm_method=execution.options.norm_method,
+            )
+        assert_exact_members(all_needed_models, loaded_models, layer="loaded union")
+        assert_exact_members(all_needed_models, tuple(norm_df.columns), layer="prediction columns")
         norm_df = self.hooks.filter_norm_df_by_args(norm_df, execution.args)
         if norm_df.empty:
             raise EmptyPredictionWindowError("过滤后没有预测数据，请检查日期参数。")
@@ -297,6 +349,7 @@ class EnsembleFusionService:
             norm_df=norm_df,
             model_metrics=model_metrics,
             loaded_models=tuple(loaded_models),
+            evidence=tuple(strict_bundle.evidence) if strict_bundle is not None else (),
         )
 
     def _execute_combos(
@@ -305,12 +358,14 @@ class EnsembleFusionService:
         bundle: LoadedPredictionBundle,
         combo_results: list[dict],
     ) -> list[dict]:
+        execution.args.source_anchors = {
+            item.resolved_key: item.prediction_end
+            for item in bundle.evidence
+            if getattr(item, "prediction_end", None)
+        }
         for combo in execution.prepared.combos:
             combo_name = combo.name
             valid_models = list(valid_models_for_combo(combo, bundle.loaded_models))
-            if not valid_models:
-                print(f"\nWarning: combo {combo_name} 没有有效模型，跳过")
-                continue
 
             result = self.hooks.run_single_combo(
                 combo_name=combo_name,
@@ -329,6 +384,9 @@ class EnsembleFusionService:
                 is_default=combo.is_default,
             )
             if result:
+                result.setdefault("declared_models", list(combo.declared_models or combo.models))
+                result.setdefault("resolved_models", list(combo.models))
+                result.setdefault("loaded_models", list(valid_models))
                 combo_results.append(result)
         return combo_results
 
@@ -372,6 +430,7 @@ class EnsembleFusionService:
         self,
         execution: EnsembleExecutionContext,
         combo_results: list[dict],
+        bundle: LoadedPredictionBundle,
         *,
         manifest_file: Path,
     ) -> CommandResult:
@@ -391,6 +450,8 @@ class EnsembleFusionService:
                 anchor_date=execution.anchor_date,
                 experiment_name=execution.experiment_name,
                 combo_results=combo_results,
+                expected_anchor=execution.anchor_date,
+                input_evidence=bundle.evidence,
             ),
         )
 
@@ -398,6 +459,7 @@ class EnsembleFusionService:
         self,
         execution: EnsembleExecutionContext,
         combo_results: list[dict],
+        bundle: LoadedPredictionBundle,
         oplog,
     ) -> str | None:
         planned_manifest_file = manifest_path(
@@ -408,6 +470,7 @@ class EnsembleFusionService:
         result = self._build_success_result(
             execution,
             combo_results,
+            bundle,
             manifest_file=planned_manifest_file,
         )
         try:
@@ -463,8 +526,6 @@ class EnsembleFusionService:
                 bundle = self._load_prediction_bundle(execution)
                 combo_results = self._execute_combos(execution, bundle, combo_results)
                 self._write_combo_comparison_if_needed(execution, combo_results)
-            except EnsembleExecutionError:
-                raise
             except Exception as exc:
                 if not execution.options.no_manifest:
                     self._write_failed_manifest_best_effort(
@@ -477,7 +538,7 @@ class EnsembleFusionService:
 
             self._print_success_summary(execution, combo_results)
             if not execution.options.no_manifest:
-                manifest_rel = self._write_success_manifest_best_effort(execution, combo_results, oplog)
+                manifest_rel = self._write_success_manifest_best_effort(execution, combo_results, bundle, oplog)
 
             oplog.set_result(
                 {
@@ -494,4 +555,8 @@ class EnsembleFusionService:
                 experiment_name=execution.experiment_name,
                 combo_results=tuple(combo_results),
                 manifest_path=manifest_rel,
+                input_evidence=tuple(
+                    item.to_public_dict() if hasattr(item, "to_public_dict") else dict(item)
+                    for item in bundle.evidence
+                ),
             )

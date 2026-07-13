@@ -77,6 +77,10 @@ def build_ensemble_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--models", type=str, help="逗号分隔的模型名列表（直接指定）")
     parser.add_argument("--from-config", action="store_true", help="从 ensemble_config.json 读取 default combo")
     parser.add_argument("--from-config-all", action="store_true", help="运行 ensemble_config.json 中所有 combo")
+    parser.add_argument(
+        "--include-disabled-combos", action="store_true",
+        help="显式允许研究运行 disabled combo（默认只运行 enabled combo）",
+    )
     parser.add_argument("--combo", type=str, help="运行指定名称的 combo")
     parser.add_argument(
         "--method",

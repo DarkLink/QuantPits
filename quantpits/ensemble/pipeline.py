@@ -43,6 +43,8 @@ class SingleComboPipelineResult:
     report_df: pd.DataFrame | None
     leaderboard_df: pd.DataFrame | None
     contributions: Mapping[str, Mapping[str, float]]
+    recorder_id: str | None = None
+    output_evidence: Mapping[str, Any] | None = None
 
     def to_legacy_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +56,8 @@ class SingleComboPipelineResult:
             "report_df": self.report_df,
             "leaderboard_df": self.leaderboard_df,
             "contributions": dict(self.contributions),
+            "recorder_id": self.recorder_id,
+            "output_evidence": dict(self.output_evidence or {}),
         }
 
 
@@ -133,6 +137,10 @@ def _default_save_predictions(
     prediction_dir=None,
     save_csv=False,
     workspace_root=None,
+    source_recorders=None,
+    source_anchors=None,
+    run_id=None,
+    plan_fingerprint=None,
 ):
     from quantpits.ensemble.persistence import (
         PredictionSaveRequest,
@@ -155,7 +163,14 @@ def _default_save_predictions(
             prediction_dir=prediction_dir,
             save_csv=save_csv,
             workspace_root=workspace_root,
-        )
+            source_recorders=source_recorders,
+            source_anchors=source_anchors,
+            run_id=run_id,
+            plan_fingerprint=plan_fingerprint,
+        ),
+        output_inspector=__import__(
+            "quantpits.ensemble.persistence", fromlist=["inspect_saved_recorder"]
+        ).inspect_saved_recorder,
     )
     return result.returned_ref
 
@@ -172,6 +187,10 @@ def _default_append_to_fusion_ledger(
     sub_model_metrics: dict | None = None,
     loo_contributions: dict | None = None,
     cli_args: list | None = None,
+    source_recorders: Mapping[str, str] | None = None,
+    source_anchors: Mapping[str, str] | None = None,
+    run_id: str | None = None,
+    plan_fingerprint: str | None = None,
 ):
     from quantpits.ensemble.ledger import FusionLedgerEntry, append_fusion_ledger
 
@@ -188,6 +207,10 @@ def _default_append_to_fusion_ledger(
             sub_model_metrics=sub_model_metrics or {},
             loo_contributions=loo_contributions or {},
             cli_args=tuple(cli_args or ()),
+            source_recorders=source_recorders or {},
+            source_anchors=source_anchors or {},
+            run_id=run_id,
+            plan_fingerprint=plan_fingerprint,
         ),
     )
 
@@ -234,7 +257,15 @@ def _valid_workspace_root(value: Any) -> str | os.PathLike | None:
 
 
 def _combo_models(selected_models: Sequence[str], norm_df: pd.DataFrame) -> list[str]:
-    return [model for model in selected_models if model in norm_df.columns]
+    from quantpits.ensemble.input_integrity import assert_exact_members
+
+    if not selected_models:
+        return []
+    if norm_df is None:
+        assert_exact_members(tuple(selected_models), (), layer="single-combo dataframe")
+    actual = tuple(model for model in norm_df.columns if model in set(selected_models))
+    assert_exact_members(tuple(selected_models), actual, layer="single-combo dataframe")
+    return list(selected_models)
 
 
 def _ledger_metrics_from_leaderboard(leaderboard_df: pd.DataFrame) -> dict[str, Any]:
@@ -323,6 +354,16 @@ def _append_ledger_best_effort(
             ),
             loo_contributions=_loo_summary(contributions),
             cli_args=_cli_args(request.args),
+            source_recorders={
+                model: request.train_records.get("models", {}).get(model, "")
+                for model in combo_models
+            },
+            source_anchors={
+                model: _arg_value(request.args, "source_anchors", {}).get(model, request.anchor_date)
+                for model in combo_models
+            },
+            run_id=_arg_value(request.args, "run_id"),
+            plan_fingerprint=_arg_value(request.args, "plan_fingerprint"),
         )
     except Exception as exc:
         print(f"[Ledger] 写入失败（非致命）: {exc}")
@@ -389,7 +430,7 @@ def run_single_combo_pipeline(
 
     prediction_dir = _arg_value(request.args, "prediction_dir")
     workspace_root = _valid_workspace_root(_arg_value(request.args, "workspace_root"))
-    pred_file = hooks.save_predictions(
+    saved_prediction = hooks.save_predictions(
         final_score,
         request.anchor_date,
         request.experiment_name,
@@ -404,7 +445,17 @@ def run_single_combo_pipeline(
         prediction_dir=prediction_dir,
         save_csv=_arg_value(request.args, "save_csv", False),
         workspace_root=workspace_root,
+        source_recorders={model: request.train_records.get("models", {}).get(model, "") for model in combo_models},
+        source_anchors={
+            model: _arg_value(request.args, "source_anchors", {}).get(model, request.anchor_date)
+            for model in combo_models
+        },
+        run_id=_arg_value(request.args, "run_id"),
+        plan_fingerprint=_arg_value(request.args, "plan_fingerprint"),
     )
+    pred_file = getattr(saved_prediction, "returned_ref", saved_prediction)
+    recorder_id = getattr(saved_prediction, "recorder_id", None)
+    output_evidence = getattr(saved_prediction, "output_evidence", None)
 
     report_df = None
     executor_obj = None
@@ -487,6 +538,8 @@ def run_single_combo_pipeline(
         report_df=report_df,
         leaderboard_df=leaderboard_df,
         contributions=contributions,
+        recorder_id=recorder_id,
+        output_evidence=output_evidence,
     )
 
 

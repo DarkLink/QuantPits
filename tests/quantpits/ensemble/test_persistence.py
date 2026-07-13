@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from quantpits.ensemble.persistence import (
     PredictionSaveRequest,
@@ -23,7 +24,11 @@ def test_save_ensemble_predictions_updates_records_and_config(tmp_path):
     (workspace / "config").mkdir(parents=True)
     records_path = workspace / "config" / "ensemble_records.json"
     records_path.write_text(
-        json.dumps({"combos": {"old_combo": "old_rec"}, "default_combo": "old_combo"}),
+        json.dumps({
+            "combos": {"old_combo": "old_rec"},
+            "default_combo": "old_combo",
+            "future_field": {"preserve": True},
+        }),
         encoding="utf-8",
     )
 
@@ -58,9 +63,12 @@ def test_save_ensemble_predictions_updates_records_and_config(tmp_path):
 
     records = json.loads(records_path.read_text(encoding="utf-8"))
     assert records["combos"]["old_combo"] == "old_rec"
+    assert records["future_field"] == {"preserve": True}
     assert records["combos"]["combo_a"] == "rec_123"
     assert records["default_combo"] == "combo_a"
     assert records["default_record_id"] == "rec_123"
+    assert records["_schema_version"] == 2
+    assert records["combo_meta"]["combo_a"]["record_id"] == "rec_123"
 
     config_path = workspace / "output" / "ensemble" / "ensemble_fusion_config_combo_a_2026-01-05.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -69,6 +77,82 @@ def test_save_ensemble_predictions_updates_records_and_config(tmp_path):
     assert config["models_used"] == ["M1", "M2"]
     assert config["model_metrics"] == {"M1": 0.1235, "M2": 0.2346}
     assert config["static_weights"] == {"M1": 0.5, "M2": 0.5}
+
+
+def test_output_verification_failure_leaves_existing_pointer_unchanged(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "config").mkdir(parents=True)
+    records_path = workspace / "config" / "ensemble_records.json"
+    original = {"combos": {"default": "old"}, "default_combo": "default"}
+    records_path.write_text(json.dumps(original), encoding="utf-8")
+    request = PredictionSaveRequest(
+        final_score=_score_series(), anchor_date="2026-01-05", experiment_name="exp",
+        method="equal", model_names=("M1",), model_metrics={}, static_weights={"M1": 1.0},
+        is_dynamic=False, output_dir="output/ensemble", combo_name="default",
+        is_default=True, workspace_root=workspace,
+    )
+    with patch("quantpits.utils.predict_utils.save_predictions_to_recorder", return_value="new"):
+        with pytest.raises(ValueError, match="unsafe"):
+            save_ensemble_predictions(
+                request,
+                output_inspector=lambda *a, **k: (_ for _ in ()).throw(ValueError("unsafe recorder")),
+            )
+    assert json.loads(records_path.read_text(encoding="utf-8")) == original
+
+
+def test_atomic_replace_failure_leaves_old_records_intact(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "config").mkdir(parents=True)
+    records_path = workspace / "config/ensemble_records.json"
+    original = {"combos": {"default": "old"}, "default_combo": "default"}
+    records_path.write_text(json.dumps(original), encoding="utf-8")
+    request = PredictionSaveRequest(
+        final_score=_score_series(), anchor_date="2026-01-05", experiment_name="exp",
+        method="equal", model_names=("M1",), model_metrics={}, static_weights={"M1": 1.0},
+        is_dynamic=False, output_dir="output/ensemble", combo_name="default",
+        is_default=True, workspace_root=workspace,
+    )
+    with patch("quantpits.utils.predict_utils.save_predictions_to_recorder", return_value="new"):
+        with patch("quantpits.ensemble.persistence.os.replace", side_effect=OSError("replace failed")):
+            with pytest.raises(OSError, match="replace failed"):
+                save_ensemble_predictions(request)
+    assert json.loads(records_path.read_text(encoding="utf-8")) == original
+
+
+def test_verified_output_records_tags_and_lineage_before_pointer_update(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "config").mkdir(parents=True)
+    seen = {}
+
+    def inspector(record_id, **kwargs):
+        seen.update(kwargs)
+        return {
+            "recorder_id": record_id,
+            "experiment_id": "demo-experiment",
+            "artifact_path": "mlruns/demo/artifacts",
+            "contained": True,
+        }
+
+    request = PredictionSaveRequest(
+        final_score=_score_series(), anchor_date="2026-01-05", experiment_name="source",
+        method="equal", model_names=("M1",), model_metrics={}, static_weights={"M1": 1.0},
+        is_dynamic=False, output_dir="output/ensemble", combo_name="default", is_default=True,
+        workspace_root=workspace, source_recorders={"M1": "source-recorder"},
+        source_anchors={"M1": "2026-01-05"}, run_id="demo-run", plan_fingerprint="abc123",
+    )
+    with patch("quantpits.utils.predict_utils.save_predictions_to_recorder", return_value="new"):
+        save_ensemble_predictions(request, output_inspector=inspector)
+
+    assert seen["expected_tags"]["mode"] == "fused_prediction"
+    assert seen["expected_tags"]["plan_fingerprint"] == "abc123"
+    records = json.loads((workspace / "config/ensemble_records.json").read_text())
+    meta = records["combo_meta"]["default"]
+    assert meta["source_recorders"] == {"M1": "source-recorder"}
+    assert meta["source_anchors"] == {"M1": "2026-01-05"}
+    snapshot = json.loads(
+        (workspace / "output/ensemble/ensemble_fusion_config_default_2026-01-05.json").read_text()
+    )
+    assert snapshot["output_recorder"]["artifact_path"] == "mlruns/demo/artifacts"
 
 
 def test_save_ensemble_predictions_non_default_preserves_default_pointer(tmp_path):

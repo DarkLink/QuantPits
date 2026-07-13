@@ -186,8 +186,16 @@ def validate_ensemble_config(data: Dict[str, Any], *, path: str = "config/ensemb
         if not isinstance(combo, dict):
             messages.append(_msg("error", "invalid-combo", combo_path, "Combo must be a mapping."))
             continue
-        if combo.get("default"):
+        enabled = combo.get("enabled", True)
+        if not isinstance(enabled, bool):
+            messages.append(_msg("error", "invalid-combo-enabled", combo_path, "enabled must be boolean."))
+            enabled = False
+        if "default" in combo and not isinstance(combo["default"], bool):
+            messages.append(_msg("error", "invalid-combo-default", combo_path, "default must be boolean."))
+        if combo.get("default") and enabled:
             default_count += 1
+        if combo.get("default") and not enabled:
+            messages.append(_msg("error", "disabled-default-combo", combo_path, "A disabled combo cannot be the production default."))
         models = combo.get("models")
         if not isinstance(models, list) or not models:
             messages.append(_msg("error", "invalid-combo-models", combo_path, "Combo models must be a non-empty list."))
@@ -196,6 +204,8 @@ def validate_ensemble_config(data: Dict[str, Any], *, path: str = "config/ensemb
             for model in models:
                 if not isinstance(model, str) or not model.strip():
                     messages.append(_msg("error", "invalid-model-key", combo_path, "Combo model keys must be non-empty strings."))
+            if len(models) != len(set(models)):
+                messages.append(_msg("error", "duplicate-combo-model", combo_path, "Combo model keys must be unique."))
         method = combo.get("method", "equal")
         if method not in allowed_methods:
             messages.append(_msg("warning", "unknown-ensemble-method", combo_path, f"Unknown ensemble method: {method}"))
@@ -204,13 +214,12 @@ def validate_ensemble_config(data: Dict[str, Any], *, path: str = "config/ensemb
             if not isinstance(weights, dict):
                 messages.append(_msg("error", "missing-manual-weights", combo_path, "manual combo requires manual_weights."))
             else:
-                missing = [model for model in models if model not in weights]
-                if missing:
-                    messages.append(_msg("error", "incomplete-manual-weights", combo_path, "manual_weights must cover all combo models."))
+                if set(weights) != set(models):
+                    messages.append(_msg("error", "incomplete-manual-weights", combo_path, "manual_weights must exactly match combo models."))
     if default_count == 0:
-        messages.append(_msg("warning", "missing-default-combo", path, "No default combo marked; current code falls back to the first combo."))
+        messages.append(_msg("error", "missing-default-combo", path, "Exactly one enabled default combo is required."))
     elif default_count > 1:
-        messages.append(_msg("warning", "multiple-default-combos", path, "Multiple default combos are marked."))
+        messages.append(_msg("error", "multiple-default-combos", path, "Exactly one enabled default combo is required."))
     if "min_model_ic" in data and not _is_number(data["min_model_ic"]):
         messages.append(_msg("error", "invalid-min-model-ic", path, "min_model_ic must be numeric."))
     return messages

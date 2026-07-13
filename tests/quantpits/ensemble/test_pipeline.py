@@ -114,15 +114,13 @@ def _hooks(calls=None, *, report_df=None, leaderboard_df=None, contributions=Non
     )
 
 
-def test_run_single_combo_pipeline_skips_when_no_valid_models():
+def test_run_single_combo_pipeline_rejects_missing_dataframe_model():
     calls = []
     hooks = _hooks(calls)
-    result = run_single_combo_pipeline(
-        _request(selected_models=["missing"]),
-        hooks=hooks,
-    )
+    from quantpits.ensemble.input_integrity import ComboMembershipMismatchError
 
-    assert result is None
+    with pytest.raises(ComboMembershipMismatchError):
+        run_single_combo_pipeline(_request(selected_models=["missing"]), hooks=hooks)
     assert calls == []
 
 

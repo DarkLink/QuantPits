@@ -18,6 +18,7 @@ class EnsembleRunOptions:
     models: str | None = None
     from_config: bool = False
     from_config_all: bool = False
+    include_disabled_combos: bool = False
     combo: str | None = None
     method: str = "equal"
     weights: str | None = None
@@ -68,6 +69,8 @@ class EnsembleExecutionHooks:
     filter_norm_df_by_args: Callable[..., Any]
     run_single_combo: Callable[..., dict | None]
     compare_combos: Callable[..., None]
+    inspect_mlflow_preflight: Callable[..., Any] | None = None
+    load_prediction_bundle: Callable[..., Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ class EnsembleRunSummary:
     experiment_name: str
     combo_results: tuple[dict, ...]
     manifest_path: str | None
+    input_evidence: tuple[dict[str, Any], ...] = ()
 
 
 def _field_default(name: str) -> Any:
