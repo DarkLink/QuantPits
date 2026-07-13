@@ -6,6 +6,7 @@ import argparse
 import json
 import uuid
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
@@ -21,7 +22,8 @@ from quantpits.runtime import (
     fingerprint_command_plan,
     render_command_plan,
 )
-from quantpits.training.errors import TrainingPlanError
+from quantpits.training.errors import TrainingDatePolicyError, TrainingPlanError
+from quantpits.training.record_repository import TrainingRecordBaseline, TrainingRecordRepository
 from quantpits.training.records import TrainingRecordSnapshot, snapshot_from_dict
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_file
 
@@ -76,6 +78,13 @@ class TrainingTarget:
 
 
 @dataclass(frozen=True)
+class RequestedDatePolicy:
+    mode: str
+    configured_anchor: Optional[str]
+    resolution: str
+
+
+@dataclass(frozen=True)
 class PreparedTrainingRun:
     ctx: WorkspaceContext
     options: TrainingRunOptions
@@ -83,9 +92,15 @@ class PreparedTrainingRun:
     targets: Tuple[TrainingTarget, ...]
     plan: CommandPlan
     plan_fingerprint: str
-    input_fingerprints: Mapping[str, str]
+    input_fingerprints: Mapping[str, Optional[str]]
     source_snapshot: Optional[TrainingRecordSnapshot]
-    anchor_resolution: str
+    current_snapshot: TrainingRecordSnapshot
+    current_record_baseline: TrainingRecordBaseline
+    date_policy: RequestedDatePolicy
+
+    @property
+    def anchor_resolution(self) -> str:
+        return self.date_policy.resolution
 
 
 def _contained(ctx: WorkspaceContext, value: str) -> Path:
@@ -182,6 +197,20 @@ def _run_id(options: TrainingRunOptions) -> str:
     return options.run_id or "training-%s" % uuid.uuid4().hex[:12]
 
 
+def _requested_date_policy(model_config: Mapping[str, Any]) -> RequestedDatePolicy:
+    mode = str(model_config.get("train_date_mode", "last_trade_date"))
+    if mode == "last_trade_date":
+        return RequestedDatePolicy(mode, None, "deferred_to_qlib_calendar")
+    value = model_config.get("current_date")
+    if not isinstance(value, str):
+        raise TrainingDatePolicyError("configured training date requires model_config.current_date")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise TrainingDatePolicyError("model_config.current_date must be YYYY-MM-DD") from exc
+    return RequestedDatePolicy(mode, value, "configured")
+
+
 def prepare_training_run(
     *, ctx: WorkspaceContext, options: TrainingRunOptions, cli_args: Tuple[str, ...] = ()
 ) -> PreparedTrainingRun:
@@ -191,6 +220,7 @@ def prepare_training_run(
     registry_path = ctx.config_path("model_registry.yaml")
     model_config_path = ctx.config_path("model_config.json")
     model_config = _read_json(model_config_path)
+    date_policy = _requested_date_policy(model_config)
     registry = _registry(ctx)
     selected = _selected_models(options, registry)
     suffix = "cpcv" if options.family == "cpcv" else "static"
@@ -216,6 +246,25 @@ def prepare_training_run(
 
     source_snapshot = None
     warnings = []
+    current_repo = TrainingRecordRepository.for_workspace(ctx)
+    try:
+        current_snapshot, current_baseline = current_repo.inspect()
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise TrainingPlanError("current training record violates its declared schema") from exc
+    current_fp = current_baseline.file_fingerprint
+    fingerprints["latest_train_records.json"] = current_fp
+    input_refs.append(InputRef(
+        "latest_train_records.json", kind="record", fingerprint=current_fp,
+        required=False, description="current publication baseline",
+    ))
+    if options.resume:
+        state_path = ctx.data_path("run_state.json")
+        state_fp = fingerprint_file(state_path) if state_path.is_file() else None
+        fingerprints["data/run_state.json"] = state_fp
+        input_refs.append(InputRef(
+            "data/run_state.json", kind="state", fingerprint=state_fp,
+            required=False, description="resume identity baseline",
+        ))
     if options.action == "predict_only":
         source_path = _contained(ctx, options.source_records)
         source_data = _read_json(source_path)
@@ -234,8 +283,6 @@ def prepare_training_run(
         if missing:
             raise TrainingPlanError("source training record is missing selected models: %s" % ", ".join(missing))
 
-    date_mode = str(model_config.get("train_date_mode", "last_trade_date"))
-    anchor_resolution = "configured" if date_mode == "current_date" and model_config.get("anchor_date") else "deferred_to_qlib_calendar"
     run_id = _run_id(options)
     command = "%s_train" % ("cv" if options.family == "cpcv" else "static")
     manifest_rel = "output/manifests/%s/%s.json" % (command, run_id)
@@ -257,19 +304,29 @@ def prepare_training_run(
         mode="%s:%s" % (options.family, options.action), args=cli_args,
         inputs=tuple(input_refs), outputs=tuple(outputs),
         states=(StateRef("data/run_state.json", "read_write", "resume and completion state"),),
-        steps=steps, config_fingerprints=dict(sorted(fingerprints.items())),
+        steps=steps, config_fingerprints=dict(sorted(
+            (key, value) for key, value in fingerprints.items() if value is not None
+        )),
         warnings=tuple(warnings), metadata={
             "family": options.family, "action": options.action,
             "target_keys": [item.key for item in targets],
-            "target_count": len(targets), "anchor_resolution": anchor_resolution,
+            "target_count": len(targets), "anchor_resolution": date_policy.resolution,
+            "configured_anchor": date_policy.configured_anchor,
+            "current_record_fingerprint": current_fp,
             "publication_policy": "overwrite_all" if options.action == "full" else "merge_successes",
+            "output_experiment_name": options.experiment_name,
+            "no_pretrain": options.no_pretrain,
+            "cache_size_mb": options.cache_size_mb,
+            "resume": options.resume,
+            "source_record_keys": [item.key for item in source_snapshot.entries] if source_snapshot else [],
         },
     )
     plan_fingerprint = fingerprint_command_plan(plan)
     return PreparedTrainingRun(
         ctx=ctx, options=options, cli_args=cli_args, targets=tuple(targets), plan=plan,
         plan_fingerprint=plan_fingerprint, input_fingerprints=fingerprints,
-        source_snapshot=source_snapshot, anchor_resolution=anchor_resolution,
+        source_snapshot=source_snapshot, current_snapshot=current_snapshot,
+        current_record_baseline=current_baseline, date_policy=date_policy,
     )
 
 

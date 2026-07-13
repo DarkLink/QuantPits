@@ -8,7 +8,7 @@
 
 **文件**: `quantpits/utils/operator_log.py`
 
-每次核心脚本运行自动追加一条 JSONL 记录到 `data/operator_log.jsonl`。已集成到 7 个脚本：`static_train.py`, `rolling_train.py`, `ensemble_fusion.py`, `pretrain.py`, `minentropy_ensemble.py`, `brute_force_ensemble.py`, `brute_force_fast.py`。
+每次核心脚本运行自动追加一条 JSONL 记录到 `data/operator_log.jsonl`。已集成到 8 个脚本：`static_train.py`, `cv_train.py`, `rolling_train.py`, `ensemble_fusion.py`, `pretrain.py`, `minentropy_ensemble.py`, `brute_force_ensemble.py`, `brute_force_fast.py`。
 
 ### 记录格式
 
@@ -46,7 +46,7 @@
 
 ### runtime manifest 关联字段
 
-`OperatorLog` 向后兼容地新增了 3 个可选字段，供命令接入 `quantpits.runtime.RunManifest` 时使用。`ensemble_fusion.py` 已接入该机制：
+`OperatorLog` 向后兼容地新增了 3 个可选字段，供命令接入 `quantpits.runtime.RunManifest` 时使用。`ensemble_fusion.py`、`static_train.py` 和 `cv_train.py` 已接入该机制：
 
 | 字段 | 含义 |
 |------|------|
@@ -81,6 +81,8 @@ with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
 ```
 
 `ensemble_fusion.py` 的实际接入由 `quantpits/ensemble/service.py` 负责：service 使用显式 `WorkspaceContext` 写入 `data/operator_log.jsonl`，在真实执行边界把相对输出路径解析到当前 workspace，真实执行默认写入 `output/manifests/ensemble_fusion/<run_id>.json`，dry-run (`--explain-plan` / `--json-plan`) 不写运行清单。
+
+静态/CPCV 训练由 `quantpits/training/service.py` 接入：轻量计划不会初始化 Qlib 或写文件；真实执行将 plan fingerprint、resolved execution fingerprint、逐模型 outcome、是否实际发布以及已提交的 workspace 输出写入运行证据。全量训练只有所有目标成功才覆盖当前训练记录；增量和 predict-only 可一次性合并成功目标，但任一目标失败时命令整体仍失败。运行清单只列本次真实提交的文件，不把计划输出当作已完成输出。
 
 ---
 

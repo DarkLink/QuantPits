@@ -44,7 +44,8 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
    c. Compile target Datasets + execute `.predict()` outputs.
     d. Instantiate novel Recorder mappings mapped inside the `Prod_Predict_{Freq}` branch identifier.
     e. Commit `pred.pkl` artifact persistence + Execute standard `SignalRecord` structures extracting IC/ICIR parameters.
-4. Trigger Incremental Merge persisting logic to `latest_train_records.json`.
+4. Validate each recorder's model, operation, anchor, experiment, and persisted prediction evidence.
+5. Atomically merge successful targets once while retaining failed targets' current pointers.
 ```
 
 > [!IMPORTANT]
@@ -54,6 +55,11 @@ Training Record V2 separates the prediction output recorder from its immediate s
 In particular, a CPCV predict-only entry points to the actual `Prod_Predict_CPCV_*` output
 experiment rather than retaining the source training experiment. Top-level fields are compatibility
 views only.
+
+The ordered target set selected by the lightweight plan is authoritative for real execution; the
+runtime never rescans the source record to broaden it. If some targets fail, successful targets may
+be batch-published, but the command still returns an execution failure. The manifest distinguishes
+`published: true/false` per model and never reports planned files as committed outputs.
 
 ---
 

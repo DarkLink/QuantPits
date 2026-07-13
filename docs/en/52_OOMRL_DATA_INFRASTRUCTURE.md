@@ -11,8 +11,8 @@ fields between runtime plans/manifests and operation logs.
 **File**: `quantpits/utils/operator_log.py`
 
 Each core script run automatically appends a JSONL record to
-`data/operator_log.jsonl`. Integrated into 7 scripts: `static_train.py`,
-`rolling_train.py`, `ensemble_fusion.py`, `pretrain.py`,
+`data/operator_log.jsonl`. Integrated into 8 scripts: `static_train.py`,
+`cv_train.py`, `rolling_train.py`, `ensemble_fusion.py`, `pretrain.py`,
 `minentropy_ensemble.py`, `brute_force_ensemble.py`, `brute_force_fast.py`.
 
 ### Record Format
@@ -53,8 +53,8 @@ filtered out in downstream analysis.
 ### Runtime Manifest Linkage Fields
 
 `OperatorLog` now has three backward-compatible optional fields for commands
-that integrate with `quantpits.runtime.RunManifest`. `ensemble_fusion.py` is
-already integrated with this mechanism:
+that integrate with `quantpits.runtime.RunManifest`. `ensemble_fusion.py`,
+`static_train.py`, and `cv_train.py` are integrated with this mechanism:
 
 | Field | Meaning |
 |-------|---------|
@@ -96,6 +96,15 @@ through an explicit `WorkspaceContext`, resolves relative output paths under
 the active workspace at the real execution boundary, writes
 `output/manifests/ensemble_fusion/<run_id>.json` by default, and dry-runs
 (`--explain-plan` / `--json-plan`) do not write run manifests.
+
+Static/CPCV training is integrated by `quantpits/training/service.py`.
+Lightweight plans do not initialize Qlib or write files. Real execution links
+the plan fingerprint, resolved execution fingerprint, per-model outcomes,
+publication status, and actually committed workspace outputs. Full training
+replaces the current training record only when every target succeeds;
+incremental and predict-only runs may merge successful targets once, but the
+overall command still fails if any target fails. Run manifests list committed
+files only and never promote planned outputs to completed outputs.
 
 ---
 

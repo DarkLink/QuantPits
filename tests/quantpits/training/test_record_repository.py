@@ -3,7 +3,9 @@ from datetime import datetime
 
 import pytest
 
-from quantpits.training.record_repository import TrainingRecordConflictError, TrainingRecordRepository
+from quantpits.training.record_repository import (
+    TrainingRecordBaseline, TrainingRecordConflictError, TrainingRecordRepository,
+)
 from quantpits.training.records import ModelRecordEntry, ModelRecordOutcome
 
 
@@ -48,4 +50,21 @@ def test_duplicate_outcomes_fail_before_lock_creation(tmp_path):
     path = tmp_path / "records.json"
     with pytest.raises(ValueError, match="duplicate"):
         TrainingRecordRepository(path).merge([_outcome(), _outcome()])
+    assert not path.with_name("records.json.lock").exists()
+
+
+def test_expected_absence_is_a_real_conflict_baseline(tmp_path):
+    path = tmp_path / "records.json"
+    repo = TrainingRecordRepository(path)
+    baseline = TrainingRecordBaseline(None, {})
+    path.write_text(json.dumps({"experiment_name": "legacy", "models": {}}))
+    with pytest.raises(TrainingRecordConflictError):
+        repo.merge([_outcome()], baseline=baseline)
+
+
+def test_preview_is_deterministic_and_creates_no_lock(tmp_path):
+    path = tmp_path / "records.json"
+    path.write_text(json.dumps({"experiment_name": "legacy", "models": {"m@static": "r"}}))
+    repo = TrainingRecordRepository(path)
+    assert repo.preview_upgrade().to_public_dict(include_preview=True) == repo.preview_upgrade().to_public_dict(include_preview=True)
     assert not path.with_name("records.json.lock").exists()

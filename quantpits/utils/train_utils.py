@@ -1936,7 +1936,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
 
 def predict_cpcv_model(model_name, model_info, params, experiment_name,
                         no_pretrain=False, cache_mgr=None,
-                        source_experiment_name=None):
+                        source_experiment_name=None, source_operation=None):
     """Predict-only for CPCV-trained models on new data.
 
     Loads K fold models from the source recorder, has each predict on the
@@ -2177,7 +2177,7 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
                 dataset_test_end=params.get('test_end_time'),
                 source_recorder_id=model_info.get('record_id'),
                 source_experiment_name=source_experiment_name,
-                source_operation="train",
+                source_operation=source_operation or "train",
                 workspace_root=env.ROOT_DIR,
                 config_fingerprint=fingerprint_value(params),
             ).to_dict()
@@ -2781,6 +2781,10 @@ def predict_single_model(model_name, model_info, params, experiment_name,
         get_experiment_name_for_model(source_records, resolved_key)
         or 'Weekly_Production_Train'
     )
+    source_operation = (
+        source_records.get("model_records", {}).get(resolved_key, {}).get("operation")
+        or "train"
+    )
 
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
@@ -2894,7 +2898,7 @@ def predict_single_model(model_name, model_info, params, experiment_name,
                 dataset_test_end=params.get('test_end_time'),
                 source_recorder_id=source_record_id,
                 source_experiment_name=source_experiment,
-                source_operation="train",
+                source_operation=source_operation,
                 workspace_root=env.ROOT_DIR,
                 config_fingerprint=fingerprint_value(params),
             ).to_dict()

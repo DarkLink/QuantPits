@@ -11,7 +11,9 @@ The training system consists of three main scripts that share the same utility m
 | `static_train.py --predict-only` | Prediction only | ❌ | Existing models | `latest_train_records.json` |
 | `pretrain.py` | Base model pre-training | ✅ | configs | `data/pretrained/` (state_dict) |
 
-Both scripts automatically back up the history to `data/history/` before modifying `latest_train_records.json`.
+Real static/CPCV commands publish through one typed execution kernel. Legacy helper backups are no
+longer part of the new command's correctness model. The current record is protected by an in-lock
+baseline check and atomic replacement; conflicts create neither a backup nor a replacement.
 
 ### Training Record V2
 
@@ -54,14 +56,27 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
 python -m quantpits.scripts.cv_train --all-enabled --explain-plan
 ```
 
-`--explain-plan` and `--json-plan` only read workspace-contained registry, config, workflow, and
-required source-record inputs. They do not initialize Qlib/MLflow, invoke the safeguard, change cwd,
+`--explain-plan` and `--json-plan` only read workspace-contained registry, config, workflow, current
+record baseline, optional resume state, and required source-record inputs. They do not initialize
+Qlib/MLflow, invoke the safeguard, change cwd,
 or write files. Calendar-dependent anchors are reported as `deferred_to_qlib_calendar` rather than
 guessed. Legacy `--dry-run` routes to the same lightweight plan.
 
 Real execution writes `output/manifests/{static_train|cv_train}/<run_id>.json` by default and links
 `data/operator_log.jsonl`. Use `--run-id` for an explicit identity or `--no-manifest` to disable only
 the manifest. Both commands support `--workspace PATH`.
+
+After safeguard approval, the service initializes Qlib once and binds exact dates, ordered targets,
+source recorders, the output experiment, and the current-record baseline into an
+`execution_fingerprint`. A runner receives exactly one planned target and cannot rediscover or
+broaden the target set.
+
+Publication semantics:
+
+- Full runs replace records and performance once only after every target returns verified evidence; otherwise existing bytes are preserved.
+- Incremental and predict-only runs merge successful targets once and preserve failed pointers; any target failure still makes the command fail.
+- Resume requires the same date/config/source/target resume fingerprint and skips only a published recorder that remains the current pointer; expected current-record baseline changes do not create false conflicts.
+- Manifests list only workspace files actually committed by the run; unpublished MLflow recorders remain outcome evidence only.
 
 ---
 
@@ -82,6 +97,7 @@ QuantPits/
 │   │   ├── strategy.py               # Strategy config / backtest strategy construction
 │   │   └── ...                       # More shared modules (see System Overview)
 │   ├── config_contracts/              # Workspace config validation, normalization, fingerprints
+│   ├── training/                      # plan/resolved runner/service/state/record repository
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # This document
 │

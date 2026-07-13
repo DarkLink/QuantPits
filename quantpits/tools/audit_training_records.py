@@ -9,7 +9,11 @@ from pathlib import Path
 from quantpits.training.record_audit import audit_training_records
 from quantpits.training.record_audit import RecordAuditIssue, TrainingRecordAuditReport
 from quantpits.training.records import snapshot_from_dict
-from quantpits.runtime.mlflow_integrity import inspect_mlflow_workspace, inspect_tracking_backend_presence
+from quantpits.runtime.mlflow_integrity import (
+    inspect_mlflow_workspace,
+    inspect_tracking_backend_presence,
+    resolve_mlflow_resource_uri,
+)
 from quantpits.utils.workspace import WorkspaceContext
 
 
@@ -52,6 +56,26 @@ def _external_issues(records, ctx, verify_predictions=False, client=None, record
         RecordAuditIssue(issue.code, issue.severity, key_by_recorder.get(issue.recorder_id or "", ""))
         for issue in mlflow_report.issues
     ]
+    for entry in snapshot.entries:
+        try:
+            metadata = client.recorder(entry.recorder_id, experiment_name=entry.experiment_name)
+            if str(metadata.get("id") or "") != entry.recorder_id:
+                issues.append(RecordAuditIssue("recorder_identity_mismatch", "error", entry.key))
+            if str(metadata.get("experiment_name") or "") != entry.experiment_name:
+                issues.append(RecordAuditIssue("recorder_experiment_mismatch", "error", entry.key))
+            if entry.experiment_id is not None and str(metadata.get("experiment_id")) != entry.experiment_id:
+                issues.append(RecordAuditIssue("experiment_id_mismatch", "error", entry.key))
+            if entry.artifact_path is not None:
+                artifact = resolve_mlflow_resource_uri(
+                    str(metadata.get("artifact_uri") or ""),
+                    workspace_root=ctx.root, resource_kind="recorder",
+                )
+                if artifact.public_path() != entry.artifact_path:
+                    issues.append(RecordAuditIssue("artifact_path_mismatch", "error", entry.key))
+        except Exception:
+            # The integrity report already carries stable not-found/containment
+            # codes; do not replace those with a generic metadata error.
+            pass
     if verify_predictions and not mlflow_report.has_errors():
         if recorder_getter is None:
             from qlib.workflow import R
@@ -66,13 +90,16 @@ def _external_issues(records, ctx, verify_predictions=False, client=None, record
                 dates = pd.to_datetime(pred.index.get_level_values("datetime"), errors="raise")
                 actual_start = pd.Timestamp(dates.min()).strftime("%Y-%m-%d")
                 actual_end = pd.Timestamp(dates.max()).strftime("%Y-%m-%d")
-                expected = entry.prediction_end or entry.requested_anchor
-                if expected and actual_end != expected:
+                if entry.prediction_end and actual_end != entry.prediction_end:
+                    issues.append(RecordAuditIssue("prediction_end_mismatch", "error", entry.key))
+                if entry.requested_anchor and actual_end != entry.requested_anchor:
                     issues.append(RecordAuditIssue("prediction_anchor_mismatch", "error", entry.key))
                 if entry.prediction_start and actual_start != entry.prediction_start:
                     issues.append(RecordAuditIssue("prediction_start_mismatch", "error", entry.key))
                 if entry.prediction_rows is not None and len(pred) != entry.prediction_rows:
                     issues.append(RecordAuditIssue("prediction_rows_mismatch", "error", entry.key))
+                if entry.dataset_test_end and actual_end != entry.dataset_test_end:
+                    issues.append(RecordAuditIssue("dataset_test_end_mismatch", "error", entry.key))
             except Exception:
                 issues.append(RecordAuditIssue("missing_or_invalid_prediction", "error", entry.key))
     return tuple(issues)

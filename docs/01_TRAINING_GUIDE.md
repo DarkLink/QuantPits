@@ -11,7 +11,9 @@
 | `static_train.py --predict-only` | 仅预测 | ❌ | 已有模型 | `latest_train_records.json` |
 | `pretrain.py` | 基础模型预训练 | ✅ | configs | `data/pretrained/` (state_dict) |
 
-两个脚本都会在修改 `latest_train_records.json` 之前自动备份历史到 `data/history/`。
+static/CPCV 的真实执行通过同一个 typed execution kernel 发布记录；旧工具函数保留的历史
+备份不再是新命令正确性的组成部分。当前记录使用锁内 baseline 校验和原子替换，冲突时不会
+生成备份或覆盖当前指针。
 
 ### Training Record V2
 
@@ -51,13 +53,25 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
 python -m quantpits.scripts.cv_train --all-enabled --explain-plan
 ```
 
-`--explain-plan` / `--json-plan` 只读取 workspace 内的 registry、配置、workflow 和必要的
-source record；不会初始化 Qlib/MLflow、触发 safeguard、改变 cwd 或写文件。依赖交易日历的
+`--explain-plan` / `--json-plan` 只读取 workspace 内的 registry、配置、workflow、当前记录
+baseline、可选 resume state 和必要的 source record；不会初始化 Qlib/MLflow、触发 safeguard、
+改变 cwd 或写文件。依赖交易日历的
 锚点会显示为 `deferred_to_qlib_calendar`，不会伪造日期。旧 `--dry-run` 兼容为相同轻量计划。
 
 真实执行默认写 `output/manifests/{static_train|cv_train}/<run_id>.json` 并关联
 `data/operator_log.jsonl`。`--run-id` 可固定身份，`--no-manifest` 只关闭 manifest。
 两个命令均支持 `--workspace PATH`。
+
+Safeguard 通过后，service 只初始化一次 Qlib，并把精确日期、顺序固定的 target、source
+recorder、输出 experiment 和 current-record baseline 绑定为 `execution_fingerprint`。runner
+一次只能处理一个已计划 target，不能重新扫描 registry 或扩大模型集合。
+
+发布语义：
+
+- full：所有 target 都成功且 recorder evidence 完整时才一次性覆盖记录和性能文件；否则保持原字节。
+- incremental / predict-only：成功 target 一次性 merge，失败 target 保留旧指针；只要有失败，命令仍以 execution failure 结束。
+- resume：日期、配置、source 与 target 形成的 resume fingerprint 必须一致，且已发布 recorder 仍是 current pointer；current-record baseline 的预期变化不会伪造冲突。
+- manifest：只列出本次实际提交的 workspace 文件；未发布的 MLflow recorder 仅作为 outcome evidence。
 
 ---
 
@@ -78,6 +92,7 @@ QuantPits/
 │   │   ├── strategy.py               # 策略配置/回测策略构建
 │   │   └── ...                       # 更多共享模块（详见系统总览）
 │   ├── config_contracts/              # Workspace 配置校验、normalize、fingerprint
+│   ├── training/                      # plan/resolved runner/service/state/record repository
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # 本文档
 │

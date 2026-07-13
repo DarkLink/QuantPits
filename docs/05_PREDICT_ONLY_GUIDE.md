@@ -44,7 +44,8 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
    c. 构建新 dataset、执行 model.predict()
     d. 在 Prod_Predict_{FREQ} 实验下创建新 Recorder
     e. 保存 pred.pkl + 运行 SignalRecord（生成 IC/ICIR 指标）
-4. Merge 方式更新 latest_train_records.json
+4. 校验每个 recorder 的模型、operation、anchor、experiment 与持久化预测证据
+5. 以一次原子 merge 更新成功 target；失败 target 保留旧 current pointer
 ```
 
 > [!IMPORTANT]
@@ -53,6 +54,10 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
 Training Record V2 会分别保存预测输出 recorder 与其直接 source recorder 的 experiment/
 recorder 身份。尤其 CPCV predict-only 的当前 experiment 是实际输出所在的
 `Prod_Predict_CPCV_*`，不能继续沿用源训练 experiment。旧顶层字段仅为兼容视图。
+
+轻量 plan 选出的有序 target 是真实执行的唯一模型集合。真实执行不会重新扫描 source record
+来扩大范围。若部分模型失败，成功模型可以批量发布，但命令返回 execution failure；manifest
+会逐模型区分 `published: true/false`，不会把计划输出当作实际输出。
 
 ---
 

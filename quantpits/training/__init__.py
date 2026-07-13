@@ -8,12 +8,19 @@ from .records import (
     build_model_record_entry,
     resolve_model_record,
 )
-from .record_repository import TrainingRecordRepository
-from .command import PreparedTrainingRun, TrainingRunOptions, TrainingTarget, prepare_training_run
+from .record_repository import TrainingRecordBaseline, TrainingRecordRepository
+from .command import (
+    PreparedTrainingRun, RequestedDatePolicy, TrainingRunOptions,
+    TrainingTarget, prepare_training_run,
+)
+from .resolved import ResolvedTrainingRun, ResolvedTrainingTarget, resolve_training_run
+from .runners import TrainingTargetRequest, TrainingTargetResult
 
 __all__ = [
     "ModelRecordEntry", "ModelRecordOutcome", "ResolvedModelRecord",
-    "TrainingRecordSnapshot", "TrainingRecordRepository", "resolve_model_record",
+    "TrainingRecordSnapshot", "TrainingRecordBaseline", "TrainingRecordRepository", "resolve_model_record",
     "build_model_record_entry",
-    "PreparedTrainingRun", "TrainingRunOptions", "TrainingTarget", "prepare_training_run",
+    "PreparedTrainingRun", "RequestedDatePolicy", "TrainingRunOptions", "TrainingTarget", "prepare_training_run",
+    "ResolvedTrainingRun", "ResolvedTrainingTarget", "resolve_training_run",
+    "TrainingTargetRequest", "TrainingTargetResult",
 ]
