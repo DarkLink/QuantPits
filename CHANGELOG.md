@@ -7,6 +7,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8-alpha] - 2026-07-14
+
+This release completes the **Phase 27 architecture baseline freeze**: post-trade settlement gains a fully deterministic state machine with recoverable transactions, and the static/CPCV training pipeline achieves crash-recoverable publication with exact receipt verification. Together with v0.4.4–v0.4.7, this closes the first-generation architecture transformation announced in v0.4.3.
+
+16 commits, 165 files changed, ~17,600 lines added since v0.4.7-alpha.
+
+### Added
+
+#### Post-Trade — Deterministic Service Layer
+- **Unified broker intake & command planning** (`post_trade/command.py`): Typed `PostTradeCommand` with settlement path discovery, broker adapter selection, and `--explain-plan` / `--json-plan` information routes that require zero Qlib initialization.
+- **Deterministic account state transitions** (`post_trade/state.py`): CAS-protected state machine for cash, holdings, and position operations; every mutation is a pure function of (state, settlement event) with full before/after evidence.
+- **Recoverable transaction & run audit** (`post_trade/transaction.py`): Atomic multi-file transaction with intent → staged writes → committed receipt → durable closure ordering. Crash at any point produces deterministic recovery.
+- **Valuation provenance & as-of reconciliation** (`post_trade/valuation.py`): Closing values are attributed to exact settlement source, broker adapter version, and market-data snapshot identity.
+- **Bonus share listing support**: Settlement adapter now correctly handles bonus share corporate actions without double-counting existing positions.
+
+#### Training — Phase 27 Completion
+- **Per-model record lineage & canonical identity** (`training/identity.py`): Every training record carries source workflow fingerprint, config fingerprint, and model-mode publication key traceable to exact MLflow experiment.
+- **Plan-first static & CPCV command services** (`training/command.py`, `training/service.py`): `TrainingCommand` with typed plan → resolved targets → one-target runner → immutable evidence → receipt-backed publication. Information routes (`--explain-plan`, `--json-plan`, `--show-state`) are physically read-only.
+- **Static & CPCV execution kernel closure**: Runner adapter accepts exactly one planned target, cannot expand scope, and cannot directly modify current records.
+- **Publication & resume crash recovery**: Publication uses intent → staged postimages → committed receipt → current-record verification → durable OperatorLog closure ordering. Resume after crash at any point deterministically identifies committed vs. uncommitted state.
+- **Phase 27 validation gap closure**: Source recorder integrity verification, audit initialization safety, failure terminalization, and closure-only resume path hardened against all identified fault points.
+
+### Fixed
+- fix(ensemble): enforce workspace lineage and exact combo inputs — combo records now validate source workspace identity
+- fix(post-trade): account for bonus share listings in settlement reconciliation
+- test: restore Python 3.8 compatibility and isolate post-trade Qlib dependencies
+
+### Testing
+- Post-trade Qlib dependencies isolated behind conditional imports for pure unit testing.
+- Python 3.8 compatibility restored for new training/post-trade modules.
+
+---
+
+## [0.4.7-alpha] - 2026-07-10
+
+This release decomposes the ensemble fusion monolith into a layered service architecture and introduces the workspace-safe command planning foundation that all production commands will share.
+
+17 commits, 98 files changed, ~9,500 lines added since v0.4.6-alpha.
+
+### Added
+
+#### Runtime Foundation
+- **`WorkspaceContext`** (`quantpits/runtime/context.py`): Explicit workspace identity with path containment, config fingerprinting, and activation lifecycle — replacing import-time `ROOT_DIR` resolution.
+- **Workspace config validation contracts** (`quantpits/config/validators.py`): Normalize → validate → fingerprint pipeline for `model_config.json`, `strategy_config.yaml`, `prod_config.json`, and `ensemble_config.json`.
+- **`CommandPlan` & `RunManifest`** (`quantpits/runtime/`): Typed command planning with `--explain-plan` / `--json-plan` information routes and post-execution manifest with exact identity, timing, and outcome evidence.
+- **Explicit workspace activation**: `WorkspaceContext.activate()` replaces implicit `env.ROOT_DIR` binding; test bootstrap validates activation lifecycle.
+
+#### Ensemble — Architecture Decomposition
+- **Explain-plan & run manifests**: `ensemble_fusion.py --explain-plan` shows exact combo inputs, source lineage, and publication policy without initializing Qlib.
+- **10-layer service extraction**:
+  - `ensemble/service.py` — fusion orchestration service
+  - `ensemble/pipeline.py` — single-combo pipeline
+  - `ensemble/backtest.py` — backtest execution
+  - `ensemble/analytics.py` — deterministic analytics helpers
+  - `ensemble/reporting.py` — combo comparison, risk & leaderboard reporting
+  - `ensemble/charts.py` — chart generation helpers
+  - `ensemble/persistence.py` — persistence and ledger writers
+  - `ensemble/runner.py` — command runner with typed failures
+- **Import-time workspace side effects removed**: `ensemble_fusion.py` no longer executes `os.chdir()` or binds module-level paths at import time.
+
+#### Order — Service Layer
+- **Workspace-safe command planning**: `OrderCommand` with typed plan, deterministic opinion generation, and `--explain-plan` route.
+- **Execution service & manifest lifecycle closure**: Order execution through service with atomic persistence and durable manifest.
+
+### Fixed
+- fix: restore Python 3.8–3.10 compatibility and add multi-version Docker tests (Python 3.8, 3.10, 3.12 matrix)
+
+---
+
+## [0.4.6-alpha] - 2026-07-09
+
+This release delivers a complete rewrite of the Multi-Agent System (MAS) deep analysis pipeline with self-registering stages and workspace-local plugin isolation, plus foundational workspace context primitives.
+
+8 commits, 65 files changed, ~5,900 lines added since v0.4.5-alpha.
+
+### Added
+
+#### MAS — 7-Stage Pipeline Rewrite
+- **Self-registering stage architecture**: Stages register via decorator; discovery is automatic, eliminating hardcoded stage lists.
+- **Label isolation**: Each stage operates in a labeled namespace, preventing cross-stage data contamination.
+- **Training mode awareness**: Predict-only cycle detection prevents false-positive convergence alerts on weeks with no actual training.
+- **Rolling training convergence tracking**: Decoupled JSONL-based per-model convergence telemetry for rolling windows.
+- **Structured raw metrics**: Synthesizer uses structured `raw_metrics` instead of keyword matching; trade pattern agent uses mark-to-market PnL instead of placeholder `win_rate`.
+- **Hardened checkpoint semantics**: Staged deep analysis checkpoints use atomic write-and-rename with content-hash verification.
+- **Workspace-local plugins**: Plugin discovery scoped to workspace directory, preventing cross-workspace plugin contamination.
+
+### Changed
+- docs: standardize workspace configurations to `Demo_Workspace` and update all guides
+
+---
+
+## [0.4.5-alpha] - 2026-07-03
+
+This release introduces the Purged Cross-Validation (CPCV) training system with concurrent-safe handler caching, and extends the rolling training pipeline with a Walk-Forward CPCV strategy.
+
+14 commits, 51 files changed, ~14,000 lines added since v0.4.4-alpha.
+
+### Added
+
+#### Purged Cross-Validation Training System
+- **`quantpits/scripts/cpcv_train.py`**: Complete Purged Cross-Validation training pipeline with configurable fold count, purge/embargo periods, and combinatorial fold ensemble.
+- **CPCV data decoupling**: CPCV fully decoupled from legacy `data_slice_mode`; uses explicit date-range fold descriptors with CUDA memory alignment.
+- **TRA label leakage prevention**: Fold ensemble now isolates label dimensions to prevent information leakage across purged boundaries.
+
+#### Handler Cache & Concurrency
+- **Centralized DataHandler cache**: Training data reuse across models sharing the same handler configuration, with workspace-scoped cache directory.
+- **`HandlerProxy`**: Lazy-loading proxy for `DataHandler` instances with concurrent file locking (`fcntl`/`msvcrt`) for safe parallel training across processes.
+- **Cache estimation**: Pre-flight memory estimation for handler cache based on instrument count and feature dimensions.
+
+#### Rolling CPCV Strategy
+- **Walk-Forward CPCV rolling strategy** (`rolling/strategy_cpcv.py`): Combines sliding window walk-forward with purged cross-validation per window, producing cross-validated predictions for each rolling period.
+
+### Fixed
+- fix(cpcv): resolve predict-only crash, add backtest, and fix consecutive runs
+- fix(cpcv): resolve validation IC indexing errors and harden metric loss
+- fix(cpcv): prevent TRA label leakage in fold ensemble
+
+### Testing
+- Unit tests for handler cache estimation and CPCV workflows.
+- Coverage tests for CPCV, backtest, orchestration, and slide strategy modules.
+- Graceful skip for `PurgedMTSDatasetH` when Qlib is not installed.
+
+---
+
+## [0.4.4-alpha] - 2026-06-21
+
+This release overhauls model wrapper architecture with IR-based early stopping, migrates the MLflow backend to SQLite for MLflow 3.0+ compatibility, and extends deep analysis with market regime awareness and training window optimization.
+
+16 commits, 152 files changed, ~13,900 lines added since v0.4.3-alpha.
+
+### Added
+
+#### Model Wrappers — IR-Based Early Stopping
+- **Reorganized wrapper hierarchy** (`quantpits/model_wrappers/`): All wrappers now inherit `ICMetricMixin` with configurable IC/Rank-IC/IR loss metrics and `LossHistoryMixin` for convergence telemetry.
+- **Best-params persistence**: Early-stopping wrappers save the parameters that achieved the best validation IC, not just the last epoch.
+- **Multi-label YAML config preservation**: Training pipeline preserves multi-label configurations and adds TCTS IC wrapper support.
+- **Ensemble group filtering**: `ensemble_fusion.py` filters models by group config before loading predictions, reducing unnecessary I/O.
+
+#### MLflow Modernization
+- **SQLite backend migration**: Default MLflow tracking backend migrated from file store to SQLite for MLflow 3.0+ compatibility. Migration utility handles existing file-store experiments.
+
+#### Deep Analysis — Market Regime & Training Windows
+- **QLIB-driven market regime analysis**: Market Regime agent now queries Qlib for benchmark returns, volatility regime classification, and regime-switch detection for training window optimization.
+- **Training data split awareness**: Deep analysis pipeline detects training/validation/test split boundaries and generates window adjustment recommendations.
+
+### Fixed
+- fix(model): guard `evals_result=None` before delegating to Qlib base `fit()`
+- fix(model): ensure `_writer` attr survives unpickling in `TRAModelIC` for predict-only mode
+- fix(model): harden TRA/GATs wrappers against NaN — stable softmax, weight decay, and `isfinite` guards in `metric_fn`
+- fix(model_wrappers): resolve training and early-stopping errors for 7 models
+- fix(wrappers): save best params for IR early-stopping and handle non-string metrics
+- fix(train): update pretrain and pretrain_validation segments for TabNet during sliding windows
+
+### Testing
+- Tests for `data_split_adapter`, `training_window_analyzer`, `migrate_mlflow_backend`, and `backtest_report`.
+- Test coverage for `window_critic` and strengthened deep analysis tests.
+
 ## [0.4.3-alpha] - 2026-06-08
 
 This release ships a major rolling-train architecture overhaul that eliminates session-long OOM hangs, hardens the OOM-RL Critic pipeline with diversity-aware guardrails and per-model tuning knowledge, introduces rank percentile normalization for ensemble fusion, and adds a full LLM observability stack. Python 3.8–3.10 compatibility is restored across the test suite.
