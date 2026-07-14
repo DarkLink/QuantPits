@@ -44,5 +44,4 @@ helper_error.log
 test_error.log
 quantpits.egg-info/
 ui/
-docs/
 landing/

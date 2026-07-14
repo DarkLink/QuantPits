@@ -28,6 +28,37 @@ def build_parser():
     return parser
 
 
+def _qlib_recorder_getter(recorder_id, experiment_name):
+    """Load a recorder through Qlib's keyword-only public API."""
+
+    from qlib.workflow import R
+    return R.get_recorder(
+        recorder_id=recorder_id,
+        experiment_name=experiment_name,
+    )
+
+
+def _init_qlib_for_audit(ctx):
+    """Bind Qlib recorder reads to the explicitly selected workspace."""
+
+    import qlib
+    from qlib.constant import REG_CN, REG_US
+
+    region = {"cn": REG_CN, "us": REG_US}.get(str(ctx.qlib_region).lower(), REG_CN)
+    qlib.init(
+        provider_uri=ctx.qlib_data_dir,
+        region=region,
+        exp_manager={
+            "class": "MLflowExpManager",
+            "module_path": "qlib.workflow.expm",
+            "kwargs": {
+                "uri": ctx.mlflow_uri,
+                "default_exp_name": "Experiment",
+            },
+        },
+    )
+
+
 def _external_issues(records, ctx, verify_predictions=False, client=None, recorder_getter=None):
     snapshot = snapshot_from_dict(records)
     presence = inspect_tracking_backend_presence(ctx.mlflow_uri, workspace_root=ctx.root)
@@ -96,8 +127,7 @@ def _external_issues(records, ctx, verify_predictions=False, client=None, record
                     issues.append(RecordAuditIssue("source_metadata_lookup_failed", "error", entry.key))
     if verify_predictions:
         if recorder_getter is None:
-            from qlib.workflow import R
-            recorder_getter = lambda rid, exp: R.get_recorder(recorder_id=rid, experiment_name=exp)
+            recorder_getter = _qlib_recorder_getter
         import pandas as pd
         for entry in snapshot.entries:
             try:
@@ -146,6 +176,8 @@ def run(args, *, client=None, recorder_getter=None):
         report = audit_training_records(records)
         if args.verify_mlflow or args.verify_predictions:
             ctx = WorkspaceContext.from_root(workspace)
+            if args.verify_predictions and recorder_getter is None:
+                _init_qlib_for_audit(ctx)
             external = _external_issues(
                 records, ctx, verify_predictions=args.verify_predictions,
                 client=client, recorder_getter=recorder_getter,

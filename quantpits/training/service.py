@@ -17,7 +17,7 @@ from quantpits.training.command import PreparedTrainingRun
 from quantpits.training.errors import (
     TrainingCommandError, TrainingExecutionError, TrainingPublicationError,
     TrainingEvidenceConflictError, TrainingManifestConflictError, TrainingOperatorLogError,
-    TrainingRunnerContractError, TrainingStateConflictError,
+    TrainingRecorderIntegrityError, TrainingRunnerContractError, TrainingStateConflictError,
 )
 from quantpits.training.lease import TrainingExecutionLease
 from quantpits.training.history import TrainingHistoryRepository
@@ -32,6 +32,7 @@ from quantpits.training.persistence import FileBaseline, read_with_baseline
 from quantpits.training.publication import TrainingPublicationCoordinator
 from quantpits.training.record_repository import TrainingRecordConflictError, TrainingRecordRepository
 from quantpits.training.resolved import ResolvedTrainingRun, resolve_training_run
+from quantpits.training.resolved import ResolvedTrainingTarget
 from quantpits.training.runners import (
     TrainingTargetRequest, TrainingTargetResult, run_cpcv_target, run_static_target,
 )
@@ -50,6 +51,10 @@ def _noop_promote(_workspace, _models):
 
 
 def _noop_verify_reusable(_run, _evidence):
+    return None
+
+
+def _noop_verify_source(_run, _target):
     return None
 
 
@@ -92,6 +97,34 @@ def _verify_reusable_recorder(run, evidence):
         raise TrainingStateConflictError("reusable target recorder differs from durable evidence")
 
 
+def _verify_source_recorder(run, target):
+    """Fail closed when a declared predict-only source is not its MLflow identity."""
+
+    source = target.source_entry
+    if source is None:
+        return
+    from mlflow.tracking import MlflowClient
+    from quantpits.runtime.mlflow_integrity import resolve_mlflow_resource_uri
+
+    try:
+        client = MlflowClient()
+        recorder = client.get_run(source.recorder_id)
+        actual_id = str(recorder.info.run_id)
+        experiment = client.get_experiment(recorder.info.experiment_id)
+        actual_experiment = str(experiment.name) if experiment is not None else ""
+        artifact_uri = str(recorder.info.artifact_uri or "")
+    except Exception as exc:
+        raise TrainingRecorderIntegrityError("source_recorder_metadata_unavailable") from exc
+    if actual_id != source.recorder_id or actual_experiment != source.experiment_name:
+        raise TrainingRecorderIntegrityError("source_recorder_experiment_mismatch")
+    artifact = resolve_mlflow_resource_uri(
+        artifact_uri, workspace_root=run.prepared.ctx.root,
+        resource_kind="source recorder",
+    )
+    if not artifact.contained:
+        raise TrainingRecorderIntegrityError("source_recorder_artifact_outside_workspace")
+
+
 @dataclass(frozen=True)
 class TrainingExecutionHooks:
     activate_workspace: Callable[[str], None]
@@ -101,6 +134,7 @@ class TrainingExecutionHooks:
     run_static_target: Callable[[TrainingTargetRequest], TrainingTargetResult] = run_static_target
     run_cpcv_target: Callable[[TrainingTargetRequest], TrainingTargetResult] = run_cpcv_target
     promote_static: Callable[[str, Tuple[str, ...]], None] = _noop_promote
+    verify_source_target: Callable[[ResolvedTrainingRun, ResolvedTrainingTarget], None] = _noop_verify_source
     verify_reusable_target: Callable[[ResolvedTrainingRun, TrainingTargetEvidence], None] = _noop_verify_reusable
     fault_hook: Callable[[str, Optional[str]], None] = _noop_fault
     clock: Callable[[], datetime] = datetime.now
@@ -151,6 +185,7 @@ def default_execution_hooks(*, activate_workspace, init_qlib, calculate_dates=No
         calculate_dates=calculate_dates or _lazy_calculate_dates,
         prepare_cache=prepare_default_cache,
         promote_static=_default_promote,
+        verify_source_target=_verify_source_recorder,
         verify_reusable_target=_verify_reusable_recorder,
     )
 
@@ -306,7 +341,7 @@ class TrainingExecutionService:
                 manifest_path=None, manifest_fingerprint=None,
                 aggregate_error_code=None, receipt_fingerprint=None,
                 committed_outputs=(), closure_steps={}, logical_finished_at=None,
-                logical_started_at=logical_started_at,
+                logical_started_at=logical_started_at, attempt_id=attempt_id,
             ), expected=state_baseline)
 
         evidence_repo = TrainingTargetEvidenceRepository(run.prepared.ctx, run.prepared.plan.run_id)
@@ -385,6 +420,8 @@ class TrainingExecutionService:
             raise TrainingStateConflictError("unexpected target recovery decision: %s" % decision.reason_code)
         runnable_keys = frozenset(decision.runnable_target_keys)
         runnable = tuple(target for target in run.targets if target.key in runnable_keys)
+        for target in runnable:
+            self.hooks.verify_source_target(run, target)
         if prior is not None and prior.phase == "targets_complete" and runnable:
             failed_state = replace(prior, phase="failed", aggregate_error_code="retry_failed_targets")
             state_baseline = state_repo.save(failed_state, expected=state_baseline)
@@ -1294,9 +1331,31 @@ class TrainingExecutionService:
                     if run is not None and state_baseline is not None:
                         try:
                             current_state, observed_state = state_repo.load_locked()
-                            if (
+                            same_run = (
                                 current_state is not None
-                                and observed_state.fingerprint == state_baseline.fingerprint
+                                and current_state.run_id == run.prepared.plan.run_id
+                                and current_state.family == run.prepared.options.family
+                                and current_state.action == run.prepared.options.action
+                                and current_state.plan_fingerprint
+                                == run.prepared.plan_fingerprint
+                                and current_state.execution_fingerprint
+                                == run.execution_fingerprint
+                                and current_state.resume_fingerprint
+                                == run.resume_fingerprint
+                                and current_state.anchor_date == run.anchor_date
+                                and current_state.target_keys
+                                == tuple(item.key for item in run.targets)
+                            )
+                            baseline_unchanged = (
+                                observed_state.fingerprint == state_baseline.fingerprint
+                            )
+                            same_attempt = (
+                                current_state is not None
+                                and current_state.attempt_id == attempt_id
+                            )
+                            if (
+                                same_run
+                                and (baseline_unchanged or same_attempt)
                                 and current_state.phase not in ("failed", "completed")
                             ):
                                 failure_phase = (
@@ -1308,7 +1367,7 @@ class TrainingExecutionService:
                                     current_state, phase=failure_phase,
                                     aggregate_error_code=getattr(exc, "code", "training_execution_failed"),
                                     attempt_id=attempt_id,
-                                ), expected=state_baseline)
+                                ), expected=observed_state)
                         except Exception:
                             pass
                     if not prepared.options.no_manifest and manifest_rel is None:

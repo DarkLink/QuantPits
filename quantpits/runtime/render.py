@@ -56,6 +56,29 @@ def _render_steps(steps: Iterable[Any]) -> List[str]:
     return lines
 
 
+def _render_plan_identity(plan: CommandPlan) -> List[str]:
+    """Render stable execution identity carried by typed command metadata."""
+
+    metadata = plan.metadata
+    target_keys = metadata.get("target_keys")
+    publication_policy = metadata.get("publication_policy")
+    source_identities = metadata.get("source_identities")
+    if not target_keys and not publication_policy and not source_identities:
+        return []
+
+    lines = ["Plan identity:"]
+    if target_keys:
+        lines.append("  - Target keys: %s" % ", ".join(str(item) for item in target_keys))
+    if publication_policy:
+        lines.append("  - Publication policy: %s" % publication_policy)
+    for source in source_identities or ():
+        lines.append(
+            "  - Source for %(target_key)s: experiment=%(experiment_name)s "
+            "recorder=%(recorder_id)s operation=%(operation)s status=%(status)s" % source
+        )
+    return lines
+
+
 def render_command_plan(plan: CommandPlan) -> str:
     """Render a command plan for human dry-run output."""
 
@@ -71,6 +94,7 @@ def render_command_plan(plan: CommandPlan) -> str:
         lines.append(f"Args: {' '.join(plan.args)}")
 
     sections: List[List[str]] = [
+        _render_plan_identity(plan),
         _render_refs("Inputs", plan.inputs),
         _render_steps(plan.steps),
         _render_refs("Would write", plan.outputs),

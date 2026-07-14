@@ -263,6 +263,7 @@ def prepare_training_run(
         ))
 
     source_snapshot = None
+    source_identities = []
     warnings = []
     current_repo = TrainingRecordRepository.for_workspace(ctx)
     try:
@@ -312,13 +313,36 @@ def prepare_training_run(
         source_rel = source_path.relative_to(ctx.root).as_posix()
         source_fp = fingerprint_file(source_path)
         fingerprints[source_rel] = source_fp
-        input_refs.append(InputRef(source_rel, kind="record", fingerprint=source_fp))
+        source_ref = InputRef(
+            source_rel, kind="record", fingerprint=source_fp, required=True,
+            description="predict-only source records",
+        )
+        matching_ref = next(
+            (index for index, item in enumerate(input_refs) if item.path == source_rel), None
+        )
+        if matching_ref is None:
+            input_refs.append(source_ref)
+        else:
+            input_refs[matching_ref] = InputRef(
+                source_rel, kind="record", fingerprint=source_fp, required=True,
+                description="current publication baseline and predict-only source records",
+            )
         if "schema_version" not in source_data:
             warnings.append("source training record uses legacy V1 identity")
         available = source_snapshot.entry_map
         missing = [target.key for target in targets if target.key not in available]
         if missing:
             raise TrainingPlanError("source training record is missing selected models: %s" % ", ".join(missing))
+        source_identities = [
+            {
+                "target_key": target.key,
+                "recorder_id": available[target.key].recorder_id,
+                "experiment_name": available[target.key].experiment_name,
+                "operation": available[target.key].operation,
+                "status": available[target.key].status,
+            }
+            for target in targets
+        ]
 
     run_id = _run_id(options)
     command = "%s_train" % ("cv" if options.family == "cpcv" else "static")
@@ -365,6 +389,7 @@ def prepare_training_run(
             "execution_lease": "data/locks/training_execution.lock",
             "publication_journal": "data/training_transactions/<run_id>/",
             "source_record_keys": [item.key for item in source_snapshot.entries] if source_snapshot else [],
+            "source_identities": source_identities,
         },
     )
     plan_fingerprint = fingerprint_command_plan(plan)

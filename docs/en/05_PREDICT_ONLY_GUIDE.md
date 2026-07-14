@@ -54,7 +54,9 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
 Training Record V2 separates the prediction output recorder from its immediate source recorder.
 In particular, a CPCV predict-only entry points to the actual `Prod_Predict_CPCV_*` output
 experiment rather than retaining the source training experiment. Top-level fields are compatibility
-views only.
+views only. Before creating an output recorder, real execution rechecks the source recorder's actual
+experiment and artifact containment through the active workspace's MLflow metadata. A conflicting
+legacy declaration fails without publishing a new V2 entry.
 
 The ordered target set selected by the lightweight plan is authoritative for real execution; the
 runtime never rescans the source record to broaden it. If some targets fail, successful targets may

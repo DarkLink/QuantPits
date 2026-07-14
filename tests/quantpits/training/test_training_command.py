@@ -5,7 +5,9 @@ import sys
 
 import pytest
 
-from quantpits.training.command import TrainingRunOptions, prepare_training_run
+from quantpits.training.command import (
+    TrainingRunOptions, prepare_training_run, render_prepared_plan,
+)
 from quantpits.training.errors import TrainingPlanError
 from quantpits.training.state import TrainingRunState, TrainingStateRepository
 from quantpits.utils.workspace import WorkspaceContext
@@ -47,6 +49,42 @@ def test_predict_plan_rejects_explicit_v2_downgrade(tmp_path):
     options = TrainingRunOptions(family="static", action="predict_only", all_enabled=True)
     with pytest.raises(TrainingPlanError, match="declared schema"):
         prepare_training_run(ctx=WorkspaceContext.from_root(root), options=options)
+
+
+@pytest.mark.parametrize("family", ["static", "cpcv"])
+def test_predict_plan_renders_exact_target_source_and_publication_identity(tmp_path, family):
+    root = workspace(tmp_path)
+    suffix = "cpcv" if family == "cpcv" else "static"
+    (root / "latest_train_records.json").write_text(json.dumps({
+        "models": {"demo@%s" % suffix: "source-recorder"},
+        "experiment_name": "source-experiment",
+    }))
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family=family, action="predict_only", all_enabled=True, explain_plan=True,
+        ),
+    )
+    rendered = render_prepared_plan(prepared)
+
+    assert [item.path for item in prepared.plan.inputs].count(
+        "latest_train_records.json"
+    ) == 1
+    assert "current publication baseline and predict-only source records" in rendered
+    assert "Target keys: demo@%s" % suffix in rendered
+    assert "Publication policy: merge_successes" in rendered
+    assert (
+        "Source for demo@%s: experiment=source-experiment recorder=source-recorder "
+        "operation=legacy_import status=legacy_unverified" % suffix
+    ) in rendered
+    assert prepared.plan.metadata["source_identities"] == [{
+        "target_key": "demo@%s" % suffix,
+        "recorder_id": "source-recorder",
+        "experiment_name": "source-experiment",
+        "operation": "legacy_import",
+        "status": "legacy_unverified",
+    }]
 
 
 def test_workflow_change_changes_plan_fingerprint(tmp_path):

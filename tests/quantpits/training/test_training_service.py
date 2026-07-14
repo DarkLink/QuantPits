@@ -1,12 +1,15 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from quantpits.training.command import TrainingRunOptions, prepare_training_run
-from quantpits.training.errors import TrainingExecutionError
+from quantpits.training.errors import TrainingExecutionError, TrainingRecorderIntegrityError
 from quantpits.training.records import ModelRecordEntry
 from quantpits.training.runners import TrainingTargetResult
-from quantpits.training.service import TrainingExecutionHooks, TrainingExecutionService
+from quantpits.training.service import (
+    TrainingExecutionHooks, TrainingExecutionService, _verify_source_recorder,
+)
 from quantpits.utils.workspace import WorkspaceContext
 
 
@@ -76,6 +79,163 @@ def test_service_owns_exact_target_loop_and_publication(tmp_path):
     ).hexdigest()
     assert closure["manifest_fingerprint"]
     assert closure["operator_log_fingerprint"]
+
+
+def test_predict_only_rejects_source_identity_before_runner_or_publication(tmp_path):
+    root = workspace(tmp_path)
+    source = {
+        "experiment_name": "Declared_Source",
+        "models": {"demo@cpcv": "source-recorder"},
+    }
+    record_path = root / "latest_train_records.json"
+    record_path.write_text(json.dumps(source))
+    before = record_path.read_bytes()
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="cpcv", action="predict_only", all_enabled=True,
+            run_id="source-integrity-failure",
+        ),
+    )
+    base = hooks([])
+    verified = []
+
+    def reject_source(run, target):
+        verified.append((run.prepared.plan.run_id, target.key))
+        raise TrainingRecorderIntegrityError("source_recorder_experiment_mismatch")
+
+    configured = TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace,
+        init_qlib=base.init_qlib,
+        calculate_dates=lambda: {
+            "anchor_date": "2026-07-10", "test_end_time": "2026-07-10",
+            "freq": "week", "cpcv_folds": [{"fold_idx": 0}],
+        },
+        run_static_target=base.run_static_target,
+        run_cpcv_target=lambda _request: pytest.fail("target runner must not start"),
+        verify_source_target=reject_source,
+    )
+
+    with pytest.raises(
+        TrainingRecorderIntegrityError, match="source_recorder_experiment_mismatch"
+    ):
+        TrainingExecutionService(configured).execute(prepared)
+
+    assert verified == [("source-integrity-failure", "demo@cpcv")]
+    assert record_path.read_bytes() == before
+    assert not (root / "data/training_transactions").exists()
+    assert not (root / "data/training_runs/source-integrity-failure/targets").exists()
+    state = json.loads((root / "data/run_state.json").read_text())
+    assert state["phase"] == "failed"
+    assert state["aggregate_error_code"] == "training_recorder_integrity_error"
+    manifest = json.loads(
+        (root / "output/manifests/cv_train/source-integrity-failure.json").read_text()
+    )
+    assert manifest["status"] == "failed"
+
+
+def test_failure_diagnostic_does_not_overwrite_foreign_attempt_state(tmp_path):
+    root = workspace(tmp_path)
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            run_id="foreign-attempt-state",
+        ),
+    )
+    base = hooks([])
+    state_path = root / "data/run_state.json"
+
+    def replace_attempt_then_fail(point, _detail=None):
+        if point != "after_target_state":
+            return
+        state = json.loads(state_path.read_text())
+        state["attempt_id"] = "foreign-attempt"
+        state["aggregate_error_code"] = "foreign-owner"
+        state_path.write_text(json.dumps(state, sort_keys=True) + "\n")
+        raise RuntimeError("injected foreign state replacement")
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace,
+            init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates,
+            run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target,
+            fault_hook=replace_attempt_then_fail,
+        )).execute(prepared)
+
+    state = json.loads(state_path.read_text())
+    assert state["phase"] == "executing"
+    assert state["attempt_id"] == "foreign-attempt"
+    assert state["aggregate_error_code"] == "foreign-owner"
+
+
+@pytest.mark.parametrize(
+    "actual_experiment,artifact_relative,error",
+    [
+        ("Actual_Source", "mlruns/1/rid/artifacts", "source_recorder_experiment_mismatch"),
+        ("Declared_Source", None, "source_recorder_artifact_outside_workspace"),
+    ],
+)
+def test_default_source_verifier_rejects_false_or_external_mlflow_identity(
+    tmp_path, monkeypatch, actual_experiment, artifact_relative, error,
+):
+    root = workspace(tmp_path)
+    source = ModelRecordEntry(
+        "demo@cpcv", "demo", "cpcv", "legacy_import", "legacy_unverified",
+        "source-recorder", "Declared_Source",
+    )
+    artifact = (
+        (root / artifact_relative).resolve().as_uri()
+        if artifact_relative is not None
+        else (tmp_path / "outside" / "artifacts").resolve().as_uri()
+    )
+
+    class Client:
+        def get_run(self, recorder_id):
+            assert recorder_id == "source-recorder"
+            return SimpleNamespace(info=SimpleNamespace(
+                run_id=recorder_id, experiment_id="1", artifact_uri=artifact,
+            ))
+
+        def get_experiment(self, experiment_id):
+            assert experiment_id == "1"
+            return SimpleNamespace(name=actual_experiment)
+
+    import mlflow.tracking
+    monkeypatch.setattr(mlflow.tracking, "MlflowClient", Client)
+    run = SimpleNamespace(prepared=SimpleNamespace(ctx=WorkspaceContext.from_root(root)))
+    target = SimpleNamespace(source_entry=source)
+
+    with pytest.raises(TrainingRecorderIntegrityError, match=error):
+        _verify_source_recorder(run, target)
+
+
+def test_default_source_verifier_accepts_exact_contained_mlflow_identity(
+    tmp_path, monkeypatch,
+):
+    root = workspace(tmp_path)
+    source = ModelRecordEntry(
+        "demo@static", "demo", "static", "legacy_import", "legacy_unverified",
+        "source-recorder", "Declared_Source",
+    )
+
+    class Client:
+        def get_run(self, recorder_id):
+            return SimpleNamespace(info=SimpleNamespace(
+                run_id=recorder_id, experiment_id="1",
+                artifact_uri=(root / "mlruns/1/rid/artifacts").resolve().as_uri(),
+            ))
+
+        def get_experiment(self, experiment_id):
+            return SimpleNamespace(name="Declared_Source")
+
+    import mlflow.tracking
+    monkeypatch.setattr(mlflow.tracking, "MlflowClient", Client)
+    run = SimpleNamespace(prepared=SimpleNamespace(ctx=WorkspaceContext.from_root(root)))
+
+    _verify_source_recorder(run, SimpleNamespace(source_entry=source))
 
 
 def test_full_failure_preserves_current_record_and_retains_state(tmp_path):

@@ -37,9 +37,10 @@ python -m quantpits.tools.audit_training_records \
 Default JSON contains only counts and stable issue codes. Add `--preview` explicitly in a controlled
 terminal to include the in-memory migration proposal.
 Use `--verify-mlflow` to validate experiment/recorder identity and workspace containment;
-`--verify-predictions` additionally checks persisted `pred.pkl` coverage. The audit never initializes
-a missing backend. Full training publishes the current registry only when every selected model
-succeeds and produces a verified entry.
+`--verify-predictions` additionally checks persisted `pred.pkl` coverage. In that mode the audit binds
+a read-only Qlib recorder runtime explicitly to `--workspace`; runtime initialization neither creates
+nor migrates a missing backend and does not write to the workspace. Full training publishes the
+current registry only when every selected model succeeds and produces a verified entry.
 
 A producer should publish `ready` only after validating the output recorder and persisted
 `pred.pkl`. Failed or skipped operations must not replace an existing current pointer.
@@ -74,7 +75,10 @@ the manifest. Both commands support `--workspace PATH`.
 After safeguard approval, the service initializes Qlib once and binds exact dates, ordered targets,
 source recorders, the output experiment, and the current-record baseline into an
 `execution_fingerprint`. A runner receives exactly one planned target and cannot rediscover or
-broaden the target set.
+broaden the target set. Before preparing a cache or starting a predict-only runner, the service also
+rechecks each source recorder's actual experiment and artifact containment through the
+workspace-bound MLflow backend. A conflicting legacy declaration fails closed instead of being copied
+into a new V2 entry.
 
 Real execution uses locked, compare-and-swap protected Training State V3. Its phases distinguish target
 execution, publication preparation/commit, manifest closure, and terminal status. A same-identity

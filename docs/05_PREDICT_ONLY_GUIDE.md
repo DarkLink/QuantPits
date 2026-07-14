@@ -53,7 +53,9 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
 
 Training Record V2 会分别保存预测输出 recorder 与其直接 source recorder 的 experiment/
 recorder 身份。尤其 CPCV predict-only 的当前 experiment 是实际输出所在的
-`Prod_Predict_CPCV_*`，不能继续沿用源训练 experiment。旧顶层字段仅为兼容视图。
+`Prod_Predict_CPCV_*`，不能继续沿用源训练 experiment。旧顶层字段仅为兼容视图。真实执行会
+在创建输出 recorder 前，通过当前 workspace 的 MLflow metadata 重新核对 source recorder 的
+实际 experiment 和 artifact containment；旧记录声明不一致时直接失败，不发布新的 V2 entry。
 
 轻量 plan 选出的有序 target 是真实执行的唯一模型集合。真实执行不会重新扫描 source record
 来扩大范围。若部分模型失败，成功模型可以批量发布，但命令返回 execution failure；manifest

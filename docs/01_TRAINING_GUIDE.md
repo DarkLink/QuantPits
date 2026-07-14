@@ -35,8 +35,10 @@ python -m quantpits.tools.audit_training_records \
 
 默认 JSON 只输出计数与稳定问题码；只有在受控终端显式添加 `--preview` 才会包含内存迁移草案。
 可选的 `--verify-mlflow` 会验证 experiment/recorder 与 workspace containment；
-`--verify-predictions` 还会读取实际 `pred.pkl` 并核对模型级 prediction end。缺失 backend
-不会被审计命令初始化。全量训练只有在所有目标都成功并生成 verified entry 时才更新 current registry。
+`--verify-predictions` 还会读取实际 `pred.pkl` 并核对模型级 prediction end。启用后，审计命令
+会将只读 Qlib recorder runtime 显式绑定到 `--workspace`；该运行时初始化不会创建或迁移
+缺失的 backend，也不会写入 workspace。全量训练只有在所有目标都成功并生成 verified entry
+时才更新 current registry。
 
 生产者只有在输出 recorder 与持久化 `pred.pkl` 验证完成后才应发布 `ready` 条目。失败或
 跳过的模型不得替换已有 current pointer。
@@ -67,7 +69,10 @@ baseline、可选 resume state 和必要的 source record；不会初始化 Qlib
 
 Safeguard 通过后，service 只初始化一次 Qlib，并把精确日期、顺序固定的 target、source
 recorder、输出 experiment 和 current-record baseline 绑定为 `execution_fingerprint`。runner
-一次只能处理一个已计划 target，不能重新扫描 registry 或扩大模型集合。
+一次只能处理一个已计划 target，不能重新扫描 registry 或扩大模型集合。Predict-only 在准备
+cache 或启动 runner 前还会从 workspace-bound MLflow backend 重新核对每个 source recorder 的
+实际 experiment 与 artifact containment；legacy 声明不一致时 fail closed，不能把错误谱系复制
+进新的 V2 entry。
 
 真实执行使用带锁、CAS 保护的 Training State V3，阶段依次区分 target execution、publication
 prepared/committed、manifest closure 与 terminal status。中断后的同身份 `--resume` 会根据
