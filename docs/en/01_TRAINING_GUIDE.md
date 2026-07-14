@@ -302,7 +302,9 @@ python quantpits/scripts/static_train.py --clear-state
 model work and publication completed but manifest/state closure was interrupted, resume closes audit
 evidence without retraining.
 The ordinary form does not require `--run-id`; if one is supplied explicitly, it must match state
-exactly or planning fails before Qlib initialization.
+exactly or planning fails before Qlib initialization. The newly selected ordered target-key tuple
+must also exactly match state; missing, extra, reordered, or differently selected targets are rejected
+during planning before Qlib/MLflow initialization, date resolution, cache preparation, or model work.
 
 The workspace owner explicitly runs full Python/Docker validation and the real Playground
 static/CPCV predict-only release gate. Implementation tools do not automatically run the full suite

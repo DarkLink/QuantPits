@@ -627,7 +627,8 @@ The default manifest path is `output/manifests/{command}/{run_id}.json`, and fil
 
 `static_train.py` and `cv_train.py` now share a plan-first command/service boundary. `--explain-plan`
 and `--json-plan` return before safeguard and Qlib/MLflow initialization, write nothing, and do not
-change cwd. Real execution initializes Qlib once and binds exact dates, targets, source identity, and
+change cwd. Resume planning requires the newly selected ordered target keys to exactly match State V3
+before runtime initialization. Real execution initializes Qlib once and binds exact dates, targets, source identity, and
 the publication baseline into an execution fingerprint. A workspace lease, Training State V3, and
 publication intent/receipt provide concurrency protection and crash recovery; the record is replaced
 after performance as the current-pointer commit. The service owns target iteration, resume, promotion,

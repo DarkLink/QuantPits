@@ -289,7 +289,8 @@ python quantpits/scripts/static_train.py --clear-state
 **注意**：`--resume` 会保留 receipt 已证明且仍为 current pointer 的模型，重新执行失败模型；若
 模型工作和 publication 已完成但 manifest/state closure 中断，则只完成审计闭环，不重复训练。
 普通 `--resume` 不需要再次传 `--run-id`；如果显式传入，该 ID 必须与 state 完全一致，否则会在
-Qlib 初始化前失败。
+Qlib 初始化前失败。重新选择的有序 target key 也必须与 state 完全一致；缺少、增加、重排或
+改选 target 都会在 planning 阶段拒绝，不会初始化 Qlib/MLflow、计算日期、准备 cache 或运行模型。
 
 全量 Python/Docker 测试与真实 Playground static/CPCV predict-only release gate 由 workspace owner
 显式执行；实现工具不会自动运行全量套件，也不会自动删除或迁移 legacy state。

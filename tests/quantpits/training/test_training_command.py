@@ -99,6 +99,39 @@ def test_resume_rejects_explicit_run_id_mismatch(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "persisted_models",
+    [
+        ("other",),
+        ("demo", "extra"),
+        ("extra", "demo"),
+        (),
+    ],
+)
+@pytest.mark.parametrize("family", ["static", "cpcv"])
+def test_resume_rejects_target_selection_mismatch_during_preparation(
+    tmp_path, persisted_models, family,
+):
+    root = workspace(tmp_path)
+    persisted_keys = tuple("%s@%s" % (name, family) for name in persisted_models)
+    TrainingStateRepository(root / "data/run_state.json").save(TrainingRunState(
+        run_id="persisted-run", family=family, action="incremental",
+        plan_fingerprint="plan", execution_fingerprint="execution",
+        resume_fingerprint="resume", anchor_date="2026-07-10",
+        target_keys=persisted_keys, outcomes={}, phase="executing",
+    ))
+
+    with pytest.raises(
+        TrainingPlanError, match="resume target selection differs from persisted state",
+    ):
+        prepare_training_run(
+            ctx=WorkspaceContext.from_root(root),
+            options=TrainingRunOptions(
+                family=family, action="incremental", all_enabled=True, resume=True,
+            ),
+        )
+
+
 def test_resume_rejects_legacy_state_before_execution(tmp_path):
     root = workspace(tmp_path)
     (root / "data/run_state.json").write_text(json.dumps({

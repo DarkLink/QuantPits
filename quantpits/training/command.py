@@ -288,6 +288,9 @@ def prepare_training_run(
             raise TrainingPlanError("resume state belongs to another training command")
         if options.run_id is not None and options.run_id != persisted.run_id:
             raise TrainingPlanError("explicit run id differs from persisted resume state")
+        planned_target_keys = tuple(target.key for target in targets)
+        if planned_target_keys != persisted.target_keys:
+            raise TrainingPlanError("resume target selection differs from persisted state")
         options = replace(options, run_id=persisted.run_id)
         state_fp = state_baseline.fingerprint
         resume_state = PreparedResumeState(

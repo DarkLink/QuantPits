@@ -291,6 +291,55 @@ def test_resume_closes_fault_boundaries_without_rerunning_success(tmp_path, faul
     assert not (root / "data/run_state.json").exists()
 
 
+def test_closure_only_resume_preserves_every_receipt_authorized_output_byte(tmp_path):
+    root = workspace(tmp_path)
+    run_id = "closure-byte-preservation"
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_receipt_write" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    receipt_path = next((root / "data/training_transactions").glob("*/receipt.json"))
+    receipt = json.loads(receipt_path.read_text())
+    before = {
+        member["path"]: (root / member["path"]).read_bytes()
+        for member in receipt["committed_outputs"]
+    }
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+    TrainingExecutionService(TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates,
+        run_static_target=lambda _request: pytest.fail("target must not rerun"),
+        run_cpcv_target=base.run_cpcv_target,
+    )).execute(resumed)
+
+    assert {
+        path: (root / path).read_bytes() for path in before
+    } == before
+
+
 def test_resume_revalidates_external_recorder_before_reusing_target_evidence(tmp_path):
     root = workspace(tmp_path)
     prepared = prepare_training_run(
@@ -333,6 +382,265 @@ def test_resume_revalidates_external_recorder_before_reusing_target_evidence(tmp
         ),
     )).execute(resumed)
     assert verified == [("verify-evidence", "demo@static")]
+
+
+def test_targets_complete_resume_prepares_publication_without_runner_or_cache(tmp_path):
+    root = workspace(tmp_path)
+    run_id = "targets-complete"
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_target_state" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    state_path = root / "data/run_state.json"
+    state = json.loads(state_path.read_text())
+    state["phase"] = state["status"] = "targets_complete"
+    state.pop("aggregate_error_code", None)
+    state_path.write_text(json.dumps(state, sort_keys=True) + "\n")
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+
+    TrainingExecutionService(TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates,
+        prepare_cache=lambda _run: pytest.fail("cache must not be prepared"),
+        run_static_target=lambda _request: pytest.fail("target must not rerun"),
+        run_cpcv_target=base.run_cpcv_target,
+    )).execute(resumed)
+    assert not state_path.exists()
+
+
+def test_resume_rejects_missing_target_evidence_at_service_boundary(tmp_path):
+    root = workspace(tmp_path)
+    run_id = "missing-evidence"
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_target_state" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    state_path = root / "data/run_state.json"
+    state = json.loads(state_path.read_text())
+    evidence_path = root / state["outcomes"]["demo@static"]["target_evidence_path"]
+    evidence_path.unlink()
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates,
+            run_static_target=lambda _request: pytest.fail("target must not rerun"),
+            run_cpcv_target=base.run_cpcv_target,
+        )).execute(resumed)
+    assert json.loads(state_path.read_text())["aggregate_error_code"] == "target_evidence_mismatch"
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["../outside-target-evidence.json", "data/training_runs/other/targets/demo.json"],
+)
+def test_resume_rejects_target_evidence_path_mismatch(tmp_path, relative_path):
+    root = workspace(tmp_path)
+    run_id = "evidence-path-mismatch"
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_target_state" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    state_path = root / "data/run_state.json"
+    state = json.loads(state_path.read_text())
+    state["outcomes"]["demo@static"]["target_evidence_path"] = relative_path
+    state_path.write_text(json.dumps(state, sort_keys=True) + "\n")
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates,
+            run_static_target=lambda _request: pytest.fail("target must not rerun"),
+            run_cpcv_target=base.run_cpcv_target,
+        )).execute(resumed)
+    assert json.loads(state_path.read_text())["aggregate_error_code"] == "target_evidence_mismatch"
+
+
+def test_resume_rejects_well_formed_evidence_operation_mismatch(tmp_path):
+    import hashlib
+
+    root = workspace(tmp_path)
+    run_id = "operation-mismatch"
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_target_state" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    state_path = root / "data/run_state.json"
+    state = json.loads(state_path.read_text())
+    outcome = state["outcomes"]["demo@static"]
+    evidence_path = root / outcome["target_evidence_path"]
+    evidence = json.loads(evidence_path.read_text())
+    evidence["operation"] = "legacy_import"
+    evidence["entry"]["operation"] = "legacy_import"
+    payload = (json.dumps(
+        evidence, ensure_ascii=False, indent=2, sort_keys=True
+    ) + "\n").encode("utf-8")
+    evidence_path.write_bytes(payload)
+    outcome["target_evidence_fingerprint"] = hashlib.sha256(payload).hexdigest()
+    state_path.write_text(json.dumps(state, sort_keys=True) + "\n")
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates,
+            run_static_target=lambda _request: pytest.fail("target must not rerun"),
+            run_cpcv_target=base.run_cpcv_target,
+        )).execute(resumed)
+    assert json.loads(state_path.read_text())["aggregate_error_code"] == "target_evidence_mismatch"
+
+
+def test_resume_rejects_well_formed_evidence_source_mismatch(tmp_path):
+    import hashlib
+
+    root = workspace(tmp_path)
+    run_id = "source-mismatch"
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_target_state" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    state_path = root / "data/run_state.json"
+    state = json.loads(state_path.read_text())
+    outcome = state["outcomes"]["demo@static"]
+    evidence_path = root / outcome["target_evidence_path"]
+    evidence = json.loads(evidence_path.read_text())
+    evidence["source_identity"] = {
+        "recorder_id": "unexpected-source",
+        "experiment_name": "Unexpected_Experiment", "operation": "train",
+    }
+    payload = (json.dumps(
+        evidence, ensure_ascii=False, indent=2, sort_keys=True
+    ) + "\n").encode("utf-8")
+    evidence_path.write_bytes(payload)
+    outcome["target_evidence_fingerprint"] = hashlib.sha256(payload).hexdigest()
+    state_path.write_text(json.dumps(state, sort_keys=True) + "\n")
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates,
+            run_static_target=lambda _request: pytest.fail("target must not rerun"),
+            run_cpcv_target=base.run_cpcv_target,
+        )).execute(resumed)
+    assert json.loads(state_path.read_text())["aggregate_error_code"] == "target_evidence_mismatch"
 
 
 def test_operator_log_append_is_durable_before_closure_marker_and_is_adopted(tmp_path):

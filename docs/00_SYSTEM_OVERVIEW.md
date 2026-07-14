@@ -628,6 +628,7 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 
 `static_train.py` 与 `cv_train.py` 也采用共用的 plan-first command/service boundary。
 `--explain-plan` / `--json-plan` 在 safeguard 和 Qlib/MLflow 初始化前返回，不写文件且不改变 cwd；
+resume planning 会先要求新选择的有序 target key 与 State V3 完全一致，不匹配时不会进入运行时初始化；
 真实执行只初始化一次 Qlib，并把精确日期、目标、source identity 与发布 baseline 绑定到
 execution fingerprint。Workspace lease、Training State V3 与 publication intent/receipt 共同提供
 并发保护和崩溃恢复；record 在 performance 之后替换，作为 current-pointer commit。Service 持有

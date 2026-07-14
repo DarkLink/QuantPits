@@ -1,9 +1,12 @@
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 import yaml
 from unittest.mock import MagicMock, patch
+
+from quantpits.training.state import TrainingRunState, TrainingStateRepository
 
 
 @pytest.fixture
@@ -36,6 +39,21 @@ def test_parser_exposes_plan_and_manifest_flags(script):
     assert args.explain_plan is True
     assert args.run_id == "review"
     assert args.no_manifest is True
+
+
+def test_chinese_and_english_resume_examples_match_the_static_parser(script):
+    module, _ = script
+    command = (
+        "python quantpits/scripts/static_train.py "
+        "--models gru,mlp,alstm_Alpha158 --resume"
+    )
+    repository = Path(__file__).resolve().parents[3]
+    assert command in (repository / "docs/01_TRAINING_GUIDE.md").read_text()
+    assert command in (repository / "docs/en/01_TRAINING_GUIDE.md").read_text()
+
+    args = module.parse_args(command.split()[2:])
+    assert args.models == "gru,mlp,alstm_Alpha158"
+    assert args.resume is True
 
 
 def test_explain_plan_returns_before_safeguard_and_execution(script, capsys):
@@ -73,6 +91,33 @@ def test_predict_only_missing_source_fails_before_safeguard(script):
             "--workspace", str(root), "--predict-only", "--all-enabled",
         ]) == 1
     safeguard.assert_not_called()
+    execute.assert_not_called()
+
+
+def test_resume_target_mismatch_reaches_no_runtime_hook(script):
+    module, root = script
+    TrainingStateRepository(root / "data/run_state.json").save(TrainingRunState(
+        run_id="persisted-run", family="static", action="incremental",
+        plan_fingerprint="plan", execution_fingerprint="execution",
+        resume_fingerprint="resume", anchor_date="2026-07-10",
+        target_keys=("other@static",), outcomes={}, phase="executing",
+    ))
+
+    with patch("quantpits.utils.env.safeguard") as safeguard, patch(
+        "quantpits.utils.env.set_root_dir"
+    ) as activate_workspace, patch("quantpits.utils.env.init_qlib") as init_qlib, patch(
+        "quantpits.training.service.default_execution_hooks"
+    ) as default_hooks, patch(
+        "quantpits.training.service.TrainingExecutionService.execute"
+    ) as execute:
+        assert module.main([
+            "--workspace", str(root), "--models", "demo", "--resume",
+        ]) == 1
+
+    safeguard.assert_not_called()
+    activate_workspace.assert_not_called()
+    init_qlib.assert_not_called()
+    default_hooks.assert_not_called()
     execute.assert_not_called()
 
 

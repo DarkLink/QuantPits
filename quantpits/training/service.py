@@ -337,6 +337,15 @@ class TrainingExecutionService:
                 )
                 if actual != expected:
                     raise TrainingEvidenceConflictError("training target evidence differs from resolved run")
+                expected_source_identity = None if target.source_entry is None else {
+                    "recorder_id": target.source_entry.recorder_id,
+                    "experiment_name": target.source_entry.experiment_name,
+                    "operation": target.source_entry.operation,
+                }
+                if evidence.source_identity != expected_source_identity:
+                    raise TrainingEvidenceConflictError(
+                        "training target evidence source differs from resolved run"
+                    )
                 if saved.get("attempt_id") and evidence.attempt_id != saved.get("attempt_id"):
                     raise TrainingEvidenceConflictError("training target evidence attempt differs from state")
                 try:
@@ -543,6 +552,11 @@ class TrainingExecutionService:
                 )
             evidence = repository.load(key, expected_fingerprint=fingerprint)
             target = targets.get(key)
+            expected_source_identity = None if target is None or target.source_entry is None else {
+                "recorder_id": target.source_entry.recorder_id,
+                "experiment_name": target.source_entry.experiment_name,
+                "operation": target.source_entry.operation,
+            }
             if target is None or (
                 evidence.operation != target.operation
                 or evidence.anchor_date != run.anchor_date
@@ -550,6 +564,7 @@ class TrainingExecutionService:
                 or evidence.plan_fingerprint != run.prepared.plan_fingerprint
                 or evidence.resume_fingerprint != run.resume_fingerprint
                 or evidence.execution_fingerprint != run.execution_fingerprint
+                or evidence.source_identity != expected_source_identity
             ):
                 raise TrainingEvidenceConflictError(
                     "published target evidence differs from resolved run"

@@ -49,3 +49,38 @@ def test_targets_complete_retries_only_declared_failed_targets():
     assert decision.action == "run_targets"
     assert decision.runnable_target_keys == ("b",)
     assert decision.reason_code == "retry_failed_targets"
+
+
+@pytest.mark.parametrize("phase", ["publication_prepared", "failed", "completed"])
+def test_receipt_backed_stale_phases_always_enter_closure(phase):
+    decision = classify_training_recovery(TrainingRecoveryObservation(
+        phase=phase, target_keys=("a", "b"), reusable_target_keys=("a",),
+        failed_target_keys=("b",) if phase == "failed" else (),
+        intent_present=True, receipt_present=True,
+        member_states=("postimage", "postimage"), transaction_id="tx",
+        closure_pending=("manifest_verified",),
+    ))
+    assert decision.action == "close_postprocess"
+    assert decision.runnable_target_keys == ()
+    assert decision.pending_closure_steps == ("manifest_verified",)
+    assert decision.reason_code == "adopt_committed_receipt"
+
+
+def test_all_preimage_intent_enters_publication_recovery():
+    decision = classify_training_recovery(TrainingRecoveryObservation(
+        phase="publication_prepared", target_keys=("a",),
+        reusable_target_keys=("a",), intent_present=True,
+        member_states=("preimage", "preimage"), transaction_id="tx",
+    ))
+    assert decision.action == "recover_publication"
+    assert decision.reason_code == "recover_orphan_intent"
+
+
+def test_all_postimage_intent_without_receipt_enters_publication_recovery():
+    decision = classify_training_recovery(TrainingRecoveryObservation(
+        phase="publication_prepared", target_keys=("a",),
+        reusable_target_keys=("a",), intent_present=True,
+        member_states=("postimage", "postimage"), transaction_id="tx",
+    ))
+    assert decision.action == "recover_publication"
+    assert decision.reason_code == "recover_orphan_intent"

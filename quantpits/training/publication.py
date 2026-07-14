@@ -66,19 +66,87 @@ class PublicationMember:
                 "publication intent member is malformed",
                 reason_code="intent_member_malformed",
             )
-        if not isinstance(value.get("preimage"), Mapping) or not isinstance(
-            value.get("commit_order"), int
+        preimage_value = value.get("preimage")
+        if (
+            not isinstance(preimage_value, Mapping)
+            or isinstance(value.get("commit_order"), bool)
+            or not isinstance(value.get("commit_order"), int)
         ):
             raise TrainingPublicationRecoveryError(
                 "publication intent member is malformed",
                 reason_code="intent_member_malformed",
             )
+        if set(preimage_value) != {"path", "existed", "fingerprint", "size_bytes"} or (
+            not isinstance(preimage_value.get("path"), str)
+            or not preimage_value.get("path")
+            or not isinstance(preimage_value.get("existed"), bool)
+            or (
+                preimage_value.get("fingerprint") is not None
+                and (
+                    not isinstance(preimage_value.get("fingerprint"), str)
+                    or not preimage_value.get("fingerprint")
+                )
+            )
+            or (
+                preimage_value.get("size_bytes") is not None
+                and (
+                    isinstance(preimage_value.get("size_bytes"), bool)
+                    or not isinstance(preimage_value.get("size_bytes"), int)
+                    or preimage_value.get("size_bytes") < 0
+                )
+            )
+            or preimage_value.get("existed") != (
+                preimage_value.get("fingerprint") is not None
+                and preimage_value.get("size_bytes") is not None
+            )
+        ):
+            raise TrainingPublicationRecoveryError(
+                "publication intent member baseline is malformed",
+                reason_code="intent_member_malformed",
+            )
+        preimage_relative_path = value.get("preimage_relative_path")
+        if preimage_relative_path is not None and (
+            not isinstance(preimage_relative_path, str) or not preimage_relative_path
+        ):
+            raise TrainingPublicationRecoveryError(
+                "publication intent preimage path is malformed",
+                reason_code="intent_member_malformed",
+            )
+        for name, reason in (
+            ("relative_path", "intent_member_path_invalid"),
+            ("staged_relative_path", "intent_stage_path_invalid"),
+        ):
+            candidate = Path(value[name])
+            if candidate == Path(".") or candidate.is_absolute() or ".." in candidate.parts:
+                raise TrainingPublicationRecoveryError(
+                    "publication intent member path leaves its authority",
+                    reason_code=reason,
+                )
+        if preimage_relative_path is not None:
+            candidate = Path(preimage_relative_path)
+            if candidate == Path(".") or candidate.is_absolute() or ".." in candidate.parts:
+                raise TrainingPublicationRecoveryError(
+                    "publication intent preimage path leaves its transaction",
+                    reason_code="intent_preimage_path_invalid",
+                )
+        try:
+            preimage = FileBaseline.from_dict(preimage_value)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TrainingPublicationRecoveryError(
+                "publication intent member baseline is malformed",
+                reason_code="intent_member_malformed",
+            ) from exc
+        if preimage.path != value["relative_path"]:
+            raise TrainingPublicationRecoveryError(
+                "publication intent preimage identity differs from its member",
+                reason_code="intent_preimage_identity_mismatch",
+            )
         return cls(
             relative_path=str(value["relative_path"]), kind=str(value["kind"]),
-            preimage=FileBaseline.from_dict(value["preimage"]),
+            preimage=preimage,
             postimage_fingerprint=str(value["postimage_fingerprint"]),
             staged_relative_path=str(value["staged_relative_path"]),
-            preimage_relative_path=value.get("preimage_relative_path"),
+            preimage_relative_path=preimage_relative_path,
             commit_order=int(value["commit_order"]),
         )
 
@@ -541,7 +609,10 @@ class TrainingPublicationCoordinator:
             with record_repository.lock():
                 states = {member.relative_path: self._member_state(member) for member in intent.members}
                 if "unknown" in states.values():
-                    raise TrainingPublicationRecoveryError("current output differs from publication preimage and postimage")
+                    raise TrainingPublicationRecoveryError(
+                        "current output differs from publication preimage and postimage",
+                        reason_code="publication_output_unknown",
+                    )
                 for member in sorted(intent.members, key=lambda item: item.commit_order):
                     if states[member.relative_path] == "postimage":
                         continue
@@ -553,14 +624,26 @@ class TrainingPublicationCoordinator:
                             "staged publication path leaves transaction",
                             reason_code="intent_stage_path_invalid",
                         ) from exc
-                    payload = staged.read_bytes()
+                    try:
+                        payload = staged.read_bytes()
+                    except OSError as exc:
+                        raise TrainingPublicationRecoveryError(
+                            "staged publication payload is missing or unreadable",
+                            reason_code="intent_staged_payload_missing",
+                        ) from exc
                     if sha256_bytes(payload) != member.postimage_fingerprint:
-                        raise TrainingPublicationRecoveryError("staged publication payload is corrupt")
+                        raise TrainingPublicationRecoveryError(
+                            "staged publication payload is corrupt",
+                            reason_code="intent_staged_payload_corrupt",
+                        )
                     atomic_write_bytes(self._contained(member.relative_path), payload)
                     self.fault_hook("after_member_replace", member.relative_path)
                 for member in intent.members:
                     if self._member_state(member) != "postimage":
-                        raise TrainingPublicationRecoveryError("publication postimage verification failed")
+                        raise TrainingPublicationRecoveryError(
+                            "publication postimage verification failed",
+                            reason_code="publication_postimage_verification_failed",
+                        )
                 receipt = TrainingPublicationReceipt(
                     transaction_id=intent.transaction_id, run_id=intent.run_id, status="committed",
                     published_keys=intent.published_keys,
@@ -587,11 +670,15 @@ class TrainingPublicationCoordinator:
         intent = self.load_intent()
         if intent is None:
             return None
+        self._verify_identity(intent, recovery=True)
+        self._expected_ledger(intent)
         states = [self._member_state(item) for item in intent.members]
         if "unknown" in states:
-            raise TrainingPublicationRecoveryError("publication recovery found an unknown current output")
+            raise TrainingPublicationRecoveryError(
+                "publication recovery found an unknown current output",
+                reason_code="publication_output_unknown",
+            )
         action = "finalize_postimages" if all(item == "postimage" for item in states) else "roll_forward"
-        self._verify_identity(intent, recovery=True)
         return self.commit(intent, recovery_action=action, recovery=True)
 
     def inspect_recovery(self):
@@ -609,6 +696,7 @@ class TrainingPublicationCoordinator:
                 "member_states": (), "transaction_id": self.transaction_id,
             }
         self._verify_identity(intent, recovery=True)
+        self._expected_ledger(intent)
         if receipt is not None:
             self.verify_receipt(intent, receipt)
         states = tuple(self._member_state(item) for item in intent.members)

@@ -10,6 +10,7 @@ import sys
 import json
 import tempfile
 import unittest.mock as mock
+from pathlib import Path
 import pytest
 
 SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -95,6 +96,29 @@ class TestUtils:
             parse_step_to_relativedelta("3D")
         with pytest.raises(ValueError):
             parse_step_to_relativedelta("")
+
+    def test_chinese_and_english_dry_run_examples_match_rolling_parser(
+        self, mock_env, monkeypatch,
+    ):
+        rt, _workspace = mock_env
+        command = (
+            "python quantpits/scripts/rolling_train.py --cold-start --dry-run "
+            "--models linear_Alpha158 --training-method slide"
+        )
+        repository = Path(__file__).resolve().parents[3]
+        for relative in (
+            "docs/30_ROLLING_TRAINING_GUIDE.md",
+            "docs/en/30_ROLLING_TRAINING_GUIDE.md",
+        ):
+            normalized = (repository / relative).read_text().replace("\\\n", "")
+            assert command in " ".join(normalized.split())
+
+        monkeypatch.setattr(sys, "argv", command.split()[1:])
+        args = rt.parse_args()
+        assert args.cold_start is True
+        assert args.dry_run is True
+        assert args.models == "linear_Alpha158"
+        assert args.training_method == "slide"
 
 
 class TestGenerateRollingWindows:
@@ -1847,6 +1871,35 @@ class TestMainAdditionalBranches:
                 rt.main()
         implementation.assert_not_called()
         lease.release.assert_not_called()
+
+    def test_real_static_lease_holder_blocks_rolling_with_typed_conflict(self, mock_env):
+        from types import SimpleNamespace
+
+        from quantpits.training.errors import TrainingLeaseError
+        from quantpits.training.lease import TrainingExecutionLease
+        from quantpits.utils.workspace import WorkspaceContext
+
+        rt, workspace = mock_env
+        ctx = WorkspaceContext.from_root(workspace)
+        static_holder = TrainingExecutionLease.for_workspace(ctx)
+        static_holder.acquire(run_id="static-owner")
+        try:
+            with mock.patch(
+                "rolling_train.parse_args",
+                return_value=SimpleNamespace(
+                    show_state=False, dry_run=False, clear_state=False,
+                ),
+            ), mock.patch(
+                "quantpits.utils.env.safeguard"
+            ), mock.patch(
+                "quantpits.utils.env.get_workspace_context", return_value=ctx,
+            ), mock.patch("rolling_train._main_impl") as implementation:
+                with pytest.raises(TrainingLeaseError) as raised:
+                    rt.main()
+            assert raised.value.code == "training_execution_lease_conflict"
+            implementation.assert_not_called()
+        finally:
+            static_holder.release()
 
     def test_main_no_config(self, mock_env):
         rt, _ = mock_env
