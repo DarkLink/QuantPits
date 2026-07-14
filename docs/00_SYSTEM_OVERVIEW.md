@@ -526,6 +526,7 @@ python -m quantpits.scripts.static_train --all-enabled
 | `history/` | 自动备份的历史文件 |
 | `order_history/` | 历史订单建议、交易明细、交易软件导出表（由归档脚本管理） |
 | `run_state.json` | static/CPCV Training State V3（锁与 CAS 保护）；Rolling 使用独立 state |
+| `training_runs/<run_id>/` | static/CPCV 不可变 target evidence 与可恢复 closure 状态 |
 | `rolling_state.json` | 滚动训练状态（断点恢复用） |
 | `migrate_records.py` | （工具库）用于将旧的双文件记录系统升级为新的统一 `model@mode` 记录格式 |
 | `trade_log_full.csv` | 累计交易日志（含买入和卖出） |
@@ -582,7 +583,7 @@ python -m quantpits.scripts.static_train --all-enabled
 | `config_loader.py` | Workspace 级配置加载 | 全局 |
 | `config_contracts/` | Workspace 配置校验、normalize、fingerprint，供运行前检查和后续 plan/manifest 复用 | 全局 |
 | `runtime/` | 通用 `CommandPlan` / `RunManifest` / plan renderer / manifest writer 运行时基础类型 | `ensemble_fusion`、`order_gen` 已接入 |
-| `training/` | static/CPCV 的轻量 plan、单目标 runner、workspace lease、State V3、可恢复 publication transaction 与 service lifecycle | 训练、仅预测 |
+| `training/` | static/CPCV 的 plan、纯 recovery classifier、不可变 target evidence、workspace lease、State V3、可重试 publication/closure 与 service lifecycle | 训练、仅预测 |
 | `order/` | Order command、prepared source、执行 service、纯 opinions 计算、原子 persistence 与 actual artifact ledger | 订单生成 |
 | `ensemble/` | Ensemble fusion 的 service、I/O 与报告层：显式配置加载、workspace-bound 执行路径、plan/render、manifest、OperatorLog linkage、预测持久化、fusion ledger、correlation/LOO analytics、risk/leaderboard/chart report 与执行生命周期 | 融合 |
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |

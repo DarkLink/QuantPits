@@ -13,10 +13,10 @@ from datetime import datetime
 class RollingState:
     """Rolling 训练状态管理，支持断点恢复"""
 
-    def __init__(self, state_file=None):
+    def __init__(self, state_file=None, readonly=False):
         from quantpits.utils.train_utils import ROLLING_STATE_FILE
         self.state_file = state_file or ROLLING_STATE_FILE
-        self._state = self._load()
+        self._state = self._load_without_lock() if readonly else self._load()
 
     def _load_without_lock(self):
         if os.path.exists(self.state_file):

@@ -147,6 +147,15 @@ class TrainingRecordRepository:
                 if fcntl is not None:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
+    def lock(self, *, shared=False, create=True):
+        """Return the canonical lock for every current-record reader/writer.
+
+        Callers that perform multi-file publication may hold this lock while
+        classifying and replacing ``latest_train_records.json``.  Repository
+        merge/overwrite use the same lock internally.
+        """
+        return self._lock(shared=shared, create=create)
+
     @staticmethod
     def _validated_outcomes(outcomes: Iterable[ModelRecordOutcome]):
         values = tuple(outcomes)

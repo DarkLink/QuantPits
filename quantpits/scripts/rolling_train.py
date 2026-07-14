@@ -286,7 +286,7 @@ def run_cold_start(args, targets, rolling_cfg):
 
     print_model_table(targets, title=f"Rolling Training Models ({training_method})")
 
-    if args.dry_run:
+    if getattr(args, "dry_run", False) is True:
         print("🔍 Dry-run mode: windows shown above, no training")
         return
 
@@ -638,10 +638,39 @@ def run_predict_only(args, targets, rolling_cfg):
 # Main
 # ==========================================================================
 
-def main():
-    from quantpits.utils import env as _env
-    _env.safeguard("Rolling Train")
-    args = parse_args()
+def _render_rolling_dry_run(args, rolling_cfg, training_method):
+    """Render a filesystem-only preview without Qlib, locks, or operator logs."""
+    has_selection = any([
+        args.models, args.algorithm, args.dataset, args.tag, args.all_enabled,
+    ])
+    if args.resume or args.merge or args.backtest_only or args.retrain_last:
+        if not has_selection:
+            args.all_enabled = True
+            has_selection = True
+    if not has_selection:
+        print("❌ Specify models to train")
+        print("   Use --models, --algorithm, --dataset, --tag, or --all-enabled")
+        return
+    targets = resolve_target_models(args)
+    if not targets:
+        print("⚠️  No matching models")
+        return
+    action = next((name for name, enabled in (
+        ("cold-start", args.cold_start), ("merge", args.merge),
+        ("resume", args.resume), ("predict-only", args.predict_only),
+        ("backtest-only", args.backtest_only), ("retrain-last", args.retrain_last),
+        ("retrain-models", bool(args.retrain_models)),
+    ) if enabled), "daily")
+    print("\n🔍 Rolling dry-run plan")
+    print("   Training method: %s" % training_method)
+    print("   Action: %s" % action)
+    print("   Rolling start: %s" % rolling_cfg.get("rolling_start"))
+    print("   Test step: %s" % rolling_cfg.get("test_step"))
+    print("   Targets: %s" % ", ".join(sorted(targets)))
+    print("   Window dates: deferred until real execution initializes Qlib")
+    print("   Writes: none")
+
+def _main_impl(args):
 
     # Load rolling config first (needed for training_method-aware state commands)
     from quantpits.utils.config_loader import load_rolling_config
@@ -659,11 +688,16 @@ def main():
             if args.training_method != rolling_cfg.get('training_method', 'slide'):
                 print(f"  ℹ️  --training-method={args.training_method} overrides config")
             rolling_cfg['training_method'] = training_method
+    if getattr(args, "dry_run", False) is True:
+        if rolling_cfg is None:
+            print("❌ config/rolling_config.yaml not found")
+            return
+        return _render_rolling_dry_run(args, rolling_cfg, training_method)
     _, mode_suffix, state_file = _get_strategy(training_method)
 
     # Info commands (now training-method-aware)
     if args.show_state:
-        RollingState(state_file=state_file).show()
+        RollingState(state_file=state_file, readonly=True).show()
         return
 
     if args.clear_state:
@@ -797,6 +831,30 @@ def main():
                 update_promote_status(ROOT_DIR, model_names=list(targets.keys()))
             except Exception:
                 pass
+
+
+def main():
+    """Legacy Rolling boundary with the shared workspace execution lease.
+
+    Phase 27 deliberately keeps Rolling's existing orchestration/state model;
+    only real mutation is interlocked with static/CPCV execution.  Information
+    and dry-run routes do not create or acquire the lease.
+    """
+    from quantpits.utils import env as _env
+    from quantpits.training.lease import TrainingExecutionLease
+
+    args = parse_args()
+    if args.show_state or getattr(args, "dry_run", False) is True:
+        return _main_impl(args)
+
+    _env.safeguard("Rolling Train")
+    ctx = _env.get_workspace_context()
+    lease = TrainingExecutionLease.for_workspace(ctx)
+    lease.acquire(run_id="rolling-%s" % os.getpid())
+    try:
+        return _main_impl(args)
+    finally:
+        lease.release()
 
 
 # ==========================================================================

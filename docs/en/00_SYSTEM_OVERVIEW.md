@@ -525,6 +525,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | `history/` | Auto-backed up historical files |
 | `order_history/` | Historical order suggestions, trade details, exported brokerage Excel files (supervised by archiver) |
 | `run_state.json` | Locked/CAS-protected static/CPCV Training State V3; Rolling uses separate state |
+| `training_runs/<run_id>/` | Immutable static/CPCV target evidence and recoverable closure state |
 | `rolling_state.json` | Rolling training state tracker (crash recovery) |
 | `migrate_records.py` | (Tool) Upgrades legacy dual-file record system to unified `model@mode` format |
 | `trade_log_full.csv` | Cumulative trade log (both buys and sells) |
@@ -581,7 +582,7 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `config_loader.py` | Workspace-level config loading | Global |
 | `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
 | `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | Integrated by `ensemble_fusion` and `order_gen` |
-| `training/` | Static/CPCV lightweight plans, one-target runners, workspace lease, State V3, recoverable publication transaction, and service lifecycle | Training and predict-only |
+| `training/` | Static/CPCV plans, pure recovery classifier, immutable target evidence, workspace lease, State V3, retryable publication/closure, and service lifecycle | Training and predict-only |
 | `order/` | Order command, prepared source, execution service, pure opinion calculation, atomic persistence, and actual artifact ledger | Order generation |
 | `ensemble/` | Ensemble fusion service, I/O, and reporting layer: explicit config loading, workspace-bound execution paths, plan/render, manifest, OperatorLog linkage, prediction persistence, fusion ledger, correlation/LOO analytics, risk/leaderboard/chart reports, and execution lifecycle | Fusion |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |

@@ -40,3 +40,89 @@ def test_readonly_state_inspect_creates_nothing(tmp_path):
     repo = TrainingStateRepository(tmp_path / "missing" / "run_state.json")
     assert repo.inspect_readonly()[0] is None
     assert not (tmp_path / "missing").exists()
+
+
+def test_state_v3_round_trips_recovery_evidence_fields():
+    value = state(
+        "closing", attempt_id="attempt-1", receipt_fingerprint="receipt",
+        committed_outputs=({
+            "path": "latest_train_records.json", "kind": "record", "fingerprint": "post",
+        },),
+        closure_steps={
+            "receipt_verified": "completed", "state_publication_bound": "completed",
+            "history_appended": "completed",
+        },
+        publication_transaction_id="tx", publication_status="committed",
+        logical_started_at="2026-07-14T00:00:00",
+    )
+    assert TrainingRunState.from_dict(value.to_dict()) == value
+
+
+def test_state_requires_consistent_publication_provenance():
+    with pytest.raises(TrainingStateConflictError, match="newly and previously"):
+        state("executing", outcomes={"demo@static": {
+            "published": True, "recorder_id": "rid",
+            "published_this_attempt": True, "already_published": True,
+        }})
+    with pytest.raises(TrainingStateConflictError, match="requires published"):
+        state("executing", outcomes={"demo@static": {
+            "published": False, "recorder_id": "rid",
+            "published_this_attempt": True,
+        }})
+
+
+def test_state_rejects_contradictory_publication_and_closure_identity():
+    ledger = ({
+        "path": "latest_train_records.json", "kind": "record", "fingerprint": "post",
+    },)
+    with pytest.raises(TrainingStateConflictError, match="receipt evidence"):
+        state(
+            "closing", publication_transaction_id="tx",
+            publication_status="committed",
+        )
+    with pytest.raises(TrainingStateConflictError, match="publication binding"):
+        state(
+            "closing", publication_transaction_id="tx", publication_status="committed",
+            receipt_fingerprint="receipt", committed_outputs=ledger,
+            closure_steps={"receipt_verified": "completed"},
+        )
+    with pytest.raises(TrainingStateConflictError, match="manifest"):
+        state(
+            "closing", publication_transaction_id="tx", publication_status="committed",
+            receipt_fingerprint="receipt", committed_outputs=ledger,
+            closure_steps={
+                "receipt_verified": "completed", "state_publication_bound": "completed",
+                "manifest_verified": "completed",
+            },
+        )
+
+
+def test_completed_closure_step_cannot_regress(tmp_path):
+    repo = TrainingStateRepository(tmp_path / "run_state.json")
+    timing = {"logical_started_at": "2026-07-14T00:00:00"}
+    baseline = repo.save(state("prepared", **timing))
+    baseline = repo.save(state("executing", **timing), expected=baseline)
+    baseline = repo.save(state("targets_complete", **timing), expected=baseline)
+    baseline = repo.save(state(
+        "publication_prepared", publication_transaction_id="tx",
+        publication_status="prepared", **timing,
+    ), expected=baseline)
+    ledger = ({
+        "path": "latest_train_records.json", "kind": "record", "fingerprint": "post",
+    },)
+    identity = dict(
+        publication_transaction_id="tx", publication_status="committed",
+        receipt_fingerprint="receipt", committed_outputs=ledger, **timing,
+    )
+    baseline = repo.save(state(
+        "publication_committed", closure_steps={
+            "receipt_verified": "completed", "state_publication_bound": "completed",
+            "history_appended": "completed",
+        }, **identity,
+    ), expected=baseline)
+    with pytest.raises(TrainingStateConflictError, match="regressed"):
+        repo.save(state(
+            "publication_committed", closure_steps={
+                "receipt_verified": "completed", "state_publication_bound": "completed",
+            }, **identity,
+        ), expected=baseline)

@@ -23,9 +23,12 @@ from quantpits.runtime import (
     fingerprint_command_plan,
     render_command_plan,
 )
-from quantpits.training.errors import TrainingDatePolicyError, TrainingPlanError
+from quantpits.training.errors import (
+    TrainingDatePolicyError, TrainingPlanError, TrainingStateConflictError,
+)
 from quantpits.training.record_repository import TrainingRecordBaseline, TrainingRecordRepository
 from quantpits.training.records import TrainingRecordSnapshot, snapshot_from_dict
+from quantpits.training.state import TrainingStateRepository
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_file
 
 FAMILIES = ("static", "cpcv")
@@ -88,6 +91,17 @@ class RequestedDatePolicy:
 
 
 @dataclass(frozen=True)
+class PreparedResumeState:
+    run_id: str
+    schema_version: int
+    state_fingerprint: str
+    family: str
+    action: str
+    target_keys: Tuple[str, ...]
+    phase: str
+
+
+@dataclass(frozen=True)
 class PreparedTrainingRun:
     ctx: WorkspaceContext
     options: TrainingRunOptions
@@ -100,6 +114,7 @@ class PreparedTrainingRun:
     current_snapshot: TrainingRecordSnapshot
     current_record_baseline: TrainingRecordBaseline
     date_policy: RequestedDatePolicy
+    resume_state: Optional[PreparedResumeState] = None
 
     @property
     def anchor_resolution(self) -> str:
@@ -260,13 +275,29 @@ def prepare_training_run(
         "latest_train_records.json", kind="record", fingerprint=current_fp,
         required=False, description="current publication baseline",
     ))
+    resume_state = None
     if options.resume:
         state_path = ctx.data_path("run_state.json")
-        state_fp = fingerprint_file(state_path) if state_path.is_file() else None
+        try:
+            persisted, state_baseline = TrainingStateRepository(state_path).inspect_readonly()
+        except (OSError, ValueError, TypeError, KeyError, TrainingStateConflictError) as exc:
+            raise TrainingPlanError("resume state is missing, unsupported, or invalid") from exc
+        if persisted is None or state_baseline.fingerprint is None:
+            raise TrainingPlanError("resume requested but no training state exists")
+        if persisted.family != options.family or persisted.action != options.action:
+            raise TrainingPlanError("resume state belongs to another training command")
+        if options.run_id is not None and options.run_id != persisted.run_id:
+            raise TrainingPlanError("explicit run id differs from persisted resume state")
+        options = replace(options, run_id=persisted.run_id)
+        state_fp = state_baseline.fingerprint
+        resume_state = PreparedResumeState(
+            persisted.run_id, persisted.schema_version, state_fp, persisted.family,
+            persisted.action, persisted.target_keys, persisted.phase,
+        )
         fingerprints["data/run_state.json"] = state_fp
         input_refs.append(InputRef(
             "data/run_state.json", kind="state", fingerprint=state_fp,
-            required=False, description="resume identity baseline",
+            required=True, description="persisted logical run identity",
         ))
     if options.action == "predict_only":
         source_path = _contained(ctx, options.source_records)
@@ -326,6 +357,7 @@ def prepare_training_run(
             "no_pretrain": options.no_pretrain,
             "cache_size_mb": options.cache_size_mb,
             "resume": options.resume,
+            "resume_identity_source": "persisted_state" if resume_state else None,
             "performance_path_pattern": "output/model_performance[_cpcv]_<anchor>.json",
             "execution_lease": "data/locks/training_execution.lock",
             "publication_journal": "data/training_transactions/<run_id>/",
@@ -338,6 +370,7 @@ def prepare_training_run(
         plan_fingerprint=plan_fingerprint, input_fingerprints=fingerprints,
         source_snapshot=source_snapshot, current_snapshot=current_snapshot,
         current_record_baseline=current_baseline, date_policy=date_policy,
+        resume_state=resume_state,
     )
 
 

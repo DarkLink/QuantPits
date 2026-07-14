@@ -1,4 +1,6 @@
 import json
+import hashlib
+from dataclasses import replace
 
 from quantpits.runtime import (
     CommandPlan,
@@ -10,6 +12,7 @@ from quantpits.runtime import (
     manifest_from_result,
     manifest_path,
     write_run_manifest,
+    write_or_adopt_run_manifest,
 )
 from quantpits.utils.workspace import WorkspaceContext
 
@@ -76,3 +79,92 @@ def test_write_run_manifest_replaces_existing_file(tmp_path):
 
     assert rewritten == path
     assert json.loads(path.read_text())["run_id"] == "run-1"
+
+
+def test_write_or_adopt_manifest_rejects_conflicting_durable_evidence(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    manifest = manifest_from_result(_sample_result(tmp_path))
+    path, fingerprint = write_or_adopt_run_manifest(ctx, manifest)
+    assert write_or_adopt_run_manifest(ctx, manifest) == (path, fingerprint)
+    path.write_text('{"status":"success","different":true}\n')
+    import pytest
+    with pytest.raises(RuntimeError, match="conflicts"):
+        write_or_adopt_run_manifest(ctx, manifest)
+
+
+def test_failed_manifest_supersession_requires_same_logical_run(tmp_path):
+    import pytest
+    from dataclasses import replace
+
+    ctx = WorkspaceContext.from_root(tmp_path)
+    manifest = manifest_from_result(_sample_result(tmp_path))
+    failed = replace(manifest, status="failed")
+    path, _ = write_or_adopt_run_manifest(ctx, failed)
+    path.write_text(json.dumps(dict(failed.to_public_dict(), command="other_command")) + "\n")
+    with pytest.raises(RuntimeError, match="conflicts"):
+        write_or_adopt_run_manifest(ctx, manifest, allow_failed_supersession=True)
+
+
+def test_failed_manifest_supersession_accepts_same_plan_identity(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    manifest = manifest_from_result(_sample_result(tmp_path))
+    records = dict(manifest.records, plan_fingerprint="plan-fp")
+    failed = replace(manifest, status="failed", records=records)
+    write_or_adopt_run_manifest(ctx, failed)
+    succeeded = replace(manifest, records=records, started_at="2026-07-09T15:00:00")
+    path, _ = write_or_adopt_run_manifest(
+        ctx, succeeded, allow_failed_supersession=True
+    )
+    payload = json.loads(path.read_text())
+    assert payload["status"] == "success"
+    assert payload["started_at"] == failed.started_at
+
+
+def test_different_success_manifest_is_never_subset_adopted(tmp_path):
+    import pytest
+
+    ctx = WorkspaceContext.from_root(tmp_path)
+    manifest = manifest_from_result(_sample_result(tmp_path))
+    path, _ = write_or_adopt_run_manifest(ctx, manifest)
+    changed = replace(manifest, warnings=manifest.warnings + ("different closure",))
+    with pytest.raises(RuntimeError, match="conflicts"):
+        write_or_adopt_run_manifest(
+            ctx, changed, allow_verified_success_adoption=True,
+        )
+    assert json.loads(path.read_text())["warnings"] == list(manifest.warnings)
+
+
+def test_failed_supersession_requires_exact_receipt_ledger(tmp_path):
+    import pytest
+
+    ctx = WorkspaceContext.from_root(tmp_path)
+    manifest = manifest_from_result(_sample_result(tmp_path))
+    failed_records = dict(manifest.records, plan_fingerprint="plan-fp")
+    failed = replace(manifest, status="failed", records=failed_records)
+    write_or_adopt_run_manifest(ctx, failed)
+    publication = {
+        "committed_outputs": [{
+            "path": "latest_train_records.json", "kind": "record", "fingerprint": "actual",
+        }],
+    }
+    succeeded = replace(
+        manifest,
+        records=dict(failed_records, publication=publication),
+    )
+    with pytest.raises(RuntimeError, match="ledger"):
+        write_or_adopt_run_manifest(
+            ctx, succeeded, allow_failed_supersession=True,
+            expected_receipt_ledger=({
+                "path": "latest_train_records.json", "kind": "record",
+                "fingerprint": "expected",
+            },),
+        )
+
+
+def test_manifest_fingerprint_matches_durable_bytes_and_no_manifest_is_pure(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path / "workspace")
+    manifest = manifest_from_result(_sample_result(ctx.root))
+    assert not ctx.root.exists()
+    assert not manifest_path(ctx, manifest.command, manifest.run_id).parent.exists()
+    path, fingerprint = write_or_adopt_run_manifest(ctx, manifest)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == fingerprint

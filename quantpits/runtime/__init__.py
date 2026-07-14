@@ -11,11 +11,13 @@ from quantpits.runtime.command import (
 )
 from quantpits.runtime.ids import generate_run_id
 from quantpits.runtime.manifest import (
+    RunManifestConflictError,
     RunManifest,
     manifest_from_result,
     manifest_path,
     run_manifest_to_public_dict,
     write_run_manifest,
+    write_or_adopt_run_manifest,
 )
 from quantpits.runtime.render import command_plan_to_public_dict, render_command_plan
 from quantpits.runtime.mlflow_integrity import (
@@ -36,6 +38,7 @@ __all__ = [
     "CommandStep",
     "InputRef",
     "OutputRef",
+    "RunManifestConflictError",
     "RunManifest",
     "StateRef",
     "command_plan_to_public_dict",
@@ -46,6 +49,7 @@ __all__ = [
     "render_command_plan",
     "run_manifest_to_public_dict",
     "write_run_manifest",
+    "write_or_adopt_run_manifest",
     "MlflowIntegrityIssue",
     "MlflowIntegrityReport",
     "MlflowResourceRef",

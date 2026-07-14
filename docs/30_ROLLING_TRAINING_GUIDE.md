@@ -1,5 +1,14 @@
 # Rolling Training Guide（滚动训练 · 总览）
 
+> Phase 27 过渡边界：Rolling/CPCV-rolling 仍使用既有 window/state 编排，尚未迁入 static/CPCV
+> execution service；但所有真实变更命令现在与 static/CPCV 共用 workspace training execution
+> lease，避免并发覆盖 current record。`--show-state` 与 `--dry-run` 不获取该 lease。完整的
+> plan/evidence/publication/closure 对齐仍属明确延后范围。
+> `--dry-run` 是严格的文件系统预览：只显示配置、动作与模型选择，不初始化 Qlib、不计算实际
+> window/fold 日期，也不创建 OperatorLog、state、manifest 或 lock；精确窗口在真实执行中解析。
+> `--show-state` 同样使用无 lock 的只读 state load；`--clear-state` 会备份/删除 state，因此仍经过
+> safeguard 并持有 shared execution lease。
+
 > 30 系列文档专注于**滚动训练**——训练窗口随时间推进而滑动的训练范式。
 >
 > | 文档 | 内容 |
@@ -110,6 +119,9 @@ python quantpits/scripts/rolling_train.py --predict-only --all-enabled
 python quantpits/scripts/rolling_train.py --backtest-only \
   --models linear_Alpha158 --training-method cpcv
 ```
+
+Phase 27 的 `--dry-run` 不再展示依赖 Qlib calendar 的精确窗口或 fold；`--show-folds` 仅在真实
+执行完成日期解析后生效。该取舍保证 dry-run 严格零写入、零 Qlib 初始化。
 
 > `--training-method` 可覆盖 `rolling_config.yaml` 中的设置，无需改配置文件即可切换模式对比效果。
 

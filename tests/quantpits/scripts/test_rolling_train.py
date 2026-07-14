@@ -1741,6 +1741,113 @@ class TestMoreMainFlows:
 
 
 class TestMainAdditionalBranches:
+    def test_show_state_uses_readonly_legacy_state_load(self, mock_env):
+        from types import SimpleNamespace
+
+        rt, _ = mock_env
+        args = SimpleNamespace(
+            show_state=True, clear_state=False, dry_run=False,
+            training_method=None,
+        )
+        state = mock.MagicMock()
+        with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch("quantpits.utils.config_loader.load_rolling_config", return_value={
+                 "training_method": "slide",
+             }), \
+             mock.patch("rolling_train.RollingState", return_value=state) as state_cls, \
+             mock.patch("quantpits.utils.env.safeguard") as safeguard, \
+             mock.patch("quantpits.training.lease.TrainingExecutionLease.acquire") as acquire:
+            rt.main()
+        state_cls.assert_called_once_with(
+            state_file=mock.ANY, readonly=True,
+        )
+        state.show.assert_called_once()
+        safeguard.assert_not_called()
+        acquire.assert_not_called()
+
+    def test_main_dry_run_is_filesystem_only(self, mock_env, capsys):
+        from types import SimpleNamespace
+
+        rt, _ = mock_env
+        args = SimpleNamespace(
+            show_state=False, clear_state=False, dry_run=True,
+            training_method=None, models="m1", algorithm=None, dataset=None,
+            tag=None, all_enabled=False, skip=None, resume=False, merge=False,
+            backtest_only=False, retrain_last=False, retrain_models=None,
+            cold_start=True, predict_only=False, backtest=False,
+            show_folds=False, no_pretrain=False, cache_size=None,
+            allow_stale_predict=False,
+        )
+        config = {
+            "rolling_start": "2020-01-01", "train_years": 3,
+            "valid_years": 1, "test_step": "3M", "test_step_months": 3,
+            "training_method": "slide",
+        }
+        with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch("quantpits.utils.config_loader.load_rolling_config", return_value=config), \
+             mock.patch("rolling_train.resolve_target_models", return_value={"m1": {}}), \
+             mock.patch("quantpits.utils.env.init_qlib") as init_qlib, \
+             mock.patch("quantpits.utils.operator_log.OperatorLog") as operator_log, \
+             mock.patch("quantpits.training.lease.TrainingExecutionLease.acquire") as acquire:
+            rt.main()
+        assert "Writes: none" in capsys.readouterr().out
+        init_qlib.assert_not_called()
+        operator_log.assert_not_called()
+        acquire.assert_not_called()
+
+    @pytest.mark.parametrize("clear_state", [False, True])
+    def test_real_and_clear_state_routes_hold_and_release_shared_lease(
+        self, mock_env, clear_state,
+    ):
+        from types import SimpleNamespace
+
+        rt, _ = mock_env
+        args = SimpleNamespace(show_state=False, dry_run=False, clear_state=clear_state)
+        lease = mock.MagicMock()
+        order = []
+        lease.acquire.side_effect = lambda **_kwargs: order.append("acquire")
+        lease.release.side_effect = lambda: order.append("release")
+        with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch("quantpits.utils.env.safeguard", side_effect=lambda _name: order.append("safeguard")), \
+             mock.patch("quantpits.utils.env.get_workspace_context", return_value=mock.sentinel.ctx), \
+             mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
+             mock.patch("rolling_train._main_impl", side_effect=lambda _args: order.append("execute")):
+            rt.main()
+        assert order == ["safeguard", "acquire", "execute", "release"]
+
+    def test_real_route_releases_shared_lease_on_failure(self, mock_env):
+        from types import SimpleNamespace
+
+        rt, _ = mock_env
+        args = SimpleNamespace(show_state=False, dry_run=False, clear_state=False)
+        lease = mock.MagicMock()
+        with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch("quantpits.utils.env.safeguard"), \
+             mock.patch("quantpits.utils.env.get_workspace_context", return_value=mock.sentinel.ctx), \
+             mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
+             mock.patch("rolling_train._main_impl", side_effect=RuntimeError("failed")):
+            with pytest.raises(RuntimeError, match="failed"):
+                rt.main()
+        lease.acquire.assert_called_once()
+        lease.release.assert_called_once()
+
+    def test_shared_lease_conflict_blocks_real_rolling_route(self, mock_env):
+        from types import SimpleNamespace
+
+        rt, _ = mock_env
+        args = SimpleNamespace(show_state=False, dry_run=False, clear_state=False)
+        lease = mock.MagicMock()
+        lease.acquire.side_effect = RuntimeError("lease conflict")
+        with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch("quantpits.utils.env.safeguard"), \
+             mock.patch("quantpits.utils.env.get_workspace_context", return_value=mock.sentinel.ctx), \
+             mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
+             mock.patch("rolling_train._main_impl") as implementation:
+            with pytest.raises(RuntimeError, match="lease conflict"):
+                rt.main()
+        implementation.assert_not_called()
+        lease.release.assert_not_called()
+
     def test_main_no_config(self, mock_env):
         rt, _ = mock_env
         args = mock.MagicMock(show_state=False, clear_state=False)
@@ -1800,5 +1907,3 @@ class TestParseArgsExtra:
             assert args.no_pretrain is True
             assert args.show_state is True
             assert args.clear_state is True
-
-

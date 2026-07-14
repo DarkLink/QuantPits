@@ -53,6 +53,8 @@ def hooks(calls, runner=result_for):
 
 
 def test_service_owns_exact_target_loop_and_publication(tmp_path):
+    import hashlib
+
     root = workspace(tmp_path)
     prepared = prepare_training_run(
         ctx=WorkspaceContext.from_root(root),
@@ -66,6 +68,14 @@ def test_service_owns_exact_target_loop_and_publication(tmp_path):
     assert summary.outcomes[0]["published"] is True
     assert json.loads((root / "latest_train_records.json").read_text())["models"] == {"demo@static": "rid-demo"}
     assert not (root / "data" / "run_state.json").exists()
+    receipt_path = next((root / "data/training_transactions").glob("*/receipt.json"))
+    closure_path = next((root / "data/training_runs/demo-run").glob("closure-*.json"))
+    closure = json.loads(closure_path.read_text())
+    assert closure["receipt_fingerprint"] == hashlib.sha256(
+        receipt_path.read_bytes()
+    ).hexdigest()
+    assert closure["manifest_fingerprint"]
+    assert closure["operator_log_fingerprint"]
 
 
 def test_full_failure_preserves_current_record_and_retains_state(tmp_path):
@@ -96,6 +106,7 @@ def test_no_manifest_still_writes_operator_log(tmp_path):
     summary = TrainingExecutionService(hooks([])).execute(prepared)
     assert summary.manifest_path is None
     assert (root / "data" / "operator_log.jsonl").is_file()
+    assert not (root / "output/manifests").exists()
 
 
 def test_incremental_partial_failure_publishes_only_successes_and_fails_command(tmp_path):
@@ -180,3 +191,441 @@ def test_resume_preserves_receipt_outputs_and_reruns_only_failed_target(tmp_path
     assert outcomes["a@static"]["already_published"] is True
     assert outcomes["b@static"]["published_this_attempt"] is True
     assert not (root / "data/run_state.json").exists()
+
+
+def test_resume_retries_warning_closure_without_rerunning_target(tmp_path):
+    root = workspace(tmp_path)
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            run_id="closure-retry",
+        ),
+    )
+    promotion_calls = []
+    base = hooks([])
+
+    def flaky_promotion(_workspace_root, names):
+        promotion_calls.append(names)
+        if len(promotion_calls) == 1:
+            raise RuntimeError("temporary promotion failure")
+
+    first_hooks = TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+        run_cpcv_target=base.run_cpcv_target, promote_static=flaky_promotion,
+    )
+    first = TrainingExecutionService(first_hooks).execute(prepared)
+    assert first.publication_applied is True
+    state = json.loads((root / "data/run_state.json").read_text())
+    assert state["phase"] == "closing"
+    assert state["closure_steps"]["promotion_applied"] == "warning"
+
+    rerun_targets = []
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True,
+        ),
+    )
+    second_hooks = TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates,
+        run_static_target=lambda request: rerun_targets.append(request.target.key),
+        run_cpcv_target=base.run_cpcv_target, promote_static=flaky_promotion,
+    )
+    TrainingExecutionService(second_hooks).execute(resumed)
+    assert rerun_targets == []
+    assert promotion_calls == [("demo",), ("demo",)]
+    assert not (root / "data/run_state.json").exists()
+
+
+@pytest.mark.parametrize("fault_point", [
+    "after_target_evidence", "after_target_state",
+    "after_intent_write", "before_receipt_write", "after_receipt_write",
+    "after_history_closure", "after_promotion_closure",
+    "after_manifest_closure", "after_operator_log_append", "after_terminal_state",
+])
+def test_resume_closes_fault_boundaries_without_rerunning_success(tmp_path, fault_point):
+    root = workspace(tmp_path)
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            run_id="fault-" + fault_point,
+        ),
+    )
+    fired = []
+    base = hooks([])
+
+    def fault(point, _detail=None):
+        if point == fault_point and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    interrupted_hooks = TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+        run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(interrupted_hooks).execute(prepared)
+
+    rerun_targets = []
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, resume=True,
+            run_id="fault-" + fault_point,
+        ),
+    )
+    resume_hooks = TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates,
+        run_static_target=lambda request: rerun_targets.append(request.target.key),
+        run_cpcv_target=base.run_cpcv_target,
+    )
+    TrainingExecutionService(resume_hooks).execute(resumed)
+    assert rerun_targets == []
+    assert not (root / "data/run_state.json").exists()
+
+
+def test_resume_revalidates_external_recorder_before_reusing_target_evidence(tmp_path):
+    root = workspace(tmp_path)
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            run_id="verify-evidence",
+        ),
+    )
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_target_evidence" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    verified = []
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id="verify-evidence",
+        ),
+    )
+    TrainingExecutionService(TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates,
+        run_static_target=lambda _request: pytest.fail("target must not rerun"),
+        run_cpcv_target=base.run_cpcv_target,
+        verify_reusable_target=lambda run, evidence: verified.append(
+            (run.prepared.plan.run_id, evidence.target_key)
+        ),
+    )).execute(resumed)
+    assert verified == [("verify-evidence", "demo@static")]
+
+
+def test_operator_log_append_is_durable_before_closure_marker_and_is_adopted(tmp_path):
+    root = workspace(tmp_path)
+    run_id = "operator-boundary"
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_operator_log_append" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+    state = json.loads((root / "data/run_state.json").read_text())
+    assert state["phase"] == "closing"
+    assert state["closure_steps"].get("operator_log_linked") is None
+    log_path = root / "data/operator_log.jsonl"
+    assert len(log_path.read_text().splitlines()) == 1
+
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+    TrainingExecutionService(TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates,
+        run_static_target=lambda _request: pytest.fail("target must not rerun"),
+        run_cpcv_target=base.run_cpcv_target,
+    )).execute(resumed)
+    assert len(log_path.read_text().splitlines()) == 1
+    assert not (root / "data/run_state.json").exists()
+
+
+def test_operator_log_write_failure_retains_resumable_closing_state(tmp_path, monkeypatch):
+    from quantpits.utils.operator_log import OperatorLog
+
+    root = workspace(tmp_path)
+    run_id = "operator-write-failure"
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    original = OperatorLog._write_entry
+    monkeypatch.setattr(
+        OperatorLog, "_write_entry",
+        lambda self, entry: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(hooks([])).execute(prepared)
+    state = json.loads((root / "data/run_state.json").read_text())
+    assert state["phase"] == "closing"
+    assert state["aggregate_error_code"] == "operator_log_write_failed"
+    assert state["closure_steps"].get("operator_log_linked") is None
+
+    monkeypatch.setattr(OperatorLog, "_write_entry", original)
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+    TrainingExecutionService(TrainingExecutionHooks(
+        **dict(
+            activate_workspace=hooks([]).activate_workspace,
+            init_qlib=hooks([]).init_qlib,
+            calculate_dates=hooks([]).calculate_dates,
+            run_static_target=lambda _request: pytest.fail("target must not rerun"),
+            run_cpcv_target=hooks([]).run_cpcv_target,
+        )
+    )).execute(resumed)
+    assert not (root / "data/run_state.json").exists()
+
+
+def test_manifest_retry_preserves_logical_timing_and_fingerprint(tmp_path):
+    import hashlib
+
+    root = workspace(tmp_path)
+    run_id = "manifest-timing"
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_manifest_closure" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+    path = root / "output/manifests/static_train" / (run_id + ".json")
+    before = path.read_bytes()
+    timing = (json.loads(before)["started_at"], json.loads(before)["finished_at"])
+
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+    TrainingExecutionService(TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates,
+        run_static_target=lambda _request: pytest.fail("target must not rerun"),
+        run_cpcv_target=base.run_cpcv_target,
+    )).execute(resumed)
+    after = path.read_bytes()
+    assert after == before
+    assert (json.loads(after)["started_at"], json.loads(after)["finished_at"]) == timing
+    assert hashlib.sha256(after).hexdigest() == hashlib.sha256(before).hexdigest()
+
+
+def test_resume_rejects_state_baseline_race_after_planning(tmp_path):
+    root = workspace(tmp_path)
+    run_id = "state-race"
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_target_state" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+    state_path = root / "data/run_state.json"
+    state = json.loads(state_path.read_text())
+    state["aggregate_error_code"] = "concurrent-owner"
+    state_path.write_text(json.dumps(state, sort_keys=True) + "\n")
+    with pytest.raises(TrainingExecutionError, match="changed after command planning"):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates,
+            run_static_target=lambda _request: pytest.fail("target must not rerun"),
+            run_cpcv_target=base.run_cpcv_target,
+        )).execute(resumed)
+
+
+def test_resume_safely_backfills_transaction_bound_phase26_v3_state(tmp_path):
+    root = workspace(tmp_path)
+    run_id = "v3-backfill"
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_receipt_write" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    state_path = root / "data/run_state.json"
+    legacy = json.loads(state_path.read_text())
+    legacy["phase"] = legacy["status"] = "publication_committed"
+    legacy["publication_status"] = "committed"
+    legacy.pop("receipt_fingerprint", None)
+    legacy.pop("committed_outputs", None)
+    legacy.pop("closure_steps", None)
+    state_path.write_text(json.dumps(legacy, sort_keys=True) + "\n")
+
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+    TrainingExecutionService(TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates,
+        run_static_target=lambda _request: pytest.fail("target must not rerun"),
+        run_cpcv_target=base.run_cpcv_target,
+    )).execute(resumed)
+    assert not state_path.exists()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_id", "other-run"),
+    ("attempt_id", "other-attempt"),
+    ("anchor_date", "2026-07-11"),
+    ("output_experiment_name", "other-experiment"),
+    ("plan_fingerprint", "other-plan"),
+    ("resume_fingerprint", "other-resume"),
+    ("execution_fingerprint", "other-execution"),
+])
+def test_resume_rejects_corrupt_target_evidence_identity(tmp_path, field, value):
+    import hashlib
+
+    root = workspace(tmp_path)
+    run_id = "corrupt-evidence-" + field
+    base = hooks([])
+    fired = []
+
+    def fault(point, _detail=None):
+        if point == "after_target_state" and not fired:
+            fired.append(point)
+            raise RuntimeError("injected interruption")
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+            run_cpcv_target=base.run_cpcv_target, fault_hook=fault,
+        )).execute(prepared)
+
+    state_path = root / "data/run_state.json"
+    state = json.loads(state_path.read_text())
+    outcome = state["outcomes"]["demo@static"]
+    evidence_path = root / outcome["target_evidence_path"]
+    evidence = json.loads(evidence_path.read_text())
+    evidence[field] = value
+    payload = (json.dumps(
+        evidence, ensure_ascii=False, indent=2, sort_keys=True
+    ) + "\n").encode("utf-8")
+    evidence_path.write_bytes(payload)
+    outcome["target_evidence_fingerprint"] = hashlib.sha256(payload).hexdigest()
+    state_path.write_text(json.dumps(state, sort_keys=True) + "\n")
+
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id=run_id,
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(TrainingExecutionHooks(
+            activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+            calculate_dates=base.calculate_dates,
+            run_static_target=lambda _request: pytest.fail("target must not rerun"),
+            run_cpcv_target=base.run_cpcv_target,
+        )).execute(resumed)
+    failed_state = json.loads(state_path.read_text())
+    assert failed_state["aggregate_error_code"] == "target_evidence_mismatch"

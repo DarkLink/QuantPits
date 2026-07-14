@@ -1,5 +1,16 @@
 # Rolling Training Guide (Overview)
 
+> Phase 27 transition boundary: Rolling/CPCV-rolling still use their legacy window/state
+> orchestration and are not yet backed by the static/CPCV execution service. All real mutating
+> commands now share the workspace training execution lease with static/CPCV, preventing concurrent
+> current-record replacement. `--show-state` and `--dry-run` do not acquire that lease. Full
+> plan/evidence/publication/closure parity remains explicitly deferred.
+> `--dry-run` is a strict filesystem-only preview: it renders configuration, action, and model
+> selection without initializing Qlib, resolving exact window/fold dates, or creating OperatorLog,
+> state, manifest, or lock files. Exact windows are resolved by real execution.
+> `--show-state` likewise uses a lock-free read-only state load. `--clear-state` backs up/deletes
+> state, so it still passes safeguard and holds the shared execution lease.
+
 > The 30-series covers **rolling training** — paradigms where training windows slide forward over time.
 >
 > | Document | Content |
@@ -112,6 +123,9 @@ python quantpits/scripts/rolling_train.py --predict-only --all-enabled
 python quantpits/scripts/rolling_train.py --backtest-only \
   --models linear_Alpha158 --training-method cpcv
 ```
+
+In Phase 27, `--dry-run` does not render exact Qlib-calendar windows or folds; `--show-folds` takes
+effect only after real execution resolves dates. This preserves a zero-write, zero-Qlib preview.
 
 > `--training-method` overrides `rolling_config.yaml` — switch modes without editing files.
 

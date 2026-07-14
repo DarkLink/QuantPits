@@ -7,6 +7,7 @@ import pytest
 
 from quantpits.training.command import TrainingRunOptions, prepare_training_run
 from quantpits.training.errors import TrainingPlanError
+from quantpits.training.state import TrainingRunState, TrainingStateRepository
 from quantpits.utils.workspace import WorkspaceContext
 
 
@@ -55,6 +56,61 @@ def test_workflow_change_changes_plan_fingerprint(tmp_path):
     (root / "config" / "demo.yaml").write_text("model: {changed: true}\n")
     second = prepare_training_run(ctx=WorkspaceContext.from_root(root), options=options)
     assert first.plan_fingerprint != second.plan_fingerprint
+
+
+def test_resume_adopts_persisted_run_id_without_creating_a_lock(tmp_path):
+    root = workspace(tmp_path)
+    ctx = WorkspaceContext.from_root(root)
+    state = TrainingRunState(
+        run_id="persisted-run", family="static", action="incremental",
+        plan_fingerprint="plan", execution_fingerprint="execution",
+        resume_fingerprint="resume", anchor_date="2026-07-10",
+        target_keys=("demo@static",), outcomes={}, phase="executing",
+    )
+    TrainingStateRepository(root / "data/run_state.json").save(state)
+    lock = root / "data/run_state.json.lock"
+    lock.unlink()
+    prepared = prepare_training_run(
+        ctx=ctx, options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, resume=True,
+        ),
+    )
+    assert prepared.plan.run_id == "persisted-run"
+    assert prepared.resume_state.run_id == "persisted-run"
+    assert prepared.plan.metadata["resume_identity_source"] == "persisted_state"
+    assert not lock.exists()
+
+
+def test_resume_rejects_explicit_run_id_mismatch(tmp_path):
+    root = workspace(tmp_path)
+    TrainingStateRepository(root / "data/run_state.json").save(TrainingRunState(
+        run_id="persisted-run", family="static", action="incremental",
+        plan_fingerprint="plan", execution_fingerprint="execution",
+        resume_fingerprint="resume", anchor_date="2026-07-10",
+        target_keys=("demo@static",), outcomes={}, phase="executing",
+    ))
+    with pytest.raises(TrainingPlanError, match="run id"):
+        prepare_training_run(
+            ctx=WorkspaceContext.from_root(root),
+            options=TrainingRunOptions(
+                family="static", action="incremental", all_enabled=True,
+                resume=True, run_id="different-run",
+            ),
+        )
+
+
+def test_resume_rejects_legacy_state_before_execution(tmp_path):
+    root = workspace(tmp_path)
+    (root / "data/run_state.json").write_text(json.dumps({
+        "schema_version": 2, "run_id": "legacy-run", "status": "running",
+    }))
+    with pytest.raises(TrainingPlanError, match="unsupported"):
+        prepare_training_run(
+            ctx=WorkspaceContext.from_root(root),
+            options=TrainingRunOptions(
+                family="static", action="incremental", all_enabled=True, resume=True,
+            ),
+        )
 
 
 @pytest.mark.parametrize(

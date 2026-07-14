@@ -46,6 +46,33 @@ class PublicationMember:
 
     @classmethod
     def from_dict(cls, value):
+        if not isinstance(value, Mapping):
+            raise TrainingPublicationRecoveryError(
+                "publication intent member must be an object",
+                reason_code="intent_member_malformed",
+            )
+        required = (
+            "relative_path", "kind", "preimage", "postimage_fingerprint",
+            "staged_relative_path", "commit_order",
+        )
+        if any(name not in value for name in required) or any(
+            not isinstance(value.get(name), str) or not value.get(name)
+            for name in (
+                "relative_path", "kind", "postimage_fingerprint",
+                "staged_relative_path",
+            )
+        ):
+            raise TrainingPublicationRecoveryError(
+                "publication intent member is malformed",
+                reason_code="intent_member_malformed",
+            )
+        if not isinstance(value.get("preimage"), Mapping) or not isinstance(
+            value.get("commit_order"), int
+        ):
+            raise TrainingPublicationRecoveryError(
+                "publication intent member is malformed",
+                reason_code="intent_member_malformed",
+            )
         return cls(
             relative_path=str(value["relative_path"]), kind=str(value["kind"]),
             preimage=FileBaseline.from_dict(value["preimage"]),
@@ -87,8 +114,32 @@ class TrainingPublicationIntent:
 
     @classmethod
     def from_dict(cls, value):
-        if value.get("schema_version") != 1:
-            raise TrainingPublicationRecoveryError("unsupported training publication intent")
+        if not isinstance(value, Mapping) or value.get("schema_version") != 1:
+            raise TrainingPublicationRecoveryError(
+                "unsupported training publication intent",
+                reason_code="intent_schema_invalid",
+            )
+        required_strings = (
+            "transaction_id", "run_id", "family", "action", "plan_fingerprint",
+            "execution_fingerprint",
+        )
+        if any(not isinstance(value.get(name), str) or not value.get(name) for name in required_strings):
+            raise TrainingPublicationRecoveryError(
+                "publication intent identity is malformed",
+                reason_code="intent_identity_malformed",
+            )
+        if not isinstance(value.get("published_keys"), list) or not value["published_keys"] or not all(
+            isinstance(item, str) and item for item in value["published_keys"]
+        ):
+            raise TrainingPublicationRecoveryError(
+                "publication intent target keys are malformed",
+                reason_code="intent_keys_malformed",
+            )
+        if not isinstance(value.get("members"), list) or not value["members"]:
+            raise TrainingPublicationRecoveryError(
+                "publication intent members are malformed",
+                reason_code="intent_members_malformed",
+            )
         return cls(
             transaction_id=str(value["transaction_id"]), run_id=str(value["run_id"]),
             family=str(value["family"]), action=str(value["action"]),
@@ -124,10 +175,55 @@ class TrainingPublicationReceipt:
 
     @classmethod
     def from_dict(cls, value):
+        if not isinstance(value, Mapping) or value.get("schema_version") != 1:
+            raise TrainingPublicationRecoveryError(
+                "unsupported training publication receipt",
+                reason_code="receipt_schema_invalid",
+            )
+        if value.get("status") != "committed":
+            raise TrainingPublicationRecoveryError(
+                "training publication receipt is not committed",
+                reason_code="receipt_status_invalid",
+            )
+        if any(
+            not isinstance(value.get(name), str) or not value.get(name)
+            for name in ("transaction_id", "run_id")
+        ):
+            raise TrainingPublicationRecoveryError(
+                "publication receipt identity is malformed",
+                reason_code="receipt_identity_malformed",
+            )
+        published_keys = value.get("published_keys")
+        outputs = value.get("committed_outputs")
+        if not isinstance(published_keys, list) or not published_keys or not all(
+            isinstance(item, str) and item for item in published_keys
+        ):
+            raise TrainingPublicationRecoveryError(
+                "publication receipt target keys are malformed",
+                reason_code="receipt_keys_malformed",
+            )
+        if not isinstance(outputs, list) or not outputs:
+            raise TrainingPublicationRecoveryError(
+                "publication receipt output ledger is malformed",
+                reason_code="receipt_ledger_malformed",
+            )
+        normalized = []
+        for item in outputs:
+            if not isinstance(item, Mapping) or set(item) != {"path", "kind", "fingerprint"}:
+                raise TrainingPublicationRecoveryError(
+                    "publication receipt output member is malformed",
+                    reason_code="receipt_member_malformed",
+                )
+            if any(not isinstance(item.get(name), str) or not item.get(name) for name in item):
+                raise TrainingPublicationRecoveryError(
+                    "publication receipt output member is malformed",
+                    reason_code="receipt_member_malformed",
+                )
+            normalized.append(dict(item))
         return cls(
             transaction_id=str(value["transaction_id"]), run_id=str(value["run_id"]),
-            status=str(value["status"]), published_keys=tuple(value.get("published_keys", ())),
-            committed_outputs=tuple(value.get("committed_outputs", ())),
+            status=str(value["status"]), published_keys=tuple(published_keys),
+            committed_outputs=tuple(normalized),
             recovery_action=value.get("recovery_action"),
         )
 
@@ -170,8 +266,8 @@ class TrainingPublicationCoordinator:
         self.receipt_path = self.directory / "receipt.json"
 
     @classmethod
-    def fresh_for_run(cls, run, *, clock):
-        candidate = cls(run, clock=clock)
+    def fresh_for_run(cls, run, *, clock, fault_hook=None):
+        candidate = cls(run, clock=clock, fault_hook=fault_hook)
         if not candidate.intent_path.exists() and not candidate.receipt_path.exists():
             return candidate
         base = candidate.transaction_id
@@ -297,12 +393,105 @@ class TrainingPublicationCoordinator:
     def load_intent(self) -> Optional[TrainingPublicationIntent]:
         if not self.intent_path.is_file():
             return None
-        return TrainingPublicationIntent.from_dict(json.loads(self.intent_path.read_text(encoding="utf-8")))
+        try:
+            value = json.loads(self.intent_path.read_text(encoding="utf-8"))
+            return TrainingPublicationIntent.from_dict(value)
+        except TrainingPublicationRecoveryError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise TrainingPublicationRecoveryError(
+                "training publication intent is corrupt",
+                reason_code="intent_malformed",
+            ) from exc
 
     def load_receipt(self) -> Optional[TrainingPublicationReceipt]:
         if not self.receipt_path.is_file():
             return None
-        return TrainingPublicationReceipt.from_dict(json.loads(self.receipt_path.read_text(encoding="utf-8")))
+        try:
+            value = json.loads(self.receipt_path.read_text(encoding="utf-8"))
+            return TrainingPublicationReceipt.from_dict(value)
+        except TrainingPublicationRecoveryError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise TrainingPublicationRecoveryError(
+                "training publication receipt is corrupt",
+                reason_code="receipt_malformed",
+            ) from exc
+
+    @staticmethod
+    def _expected_ledger(intent):
+        members = sorted(intent.members, key=lambda item: item.commit_order)
+        paths = [item.relative_path for item in members]
+        orders = [item.commit_order for item in members]
+        if len(paths) != len(set(paths)) or len(orders) != len(set(orders)):
+            raise TrainingPublicationRecoveryError(
+                "publication intent contains duplicate members",
+                reason_code="intent_member_duplicate",
+            )
+        if len(intent.published_keys) != len(set(intent.published_keys)):
+            raise TrainingPublicationRecoveryError(
+                "publication intent contains duplicate target keys",
+                reason_code="intent_keys_duplicate",
+            )
+        kinds = [item.kind for item in members]
+        if kinds.count("record") != 1 or kinds[-1] != "record" or any(
+            kind not in ("performance", "record") for kind in kinds
+        ):
+            raise TrainingPublicationRecoveryError(
+                "publication intent member kinds are invalid",
+                reason_code="intent_ledger_invalid",
+            )
+        return tuple({
+            "path": item.relative_path,
+            "kind": item.kind,
+            "fingerprint": item.postimage_fingerprint,
+        } for item in members)
+
+    def verify_receipt(self, intent, receipt, *, verify_current=True):
+        """Prove that one committed receipt describes the complete intent bundle."""
+        if receipt.transaction_id != intent.transaction_id:
+            raise TrainingPublicationRecoveryError(
+                "publication receipt transaction differs from intent",
+                reason_code="receipt_transaction_mismatch",
+            )
+        if receipt.run_id != intent.run_id:
+            raise TrainingPublicationRecoveryError(
+                "publication receipt run differs from intent",
+                reason_code="receipt_run_mismatch",
+            )
+        if receipt.published_keys != intent.published_keys:
+            raise TrainingPublicationRecoveryError(
+                "publication receipt target keys differ from intent",
+                reason_code="receipt_keys_mismatch",
+            )
+        if len(receipt.published_keys) != len(set(receipt.published_keys)):
+            raise TrainingPublicationRecoveryError(
+                "publication receipt contains duplicate target keys",
+                reason_code="receipt_keys_duplicate",
+            )
+        expected = self._expected_ledger(intent)
+        observed_paths = [item["path"] for item in receipt.committed_outputs]
+        if len(observed_paths) != len(set(observed_paths)):
+            raise TrainingPublicationRecoveryError(
+                "publication receipt contains duplicate output members",
+                reason_code="receipt_member_duplicate",
+            )
+        if tuple(dict(item) for item in receipt.committed_outputs) != expected:
+            raise TrainingPublicationRecoveryError(
+                "publication receipt output ledger differs from intent",
+                reason_code="receipt_ledger_mismatch",
+            )
+        if verify_current:
+            for item in expected:
+                _raw, observed = read_with_baseline(
+                    self._contained(item["path"]), display_path=item["path"]
+                )
+                if observed.fingerprint != item["fingerprint"]:
+                    raise TrainingPublicationRecoveryError(
+                        "committed publication output changed",
+                        reason_code="receipt_postimage_changed",
+                    )
+        return receipt
 
     def _verify_identity(self, intent, *, recovery=False):
         if recovery:
@@ -313,7 +502,10 @@ class TrainingPublicationCoordinator:
             )
             actual = (intent.run_id, intent.family, intent.action, intent.resume_fingerprint)
             if actual != expected:
-                raise TrainingPublicationRecoveryError("publication intent belongs to another resolved run")
+                raise TrainingPublicationRecoveryError(
+                    "publication intent belongs to another resolved run",
+                    reason_code="intent_resume_identity_mismatch",
+                )
             return
         expected = (
             self.run.prepared.plan.run_id, self.run.prepared.plan_fingerprint,
@@ -321,7 +513,10 @@ class TrainingPublicationCoordinator:
         )
         actual = (intent.run_id, intent.plan_fingerprint, intent.execution_fingerprint)
         if actual != expected:
-            raise TrainingPublicationRecoveryError("publication intent belongs to another execution")
+            raise TrainingPublicationRecoveryError(
+                "publication intent belongs to another execution",
+                reason_code="intent_execution_identity_mismatch",
+            )
 
     def _member_state(self, member):
         target = self._contained(member.relative_path)
@@ -337,49 +532,58 @@ class TrainingPublicationCoordinator:
 
     def commit(self, intent, *, recovery_action=None, recovery=False):
         self._verify_identity(intent, recovery=recovery)
+        expected_ledger = self._expected_ledger(intent)
         with self._lock():
-            states = {member.relative_path: self._member_state(member) for member in intent.members}
-            if "unknown" in states.values():
-                raise TrainingPublicationRecoveryError("current output differs from publication preimage and postimage")
-            for member in sorted(intent.members, key=lambda item: item.commit_order):
-                if states[member.relative_path] == "postimage":
-                    continue
-                staged = self.directory / member.staged_relative_path
-                payload = staged.read_bytes()
-                if sha256_bytes(payload) != member.postimage_fingerprint:
-                    raise TrainingPublicationRecoveryError("staged publication payload is corrupt")
-                atomic_write_bytes(self._contained(member.relative_path), payload)
-                self.fault_hook("after_member_replace", member.relative_path)
-            for member in intent.members:
-                if self._member_state(member) != "postimage":
-                    raise TrainingPublicationRecoveryError("publication postimage verification failed")
-            receipt = TrainingPublicationReceipt(
-                transaction_id=intent.transaction_id, run_id=intent.run_id, status="committed",
-                published_keys=intent.published_keys,
-                committed_outputs=tuple({
-                    "path": item.relative_path, "kind": item.kind,
-                    "fingerprint": item.postimage_fingerprint,
-                } for item in sorted(intent.members, key=lambda member: member.commit_order)),
-                recovery_action=recovery_action,
-            )
-            self.fault_hook("before_receipt_write")
-            atomic_write_json_bytes(self.receipt_path, _json_bytes(receipt.to_dict()))
-            self.fault_hook("after_receipt_write")
-            fsync_directory(self.directory)
-            return receipt
+            record_repository = TrainingRecordRepository.for_workspace(self.ctx)
+            # Lock order: execution lease -> transaction lock -> canonical
+            # current-record lock.  Direct repository writers use this same
+            # lock, closing the check/replace lost-update window.
+            with record_repository.lock():
+                states = {member.relative_path: self._member_state(member) for member in intent.members}
+                if "unknown" in states.values():
+                    raise TrainingPublicationRecoveryError("current output differs from publication preimage and postimage")
+                for member in sorted(intent.members, key=lambda item: item.commit_order):
+                    if states[member.relative_path] == "postimage":
+                        continue
+                    staged = (self.directory / member.staged_relative_path).resolve()
+                    try:
+                        staged.relative_to(self.directory.resolve())
+                    except ValueError as exc:
+                        raise TrainingPublicationRecoveryError(
+                            "staged publication path leaves transaction",
+                            reason_code="intent_stage_path_invalid",
+                        ) from exc
+                    payload = staged.read_bytes()
+                    if sha256_bytes(payload) != member.postimage_fingerprint:
+                        raise TrainingPublicationRecoveryError("staged publication payload is corrupt")
+                    atomic_write_bytes(self._contained(member.relative_path), payload)
+                    self.fault_hook("after_member_replace", member.relative_path)
+                for member in intent.members:
+                    if self._member_state(member) != "postimage":
+                        raise TrainingPublicationRecoveryError("publication postimage verification failed")
+                receipt = TrainingPublicationReceipt(
+                    transaction_id=intent.transaction_id, run_id=intent.run_id, status="committed",
+                    published_keys=intent.published_keys,
+                    committed_outputs=expected_ledger,
+                    recovery_action=recovery_action,
+                )
+                self.fault_hook("before_receipt_write")
+                atomic_write_json_bytes(self.receipt_path, _json_bytes(receipt.to_dict()))
+                self.fault_hook("after_receipt_write")
+                fsync_directory(self.directory)
+                return receipt
 
     def recover(self):
         receipt = self.load_receipt()
         if receipt is not None:
             intent = self.load_intent()
             if intent is None:
-                raise TrainingPublicationRecoveryError("publication receipt has no durable intent")
+                raise TrainingPublicationRecoveryError(
+                    "publication receipt has no durable intent",
+                    reason_code="receipt_without_intent",
+                )
             self._verify_identity(intent, recovery=True)
-            for item in receipt.committed_outputs:
-                _raw, observed = read_with_baseline(self._contained(item["path"]), display_path=item["path"])
-                if observed.fingerprint != item["fingerprint"]:
-                    raise TrainingPublicationRecoveryError("committed publication output changed")
-            return receipt
+            return self.verify_receipt(intent, receipt)
         intent = self.load_intent()
         if intent is None:
             return None
@@ -390,9 +594,33 @@ class TrainingPublicationCoordinator:
         self._verify_identity(intent, recovery=True)
         return self.commit(intent, recovery_action=action, recovery=True)
 
+    def inspect_recovery(self):
+        """Return a write-free, identity-verified publication observation."""
+        intent = self.load_intent()
+        receipt = self.load_receipt()
+        if receipt is not None and intent is None:
+            raise TrainingPublicationRecoveryError(
+                "publication receipt has no durable intent",
+                reason_code="receipt_without_intent",
+            )
+        if intent is None:
+            return {
+                "intent_present": False, "receipt_present": False,
+                "member_states": (), "transaction_id": self.transaction_id,
+            }
+        self._verify_identity(intent, recovery=True)
+        if receipt is not None:
+            self.verify_receipt(intent, receipt)
+        states = tuple(self._member_state(item) for item in intent.members)
+        return {
+            "intent_present": True, "receipt_present": receipt is not None,
+            "member_states": states, "transaction_id": intent.transaction_id,
+        }
+
     @classmethod
     def find_for_run(
         cls, run, *, clock, expected_resume_fingerprint=None, transaction_id=None,
+        fault_hook=None,
     ):
         parent = run.prepared.ctx.data_path("training_transactions")
         if not parent.is_dir():
@@ -404,7 +632,7 @@ class TrainingPublicationCoordinator:
             and (path.name == transaction_id if transaction_id else path.name.startswith(prefix))
         )
         for path in reversed(matches):
-            candidate = cls(run, clock=clock)
+            candidate = cls(run, clock=clock, fault_hook=fault_hook)
             candidate._set_transaction_id(path.name)
             candidate.recovery_resume_fingerprint = expected_resume_fingerprint
             try:
@@ -414,5 +642,7 @@ class TrainingPublicationCoordinator:
                     candidate.transaction_id = intent.transaction_id
                     return candidate
             except TrainingPublicationRecoveryError:
+                if transaction_id:
+                    raise
                 continue
         return None

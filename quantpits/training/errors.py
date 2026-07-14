@@ -47,3 +47,19 @@ class TrainingLeaseError(TrainingStateConflictError):
 
 class TrainingPublicationRecoveryError(TrainingPublicationError):
     code = "training_publication_recovery_conflict"
+
+    def __init__(self, message, *, reason_code=None):
+        super().__init__(message)
+        self.reason_code = reason_code or self.code
+
+
+class TrainingManifestConflictError(TrainingStateConflictError):
+    code = "manifest_conflict"
+
+
+class TrainingOperatorLogError(TrainingStateConflictError):
+    code = "operator_log_write_failed"
+
+
+class TrainingEvidenceConflictError(TrainingStateConflictError):
+    code = "target_evidence_mismatch"

@@ -16,8 +16,9 @@ Real static/CPCV commands publish through one typed execution kernel. Only one r
 record and the run's performance output form a recoverable publication unit under
 `data/training_transactions/<run-id>-<fingerprint>/`, with `latest_train_records.json` replaced last as
 the canonical current pointer.
-This contract currently applies to static/CPCV only. Rolling and CPCV-rolling still use their existing
-independent lifecycle and are not yet backed by this lease, State V3, or publication coordinator.
+This complete contract currently applies to static/CPCV only. Rolling and CPCV-rolling still use
+their existing independent lifecycle. Their real mutating commands share only the workspace training
+execution lease and are not yet backed by State V3 or the publication coordinator.
 
 ### Training Record V2
 
@@ -80,6 +81,27 @@ execution, publication preparation/commit, manifest closure, and terminal status
 `--resume` classifies transaction preimages/postimages and deterministically rolls forward or closes
 audit evidence; an unknown third version fails closed.
 
+Phase 27 separates recovery evidence more explicitly. `--resume` without `--run-id` adopts the
+persisted logical run ID. Every successful target writes immutable, SHA-256-addressed JSON evidence
+before publication, so verified expensive work that has not yet been published is reused rather than
+executed again. A receipt proves current-output commit, target evidence proves model work, and state
+coordinates recovery. History events are receipt/target linked and manifests use write-or-adopt
+semantics: identical evidence is adopted and conflicting evidence fails closed.
+Recovery actions are selected by a pure classifier from state, target evidence, intent, receipt, and
+current member observations. Unknown output bytes or identity mismatches never enter target or
+publication execution. History, promotion, manifest, OperatorLog, and terminal-state work are
+individually durable closure steps. A warning retains state; a same-identity `--resume` retries only
+unfinished steps, and `run_state.json` is cleared only after closure is complete.
+A receipt authorizes closure only when its schema/status, run/transaction, target order, complete
+output ledger, and every current postimage fingerprint exactly match the intent. Missing, duplicate,
+extra, or changed members fail closed. The manifest-linked OperatorLog JSONL entry is appended,
+flushed, and fsynced before `operator_log_linked` completes; a write failure retains `closing` state.
+Manifests use exact canonical bytes, and durable logical start/finish timing is not replaced by the
+timestamp of a later closure attempt.
+An older compatible State V3 is backfilled only when transaction-bound intent/receipt, complete
+target evidence, current postimages, and recoverable timing prove every new field. Otherwise resume
+fails closed with clear/explicit-migration guidance; no automatic migration is performed.
+
 Publication semantics:
 
 - Full runs commit the record/performance bundle only after every target returns verified evidence; otherwise existing bytes are preserved.
@@ -126,7 +148,8 @@ QuantPits/
         │   ├── pretrained/           # 🧠 Pre-trained base models (.pkl + .json)
         │   ├── run_state.json        # Locked, CAS-protected Training State V3
         │   ├── locks/                # Training execution/publication advisory locks
-        │   └── training_transactions/# Recoverable publication intents/receipts
+        │   ├── training_transactions/# Recoverable publication intents/receipts
+        │   └── training_runs/        # Immutable target evidence/closure per logical run
         └── latest_train_records.json # Current training records
 ```
 
@@ -278,6 +301,12 @@ python quantpits/scripts/static_train.py --clear-state
 **Note**: `--resume` preserves receipt-proven models that remain current and reruns failed models. If
 model work and publication completed but manifest/state closure was interrupted, resume closes audit
 evidence without retraining.
+The ordinary form does not require `--run-id`; if one is supplied explicitly, it must match state
+exactly or planning fails before Qlib initialization.
+
+The workspace owner explicitly runs full Python/Docker validation and the real Playground
+static/CPCV predict-only release gate. Implementation tools do not automatically run the full suite
+or delete/migrate legacy state.
 
 ### Viewing the Model Registry
 
@@ -416,6 +445,14 @@ data/training_transactions/<transaction-id>/
 ├── member-*.preimage         # Exact previous bytes when the member existed
 ├── member-*.postimage        # Fsynced intended bytes
 └── receipt.json              # Verified committed outputs
+```
+
+Target and closure evidence for the same logical run is stored under:
+
+```text
+data/training_runs/<run-id>/
+├── targets/<target-key>.json # Immutable typed result and recorder lineage
+└── closure-<transaction-id>.json # Receipt-linked closure status and retry evidence
 ```
 
 `data/history/` may still contain compatibility backups produced by legacy or rolling tools, but it is

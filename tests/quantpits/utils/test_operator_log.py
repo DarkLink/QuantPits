@@ -96,3 +96,30 @@ def test_operator_log_records_manifest_linkage(mock_root_dir):
     assert entry["run_id"] == "run-1"
     assert entry["manifest_path"] == "output/manifests/ensemble_fusion/run-1.json"
     assert entry["plan_fingerprint"] == "abc123"
+
+
+def test_explicit_operator_log_commit_exposes_write_failure(mock_root_dir):
+    with patch("builtins.open", side_effect=OSError("Disk Full")):
+        with pytest.raises(OSError, match="Disk Full"):
+            with OperatorLog(
+                "static_train", run_id="run-1", transaction_id="tx-1",
+            ) as oplog:
+                oplog.set_result({"status": "success"})
+                oplog.commit()
+
+
+def test_explicit_operator_log_commit_adopts_existing_durable_link(mock_root_dir):
+    log_file = mock_root_dir / "data" / "operator_log.jsonl"
+    kwargs = dict(
+        script_name="static_train", run_id="run-1", transaction_id="tx-1",
+        manifest_path="output/manifests/static_train/run-1.json",
+        plan_fingerprint="plan-fp", log_file=str(log_file),
+    )
+    with OperatorLog(**kwargs) as oplog:
+        oplog.set_result({"status": "success"})
+        first = oplog.commit()
+    with OperatorLog(**kwargs) as oplog:
+        oplog.set_result({"status": "success"})
+        adopted = oplog.commit()
+    assert adopted == first
+    assert len(log_file.read_text().splitlines()) == 1

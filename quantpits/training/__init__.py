@@ -10,7 +10,7 @@ from .records import (
 )
 from .record_repository import TrainingRecordBaseline, TrainingRecordRepository
 from .command import (
-    PreparedTrainingRun, RequestedDatePolicy, TrainingRunOptions,
+    PreparedResumeState, PreparedTrainingRun, RequestedDatePolicy, TrainingRunOptions,
     TrainingTarget, prepare_training_run,
 )
 from .resolved import ResolvedTrainingRun, ResolvedTrainingTarget, resolve_training_run
@@ -22,15 +22,23 @@ from .publication import (
     TrainingPublicationCoordinator, TrainingPublicationIntent, TrainingPublicationReceipt,
 )
 from .state import TrainingRunState, TrainingStateRepository
+from .evidence import TrainingTargetEvidence, TrainingTargetEvidenceRepository
+from .recovery import (
+    TrainingRecoveryDecision, TrainingRecoveryObservation, classify_training_recovery,
+)
+from .closure import TrainingClosureRepository, TrainingClosureState
 
 __all__ = [
     "ModelRecordEntry", "ModelRecordOutcome", "ResolvedModelRecord",
     "TrainingRecordSnapshot", "TrainingRecordBaseline", "TrainingRecordRepository", "resolve_model_record",
     "build_model_record_entry",
-    "PreparedTrainingRun", "RequestedDatePolicy", "TrainingRunOptions", "TrainingTarget", "prepare_training_run",
+    "PreparedResumeState", "PreparedTrainingRun", "RequestedDatePolicy", "TrainingRunOptions", "TrainingTarget", "prepare_training_run",
     "ResolvedTrainingRun", "ResolvedTrainingTarget", "resolve_training_run",
     "TrainingTargetRequest", "TrainingTargetResult",
     "TrainingExecutionLease", "TrainingHistoryRepository", "FileBaseline", "TrainingPublicationCoordinator",
     "TrainingPublicationIntent", "TrainingPublicationReceipt", "TrainingRunState",
     "TrainingStateRepository",
+    "TrainingTargetEvidence", "TrainingTargetEvidenceRepository",
+    "TrainingRecoveryDecision", "TrainingRecoveryObservation", "classify_training_recovery",
+    "TrainingClosureRepository", "TrainingClosureState",
 ]
