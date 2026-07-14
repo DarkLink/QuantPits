@@ -15,6 +15,13 @@ from .command import (
 )
 from .resolved import ResolvedTrainingRun, ResolvedTrainingTarget, resolve_training_run
 from .runners import TrainingTargetRequest, TrainingTargetResult
+from .lease import TrainingExecutionLease
+from .history import TrainingHistoryRepository
+from .persistence import FileBaseline
+from .publication import (
+    TrainingPublicationCoordinator, TrainingPublicationIntent, TrainingPublicationReceipt,
+)
+from .state import TrainingRunState, TrainingStateRepository
 
 __all__ = [
     "ModelRecordEntry", "ModelRecordOutcome", "ResolvedModelRecord",
@@ -23,4 +30,7 @@ __all__ = [
     "PreparedTrainingRun", "RequestedDatePolicy", "TrainingRunOptions", "TrainingTarget", "prepare_training_run",
     "ResolvedTrainingRun", "ResolvedTrainingTarget", "resolve_training_run",
     "TrainingTargetRequest", "TrainingTargetResult",
+    "TrainingExecutionLease", "TrainingHistoryRepository", "FileBaseline", "TrainingPublicationCoordinator",
+    "TrainingPublicationIntent", "TrainingPublicationReceipt", "TrainingRunState",
+    "TrainingStateRepository",
 ]

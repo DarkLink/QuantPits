@@ -82,7 +82,7 @@ with OperatorLog("ensemble_fusion", args=sys.argv[1:]) as oplog:
 
 `ensemble_fusion.py` 的实际接入由 `quantpits/ensemble/service.py` 负责：service 使用显式 `WorkspaceContext` 写入 `data/operator_log.jsonl`，在真实执行边界把相对输出路径解析到当前 workspace，真实执行默认写入 `output/manifests/ensemble_fusion/<run_id>.json`，dry-run (`--explain-plan` / `--json-plan`) 不写运行清单。
 
-静态/CPCV 训练由 `quantpits/training/service.py` 接入：轻量计划不会初始化 Qlib 或写文件；真实执行将 plan fingerprint、resolved execution fingerprint、逐模型 outcome、是否实际发布以及已提交的 workspace 输出写入运行证据。全量训练只有所有目标成功才覆盖当前训练记录；增量和 predict-only 可一次性合并成功目标，但任一目标失败时命令整体仍失败。运行清单只列本次真实提交的文件，不把计划输出当作已完成输出。
+静态/CPCV 训练由 `quantpits/training/service.py` 接入：轻量计划不会初始化 Qlib、创建 lease 或写文件。真实执行由 workspace lease 串行化，Training State V3 记录 target/publication/closure 阶段；record 与性能输出通过 durable intent、staged postimage 和 verified receipt 可恢复提交。全量训练只有所有目标成功才提交；增量和 predict-only 可提交成功目标，但任一目标失败时命令整体仍失败。运行清单只列 receipt 证明的输出，并通过 `OperatorLog.transaction_id` 关联 publication transaction。
 
 ---
 

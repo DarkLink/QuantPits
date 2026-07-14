@@ -301,7 +301,7 @@ remain compatibility projections.
 - Models are uniformly managed in `config/model_registry.yaml`
 - Date parameters are controlled by `config/model_config.json`
 - Backtest strategy parameters (benchmark, frequency, capital) are controlled by `config/strategy_config.yaml` (preview)
-- Training records are auto-backed up to `data/history/` before modifying
+- Typed static/CPCV stores exact pre/postimages and receipts under `data/training_transactions/`; legacy/rolling backups may remain in `data/history/`
 - Incremental training supports `--resume` (resume from breakpoint) and `--dry-run` (preview)
 
 ### ⑨ Rolling Training Module
@@ -524,7 +524,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 |------|------|
 | `history/` | Auto-backed up historical files |
 | `order_history/` | Historical order suggestions, trade details, exported brokerage Excel files (supervised by archiver) |
-| `run_state.json` | State tracker for incremental training (Resume functionality) |
+| `run_state.json` | Locked/CAS-protected static/CPCV Training State V3; Rolling uses separate state |
 | `rolling_state.json` | Rolling training state tracker (crash recovery) |
 | `migrate_records.py` | (Tool) Upgrades legacy dual-file record system to unified `model@mode` format |
 | `trade_log_full.csv` | Cumulative trade log (both buys and sells) |
@@ -581,7 +581,7 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `config_loader.py` | Workspace-level config loading | Global |
 | `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
 | `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | Integrated by `ensemble_fusion` and `order_gen` |
-| `training/` | Static/CPCV lightweight plans, resolved execution, one-target runners, resume state, atomic Training Record repository, and service-owned publication | Training and predict-only |
+| `training/` | Static/CPCV lightweight plans, one-target runners, workspace lease, State V3, recoverable publication transaction, and service lifecycle | Training and predict-only |
 | `order/` | Order command, prepared source, execution service, pure opinion calculation, atomic persistence, and actual artifact ledger | Order generation |
 | `ensemble/` | Ensemble fusion service, I/O, and reporting layer: explicit config loading, workspace-bound execution paths, plan/render, manifest, OperatorLog linkage, prediction persistence, fusion ledger, correlation/LOO analytics, risk/leaderboard/chart reports, and execution lifecycle | Fusion |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
@@ -627,10 +627,11 @@ The default manifest path is `output/manifests/{command}/{run_id}.json`, and fil
 `static_train.py` and `cv_train.py` now share a plan-first command/service boundary. `--explain-plan`
 and `--json-plan` return before safeguard and Qlib/MLflow initialization, write nothing, and do not
 change cwd. Real execution initializes Qlib once and binds exact dates, targets, source identity, and
-the publication baseline into an execution fingerprint. The service owns target iteration, resume,
-batch record/performance publication, and the actual-output manifest. An incomplete full run never
-replaces the current record; incremental/predict-only partial failures merge successes but still fail
-the command. Training Record V2 uses strict schema dispatch, while ensemble execution rechecks
+the publication baseline into an execution fingerprint. A workspace lease, Training State V3, and
+publication intent/receipt provide concurrency protection and crash recovery; the record is replaced
+after performance as the current-pointer commit. The service owns target iteration, resume, promotion,
+and the actual-output manifest. An incomplete full run never replaces the current record;
+incremental/predict-only partial failures commit successes but still fail the command. Training Record V2 uses strict schema dispatch, while ensemble execution rechecks
 workspace/experiment/artifact identity and actual prediction coverage.
 
 `ensemble_fusion` also exposes a typed command boundary: `quantpits/ensemble/command.py` owns the argument contract and prepare/explain/execute routing, `quantpits/ensemble/service.py` owns the execution lifecycle, and the script layer owns process exit semantics only. The engine layer never calls `sys.exit()`, so notebooks, schedulers, tests, and other Python workflows can reuse the command runner and handle structured outcomes or typed domain errors themselves.

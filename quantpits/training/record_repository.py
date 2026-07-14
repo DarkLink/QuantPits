@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional
 
 from .records import ModelRecordOutcome, TrainingRecordSnapshot, snapshot_from_dict
+from .persistence import read_with_baseline
 
 try:
     import fcntl
@@ -53,21 +54,26 @@ class TrainingRecordRepository:
         return cls(path, **kwargs)
 
     def load(self) -> TrainingRecordSnapshot:
-        with self._lock(shared=True, create=False):
+        with self._lock(shared=True, create=True):
             return self._read_unlocked()
 
     def baseline(self) -> TrainingRecordBaseline:
         return self.inspect()[1]
 
     def inspect(self):
-        """Return snapshot and exact baseline from one shared-read boundary."""
-        with self._lock(shared=True, create=False):
-            snapshot = self._read_unlocked()
-            baseline = TrainingRecordBaseline(
-                file_fingerprint=_fingerprint(self.path),
-                entries={key: entry.recorder_id for key, entry in snapshot.entry_map.items()},
-            )
-            return snapshot, baseline
+        """Compatibility alias for the pure, coherent preparation read."""
+        return self.inspect_readonly()
+
+    def inspect_readonly(self):
+        """Read and hash one byte version without creating locks or directories."""
+        raw, file_baseline = read_with_baseline(self.path, display_path=self.path.name)
+        snapshot = TrainingRecordSnapshot(()) if raw is None else snapshot_from_dict(
+            json.loads(raw.decode("utf-8"))
+        )
+        return snapshot, TrainingRecordBaseline(
+            file_fingerprint=file_baseline.fingerprint,
+            entries={key: entry.recorder_id for key, entry in snapshot.entry_map.items()},
+        )
 
     def preview_upgrade(self, *, preview_time: Optional[str] = None):
         """Return a deterministic structural audit without locks or writes."""
@@ -91,6 +97,35 @@ class TrainingRecordRepository:
             return TrainingRecordSnapshot(())
         with self.path.open("r", encoding="utf-8") as handle:
             return snapshot_from_dict(json.load(handle))
+
+    def project_merge(self, snapshot, outcomes, *, timestamp=None):
+        outcomes = self._validated_outcomes(outcomes)
+        entries = dict(snapshot.entry_map)
+        for outcome in outcomes:
+            if outcome.outcome == "success" and outcome.entry is not None:
+                entries[outcome.key] = outcome.entry
+        return TrainingRecordSnapshot(
+            tuple(entries[key] for key in sorted(entries)),
+            updated_at=timestamp or self._clock().replace(microsecond=0).isoformat(),
+        )
+
+    def project_overwrite(self, snapshot, outcomes, *, timestamp=None):
+        del snapshot
+        outcomes = self._validated_outcomes(outcomes)
+        if any(item.outcome != "success" or item.entry is None for item in outcomes):
+            raise ValueError("incomplete full run cannot overwrite current records")
+        if not outcomes:
+            raise ValueError("empty overwrite requires an explicit migration workflow")
+        return TrainingRecordSnapshot(
+            tuple(sorted((item.entry for item in outcomes), key=lambda item: item.key)),
+            updated_at=timestamp or self._clock().replace(microsecond=0).isoformat(),
+        )
+
+    @staticmethod
+    def serialize(snapshot: TrainingRecordSnapshot) -> bytes:
+        return (json.dumps(
+            snapshot.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+        ) + "\n").encode("utf-8")
 
     @contextmanager
     def _lock(self, *, shared=False, create=True):
@@ -141,10 +176,9 @@ class TrainingRecordRepository:
                     actual = current.recorder_id if current else None
                     if actual != recorder_id:
                         raise TrainingRecordConflictError("selected training record changed during run")
-            for outcome in outcomes:
-                if outcome.outcome == "success" and outcome.entry is not None:
-                    entries[outcome.key] = outcome.entry
-            snapshot = self._timestamped(tuple(entries[key] for key in sorted(entries)))
+            snapshot = self.project_merge(
+                TrainingRecordSnapshot(tuple(entries[key] for key in sorted(entries))), outcomes
+            )
             self._replace(snapshot, observed)
             return snapshot
 
@@ -166,7 +200,7 @@ class TrainingRecordRepository:
             expected = baseline.file_fingerprint if baseline is not None else expected_file_fingerprint
             if (baseline is not None or expected_file_fingerprint is not None) and observed != expected:
                 raise TrainingRecordConflictError("training record baseline differs from prepared run")
-            snapshot = self._timestamped(tuple(sorted(entries, key=lambda item: item.key)))
+            snapshot = self.project_overwrite(TrainingRecordSnapshot(()), outcomes)
             self._replace(snapshot, observed)
             return snapshot
 
@@ -178,7 +212,7 @@ class TrainingRecordRepository:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if _fingerprint(self.path) != baseline:
             raise TrainingRecordConflictError("training record changed during update")
-        payload = json.dumps(snapshot.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        payload = self.serialize(snapshot).decode("utf-8")
         fd, name = tempfile.mkstemp(prefix=".%s." % self.path.name, dir=str(self.path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:

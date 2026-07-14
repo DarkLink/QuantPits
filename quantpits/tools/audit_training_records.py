@@ -56,6 +56,9 @@ def _external_issues(records, ctx, verify_predictions=False, client=None, record
         RecordAuditIssue(issue.code, issue.severity, key_by_recorder.get(issue.recorder_id or "", ""))
         for issue in mlflow_report.issues
     ]
+    known_failed_recorders = {
+        str(issue.recorder_id) for issue in mlflow_report.issues if issue.recorder_id
+    }
     for entry in snapshot.entries:
         try:
             metadata = client.recorder(entry.recorder_id, experiment_name=entry.experiment_name)
@@ -73,10 +76,25 @@ def _external_issues(records, ctx, verify_predictions=False, client=None, record
                 if artifact.public_path() != entry.artifact_path:
                     issues.append(RecordAuditIssue("artifact_path_mismatch", "error", entry.key))
         except Exception:
-            # The integrity report already carries stable not-found/containment
-            # codes; do not replace those with a generic metadata error.
-            pass
-    if verify_predictions and not mlflow_report.has_errors():
+            if entry.recorder_id not in known_failed_recorders:
+                issues.append(RecordAuditIssue("recorder_metadata_lookup_failed", "error", entry.key))
+        if entry.source_recorder_id:
+            try:
+                source = client.recorder(
+                    entry.source_recorder_id,
+                    experiment_name=entry.source_experiment_name,
+                )
+                if str(source.get("experiment_name") or "") != entry.source_experiment_name:
+                    issues.append(RecordAuditIssue("source_experiment_mismatch", "error", entry.key))
+                uri = str(source.get("artifact_uri") or "")
+                if uri:
+                    resolve_mlflow_resource_uri(
+                        uri, workspace_root=ctx.root, resource_kind="source recorder",
+                    )
+            except Exception:
+                if entry.source_recorder_id not in known_failed_recorders:
+                    issues.append(RecordAuditIssue("source_metadata_lookup_failed", "error", entry.key))
+    if verify_predictions:
         if recorder_getter is None:
             from qlib.workflow import R
             recorder_getter = lambda rid, exp: R.get_recorder(recorder_id=rid, experiment_name=exp)
@@ -102,7 +120,14 @@ def _external_issues(records, ctx, verify_predictions=False, client=None, record
                     issues.append(RecordAuditIssue("dataset_test_end_mismatch", "error", entry.key))
             except Exception:
                 issues.append(RecordAuditIssue("missing_or_invalid_prediction", "error", entry.key))
-    return tuple(issues)
+    unique = []
+    seen = set()
+    for issue in issues:
+        identity = (issue.code, issue.severity, issue.model_key)
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(issue)
+    return tuple(unique)
 
 
 def run(args, *, client=None, recorder_getter=None):

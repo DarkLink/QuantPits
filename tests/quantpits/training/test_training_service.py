@@ -123,3 +123,60 @@ def test_incremental_partial_failure_publishes_only_successes_and_fails_command(
     outcomes = {item["key"]: item for item in manifest["records"]["outcomes"]}
     assert outcomes["a@static"]["published"] is True
     assert outcomes["b@static"]["outcome"] == "failed"
+
+
+def test_partial_static_publication_promotes_success_before_aggregate_failure(tmp_path):
+    root = workspace(tmp_path, ("a", "b"))
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id="promote-run",
+        ),
+    )
+    promoted = []
+    base = hooks([], lambda request: result_for(
+        request, outcome="failed" if request.target.key == "b@static" else "success"
+    ))
+    configured = TrainingExecutionHooks(
+        activate_workspace=base.activate_workspace, init_qlib=base.init_qlib,
+        calculate_dates=base.calculate_dates, run_static_target=base.run_static_target,
+        run_cpcv_target=base.run_cpcv_target,
+        promote_static=lambda workspace_root, names: promoted.append((workspace_root, names)),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(configured).execute(prepared)
+    assert promoted == [(str(root.resolve()), ("a",))]
+
+
+def test_resume_preserves_receipt_outputs_and_reruns_only_failed_target(tmp_path):
+    root = workspace(tmp_path, ("a", "b"))
+    first = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True, run_id="resume-run",
+        ),
+    )
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(hooks([], lambda request: result_for(
+            request, outcome="failed" if request.target.key == "b@static" else "success"
+        ))).execute(first)
+
+    called = []
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="incremental", all_enabled=True,
+            resume=True, run_id="resume-run",
+        ),
+    )
+
+    def runner(request):
+        called.append(request.target.key)
+        return result_for(request)
+
+    summary = TrainingExecutionService(hooks([], runner)).execute(resumed)
+    assert called == ["b@static"]
+    outcomes = {item["key"]: item for item in summary.outcomes}
+    assert outcomes["a@static"]["already_published"] is True
+    assert outcomes["b@static"]["published_this_attempt"] is True
+    assert not (root / "data/run_state.json").exists()

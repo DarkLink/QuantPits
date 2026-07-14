@@ -26,6 +26,7 @@ class TrainingTargetResult:
     performance: Optional[Mapping[str, Any]] = None
     error_code: Optional[str] = None
     error_type: Optional[str] = None
+    history_event: Optional[Mapping[str, Any]] = None
 
     def __post_init__(self):
         if self.outcome not in ("success", "failed", "skipped", "preserved"):
@@ -61,7 +62,13 @@ def _adapt_result(request: TrainingTargetRequest, raw: object) -> TrainingTarget
     performance = raw.get("performance")
     if performance is not None and not isinstance(performance, Mapping):
         raise TrainingRunnerContractError("model helper performance must be a mapping")
-    return TrainingTargetResult(target.key, target.operation, "success", entry, performance)
+    history_event = raw.get("history_entry")
+    if history_event is not None and not isinstance(history_event, Mapping):
+        raise TrainingRunnerContractError("model helper history event must be a mapping")
+    return TrainingTargetResult(
+        target.key, target.operation, "success", entry, performance,
+        history_event=history_event,
+    )
 
 
 def run_static_target(request: TrainingTargetRequest) -> TrainingTargetResult:
@@ -70,10 +77,13 @@ def run_static_target(request: TrainingTargetRequest) -> TrainingTargetResult:
     run = request.resolved_run
     target = request.target
     workflow = str(run.prepared.ctx.path(target.target.workflow_path))
+    history_file = False
+    workspace_root = str(run.prepared.ctx.root)
     if target.operation == "train":
         raw = train_utils.train_single_model(
             target.target.model_name, workflow, dict(run.params), run.output_experiment_name,
             no_pretrain=run.prepared.options.no_pretrain, cache_mgr=request.cache, mode="static",
+            history_file=history_file, workspace_root=workspace_root,
         )
     else:
         source = target.source_entry
@@ -83,6 +93,7 @@ def run_static_target(request: TrainingTargetRequest) -> TrainingTargetResult:
             {"yaml_file": workflow},
             dict(run.params), run.output_experiment_name, source_records,
             no_pretrain=run.prepared.options.no_pretrain, cache_mgr=request.cache,
+            history_file=history_file, workspace_root=workspace_root,
         )
     return _adapt_result(request, raw)
 
@@ -93,10 +104,13 @@ def run_cpcv_target(request: TrainingTargetRequest) -> TrainingTargetResult:
     run = request.resolved_run
     target = request.target
     workflow = str(run.prepared.ctx.path(target.target.workflow_path))
+    history_file = False
+    workspace_root = str(run.prepared.ctx.root)
     if target.operation == "train":
         raw = train_utils.train_cpcv_model(
             target.target.model_name, workflow, dict(run.params), run.output_experiment_name,
             no_pretrain=run.prepared.options.no_pretrain, cache_mgr=request.cache, mode="cpcv",
+            history_file=history_file, workspace_root=workspace_root,
         )
     else:
         source = target.source_entry
@@ -107,6 +121,7 @@ def run_cpcv_target(request: TrainingTargetRequest) -> TrainingTargetResult:
             no_pretrain=run.prepared.options.no_pretrain, cache_mgr=request.cache,
             source_experiment_name=source.experiment_name,
             source_operation=source.operation,
+            history_file=history_file, workspace_root=workspace_root,
         )
     return _adapt_result(request, raw)
 

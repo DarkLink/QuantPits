@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -61,6 +62,8 @@ class TrainingRunOptions:
             raise TrainingPlanError("cache size must be non-negative")
         if self.resume and self.action != "incremental":
             raise TrainingPlanError("resume is supported only for incremental training")
+        if self.run_id is not None and not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", self.run_id):
+            raise TrainingPlanError("run id must use safe filename characters")
         if self.action != "full" and not (
             self.models or self.algorithm or self.dataset or self.market or self.tag or self.all_enabled
         ):
@@ -248,7 +251,7 @@ def prepare_training_run(
     warnings = []
     current_repo = TrainingRecordRepository.for_workspace(ctx)
     try:
-        current_snapshot, current_baseline = current_repo.inspect()
+        current_snapshot, current_baseline = current_repo.inspect_readonly()
     except (OSError, ValueError, TypeError, KeyError) as exc:
         raise TrainingPlanError("current training record violates its declared schema") from exc
     current_fp = current_baseline.file_fingerprint
@@ -295,7 +298,8 @@ def prepare_training_run(
         CommandStep("resolve-source-recorders", "verify per-model source recorder identity", can_skip=options.action != "predict_only", skip_reason="not predict-only" if options.action != "predict_only" else ""),
         CommandStep("train-or-predict-targets", "execute %d deterministic target(s)" % len(targets), expensive=True),
         CommandStep("verify-output-recorders", "verify persisted prediction coverage and workspace lineage"),
-        CommandStep("publish-training-records", "publish one atomic V2 registry update"),
+        CommandStep("prepare-publication", "stage record and performance postimages with durable intent"),
+        CommandStep("commit-publication", "commit and verify the recoverable current-output bundle"),
         CommandStep("write-manifest", "write truthful run manifest", can_skip=options.no_manifest, skip_reason="--no-manifest" if options.no_manifest else ""),
         CommandStep("write-operator-log", "link operator log to plan and manifest"),
     )
@@ -303,7 +307,11 @@ def prepare_training_run(
         command=command, workspace=ctx.root.name, run_id=run_id,
         mode="%s:%s" % (options.family, options.action), args=cli_args,
         inputs=tuple(input_refs), outputs=tuple(outputs),
-        states=(StateRef("data/run_state.json", "read_write", "resume and completion state"),),
+        states=(
+            StateRef("data/run_state.json", "read_write", "locked V3 resume and publication state"),
+            StateRef("data/locks/training_execution.lock", "read_write", "workspace execution lease"),
+            StateRef("data/training_transactions/<run_id>/", "read_write", "publication intent and receipt"),
+        ),
         steps=steps, config_fingerprints=dict(sorted(
             (key, value) for key, value in fingerprints.items() if value is not None
         )),
@@ -318,6 +326,9 @@ def prepare_training_run(
             "no_pretrain": options.no_pretrain,
             "cache_size_mb": options.cache_size_mb,
             "resume": options.resume,
+            "performance_path_pattern": "output/model_performance[_cpcv]_<anchor>.json",
+            "execution_lease": "data/locks/training_execution.lock",
+            "publication_journal": "data/training_transactions/<run_id>/",
             "source_record_keys": [item.key for item in source_snapshot.entries] if source_snapshot else [],
         },
     )

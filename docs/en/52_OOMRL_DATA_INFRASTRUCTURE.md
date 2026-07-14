@@ -98,13 +98,14 @@ the active workspace at the real execution boundary, writes
 (`--explain-plan` / `--json-plan`) do not write run manifests.
 
 Static/CPCV training is integrated by `quantpits/training/service.py`.
-Lightweight plans do not initialize Qlib or write files. Real execution links
-the plan fingerprint, resolved execution fingerprint, per-model outcomes,
-publication status, and actually committed workspace outputs. Full training
-replaces the current training record only when every target succeeds;
-incremental and predict-only runs may merge successful targets once, but the
-overall command still fails if any target fails. Run manifests list committed
-files only and never promote planned outputs to completed outputs.
+Lightweight plans do not initialize Qlib, create a lease, or write files. A
+workspace lease serializes real execution, while Training State V3 records
+target, publication, and closure phases. Record and performance outputs are
+recoverably committed through durable intent, staged postimages, and a verified
+receipt. Full training commits only when every target succeeds; incremental and
+predict-only may commit successful targets while still failing the aggregate
+command. Run manifests list receipt-proven outputs only, and
+`OperatorLog.transaction_id` links the publication transaction.
 
 ---
 

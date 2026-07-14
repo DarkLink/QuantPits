@@ -45,7 +45,7 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
     d. Instantiate novel Recorder mappings mapped inside the `Prod_Predict_{Freq}` branch identifier.
     e. Commit `pred.pkl` artifact persistence + Execute standard `SignalRecord` structures extracting IC/ICIR parameters.
 4. Validate each recorder's model, operation, anchor, experiment, and persisted prediction evidence.
-5. Atomically merge successful targets once while retaining failed targets' current pointers.
+5. Persist publication intent, recoverably commit record/performance, and write a verified receipt while retaining failed targets' current pointers.
 ```
 
 > [!IMPORTANT]
@@ -59,7 +59,9 @@ views only.
 The ordered target set selected by the lightweight plan is authoritative for real execution; the
 runtime never rescans the source record to broaden it. If some targets fail, successful targets may
 be batch-published, but the command still returns an execution failure. The manifest distinguishes
-`published: true/false` per model and never reports planned files as committed outputs.
+`published_this_attempt` from `already_published` and reports only receipt-verified outputs. A
+same-identity `--resume` closes interrupted publication/manifest work without rerunning a target whose
+commit is already proven by the receipt.
 
 ---
 
@@ -131,7 +133,7 @@ Functionality is rigidly analogous to incremental training:
 | Entirely novel unmapped identifier class | Modifies file indexing inserting distinct parameters |
 | Untouched / Filtered classes | Completely preserved unaltered spanning state iterations |
 
-Note: Baseline logic actively maintains archival backups dumping to `data/history/` preemptive to any state overwriting protocol executing.
+Before merge, the transaction stores exact preimage evidence. Durable intent/receipt, rather than a timestamped backup, is the recovery authority.
 
 ---
 
@@ -199,4 +201,4 @@ python quantpits/scripts/static_train.py --list
 2. **Missing Identifiers**: Models failing validation parsing against source target records are natively suppressed generating terminal warnings without halting the global stream.
 3. **Identifier Distinction**: Native operation routes completely through an independent `Prod_Predict_{Freq}` branch tag inside MLruns effectively protecting discrete training sequences records.
 4. **Chronology Constraints**: Evaluation intervals bound strictly through `model_config.json` maintaining strict parity with explicit training mapping architecture.
-5. **Autosave Backups**: Any mutable sequence dictating logic overrides implicitly generates historical snapshot representations automatically inside `data/history/` directories natively.
+5. **Recovery Evidence**: Every publication stores preimage/postimage evidence and a receipt under `data/training_transactions/`.

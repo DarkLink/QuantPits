@@ -154,8 +154,14 @@ def main(argv=None):
 
     if args.clear_state:
         env.safeguard("Static Train: clear state", workspace_root=ctx.root)
+        from quantpits.training.lease import TrainingExecutionLease
         from quantpits.training.state import TrainingStateRepository
-        TrainingStateRepository(ctx.data_path("run_state.json")).clear()
+        lease = TrainingExecutionLease.for_workspace(ctx)
+        lease.acquire(run_id="clear-training-state")
+        try:
+            TrainingStateRepository(ctx.data_path("run_state.json")).clear()
+        finally:
+            lease.release()
         return
 
     from quantpits.training.command import (
@@ -163,7 +169,6 @@ def main(argv=None):
     )
     from quantpits.training.errors import TrainingCommandError
     from quantpits.training.service import TrainingExecutionService, default_execution_hooks
-    from quantpits.utils.train_utils import calculate_dates
     try:
         options = options_from_namespace(args, "static")
         cli_args = tuple(argv if argv is not None else sys.argv[1:])
@@ -178,20 +183,8 @@ def main(argv=None):
         service = TrainingExecutionService(default_execution_hooks(
             activate_workspace=env.set_root_dir,
             init_qlib=env.init_qlib,
-            calculate_dates=calculate_dates,
         ))
         summary = service.execute(prepared)
-        if not args.predict_only:
-            try:
-                from quantpits.scripts.deep_analysis.promote_config import update_promote_status
-                published = [
-                    item["key"].rsplit("@", 1)[0]
-                    for item in summary.outcomes if item.get("published") is True
-                ]
-                if published:
-                    update_promote_status(str(ctx.root), model_names=published)
-            except Exception as exc:
-                print("Warning: promote status update failed (%s)" % type(exc).__name__, file=sys.stderr)
         return 0
     except TrainingCommandError as exc:
         print("❌ %s" % exc, file=sys.stderr)

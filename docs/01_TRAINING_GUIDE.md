@@ -11,9 +11,12 @@
 | `static_train.py --predict-only` | 仅预测 | ❌ | 已有模型 | `latest_train_records.json` |
 | `pretrain.py` | 基础模型预训练 | ✅ | configs | `data/pretrained/` (state_dict) |
 
-static/CPCV 的真实执行通过同一个 typed execution kernel 发布记录；旧工具函数保留的历史
-备份不再是新命令正确性的组成部分。当前记录使用锁内 baseline 校验和原子替换，冲突时不会
-生成备份或覆盖当前指针。
+static/CPCV 的真实执行通过同一个 typed execution kernel 发布记录。每个 workspace 同时只允许
+一个真实训练命令持有 `data/locks/training_execution.lock`；轻量 plan 不创建该文件。当前记录与
+本次性能文件通过 `data/training_transactions/<run-id>-<fingerprint>/` 中的 durable intent/receipt
+组成可恢复发布单元，`latest_train_records.json` 始终作为最后替换的 current pointer。
+本节契约当前只适用于 static/CPCV；Rolling/CPCV-rolling 仍使用既有独立流程，尚未接入该 lease、
+State V3 与 publication coordinator。
 
 ### Training Record V2
 
@@ -66,12 +69,19 @@ Safeguard 通过后，service 只初始化一次 Qlib，并把精确日期、顺
 recorder、输出 experiment 和 current-record baseline 绑定为 `execution_fingerprint`。runner
 一次只能处理一个已计划 target，不能重新扫描 registry 或扩大模型集合。
 
+真实执行使用带锁、CAS 保护的 Training State V3，阶段依次区分 target execution、publication
+prepared/committed、manifest closure 与 terminal status。中断后的同身份 `--resume` 会根据
+transaction preimage/postimage fingerprint 确定性 roll-forward 或完成审计，不会仅凭文件存在
+推断成功；遇到未知第三版本时 fail closed。
+
 发布语义：
 
-- full：所有 target 都成功且 recorder evidence 完整时才一次性覆盖记录和性能文件；否则保持原字节。
-- incremental / predict-only：成功 target 一次性 merge，失败 target 保留旧指针；只要有失败，命令仍以 execution failure 结束。
+- full：所有 target 都成功且 recorder evidence 完整时才提交 record/performance bundle；否则保持原字节。
+- incremental / predict-only：成功 target 在一个 transaction 中 merge，失败 target 保留旧指针；只要有失败，发布 receipt 仍先持久化，随后命令以 execution failure 结束。
 - resume：日期、配置、source 与 target 形成的 resume fingerprint 必须一致，且已发布 recorder 仍是 current pointer；current-record baseline 的预期变化不会伪造冲突。
-- manifest：只列出本次实际提交的 workspace 文件；未发布的 MLflow recorder 仅作为 outcome evidence。
+- manifest：只列 publication receipt 证明的实际 workspace 输出；未发布的 MLflow recorder 仅作为 outcome evidence。
+- promotion：static train 的 promotion hook 在 receipt 持久化后执行；失败只形成显式 warning，不回滚已验证的 current pointer。
+- history：typed static/CPCV runner 不直接写全局 history 路径；service 只为 receipt 中的新发布项追加带稳定 `event_id` 的 workspace-local 事件，恢复时可幂等重放。
 
 ---
 
@@ -92,7 +102,7 @@ QuantPits/
 │   │   ├── strategy.py               # 策略配置/回测策略构建
 │   │   └── ...                       # 更多共享模块（详见系统总览）
 │   ├── config_contracts/              # Workspace 配置校验、normalize、fingerprint
-│   ├── training/                      # plan/resolved runner/service/state/record repository
+│   ├── training/                      # plan/runner/lease/State V3/publication journal/service
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # 本文档
 │
@@ -108,9 +118,15 @@ QuantPits/
         ├── data/
         │   ├── history/              # 📦 自动备份的历史文件
         │   ├── pretrained/           # 🧠 预训练基模型 (.pkl + .json)
-        │   └── run_state.json        # 增量训练运行状态
+        │   ├── run_state.json        # 带锁、CAS 保护的 Training State V3
+        │   ├── locks/                # 训练 execution/publication advisory locks
+        │   └── training_transactions/# 可恢复 publication intent/receipt
         └── latest_train_records.json # 当前训练记录
 ```
+
+> 测试政策：自动全量测试由项目 owner 手工执行。实现/审阅 agent 默认只做静态检查，不应自动
+> 运行 `pytest tests/`、coverage、Docker full-suite 或等价命令；只有无法通过静态审阅判断的具体
+> 高风险契约才可运行最小定向测试，并在交接中记录原因与命令。
 
 ---
 
@@ -182,8 +198,8 @@ python quantpits/scripts/static_train.py --full
 ### 行为
 1. 训练 `model_registry.yaml` 中所有 `enabled: true` 的模型
 2. 完成后 **全量覆写** `latest_train_records.json`
-3. 覆写前自动备份到 `data/history/train_records_YYYY-MM-DD_HHMMSS.json`
-4. 性能数据保存到 `output/model_performance_{anchor_date}.json`
+3. record/performance 的精确 preimage 与 postimage 写入 publication transaction 目录
+4. 验证性能文件后最后替换 `latest_train_records.json`，再写 committed receipt
 
 ---
 
@@ -252,7 +268,8 @@ python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158 --resum
 python quantpits/scripts/static_train.py --clear-state
 ```
 
-**注意**：`--resume` 只跳过已完成的模型，**失败的模型会被重新训练**。
+**注意**：`--resume` 会保留 receipt 已证明且仍为 current pointer 的模型，重新执行失败模型；若
+模型工作和 publication 已完成但 manifest/state closure 中断，则只完成审计闭环，不重复训练。
 
 ### 查看模型注册表
 
@@ -380,19 +397,19 @@ python quantpits/scripts/ensemble_fusion.py --from-config --training-mode cpcv
 
 ---
 
-## 历史备份
+## 发布历史与恢复证据
 
-所有重要文件在修改前会自动备份到 `data/history/`：
+typed static/CPCV 不再依赖 `data/history/` 的时间戳备份保证正确性。每次实际发布使用：
 
 ```
-data/history/
-├── train_records_YYYY-MM-DD_HHMMSS.json       # latest_train_records.json 的历史
-├── train_records_YYYY-MM-DD_HHMMSS.json
-├── model_performance_YYYY-MM-DD_HHMMSS.json   # 性能数据的历史
-└── run_state_YYYY-MM-DD_HHMMSS.json           # 运行状态的历史
+data/training_transactions/<transaction-id>/
+├── intent.json               # preimage/postimage fingerprint 与提交顺序
+├── member-*.preimage         # 存在时保存精确旧字节
+├── member-*.postimage        # 已 fsync 的目标字节
+└── receipt.json              # verified committed outputs
 ```
 
-无需手动操作，系统会自动管理备份。
+`data/history/` 仍可能包含 legacy/rolling 工具生成的兼容备份，但不是新 static/CPCV 恢复依据。
 
 ---
 

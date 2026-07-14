@@ -68,3 +68,15 @@ def test_preview_is_deterministic_and_creates_no_lock(tmp_path):
     repo = TrainingRecordRepository(path)
     assert repo.preview_upgrade().to_public_dict(include_preview=True) == repo.preview_upgrade().to_public_dict(include_preview=True)
     assert not path.with_name("records.json.lock").exists()
+
+
+def test_readonly_inspect_is_coherent_and_runtime_load_takes_lock(tmp_path):
+    path = tmp_path / "records.json"
+    path.write_text(json.dumps({"experiment_name": "legacy", "models": {"m@static": "r"}}))
+    repo = TrainingRecordRepository(path)
+    snapshot, baseline = repo.inspect_readonly()
+    assert snapshot.entry_map["m@static"].recorder_id == "r"
+    assert baseline.file_fingerprint
+    assert not path.with_name("records.json.lock").exists()
+    repo.load()
+    assert path.with_name("records.json.lock").exists()

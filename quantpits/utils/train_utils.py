@@ -134,8 +134,19 @@ def append_jsonl(file_path, entry):
     """
     try:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        event_id = entry.get("event_id") if isinstance(entry, dict) else None
+        if event_id and os.path.isfile(file_path):
+            with open(file_path, "r", encoding="utf-8") as existing:
+                for line in existing:
+                    try:
+                        if json.loads(line).get("event_id") == event_id:
+                            return True
+                    except (ValueError, AttributeError):
+                        continue
         with open(file_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(entry, default=str) + '\n')
+            f.flush()
+            os.fsync(f.fileno())
         return True
     except Exception:
         return False
@@ -1195,7 +1206,8 @@ class BestScoreCaptureHandler(logging.Handler):
 
 # ================= 单模型训练 =================
 def train_single_model(model_name, yaml_file, params, experiment_name,
-                       no_pretrain=False, cache_mgr=None, mode="static"):
+                       no_pretrain=False, cache_mgr=None, mode="static",
+                       history_file=None, workspace_root=None):
     """
     训练单个模型的完整流程：训练 → 预测 → Signal Record → IC 计算
 
@@ -1520,7 +1532,12 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             # 追加到 training_history.jsonl
             history_entry = {"model_name": model_name, "mode": mode}
             history_entry.update(convergence_log)
-            if not append_jsonl(TRAINING_HISTORY_FILE, history_entry):
+            history_entry["event_id"] = fingerprint_value({
+                "operation": "train", "model_name": model_name, "mode": mode,
+                "record_id": convergence_log.get("record_id"),
+            })
+            result["history_entry"] = history_entry
+            if history_file is not False and not append_jsonl(history_file or TRAINING_HISTORY_FILE, history_entry):
                 print(f"[{model_name}] Warning: Could not write to training_history.jsonl")
             
             rid = recorder.info['id']
@@ -1536,7 +1553,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
                 requested_anchor=params['anchor_date'],
                 dataset_test_end=params.get('test_end_time'),
                 fit_start=params.get('fit_start_time'), fit_end=params.get('fit_end_time'),
-                workspace_root=env.ROOT_DIR,
+                workspace_root=workspace_root or env.ROOT_DIR,
                 config_fingerprint=fingerprint_value(params),
             ).to_dict()
     
@@ -1551,7 +1568,8 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
 
 # ================= CPCV 多折训练 =================
 def train_cpcv_model(model_name, yaml_file, params, experiment_name,
-                      no_pretrain=False, cache_mgr=None, mode="cpcv"):
+                      no_pretrain=False, cache_mgr=None, mode="cpcv",
+                      history_file=None, workspace_root=None):
     """Train K CPCV folds for a single model and average predictions.
 
     For each fold:
@@ -1892,7 +1910,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                 experiment_name=experiment_name, recorder=recorder,
                 requested_anchor=params['anchor_date'],
                 dataset_test_end=params.get('test_end_time'),
-                workspace_root=env.ROOT_DIR,
+                workspace_root=workspace_root or env.ROOT_DIR,
                 config_fingerprint=fingerprint_value(params),
             ).to_dict()
 
@@ -1918,7 +1936,12 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                 "IC_Mean": performance.get('IC_Mean'),
                 "ICIR": performance.get('ICIR'),
             }
-            if not append_jsonl(TRAINING_HISTORY_FILE, history_entry):
+            history_entry["event_id"] = fingerprint_value({
+                "operation": "train", "model_name": model_name, "mode": mode,
+                "record_id": recorder.id,
+            })
+            result["history_entry"] = history_entry
+            if history_file is not False and not append_jsonl(history_file or TRAINING_HISTORY_FILE, history_entry):
                 print(f"[{model_name}] Warning: Could not write CPCV "
                       f"convergence to training_history.jsonl")
 
@@ -1936,7 +1959,8 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
 
 def predict_cpcv_model(model_name, model_info, params, experiment_name,
                         no_pretrain=False, cache_mgr=None,
-                        source_experiment_name=None, source_operation=None):
+                        source_experiment_name=None, source_operation=None,
+                        history_file=None, workspace_root=None):
     """Predict-only for CPCV-trained models on new data.
 
     Loads K fold models from the source recorder, has each predict on the
@@ -2178,7 +2202,7 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
                 source_recorder_id=model_info.get('record_id'),
                 source_experiment_name=source_experiment_name,
                 source_operation=source_operation or "train",
-                workspace_root=env.ROOT_DIR,
+                workspace_root=workspace_root or env.ROOT_DIR,
                 config_fingerprint=fingerprint_value(params),
             ).to_dict()
 
@@ -2195,7 +2219,12 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
                 "ICIR": performance.get('ICIR'),
                 "prediction_type": "cpcv_ensemble",
             }
-            if not append_jsonl(PREDICTION_HISTORY_FILE, pred_entry):
+            pred_entry["event_id"] = fingerprint_value({
+                "operation": "cpcv_predict", "model_name": model_name,
+                "record_id": recorder.id,
+            })
+            result["history_entry"] = pred_entry
+            if history_file is not False and not append_jsonl(history_file or PREDICTION_HISTORY_FILE, pred_entry):
                 print(f"[{model_name}] Warning: Could not write CPCV predict "
                       f"to prediction_history.jsonl")
             print(f"  ✅ CPCV predict-only complete: recorder={recorder.id}")
@@ -2730,7 +2759,8 @@ def show_model_list(args, source_records_file=None):
 
 
 def predict_single_model(model_name, model_info, params, experiment_name,
-                         source_records, no_pretrain=False, cache_mgr=None):
+                         source_records, no_pretrain=False, cache_mgr=None,
+                         history_file=None, workspace_root=None):
     """
     使用已有模型对新数据进行预测（不训练）— 共享逻辑
 
@@ -2899,7 +2929,7 @@ def predict_single_model(model_name, model_info, params, experiment_name,
                 source_recorder_id=source_record_id,
                 source_experiment_name=source_experiment,
                 source_operation=source_operation,
-                workspace_root=env.ROOT_DIR,
+                workspace_root=workspace_root or env.ROOT_DIR,
                 config_fingerprint=fingerprint_value(params),
             ).to_dict()
 
@@ -2915,7 +2945,12 @@ def predict_single_model(model_name, model_info, params, experiment_name,
                 "IC_Mean": performance.get('IC_Mean'),
                 "ICIR": performance.get('ICIR'),
             }
-            if not append_jsonl(PREDICTION_HISTORY_FILE, pred_entry):
+            pred_entry["event_id"] = fingerprint_value({
+                "operation": "predict_only", "model_name": model_name,
+                "mode": source_mode, "record_id": rid,
+            })
+            result["history_entry"] = pred_entry
+            if history_file is not False and not append_jsonl(history_file or PREDICTION_HISTORY_FILE, pred_entry):
                 print(f"[{model_name}] Warning: Could not write to "
                       f"prediction_history.jsonl")
 

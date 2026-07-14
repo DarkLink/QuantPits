@@ -299,7 +299,7 @@ python -m quantpits.scripts.static_train --all-enabled
 - 模型通过 `config/model_registry.yaml` 统一注册管理
 - 日期参数由 `config/model_config.json` 控制
 - 回测策略参数（含基准、交易频率、资金量）由 `config/strategy_config.yaml` 控制
-- 训练记录修改前自动备份到 `data/history/`
+- typed static/CPCV 通过 `data/training_transactions/` 保存精确 preimage/postimage 与 receipt；legacy/rolling 备份仍可保留在 `data/history/`
 - Training Record V2 以 `model_records[model@mode]` 保存每个模型的权威 experiment、recorder、
   operation、预测覆盖与 source lineage；旧 `models` 和顶层字段仅为兼容视图。
 - 增量训练支持 `--resume`（断点续训）和 `--dry-run`（预览）
@@ -525,7 +525,7 @@ python -m quantpits.scripts.static_train --all-enabled
 |------|------|
 | `history/` | 自动备份的历史文件 |
 | `order_history/` | 历史订单建议、交易明细、交易软件导出表（由归档脚本管理） |
-| `run_state.json` | 增量训练运行状态（支持断点续跑） |
+| `run_state.json` | static/CPCV Training State V3（锁与 CAS 保护）；Rolling 使用独立 state |
 | `rolling_state.json` | 滚动训练状态（断点恢复用） |
 | `migrate_records.py` | （工具库）用于将旧的双文件记录系统升级为新的统一 `model@mode` 记录格式 |
 | `trade_log_full.csv` | 累计交易日志（含买入和卖出） |
@@ -582,7 +582,7 @@ python -m quantpits.scripts.static_train --all-enabled
 | `config_loader.py` | Workspace 级配置加载 | 全局 |
 | `config_contracts/` | Workspace 配置校验、normalize、fingerprint，供运行前检查和后续 plan/manifest 复用 | 全局 |
 | `runtime/` | 通用 `CommandPlan` / `RunManifest` / plan renderer / manifest writer 运行时基础类型 | `ensemble_fusion`、`order_gen` 已接入 |
-| `training/` | static/CPCV 的轻量 plan、resolved execution、单目标 runner、resume state、原子 Training Record repository 与 service-owned publication | 训练、仅预测 |
+| `training/` | static/CPCV 的轻量 plan、单目标 runner、workspace lease、State V3、可恢复 publication transaction 与 service lifecycle | 训练、仅预测 |
 | `order/` | Order command、prepared source、执行 service、纯 opinions 计算、原子 persistence 与 actual artifact ledger | 订单生成 |
 | `ensemble/` | Ensemble fusion 的 service、I/O 与报告层：显式配置加载、workspace-bound 执行路径、plan/render、manifest、OperatorLog linkage、预测持久化、fusion ledger、correlation/LOO analytics、risk/leaderboard/chart report 与执行生命周期 | 融合 |
 | `strategy.py` | 策略配置/回测策略构建 | 穷举、融合、分析 |
@@ -628,9 +628,10 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 `static_train.py` 与 `cv_train.py` 也采用共用的 plan-first command/service boundary。
 `--explain-plan` / `--json-plan` 在 safeguard 和 Qlib/MLflow 初始化前返回，不写文件且不改变 cwd；
 真实执行只初始化一次 Qlib，并把精确日期、目标、source identity 与发布 baseline 绑定到
-execution fingerprint。Service 持有目标循环、resume、批量 record/performance 发布和 actual-output
-manifest；full 不完整时不覆盖 current record，incremental/predict-only 部分失败时只 merge 成功项
-但命令仍失败。Training Record V2 使用严格 schema 分派，ensemble 会再次核对 recorder 的
+execution fingerprint。Workspace lease、Training State V3 与 publication intent/receipt 共同提供
+并发保护和崩溃恢复；record 在 performance 之后替换，作为 current-pointer commit。Service 持有
+目标循环、resume、promotion 和 actual-output manifest；full 不完整时不覆盖 current record，
+incremental/predict-only 部分失败时只提交成功项但命令仍失败。Training Record V2 使用严格 schema 分派，ensemble 会再次核对 recorder 的
 workspace/experiment/artifact 和实际预测覆盖。
 
 `ensemble_fusion` 还提供独立的 typed command boundary：`quantpits/ensemble/command.py` 负责参数合同和 prepare/explain/execute 路由，`quantpits/ensemble/service.py` 负责执行生命周期，脚本层只负责 process exit semantics。Engine 层不会调用 `sys.exit()`，因此 notebook、scheduler、测试或其他 Python 流程可以复用 command runner，并自行处理结构化 outcome 与 typed domain error。

@@ -134,17 +134,13 @@ def _resolve_targets(args, registry):
 
 # ================= Main =================
 def main(argv=None):
-    from quantpits.utils.train_utils import (
-        load_model_registry,
-        print_model_table,
-    )
-
     args = parse_args(argv)
     ctx = env.get_workspace_context(args.workspace)
 
     # --list
     if args.list:
         env.set_root_dir(str(ctx.root))
+        from quantpits.utils.train_utils import load_model_registry, print_model_table
         registry = load_model_registry()
         targets = _resolve_targets(args, registry) if (
             args.models or args.algorithm or args.dataset or
@@ -165,8 +161,14 @@ def main(argv=None):
     # --clear-state
     if args.clear_state:
         env.safeguard("CPCV Train: clear state", workspace_root=ctx.root)
+        from quantpits.training.lease import TrainingExecutionLease
         from quantpits.training.state import TrainingStateRepository
-        TrainingStateRepository(ctx.data_path("run_state.json")).clear()
+        lease = TrainingExecutionLease.for_workspace(ctx)
+        lease.acquire(run_id="clear-training-state")
+        try:
+            TrainingStateRepository(ctx.data_path("run_state.json")).clear()
+        finally:
+            lease.release()
         print("Run state cleared.")
         return
 
@@ -175,7 +177,6 @@ def main(argv=None):
     )
     from quantpits.training.errors import TrainingCommandError
     from quantpits.training.service import TrainingExecutionService, default_execution_hooks
-    from quantpits.utils.train_utils import calculate_dates
     try:
         options = options_from_namespace(args, "cpcv")
         cli_args = tuple(argv if argv is not None else sys.argv[1:])
@@ -190,7 +191,6 @@ def main(argv=None):
         service = TrainingExecutionService(default_execution_hooks(
             activate_workspace=env.set_root_dir,
             init_qlib=env.init_qlib,
-            calculate_dates=calculate_dates,
         ))
         service.execute(prepared)
         return 0

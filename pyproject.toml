@@ -13,6 +13,7 @@ requires-python = ">=3.8, <3.13"
 dependencies = [
     "pyqlib",
     "pandas>=1.3.0",
+    "openpyxl>=3.1.0",
     "numpy>=1.20.0,<2.0.0",
     "scipy>=1.7.0",
     "PyYAML>=5.4.1",

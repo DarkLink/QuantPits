@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
 from quantpits.training.command import PreparedTrainingRun, TrainingTarget
 from quantpits.training.errors import TrainingExecutionError, TrainingSourceRecordError
 from quantpits.training.records import ModelRecordEntry
+from quantpits.training.persistence import FileBaseline, read_with_baseline
 from quantpits.utils.workspace import fingerprint_value
 
 
@@ -31,6 +33,10 @@ class ResolvedTrainingRun:
     targets: Tuple[ResolvedTrainingTarget, ...]
     execution_fingerprint: str
     resume_fingerprint: str
+    performance_path: Path
+    performance_relative_path: str
+    performance_baseline: FileBaseline
+    resolved_params_fingerprint: str
 
 
 def operation_for(family: str, action: str) -> str:
@@ -71,10 +77,26 @@ def resolve_training_run(prepared: PreparedTrainingRun, params: Mapping[str, Any
     experiment = prepared.options.experiment_name or default_experiment_name(
         prepared.options.family, prepared.options.action, params
     )
+    suffix = "_cpcv" if prepared.options.family == "cpcv" else ""
+    performance_relative = "output/model_performance%s_%s.json" % (suffix, anchor)
+    performance_path = prepared.ctx.path(performance_relative)
+    _performance_raw, performance_baseline = read_with_baseline(
+        performance_path, display_path=performance_relative
+    )
+    resolved_params_fingerprint = fingerprint_value(dict(params))
     resume_payload = {
         "params": dict(params),
         "target_keys": [item.key for item in targets],
         "operations": [item.operation for item in targets],
+        "sources": [
+            {
+                "key": item.key,
+                "recorder_id": item.source_entry.recorder_id,
+                "experiment_name": item.source_entry.experiment_name,
+                "operation": item.source_entry.operation,
+            }
+            for item in targets if item.source_entry is not None
+        ],
         "output_experiment_name": experiment,
         "publication_policy": prepared.plan.metadata.get("publication_policy"),
         "no_pretrain": prepared.options.no_pretrain,
@@ -89,6 +111,8 @@ def resolve_training_run(prepared: PreparedTrainingRun, params: Mapping[str, Any
         "plan_fingerprint": prepared.plan_fingerprint,
         "resume_fingerprint": resume_fingerprint,
         "current_record_baseline": prepared.current_record_baseline,
+        "performance_baseline": performance_baseline.to_dict(),
+        "resolved_params_fingerprint": resolved_params_fingerprint,
     }
     return ResolvedTrainingRun(
         prepared=prepared,
@@ -98,4 +122,8 @@ def resolve_training_run(prepared: PreparedTrainingRun, params: Mapping[str, Any
         targets=tuple(targets),
         execution_fingerprint=fingerprint_value(payload),
         resume_fingerprint=resume_fingerprint,
+        performance_path=performance_path,
+        performance_relative_path=performance_relative,
+        performance_baseline=performance_baseline,
+        resolved_params_fingerprint=resolved_params_fingerprint,
     )

@@ -39,3 +39,11 @@ class TrainingStateConflictError(TrainingExecutionError):
 
 class TrainingPublicationError(TrainingExecutionError):
     code = "training_publication_error"
+
+
+class TrainingLeaseError(TrainingStateConflictError):
+    code = "training_execution_lease_conflict"
+
+
+class TrainingPublicationRecoveryError(TrainingPublicationError):
+    code = "training_publication_recovery_conflict"

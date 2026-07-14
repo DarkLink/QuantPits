@@ -11,9 +11,13 @@ The training system consists of three main scripts that share the same utility m
 | `static_train.py --predict-only` | Prediction only | ❌ | Existing models | `latest_train_records.json` |
 | `pretrain.py` | Base model pre-training | ✅ | configs | `data/pretrained/` (state_dict) |
 
-Real static/CPCV commands publish through one typed execution kernel. Legacy helper backups are no
-longer part of the new command's correctness model. The current record is protected by an in-lock
-baseline check and atomic replacement; conflicts create neither a backup nor a replacement.
+Real static/CPCV commands publish through one typed execution kernel. Only one real command may hold
+`data/locks/training_execution.lock` in a workspace; lightweight plans do not create it. The current
+record and the run's performance output form a recoverable publication unit under
+`data/training_transactions/<run-id>-<fingerprint>/`, with `latest_train_records.json` replaced last as
+the canonical current pointer.
+This contract currently applies to static/CPCV only. Rolling and CPCV-rolling still use their existing
+independent lifecycle and are not yet backed by this lease, State V3, or publication coordinator.
 
 ### Training Record V2
 
@@ -71,12 +75,19 @@ source recorders, the output experiment, and the current-record baseline into an
 `execution_fingerprint`. A runner receives exactly one planned target and cannot rediscover or
 broaden the target set.
 
+Real execution uses locked, compare-and-swap protected Training State V3. Its phases distinguish target
+execution, publication preparation/commit, manifest closure, and terminal status. A same-identity
+`--resume` classifies transaction preimages/postimages and deterministically rolls forward or closes
+audit evidence; an unknown third version fails closed.
+
 Publication semantics:
 
-- Full runs replace records and performance once only after every target returns verified evidence; otherwise existing bytes are preserved.
-- Incremental and predict-only runs merge successful targets once and preserve failed pointers; any target failure still makes the command fail.
+- Full runs commit the record/performance bundle only after every target returns verified evidence; otherwise existing bytes are preserved.
+- Incremental and predict-only runs merge successes in one transaction and preserve failed pointers; the receipt is durable before the aggregate command failure is returned.
 - Resume requires the same date/config/source/target resume fingerprint and skips only a published recorder that remains the current pointer; expected current-record baseline changes do not create false conflicts.
-- Manifests list only workspace files actually committed by the run; unpublished MLflow recorders remain outcome evidence only.
+- Manifests list only outputs proven by the publication receipt; unpublished MLflow recorders remain outcome evidence only.
+- Static-train promotion runs after a durable receipt. Promotion failure is a visible warning and does not roll back a verified current pointer.
+- Typed static/CPCV runners do not write global history paths. The service appends stable-`event_id`, workspace-local history only for newly published receipt entries, so recovery can replay it idempotently.
 
 ---
 
@@ -97,7 +108,7 @@ QuantPits/
 │   │   ├── strategy.py               # Strategy config / backtest strategy construction
 │   │   └── ...                       # More shared modules (see System Overview)
 │   ├── config_contracts/              # Workspace config validation, normalization, fingerprints
-│   ├── training/                      # plan/resolved runner/service/state/record repository
+│   ├── training/                      # plan/runner/lease/State V3/publication journal/service
 │   └── docs/
 │       └── 01_TRAINING_GUIDE.md      # This document
 │
@@ -113,9 +124,16 @@ QuantPits/
         ├── data/
         │   ├── history/              # 📦 Auto-backed up historical files
         │   ├── pretrained/           # 🧠 Pre-trained base models (.pkl + .json)
-        │   └── run_state.json        # State tracker for incremental training
+        │   ├── run_state.json        # Locked, CAS-protected Training State V3
+        │   ├── locks/                # Training execution/publication advisory locks
+        │   └── training_transactions/# Recoverable publication intents/receipts
         └── latest_train_records.json # Current training records
 ```
+
+> Test policy: automatic full-suite validation is owner-operated. Implementation and review agents
+> should not automatically run `pytest tests/`, coverage, Docker full-suite, or equivalent commands.
+> A minimal focused test is reserved for a concrete high-risk contract that cannot be established by
+> static review, and its reason and exact command must be reported at handoff.
 
 ---
 
@@ -187,8 +205,8 @@ python quantpits/scripts/static_train.py --full
 ### Behavior
 1. Trains all `enabled: true` models in `model_registry.yaml`
 2. Upon completion, **fully overwrites** `latest_train_records.json`
-3. Auto-backs up to `data/history/train_records_YYYY-MM-DD_HHMMSS.json` before overwriting
-4. Saves performance metrics to `output/model_performance_{anchor_date}.json`
+3. Stores exact record/performance preimages and postimages in the publication transaction directory
+4. Verifies performance, replaces `latest_train_records.json` last, and writes a committed receipt
 
 ---
 
@@ -257,7 +275,9 @@ python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158 --resum
 python quantpits/scripts/static_train.py --clear-state
 ```
 
-**Note**: `--resume` only skips successfully completed models. **Failed models will be retrained.**
+**Note**: `--resume` preserves receipt-proven models that remain current and reruns failed models. If
+model work and publication completed but manifest/state closure was interrupted, resume closes audit
+evidence without retraining.
 
 ### Viewing the Model Registry
 
@@ -385,19 +405,21 @@ Each CPCV model stores K fold models (`model_fold_0.pkl` … `model_fold_K-1.pkl
 
 ---
 
-## History Backups
+## Publication history and recovery evidence
 
-All vital files are auto-backed up to `data/history/` prior to modification:
+Typed static/CPCV correctness no longer depends on timestamped `data/history/` backups. Every actual
+publication uses:
 
 ```text
-data/history/
-├── train_records_YYYY-MM-DD_HHMMSS.json       # History of latest_train_records.json
-├── train_records_YYYY-MM-DD_HHMMSS.json
-├── model_performance_YYYY-MM-DD_HHMMSS.json   # History of performance metrics
-└── run_state_YYYY-MM-DD_HHMMSS.json           # History of run states
+data/training_transactions/<transaction-id>/
+├── intent.json               # Pre/post fingerprints and commit order
+├── member-*.preimage         # Exact previous bytes when the member existed
+├── member-*.postimage        # Fsynced intended bytes
+└── receipt.json              # Verified committed outputs
 ```
 
-This runs automatically without manual orchestration.
+`data/history/` may still contain compatibility backups produced by legacy or rolling tools, but it is
+not the recovery authority for new static/CPCV commands.
 
 ---
 
