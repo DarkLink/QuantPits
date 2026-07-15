@@ -50,10 +50,18 @@ OperatorLog。它会冻结 registry 顺序的 targets 和 workspace-contained wo
 如实声明真实命令可能写入的 state、record、history、MLflow artifacts 和 OperatorLog。日历 anchor、
 windows/CPCV folds 在 Prepared Plan 中保持 deferred；真实执行会在 shared lease 内复核 input baselines，
 初始化一次 Qlib，并用 Resolved Plan 绑定精确 anchor、ordered windows/folds、stable window keys 和 execution
-fingerprint。legacy adapter 只消费该冻结范围，不重新扫描 registry 或再次生成窗口。
+fingerprint。`--workspace PATH`、`--workspace=PATH` 与 `main(argv=[...])` 共享这个 Prepared context；
+safeguard 不导入 legacy `env`，activation 只在 safeguard → lease → baseline recheck 后发生。legacy adapter
+只消费该冻结范围，不重新扫描 registry 或再次生成窗口。
+
+缺少 anchor 的 `daily`/`predict-only` 和没有已完成窗口的 `retrain-last` 会以
+`rolling_state_precondition_failed` 在 backend 前失败。已缺失 state 的 `--clear-state` 以及没有生成预测的
+`--predict-only` 明确记录为 `skipped`。OperatorLog、adapter outcome 与 CLI exit 使用同一个
+command-level status；成功 action 仍保留 `legacy_partial_visibility`，不代表 per-window evidence parity。
 
 全量回归与 workspace gate 由项目 owner 执行。无写验证只使用 `Demo_Workspace` 或 owner 明确选择的
-一次性 validation workspace；生产 workspace 始终只读。任何真实 Rolling smoke 都需要 owner 单独授权。
+一次性 validation workspace；生产 workspace 始终只读。28E 的真实 Rolling adapter/bootstrap smoke 是 owner
+验收项，必须单独授权并只在可丢弃 validation workspace 执行。
 
 ### 信息查看
 

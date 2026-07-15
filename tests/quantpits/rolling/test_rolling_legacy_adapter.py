@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from quantpits.rolling.errors import RollingInputChangedError
+from quantpits.rolling.errors import RollingExecutionError, RollingInputChangedError
 from quantpits.rolling.legacy import (
     LegacyRollingExecutionAdapter,
     recheck_prepared_inputs,
@@ -123,3 +123,100 @@ def test_retrain_edit_occurs_inside_adapter_before_frozen_scope_execution(tmp_pa
     assert effective_args.resume is False
     assert args.merge is False
     assert args.resume is True
+
+
+def test_clear_missing_state_is_truthfully_skipped(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    (tmp_path / "data").mkdir()
+    prepared = SimpleNamespace(
+        ctx=ctx,
+        state=SimpleNamespace(path="data/rolling_state.json", status="missing"),
+        targets=(),
+        options=SimpleNamespace(action="clear_state"),
+        effective_config={"training_method": "slide"},
+        plan=SimpleNamespace(metadata={"family": "rolling"}),
+        plan_fingerprint="prepared-fingerprint",
+        cli_args=("--clear-state",),
+    )
+    with mock.patch("quantpits.utils.operator_log.OperatorLog") as log_cls, \
+         mock.patch("quantpits.scripts.rolling.state.RollingState") as state_cls:
+        log_cls.return_value.__enter__.return_value = log_cls.return_value
+        outcome = LegacyRollingExecutionAdapter(SimpleNamespace()).execute(
+            SimpleNamespace(), prepared, None, "rolling-test",
+        )
+    assert outcome.status == "skipped"
+    assert outcome.reason_code == "rolling_action_skipped"
+    assert outcome.did_execute is False
+    state_cls.assert_not_called()
+    result = log_cls.return_value.set_result.call_args.args[0]
+    assert result["status"] == "skipped"
+    assert result["did_execute"] is False
+
+
+def test_adapter_failure_is_logged_and_raised_with_stable_code(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    (tmp_path / "data").mkdir()
+    target = SimpleNamespace(
+        model_name="demo", target_key="demo@rolling",
+        workflow_path="config/demo.yaml", legacy_info={},
+    )
+    prepared = SimpleNamespace(
+        ctx=ctx,
+        state=SimpleNamespace(
+            path="data/rolling_state.json", status="valid_legacy",
+        ),
+        targets=(target,), options=SimpleNamespace(action="daily"),
+        effective_config={"training_method": "slide"},
+        plan=SimpleNamespace(metadata={"family": "rolling"}),
+        plan_fingerprint="prepared-fingerprint", cli_args=(),
+    )
+    resolved = SimpleNamespace(
+        prepared=prepared, params={}, execution_fingerprint="execution-fingerprint",
+    )
+    facade = SimpleNamespace(run_daily=mock.Mock(side_effect=RuntimeError("crash")))
+    with mock.patch("quantpits.utils.operator_log.OperatorLog") as log_cls:
+        log_cls.return_value.__enter__.return_value = log_cls.return_value
+        with pytest.raises(RollingExecutionError) as caught:
+            LegacyRollingExecutionAdapter(facade).execute(
+                SimpleNamespace(), prepared, resolved, "rolling-test",
+            )
+    assert caught.value.code == "rolling_execution_failed"
+    result = log_cls.return_value.set_result.call_args.args[0]
+    assert result["status"] == "failed"
+    assert result["reason_code"] == "rolling_execution_failed"
+
+
+def test_adapter_propagates_explicit_facade_skip_to_log_and_outcome(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    (tmp_path / "data").mkdir()
+    target = SimpleNamespace(
+        model_name="demo", target_key="demo@rolling",
+        workflow_path="config/demo.yaml", legacy_info={},
+    )
+    prepared = SimpleNamespace(
+        ctx=ctx,
+        state=SimpleNamespace(
+            path="data/rolling_state.json", status="valid_legacy",
+        ),
+        targets=(target,), options=SimpleNamespace(action="predict_only"),
+        effective_config={"training_method": "slide"},
+        plan=SimpleNamespace(metadata={"family": "rolling"}),
+        plan_fingerprint="prepared-fingerprint", cli_args=(),
+    )
+    resolved = SimpleNamespace(
+        prepared=prepared, params={}, execution_fingerprint="execution-fingerprint",
+    )
+    facade = SimpleNamespace(run_predict_only=mock.Mock(return_value={
+        "status": "skipped", "reason_code": "rolling_action_skipped",
+        "message": "predict-only generated no predictions", "did_execute": True,
+    }))
+    with mock.patch("quantpits.utils.operator_log.OperatorLog") as log_cls:
+        log_cls.return_value.__enter__.return_value = log_cls.return_value
+        outcome = LegacyRollingExecutionAdapter(facade).execute(
+            SimpleNamespace(), prepared, resolved, "rolling-test",
+        )
+    assert outcome.status == "skipped"
+    assert outcome.did_execute is True
+    result = log_cls.return_value.set_result.call_args.args[0]
+    assert result["status"] == outcome.status
+    assert result["reason_code"] == outcome.reason_code

@@ -606,7 +606,12 @@ def run_predict_only(args, targets, rolling_cfg, resolved=None):
     state = RollingState(state_file=state_file)
     if not state.anchor_date:
         print("❌ No rolling state — run --cold-start first")
-        return
+        return {
+            "status": "failed",
+            "reason_code": "rolling_state_precondition_failed",
+            "message": "predict-only requires Rolling state with anchor",
+            "did_execute": False,
+        }
 
     # Generate windows: module-level for slide (mock.patch compat), strategy for CPCV
     if windows is None:
@@ -687,6 +692,18 @@ def run_predict_only(args, targets, rolling_cfg, resolved=None):
             if args.backtest:
                 run_combined_backtest(model_names, combined_records,
                                       combined_exp_name, params_base)
+        return {
+            "status": "success",
+            "reason_code": "legacy_partial_visibility",
+            "message": "generated predictions for %s model(s)" % len(extra_preds),
+            "did_execute": True,
+        }
+    return {
+        "status": "skipped",
+        "reason_code": "rolling_action_skipped",
+        "message": "predict-only generated no predictions",
+        "did_execute": True,
+    }
 
 
 # ==========================================================================
@@ -913,13 +930,51 @@ def _main_impl(args):
 
 
 def _activate_legacy_workspace(ctx):
-    """Activate legacy globals only after an actual route is selected."""
+    """Bind legacy globals and backends to exactly the Prepared context."""
     import os
 
     os.environ['QLIB_WORKSPACE_DIR'] = str(ctx.root)
-    from quantpits.utils import env as runtime_env
-    runtime_env.set_root_dir(str(ctx.root))
+    os.environ['QLIB_DATA_DIR'] = str(ctx.qlib_data_dir)
+    os.environ['QLIB_REGION'] = str(ctx.qlib_region)
+    os.environ['MLFLOW_TRACKING_URI'] = ctx.mlflow_uri
+    try:
+        from quantpits.utils import env as runtime_env
+        runtime_env.set_root_dir(str(ctx.root))
+        runtime_env.QLIB_DATA_DIR = str(ctx.qlib_data_dir)
+        runtime_env.QLIB_REGION = str(ctx.qlib_region)
+        runtime_env.mlflow_backend = ctx.mlflow_uri
+        runtime_env.mlruns_dir = (
+            str(ctx.mlruns_dir) if ctx.mlflow_uri.startswith('file://') else None
+        )
+        runtime_env._qlib_initialized = False
+        os.environ['MLFLOW_TRACKING_URI'] = ctx.mlflow_uri
+        if ctx.mlflow_uri.startswith('file://'):
+            os.environ['MLFLOW_ALLOW_FILE_STORE'] = 'true'
+        else:
+            os.environ.pop('MLFLOW_ALLOW_FILE_STORE', None)
+    except Exception as exc:
+        from quantpits.rolling.errors import RollingWorkspaceActivationError
+        raise RollingWorkspaceActivationError(
+            "cannot activate prepared workspace: %s" % exc
+        ) from exc
     return runtime_env
+
+
+def _safeguard_explicit_workspace(ctx, script_name="Rolling Train"):
+    """Display the explicit context without importing the legacy environment."""
+    import time
+
+    print("=" * 60)
+    print("🚦  SAFEGUARD ACTIVATED  🚦")
+    print("[%s] is about to run." % script_name)
+    print("Active Workspace: \033[1;31;40m%s\033[0m" % ctx.root.name)
+    print("Workspace Path  : %s" % ctx.root)
+    print("Qlib Data Dir   : %s" % ctx.qlib_data_dir)
+    print("Qlib Region     : %s" % ctx.qlib_region)
+    print("=" * 60)
+    print("Please confirm. (Press Ctrl+C within 3 seconds to abort if this is the wrong workspace!)")
+    time.sleep(3)
+    print("Executing...")
 
 
 def main(argv=None):
@@ -952,18 +1007,20 @@ def main(argv=None):
             return _render_strict_state(prepared)
         return _main_impl(args)
 
-    # Importing the legacy environment is allowed only after the read-only
-    # command boundary has selected a real mutation route.
-    from quantpits.utils import env as runtime_env
     from quantpits.training.lease import TrainingExecutionLease
+    from quantpits.training.errors import TrainingCommandError
 
-    runtime_env.safeguard("Rolling Train", workspace_root=ctx.root)
+    _safeguard_explicit_workspace(ctx)
     lease = TrainingExecutionLease.for_workspace(ctx)
     run_id = getattr(args, 'run_id', None)
     if not isinstance(run_id, str) or not run_id.strip():
         import uuid
         run_id = "rolling-%s" % uuid.uuid4().hex[:12]
-    lease.acquire(run_id=run_id)
+    try:
+        lease.acquire(run_id=run_id)
+    except TrainingCommandError as exc:
+        _render_information_error(args, exc.code, str(exc))
+        return exc.exit_code
     try:
         from quantpits.rolling.legacy import (
             LegacyRollingExecutionAdapter, recheck_prepared_inputs,
@@ -971,17 +1028,28 @@ def main(argv=None):
         from quantpits.rolling.windows import resolve_rolling_run
 
         recheck_prepared_inputs(prepared)
-        _activate_legacy_workspace(ctx)
+        runtime_env = _activate_legacy_workspace(ctx)
         resolved = None
         if prepared.options.action != "clear_state":
-            runtime_env.init_qlib()
+            try:
+                runtime_env.init_qlib()
+            except Exception as exc:
+                from quantpits.rolling.errors import RollingExecutionError
+                raise RollingExecutionError(
+                    "Qlib initialization failed: %s" % exc
+                ) from exc
             params = get_base_params(workspace_root=ctx.root, strict_calendar=True)
             resolved = resolve_rolling_run(prepared, params)
         adapter = LegacyRollingExecutionAdapter(sys.modules[__name__])
-        try:
-            adapter.execute(args, prepared, resolved, run_id)
-        except RollingCommandError as exc:
-            return _render_information_error(args, exc.code, str(exc)) or exc.exit_code
+        outcome = adapter.execute(args, prepared, resolved, run_id)
+        if outcome.status == "failed":
+            _render_information_error(
+                args, outcome.reason_code or "rolling_execution_failed",
+                outcome.message or "Rolling action failed",
+            )
+            return 2
+        if outcome.status == "skipped":
+            print("ℹ️  [%s] %s" % (outcome.reason_code, outcome.message))
         return 0
     except RollingCommandError as exc:
         return _render_information_error(args, exc.code, str(exc)) or exc.exit_code

@@ -10,8 +10,9 @@
 > selected workspace and may not escape it.
 >
 > A Prepared Plan does not invent calendar facts: its anchor, slide windows, and CPCV folds remain
-> runtime-deferred. After safeguard and acquisition of the shared lease, a real command rechecks
-> Prepared inputs, activates the explicit workspace, initializes Qlib once, and freezes the exact
+> runtime-deferred. A real command renders safeguard directly from the Prepared `WorkspaceContext`
+> without importing legacy `env`; after acquiring the shared lease it rechecks Prepared inputs,
+> activates that same explicit workspace, initializes Qlib once, and freezes the exact
 > anchor, ordered windows/CPCV folds, stable window keys, and execution fingerprint. The adapter
 > consumes only Prepared targets and Resolved windows; it does not rescan the registry or generate a
 > second window set. Rolling still uses unversioned legacy state and legacy record
@@ -127,6 +128,9 @@ source workspaces/<name>/run_env.sh
 # Or skip sourcing and select the example workspace explicitly
 python -m quantpits.scripts.rolling_train --workspace workspaces/Demo_Workspace --help
 
+# Equal form; direct script, python -m, and main(argv=[...]) use the same parsed context
+python -m quantpits.scripts.rolling_train --workspace=workspaces/Demo_Workspace --help
+
 # ---- Slide rolling ----
 python quantpits/scripts/rolling_train.py --cold-start --dry-run \
   --models linear_Alpha158 --training-method slide
@@ -161,18 +165,25 @@ such as `--cold-start --resume`, fail with `rolling_action_conflict` before safe
 backend activation. `--show-state` distinguishes `missing`, `valid_legacy`, `corrupt`, and
 `unsupported` instead of treating damaged state as empty.
 
-Real execution is ordered as safeguard → shared lease → input baseline recheck → workspace
+`--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared
+context as the sole workspace identity; legacy `env` does not reselect it from process `sys.argv`.
+Real execution is ordered as explicit-context safeguard → shared lease → input baseline recheck → workspace
 activation → Qlib init → Resolved Plan → legacy adapter → OperatorLog → lease release.
 `--clear-state` needs no Qlib initialization, but still rechecks its state baseline and performs the
-backup/removal inside the lease. OperatorLog records the run ID, Prepared plan fingerprint, and
-execution fingerprint; this does not imply manifest/receipt-backed closure parity.
+backup/removal inside the lease; an already-missing state is recorded as `skipped`. Missing valid
+anchors for `daily`/`predict-only`, or no completed window for `retrain-last`, fail before backend
+initialization with `rolling_state_precondition_failed`. OperatorLog, adapter outcome, and CLI exit
+share one command-level status. Successful actions retain `legacy_partial_visibility`; they do not
+prove immutable evidence for every target×window or manifest/receipt closure. A `predict-only`
+action that produces no prediction is recorded as `skipped`.
 
 The project owner controls and runs the Phase 28 full Python suite and workspace gates. A no-write
 gate should use `Demo_Workspace` or a disposable validation workspace explicitly selected by the
 owner, with before/after snapshots of configuration, state, current records, OperatorLog, and MLflow
 paths. Plan commands must not trigger safeguard, lease acquisition, or backend initialization. The
-production workspace remains read-only. Run a minimal real adapter smoke only with explicit owner
-authorization and a disposable validation workspace.
+production workspace remains read-only. The 28E minimal real adapter/bootstrap smoke is an owner
+acceptance gate and may run only with explicit authorization in a disposable validation workspace;
+the agent does not run it against production or a historical Playground.
 
 > `--training-method` overrides `rolling_config.yaml` — switch modes without editing files.
 

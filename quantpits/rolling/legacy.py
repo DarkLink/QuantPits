@@ -49,6 +49,10 @@ class RollingExecutionOutcome:
     status: str
     run_id: str
     plan_fingerprint: str
+    action: str = None
+    reason_code: str = None
+    message: str = None
+    did_execute: bool = False
     execution_fingerprint: str = None
     target_keys: tuple = ()
 
@@ -95,12 +99,91 @@ class LegacyRollingExecutionAdapter:
         if removed:
             state.save()
         print("🔄 Window %s: cleared %s selected model(s)" % (last_idx, removed))
-        return True
+        return removed > 0
+
+    def _run_action(self, action, effective_args, prepared, resolved, targets,
+                    state_path):
+        """Return status metadata for command-visible legacy action results."""
+
+        from quantpits.scripts.rolling.state import RollingState
+
+        if action == "clear_state" and prepared.state.status == "missing":
+            return ("skipped", "rolling_action_skipped",
+                    "legacy state is already missing", False)
+        facade_result = None
+        if action == "clear_state":
+            RollingState(state_file=state_path).clear()
+            return (
+                "success", "rolling_action_completed",
+                "legacy state was cleared", True,
+            )
+        elif action == "retrain_models":
+            self._edit_retrain_models(
+                prepared, RollingState(state_file=state_path),
+            )
+            effective_args.merge = True
+            effective_args.resume = False
+            facade_result = self.facade.run_cold_start(
+                effective_args, targets, prepared.effective_config,
+                resolved=resolved,
+            )
+        elif action == "retrain_last":
+            should_run = self._edit_retrain_last(
+                prepared, RollingState(state_file=state_path),
+            )
+            if not should_run:
+                return (
+                    "skipped", "rolling_action_skipped",
+                    "no selected model record exists in the last window", False,
+                )
+            facade_result = self.facade.run_daily(
+                effective_args, targets, prepared.effective_config,
+                resolved=resolved,
+            )
+        elif action == "backtest_only":
+            facade_result = self.facade.run_backtest_only(
+                effective_args, targets, dict(resolved.params),
+                mode=prepared.plan.metadata["family"],
+            )
+        elif action == "predict_only":
+            facade_result = self.facade.run_predict_only(
+                effective_args, targets, prepared.effective_config,
+                resolved=resolved,
+            )
+        elif action in ("cold_start", "merge", "resume"):
+            facade_result = self.facade.run_cold_start(
+                effective_args, targets, prepared.effective_config,
+                resolved=resolved,
+            )
+        elif action == "daily":
+            facade_result = self.facade.run_daily(
+                effective_args, targets, prepared.effective_config,
+                resolved=resolved,
+            )
+        else:
+            raise RollingExecutionError("unsupported Rolling action: %s" % action)
+        if isinstance(facade_result, dict):
+            result_status = facade_result.get("status")
+            if result_status == "failed":
+                raise RollingExecutionError(
+                    facade_result.get("message") or "legacy action reported failure"
+                )
+            if result_status == "skipped":
+                return (
+                    "skipped",
+                    facade_result.get("reason_code") or "rolling_action_skipped",
+                    facade_result.get("message") or "legacy action was skipped",
+                    bool(facade_result.get("did_execute", False)),
+                )
+        return (
+            "success", "legacy_partial_visibility",
+            "legacy action returned without a command-level failure; "
+            "per-window completion remains legacy-managed", True,
+        )
 
     def execute(self, args, prepared, resolved, run_id):
         """Run the canonical action without registry or window rediscovery."""
 
-        from quantpits.scripts.rolling.state import RollingState
         from quantpits.utils.operator_log import OperatorLog
 
         action = prepared.options.action
@@ -124,54 +207,13 @@ class LegacyRollingExecutionAdapter:
             run_id=run_id,
             plan_fingerprint=prepared.plan_fingerprint,
         )
-        try:
-            with log:
-                if action == "clear_state":
-                    RollingState(state_file=state_path).clear()
-                elif action == "retrain_models":
-                    self._edit_retrain_models(
-                        prepared, RollingState(state_file=state_path),
-                    )
-                    effective_args.merge = True
-                    effective_args.resume = False
-                    self.facade.run_cold_start(
-                        effective_args, targets, prepared.effective_config,
-                        resolved=resolved,
-                    )
-                elif action == "retrain_last":
-                    should_run = self._edit_retrain_last(
-                        prepared, RollingState(state_file=state_path),
-                    )
-                    if should_run:
-                        self.facade.run_daily(
-                            effective_args, targets, prepared.effective_config,
-                            resolved=resolved,
-                        )
-                elif action == "backtest_only":
-                    mode = prepared.plan.metadata["family"]
-                    self.facade.run_backtest_only(
-                        effective_args, targets, dict(resolved.params), mode=mode,
-                    )
-                elif action == "predict_only":
-                    self.facade.run_predict_only(
-                        effective_args, targets, prepared.effective_config,
-                        resolved=resolved,
-                    )
-                elif action in ("cold_start", "merge", "resume"):
-                    self.facade.run_cold_start(
-                        effective_args, targets, prepared.effective_config,
-                        resolved=resolved,
-                    )
-                elif action == "daily":
-                    self.facade.run_daily(
-                        effective_args, targets, prepared.effective_config,
-                        resolved=resolved,
-                    )
-                else:
-                    raise RollingExecutionError(
-                        "unsupported Rolling action: %s" % action
-                    )
-                if action not in ("predict_only", "backtest_only", "clear_state"):
+        with log:
+            try:
+                status, reason_code, message, did_execute = self._run_action(
+                    action, effective_args, prepared, resolved, targets, state_path,
+                )
+                if (status == "success" and action not in
+                        ("predict_only", "backtest_only", "clear_state")):
                     try:
                         from quantpits.scripts.deep_analysis.promote_config import (
                             update_promote_status,
@@ -182,21 +224,47 @@ class LegacyRollingExecutionAdapter:
                     except Exception:
                         pass
                 log.set_result({
-                    "status": "success",
+                    "status": status,
                     "action": action,
+                    "reason_code": reason_code,
+                    "message": message,
+                    "did_execute": did_execute,
                     "n_targets": len(targets),
                     "target_keys": [item.target_key for item in prepared.targets],
                     "execution_fingerprint": execution_fingerprint,
                     "training_method": prepared.effective_config["training_method"],
                 })
-        except RollingExecutionError:
-            raise
-        except Exception as exc:
-            raise RollingExecutionError("legacy Rolling execution failed: %s" % exc)
+            except RollingExecutionError as exc:
+                log.set_result({
+                    "status": "failed", "action": action,
+                    "reason_code": exc.code, "message": str(exc),
+                    "did_execute": not (
+                        action == "clear_state"
+                        and prepared.state.status == "missing"
+                    ),
+                })
+                raise
+            except Exception as exc:
+                wrapped = RollingExecutionError(
+                    "legacy Rolling execution failed: %s" % exc
+                )
+                log.set_result({
+                    "status": "failed", "action": action,
+                    "reason_code": wrapped.code, "message": str(wrapped),
+                    "did_execute": not (
+                        action == "clear_state"
+                        and prepared.state.status == "missing"
+                    ),
+                })
+                raise wrapped from exc
         return RollingExecutionOutcome(
-            status="success",
+            status=status,
             run_id=run_id,
             plan_fingerprint=prepared.plan_fingerprint,
+            action=action,
+            reason_code=reason_code,
+            message=message,
+            did_execute=did_execute,
             execution_fingerprint=execution_fingerprint,
             target_keys=tuple(item.target_key for item in prepared.targets),
         )

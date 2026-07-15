@@ -55,6 +55,14 @@ class RollingResumeStateMissingError(RollingCommandError):
     code = "rolling_resume_state_missing"
 
 
+class RollingStatePreconditionError(RollingCommandError):
+    code = "rolling_state_precondition_failed"
+
+
+class RollingWorkspaceActivationError(RollingCommandError):
+    code = "rolling_workspace_activation_failed"
+
+
 class RollingInputChangedError(RollingCommandError):
     code = "rolling_input_changed"
 

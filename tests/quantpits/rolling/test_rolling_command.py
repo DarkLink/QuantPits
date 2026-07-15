@@ -19,6 +19,7 @@ from quantpits.rolling.command import (
 from quantpits.rolling.errors import (
     RollingActionConflictError,
     RollingResumeStateMissingError,
+    RollingStatePreconditionError,
     RollingStateCorruptError,
     RollingStateUnsupportedError,
     RollingTargetUnknownError,
@@ -204,6 +205,18 @@ def test_strict_state_classification_and_resume_contract(tmp_path):
     assert resumed.state.status == "valid_legacy"
     assert resumed.state.completed_units == 1
     assert resumed.anchor_policy.resolution == "legacy_state_hint"
+
+
+@pytest.mark.parametrize("action", ["daily", "predict_only", "retrain_last"])
+def test_state_dependent_actions_fail_before_backend_when_state_is_missing(
+    tmp_path, action,
+):
+    _root, ctx = _workspace(tmp_path)
+    with pytest.raises(RollingStatePreconditionError) as caught:
+        prepare_rolling_run(
+            ctx, RollingRunOptions(action=action, all_enabled=True),
+        )
+    assert caught.value.code == "rolling_state_precondition_failed"
 
 
 def test_phase28_core_uses_python38_compatible_syntax():

@@ -17,6 +17,7 @@ from quantpits.rolling.errors import (
     RollingConfigInvalidError,
     RollingConfigMissingError,
     RollingResumeStateMissingError,
+    RollingStatePreconditionError,
     RollingStateCorruptError,
     RollingStateUnsupportedError,
     RollingTargetSelectionEmptyError,
@@ -446,6 +447,18 @@ def prepare_rolling_run(ctx, options, cli_args=()):
         raise RollingStateUnsupportedError("%s: %s" % (state.path, state.warning))
     if options.action == "resume" and (state.status != "valid_legacy" or not state.anchor):
         raise RollingResumeStateMissingError("resume requires valid legacy state with anchor")
+    if options.action in ("daily", "predict_only") and (
+            state.status != "valid_legacy" or not state.anchor):
+        raise RollingStatePreconditionError(
+            "%s requires valid legacy state with anchor; run --cold-start first"
+            % options.action.replace("_", "-")
+        )
+    if options.action == "retrain_last" and (
+            state.status != "valid_legacy" or not state.anchor
+            or state.completed_windows < 1):
+        raise RollingStatePreconditionError(
+            "retrain-last requires valid legacy state with a completed window"
+        )
 
     targets = ()
     registry = None

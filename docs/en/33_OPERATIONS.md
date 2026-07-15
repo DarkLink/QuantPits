@@ -37,12 +37,21 @@ workspace-contained workflows, classifies legacy state, and truthfully declares 
 history, MLflow artifact, and OperatorLog effects of a real command. Calendar anchors, windows, and
 CPCV folds remain deferred in the Prepared Plan. Real execution rechecks input baselines inside the
 shared lease, initializes Qlib once, and binds the exact anchor, ordered windows/folds, stable window
-keys, and execution fingerprint in a Resolved Plan. The legacy adapter consumes that frozen scope
-without rescanning the registry or generating another window set.
+keys, and execution fingerprint in a Resolved Plan. `--workspace PATH`, `--workspace=PATH`, and
+`main(argv=[...])` share the Prepared context; safeguard does not import legacy `env`, and activation
+occurs only after safeguard → lease → baseline recheck. The legacy adapter consumes that frozen
+scope without rescanning the registry or generating another window set.
+
+`daily`/`predict-only` without an anchor and `retrain-last` without a completed window fail before
+backend initialization with `rolling_state_precondition_failed`. An already-missing
+`--clear-state`, and `--predict-only` that creates no prediction, are explicitly `skipped`.
+OperatorLog, adapter outcome, and CLI exit share one command-level status. Successful actions retain
+`legacy_partial_visibility`; they do not claim per-window evidence parity.
 
 The project owner runs the full regression suite and workspace gates. No-write validation uses only
 `Demo_Workspace` or a disposable validation workspace explicitly selected by the owner; production
-workspaces remain read-only. Any real Rolling smoke requires separate owner authorization.
+workspaces remain read-only. The 28E real Rolling adapter/bootstrap smoke is an owner acceptance gate
+and requires separate authorization in a disposable validation workspace.
 
 ### Info Commands
 

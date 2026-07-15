@@ -71,10 +71,9 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(pd.DataFrame, 'to_csv', mock.MagicMock())
     monkeypatch.setattr(pd.Series, 'to_csv', mock.MagicMock())
 
-    # Mock safeguard to avoid 3-second sleep in tests
-    monkeypatch.setattr('quantpits.utils.env.safeguard', lambda x, **kwargs: None)
-
     import rolling_train as rt
+    # Mock the explicit-context safeguard to avoid 3-second sleep in tests.
+    monkeypatch.setattr(rt, '_safeguard_explicit_workspace', lambda _ctx: None)
     return rt, workspace
 
 
@@ -1765,6 +1764,71 @@ class TestMoreMainFlows:
 
 
 class TestMainAdditionalBranches:
+    def test_programmatic_equal_form_workspace_drives_the_entire_real_route(
+        self, mock_env,
+    ):
+        from types import SimpleNamespace
+
+        rt, workspace = mock_env
+        lease = mock.MagicMock()
+        seen = []
+
+        def record(label, ctx):
+            seen.append((label, ctx.root))
+
+        with mock.patch(
+            "rolling_train._safeguard_explicit_workspace",
+            side_effect=lambda ctx: record("safeguard", ctx),
+        ), mock.patch(
+            "quantpits.training.lease.TrainingExecutionLease.for_workspace",
+            side_effect=lambda ctx: record("lease", ctx) or lease,
+        ), mock.patch(
+            "quantpits.rolling.legacy.recheck_prepared_inputs",
+        ), mock.patch(
+            "rolling_train._activate_legacy_workspace",
+            side_effect=lambda ctx: record("activate", ctx) or SimpleNamespace(
+                init_qlib=lambda: None,
+            ),
+        ), mock.patch(
+            "rolling_train.get_base_params",
+            return_value={"anchor_date": "2026-07-15"},
+        ), mock.patch(
+            "quantpits.rolling.windows.resolve_rolling_run",
+            return_value=mock.sentinel.resolved,
+        ), mock.patch(
+            "quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute",
+            return_value=SimpleNamespace(status="success"),
+        ):
+            result = rt.main([
+                "--workspace=%s" % workspace, "--cold-start", "--all-enabled",
+            ])
+        assert result == 0
+        assert seen == [
+            ("safeguard", workspace.resolve()),
+            ("lease", workspace.resolve()),
+            ("activate", workspace.resolve()),
+        ]
+        lease.acquire.assert_called_once()
+        lease.release.assert_called_once()
+
+    def test_activation_rebinds_foreign_legacy_environment(self, mock_env, tmp_path):
+        from quantpits.utils import env as runtime_env
+        from quantpits.utils.workspace import WorkspaceContext
+
+        rt, workspace = mock_env
+        foreign = tmp_path / "foreign_workspace"
+        foreign.mkdir()
+        runtime_env.set_root_dir(str(foreign))
+        activated = rt._activate_legacy_workspace(
+            WorkspaceContext.from_root(workspace),
+        )
+        assert Path(activated.ROOT_DIR) == workspace.resolve()
+        assert activated.mlflow_backend == WorkspaceContext.from_root(
+            workspace,
+        ).mlflow_uri
+        assert os.environ["QLIB_WORKSPACE_DIR"] == str(workspace.resolve())
+        assert os.environ["MLFLOW_TRACKING_URI"] == activated.mlflow_backend
+
     def test_show_state_uses_strict_readonly_inspection(self, mock_env, capsys):
         from types import SimpleNamespace
 
@@ -1832,14 +1896,13 @@ class TestMainAdditionalBranches:
         lease.release.side_effect = lambda: order.append("release")
         with mock.patch("rolling_train.parse_args", return_value=args), \
              mock.patch("quantpits.rolling.command.prepare_rolling_run", side_effect=lambda *_args: order.append("prepare") or prepared), \
-             mock.patch("quantpits.utils.env.safeguard", side_effect=lambda _name, **_kwargs: order.append("safeguard")), \
+             mock.patch("rolling_train._safeguard_explicit_workspace", side_effect=lambda _ctx: order.append("safeguard")), \
              mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
              mock.patch("quantpits.rolling.legacy.recheck_prepared_inputs", side_effect=lambda _prepared: order.append("recheck")), \
-             mock.patch("rolling_train._activate_legacy_workspace", side_effect=lambda _ctx: order.append("activate")), \
-             mock.patch("quantpits.utils.env.init_qlib", side_effect=lambda: order.append("init")), \
+             mock.patch("rolling_train._activate_legacy_workspace", side_effect=lambda _ctx: order.append("activate") or SimpleNamespace(init_qlib=lambda: order.append("init"))), \
              mock.patch("rolling_train.get_base_params", return_value={"anchor_date": "2026-07-15"}), \
              mock.patch("quantpits.rolling.windows.resolve_rolling_run", side_effect=lambda *_args: order.append("resolve") or mock.sentinel.resolved), \
-             mock.patch("quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute", side_effect=lambda *_args: order.append("execute")):
+             mock.patch("quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute", side_effect=lambda *_args: order.append("execute") or SimpleNamespace(status="success")):
             rt.main()
         expected = ["prepare", "safeguard", "acquire", "recheck", "activate"]
         if not clear_state:
@@ -1859,17 +1922,42 @@ class TestMainAdditionalBranches:
         lease = mock.MagicMock()
         with mock.patch("rolling_train.parse_args", return_value=args), \
              mock.patch("quantpits.rolling.command.prepare_rolling_run", return_value=prepared), \
-             mock.patch("quantpits.utils.env.safeguard"), \
+             mock.patch("rolling_train._safeguard_explicit_workspace"), \
              mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
              mock.patch("quantpits.rolling.legacy.recheck_prepared_inputs"), \
-             mock.patch("rolling_train._activate_legacy_workspace"), \
-             mock.patch("quantpits.utils.env.init_qlib"), \
+             mock.patch("rolling_train._activate_legacy_workspace", return_value=SimpleNamespace(init_qlib=lambda: None)), \
              mock.patch("rolling_train.get_base_params", return_value={"anchor_date": "2026-07-15"}), \
              mock.patch("quantpits.rolling.windows.resolve_rolling_run", return_value=mock.sentinel.resolved), \
              mock.patch("quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute", side_effect=RuntimeError("failed")):
             with pytest.raises(RuntimeError, match="failed"):
                 rt.main()
         lease.acquire.assert_called_once()
+        lease.release.assert_called_once()
+
+    def test_activation_failure_has_stable_code_and_releases_lease(
+        self, mock_env, capsys,
+    ):
+        from types import SimpleNamespace
+        from quantpits.rolling.errors import RollingWorkspaceActivationError
+
+        rt, _ = mock_env
+        args = SimpleNamespace(
+            show_state=False, dry_run=False, clear_state=False, all_enabled=True,
+        )
+        prepared = mock.MagicMock()
+        prepared.options.action = "daily"
+        lease = mock.MagicMock()
+        with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch("quantpits.rolling.command.prepare_rolling_run", return_value=prepared), \
+             mock.patch("rolling_train._safeguard_explicit_workspace"), \
+             mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
+             mock.patch("quantpits.rolling.legacy.recheck_prepared_inputs"), \
+             mock.patch(
+                 "rolling_train._activate_legacy_workspace",
+                 side_effect=RollingWorkspaceActivationError("activation failed"),
+             ):
+            assert rt.main() == 2
+        assert "rolling_workspace_activation_failed" in capsys.readouterr().err
         lease.release.assert_called_once()
 
     def test_shared_lease_conflict_blocks_real_rolling_route(self, mock_env):
@@ -1880,14 +1968,14 @@ class TestMainAdditionalBranches:
             show_state=False, dry_run=False, clear_state=False, all_enabled=True,
         )
         lease = mock.MagicMock()
-        lease.acquire.side_effect = RuntimeError("lease conflict")
+        from quantpits.training.errors import TrainingLeaseError
+        lease.acquire.side_effect = TrainingLeaseError("lease conflict")
         with mock.patch("rolling_train.parse_args", return_value=args), \
              mock.patch("quantpits.rolling.command.prepare_rolling_run", return_value=mock.sentinel.prepared), \
-             mock.patch("quantpits.utils.env.safeguard"), \
+             mock.patch("rolling_train._safeguard_explicit_workspace"), \
              mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
              mock.patch("rolling_train._main_impl") as implementation:
-            with pytest.raises(RuntimeError, match="lease conflict"):
-                rt.main()
+            assert rt.main() == 2
         implementation.assert_not_called()
         lease.release.assert_not_called()
 
@@ -1913,13 +2001,11 @@ class TestMainAdditionalBranches:
                 "quantpits.rolling.command.prepare_rolling_run",
                 return_value=mock.sentinel.prepared,
             ), mock.patch(
-                "quantpits.utils.env.safeguard"
+                "rolling_train._safeguard_explicit_workspace"
             ), mock.patch(
                 "quantpits.rolling.legacy.recheck_prepared_inputs"
             ), mock.patch("quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute") as implementation:
-                with pytest.raises(TrainingLeaseError) as raised:
-                    rt.main()
-            assert raised.value.code == "training_execution_lease_conflict"
+                assert rt.main() == TrainingLeaseError.exit_code
             implementation.assert_not_called()
         finally:
             static_holder.release()

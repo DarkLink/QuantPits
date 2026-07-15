@@ -98,13 +98,16 @@ def test_json_information_route_does_not_import_legacy_env(tmp_path):
     before = _snapshot(workspace)
     code = """
 import json
+import os
 import sys
 from quantpits.scripts import rolling_train
+before_env = dict(os.environ)
 exit_code = rolling_train.main([
     '--workspace', sys.argv[1], '--cold-start', '--all-enabled', '--json-plan',
 ])
 assert exit_code in (None, 0), exit_code
 assert 'quantpits.utils.env' not in sys.modules
+assert dict(os.environ) == before_env
 """
     result = subprocess.run(
         [sys.executable, "-c", code, str(workspace)], cwd=str(tmp_path),

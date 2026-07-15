@@ -9,7 +9,8 @@
 > workspace 解析，并且不允许逃逸 workspace。
 >
 > Prepared Plan 不伪造交易日历事实：anchor、slide windows 与 CPCV folds 会标为 runtime deferred。
-> 真实命令在 safeguard 和 shared lease 后复核 Prepared inputs，激活显式 workspace、初始化一次 Qlib，
+> 真实命令直接用 Prepared `WorkspaceContext` 显示 safeguard，不导入 legacy `env`；随后在 shared lease
+> 内复核 Prepared inputs，再激活同一个显式 workspace、初始化一次 Qlib，
 > 冻结精确 anchor、ordered windows/CPCV folds、stable window keys 与 execution fingerprint。adapter 只消费
 > Prepared targets 和 Resolved windows，不重新扫描 registry 或再次生成窗口。Rolling 仍使用 legacy
 > unversioned state 与 legacy record merge，不具备新版 evidence/publication
@@ -121,6 +122,9 @@ source workspaces/<name>/run_env.sh
 # 也可不 source，显式指定示例 workspace
 python -m quantpits.scripts.rolling_train --workspace workspaces/Demo_Workspace --help
 
+# 等价形式；direct script、python -m 与 main(argv=[...]) 使用同一个解析结果
+python -m quantpits.scripts.rolling_train --workspace=workspaces/Demo_Workspace --help
+
 # ---- Slide 滚动 ----
 python quantpits/scripts/rolling_train.py --cold-start --dry-run \
   --models linear_Alpha158 --training-method slide
@@ -154,15 +158,21 @@ Prepared Plan 不展示依赖 Qlib calendar 的精确窗口或 fold；`--show-fo
 之前以 `rolling_action_conflict` 拒绝；`--show-state` 会区分 `missing`、`valid_legacy`、`corrupt` 与
 `unsupported`，不会把损坏状态伪装成空状态。
 
-真实执行顺序为 safeguard → shared lease → input baseline recheck → workspace activation → Qlib init →
+`--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一
+workspace identity，不依赖进程 `sys.argv` 让 legacy `env` 再次选择 workspace。真实执行顺序为
+explicit-context safeguard → shared lease → input baseline recheck → workspace activation → Qlib init →
 Resolved Plan → legacy adapter → OperatorLog → lease release。`--clear-state` 不需要 Qlib，但仍在 lease 内
-复核 state baseline 后备份并清除。OperatorLog 显式记录 run ID、Prepared plan fingerprint 和 execution
-fingerprint；这不代表 Rolling 已获得新版 manifest/receipt closure。
+复核 state baseline 后备份并清除；state 已缺失时 outcome 与 OperatorLog 记录 `skipped`。`daily`、
+`predict-only` 缺少有效 anchor，或 `retrain-last` 没有已完成窗口时，会在 backend 前以
+`rolling_state_precondition_failed` 拒绝。OperatorLog、adapter outcome 与 CLI exit 共享同一个
+command-level status。成功 action 仍标注 `legacy_partial_visibility`；它不代表每个 target×window 都已有
+新版 immutable evidence 或 manifest/receipt closure。`predict-only` 没有生成 prediction 时记录 `skipped`。
 
 Phase 28 的全量 Python 测试与 workspace gate 由项目 owner 控制和执行。无写 gate 应使用
 `Demo_Workspace` 或 owner 明确选择的一次性 validation workspace，并对配置、state、current records、
 OperatorLog 与 MLflow 路径做前后快照；计划命令不得触发 safeguard、lease 或 backend 初始化。生产
-workspace 保持只读。最小真实 adapter smoke 仅在 owner 明确授权且 validation workspace 可丢弃时执行。
+workspace 保持只读。28E candidate 的最小真实 adapter/bootstrap smoke 是 owner 验收项，只能在 owner
+明确授权的可丢弃 validation workspace 执行；agent 不对生产或历史 Playground 执行该命令。
 
 > `--training-method` 可覆盖 `rolling_config.yaml` 中的设置，无需改配置文件即可切换模式对比效果。
 
