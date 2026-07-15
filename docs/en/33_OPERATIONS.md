@@ -21,17 +21,34 @@
 
 | Flag | Purpose |
 |------|---------|
-| `--dry-run` | Preview windows, no training |
+| `--workspace PATH` | Select a workspace explicitly; otherwise use `QLIB_WORKSPACE_DIR` |
+| `--dry-run` | Compatibility entry for the authoritative Prepared Plan; exact dates are runtime-deferred |
+| `--explain-plan` | Human-readable form of the same Prepared Plan |
+| `--json-plan` | Single JSON document for that plan, including input/state/effect/plan fingerprints |
+| `--run-id ID` | Explicit lease operation identity for a real run |
 | `--show-folds` | CPCV: show per-window fold details |
 | `--training-method slide\|cpcv` | Override config file setting |
 | `--cache-size N` | Handler cache max (MB), 0=disable. CPCV K-fold reuse |
 | `--allow-stale-predict` | Allow old weights for new data in predict-only |
 
+Preparing a plan is strictly filesystem-read-only: it does not initialize Qlib/MLflow, acquire the
+shared lease, or write an OperatorLog. The plan freezes registry-ordered targets and
+workspace-contained workflows, classifies legacy state, and truthfully declares state, record,
+history, MLflow artifact, and OperatorLog effects of a real command. Calendar anchors, windows, and
+CPCV folds remain deferred in the Prepared Plan. Real execution rechecks input baselines inside the
+shared lease, initializes Qlib once, and binds the exact anchor, ordered windows/folds, stable window
+keys, and execution fingerprint in a Resolved Plan. The legacy adapter consumes that frozen scope
+without rescanning the registry or generating another window set.
+
+The project owner runs the full regression suite and workspace gates. No-write validation uses only
+`Demo_Workspace` or a disposable validation workspace explicitly selected by the owner; production
+workspaces remain read-only. Any real Rolling smoke requires separate owner authorization.
+
 ### Info Commands
 
 | Flag | Purpose |
 |------|---------|
-| `--show-state` | Show current method's training state |
+| `--show-state` | Strict readonly classification: `missing` / `valid_legacy` / `corrupt` / `unsupported` |
 | `--clear-state` | Clear current method's training state (auto-backup) |
 
 > `--show-state` / `--clear-state` accept `--training-method` to target a specific mode.

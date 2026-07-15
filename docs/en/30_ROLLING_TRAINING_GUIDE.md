@@ -1,14 +1,32 @@
 # Rolling Training Guide (Overview)
 
+> Phase 28A/28B/28C establish an import-pure CLI, a filesystem-only authoritative Prepared Plan,
+> and an in-lease Resolved Plan plus legacy execution adapter.
+> Importing the module and running `--help` require no prior `source run_env.sh` and do not change the
+> current directory. `--dry-run`, `--explain-plan`, and `--json-plan` render the same typed plan,
+> freezing the action, ordered targets, workflow and workspace input fingerprints, legacy-state
+> classification, expected effects, and plan fingerprint. This route does not initialize Qlib or
+> MLflow, acquire the lease, or write files. Relative workflow YAML paths are resolved against the
+> selected workspace and may not escape it.
+>
+> A Prepared Plan does not invent calendar facts: its anchor, slide windows, and CPCV folds remain
+> runtime-deferred. After safeguard and acquisition of the shared lease, a real command rechecks
+> Prepared inputs, activates the explicit workspace, initializes Qlib once, and freezes the exact
+> anchor, ordered windows/CPCV folds, stable window keys, and execution fingerprint. The adapter
+> consumes only Prepared targets and Resolved windows; it does not rescan the registry or generate a
+> second window set. Rolling still uses unversioned legacy state and legacy record
+> merge, without the newer evidence/publication closure parity.
+
 > Phase 27 transition boundary: Rolling/CPCV-rolling still use their legacy window/state
 > orchestration and are not yet backed by the static/CPCV execution service. All real mutating
 > commands now share the workspace training execution lease with static/CPCV, preventing concurrent
 > current-record replacement. `--show-state` and `--dry-run` do not acquire that lease. Full
-> plan/evidence/publication/closure parity remains explicitly deferred.
-> `--dry-run` is a strict filesystem-only preview: it renders configuration, action, and model
-> selection without initializing Qlib, resolving exact window/fold dates, or creating OperatorLog,
-> state, manifest, or lock files. Exact windows are resolved by real execution.
-> `--show-state` likewise uses a lock-free read-only state load. `--clear-state` backs up/deletes
+> service-owned execution/evidence/publication/closure parity remains explicitly deferred.
+> `--dry-run` is a strict filesystem-only Prepared Plan: it renders configuration and input
+> fingerprints, the action, ordered targets, state classification, and expected effects without
+> initializing Qlib, resolving exact window/fold dates, or creating OperatorLog, state, manifest, or
+> lock files. Exact windows are resolved by real execution.
+> `--show-state` likewise uses lock-free strict readonly classification. `--clear-state` backs up/deletes
 > state, so it still passes safeguard and holds the shared execution lease.
 
 > The 30-series covers **rolling training** — paradigms where training windows slide forward over time.
@@ -60,6 +78,11 @@ rolling_train.py      ← CLI + orchestration + strategy dispatch
 ```
 
 ```
+quantpits/rolling/
+├── command.py            # filesystem-only PreparedRollingRun
+├── windows.py            # runtime ResolvedRollingRun + stable window keys
+└── legacy.py             # exact-scope legacy adapter + baseline recheck
+
 rolling/
 ├── state.py              # State management (separate file per method)
 ├── memory.py             # 3-tier memory cleanup
@@ -101,9 +124,16 @@ cpcv_embargo_steps: 5           # asymmetric embargo (trading weeks)
 conda activate qlib_cupy
 source workspaces/<name>/run_env.sh
 
+# Or skip sourcing and select the example workspace explicitly
+python -m quantpits.scripts.rolling_train --workspace workspaces/Demo_Workspace --help
+
 # ---- Slide rolling ----
 python quantpits/scripts/rolling_train.py --cold-start --dry-run \
   --models linear_Alpha158 --training-method slide
+
+# Single-document JSON form of the same authoritative Prepared Plan
+python -m quantpits.scripts.rolling_train \
+  --workspace workspaces/Demo_Workspace --cold-start --all-enabled --json-plan
 
 # ---- CPCV rolling (with fold details) ----
 python quantpits/scripts/rolling_train.py --cold-start --dry-run \
@@ -124,8 +154,25 @@ python quantpits/scripts/rolling_train.py --backtest-only \
   --models linear_Alpha158 --training-method cpcv
 ```
 
-In Phase 27, `--dry-run` does not render exact Qlib-calendar windows or folds; `--show-folds` takes
-effect only after real execution resolves dates. This preserves a zero-write, zero-Qlib preview.
+The Prepared Plan does not render exact Qlib-calendar windows or folds. In plan mode, `--show-folds`
+only exposes the deferred reason; exact content is available after real execution resolves dates.
+This preserves a zero-write route with no Qlib/MLflow initialization. Conflicting primary actions,
+such as `--cold-start --resume`, fail with `rolling_action_conflict` before safeguard, lease, or
+backend activation. `--show-state` distinguishes `missing`, `valid_legacy`, `corrupt`, and
+`unsupported` instead of treating damaged state as empty.
+
+Real execution is ordered as safeguard → shared lease → input baseline recheck → workspace
+activation → Qlib init → Resolved Plan → legacy adapter → OperatorLog → lease release.
+`--clear-state` needs no Qlib initialization, but still rechecks its state baseline and performs the
+backup/removal inside the lease. OperatorLog records the run ID, Prepared plan fingerprint, and
+execution fingerprint; this does not imply manifest/receipt-backed closure parity.
+
+The project owner controls and runs the Phase 28 full Python suite and workspace gates. A no-write
+gate should use `Demo_Workspace` or a disposable validation workspace explicitly selected by the
+owner, with before/after snapshots of configuration, state, current records, OperatorLog, and MLflow
+paths. Plan commands must not trigger safeguard, lease acquisition, or backend initialization. The
+production workspace remains read-only. Run a minimal real adapter smoke only with explicit owner
+authorization and a disposable validation workspace.
 
 > `--training-method` overrides `rolling_config.yaml` — switch modes without editing files.
 

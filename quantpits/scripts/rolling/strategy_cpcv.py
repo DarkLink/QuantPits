@@ -166,7 +166,10 @@ def train_window(model_name, yaml_file, window, params_base,
     """
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
+    from quantpits.rolling.legacy import resolve_legacy_workflow_path
     from quantpits.utils.train_utils import inject_config_for_fold
+
+    yaml_file = resolve_legacy_workflow_path(yaml_file)
 
     result = {
         'success': False,
@@ -655,7 +658,8 @@ def predict_latest(model_name, model_info, state, rolling_exp_name,
             experiment_name=rolling_exp_name,
         )
 
-        yaml_file = model_info['yaml_file']
+        from quantpits.rolling.legacy import resolve_legacy_workflow_path
+        yaml_file = resolve_legacy_workflow_path(model_info['yaml_file'])
         folds = trained_window.get('cpcv_folds', [])
 
         fi = 0
@@ -798,7 +802,8 @@ def repair_truncated(model_name, model_info, comp, window_map,
         print(f"    ⚠️  Window {widx}: no fold info, cannot repair")
         return pred, False
 
-    yaml_file = model_info['yaml_file']
+    from quantpits.rolling.legacy import resolve_legacy_workflow_path
+    yaml_file = resolve_legacy_workflow_path(model_info['yaml_file'])
     fold_params = dict(params_base)
     fold_params['test_start_time'] = w['test_start']
     fold_params['test_end_time'] = w['test_end']

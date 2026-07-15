@@ -118,8 +118,11 @@ def train_window(model_name, yaml_file, window, params_base,
         dict: {success, record_id, performance, error}
     """
     from quantpits.utils.train_utils import inject_config
+    from quantpits.rolling.legacy import resolve_legacy_workflow_path
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
+
+    yaml_file = resolve_legacy_workflow_path(yaml_file)
 
     result = {
         'success': False,
@@ -379,7 +382,8 @@ def repair_truncated(model_name, model_info, comp, window_map,
         print(f"    ⚠️  Window {widx}: cannot load model weights ({e}), skipping repair")
         return pred, False
 
-    yaml_file = model_info['yaml_file']
+    from quantpits.rolling.legacy import resolve_legacy_workflow_path
+    yaml_file = resolve_legacy_workflow_path(model_info['yaml_file'])
     params = dict(params_base)
     params['start_time'] = w['train_start']
     params['end_time'] = w['test_end']
@@ -509,7 +513,8 @@ def predict_latest(model_name, model_info, state, rolling_exp_name,
         )
         model = rec.load_object("model.pkl")
 
-        yaml_file = model_info['yaml_file']
+        from quantpits.rolling.legacy import resolve_legacy_workflow_path
+        yaml_file = resolve_legacy_workflow_path(model_info['yaml_file'])
         params = dict(params_base)
         params['anchor_date'] = anchor_date
 

@@ -34,18 +34,32 @@
 
 | 参数 | 说明 |
 |------|------|
-| `--dry-run` | 预览窗口划分，不训练 |
+| `--workspace PATH` | 显式选择 workspace；未指定时读取 `QLIB_WORKSPACE_DIR` |
+| `--dry-run` | authoritative Prepared Plan 的兼容入口；精确窗口日期延迟到真实执行 |
+| `--explain-plan` | 同一个 Prepared Plan 的 human-readable 形式 |
+| `--json-plan` | 同一个 Prepared Plan 的单一 JSON 文档（含输入/state/effect/plan fingerprints） |
+| `--run-id ID` | 真实执行的显式 lease operation identity |
 | `--show-folds` | CPCV 模式下显示每窗口的 Fold 详情（train/valid 日期段） |
 | `--training-method slide\|cpcv` | 覆盖 `rolling_config.yaml` 中的设置，无需改配置文件 |
 | `--cache-size N` | Handler 缓存上限（MB），0=禁用，默认=自动。CPCV 模式 K-fold 共享 |
 | `--no-pretrain` | 跳过预训练模型加载 |
 | `--allow-stale-predict` | 允许 `--predict-only` 用旧权重预测新数据 |
 
+Prepared Plan 是严格的文件系统只读操作，不初始化 Qlib/MLflow，不获取 shared lease，也不写
+OperatorLog。它会冻结 registry 顺序的 targets 和 workspace-contained workflow，分类 legacy state，并
+如实声明真实命令可能写入的 state、record、history、MLflow artifacts 和 OperatorLog。日历 anchor、
+windows/CPCV folds 在 Prepared Plan 中保持 deferred；真实执行会在 shared lease 内复核 input baselines，
+初始化一次 Qlib，并用 Resolved Plan 绑定精确 anchor、ordered windows/folds、stable window keys 和 execution
+fingerprint。legacy adapter 只消费该冻结范围，不重新扫描 registry 或再次生成窗口。
+
+全量回归与 workspace gate 由项目 owner 执行。无写验证只使用 `Demo_Workspace` 或 owner 明确选择的
+一次性 validation workspace；生产 workspace 始终只读。任何真实 Rolling smoke 都需要 owner 单独授权。
+
 ### 信息查看
 
 | 参数 | 说明 |
 |------|------|
-| `--show-state` | 显示当前模式的训练状态 |
+| `--show-state` | 严格只读分类：`missing` / `valid_legacy` / `corrupt` / `unsupported` |
 | `--clear-state` | 清除当前模式的训练状态（自动备份） |
 
 > `--show-state` / `--clear-state` 支持 `--training-method` 选择目标模式。

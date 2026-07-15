@@ -250,5 +250,8 @@ def set_root_dir(path: str):
         tu.HISTORY_DIR = os.path.join(ROOT_DIR, "data", "history")
         tu.RUN_STATE_FILE = os.path.join(ROOT_DIR, "data", "run_state.json")
         tu.ROLLING_STATE_FILE = os.path.join(ROOT_DIR, "data", "rolling_state.json")
+        tu.ROLLING_STATE_FILE_CPCV = os.path.join(ROOT_DIR, "data", "rolling_state_cpcv.json")
         tu.LEGACY_ROLLING_RECORD_FILE = os.path.join(ROOT_DIR, "latest_rolling_records.json")
+        tu.ROLLING_TRAINING_HISTORY_FILE = os.path.join(ROOT_DIR, "data", "rolling_training_history.jsonl")
+        tu.ROLLING_PREDICTION_HISTORY_FILE = os.path.join(ROOT_DIR, "data", "rolling_prediction_history.jsonl")
         tu.PRETRAINED_DIR = os.path.join(ROOT_DIR, "data", "pretrained")

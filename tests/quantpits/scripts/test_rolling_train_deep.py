@@ -68,7 +68,7 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(pd.Series, 'to_csv', mock.MagicMock())
 
     # Mock safeguard to avoid sleep
-    monkeypatch.setattr('quantpits.utils.env.safeguard', lambda x: None)
+    monkeypatch.setattr('quantpits.utils.env.safeguard', lambda x, **kwargs: None)
 
     return workspace
 

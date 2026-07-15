@@ -72,7 +72,7 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setattr(pd.Series, 'to_csv', mock.MagicMock())
 
     # Mock safeguard to avoid 3-second sleep in tests
-    monkeypatch.setattr('quantpits.utils.env.safeguard', lambda x: None)
+    monkeypatch.setattr('quantpits.utils.env.safeguard', lambda x, **kwargs: None)
 
     import rolling_train as rt
     return rt, workspace
@@ -849,7 +849,7 @@ class TestMainFlows:
                 'test_step_months': 3
             }
             try:
-                rt.main()
+                rt._main_impl(args)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -886,7 +886,7 @@ class TestMainFlows:
              mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value=mock_patch_cfg), \
              mock.patch('rolling_train.run_predict_only') as mock_run_po:
             
-            rt.main()
+            rt._main_impl(args)
             mock_run_po.assert_called_once()
 
     def test_main_resume(self, mock_env):
@@ -925,7 +925,7 @@ class TestMainFlows:
              mock.patch('rolling_train.RollingState', return_value=mock_state), \
              mock.patch('rolling_train.run_cold_start') as mock_run:
             
-            rt.main()
+            rt._main_impl(args)
             mock_run.assert_called_once()
 
     def test_main_show_state(self, mock_env):
@@ -937,7 +937,7 @@ class TestMainFlows:
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.RollingState') as mock_state_cls:
             
-            rt.main()
+            rt._main_impl(args)
             mock_state_cls.return_value.show.assert_called()
 
     def test_main_clear_state(self, mock_env):
@@ -949,7 +949,7 @@ class TestMainFlows:
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.RollingState') as mock_state_cls:
             
-            rt.main()
+            rt._main_impl(args)
             mock_state_cls.return_value.clear.assert_called()
 
     """Test RollingState persistence and recovery"""
@@ -1050,7 +1050,7 @@ class TestMainFlowsExtended:
             mock_state = mock_state_cls.return_value
             mock_state.anchor_date = "2024-01-01"
             
-            rt.main()
+            rt._main_impl(args)
             mock_run.assert_called_once()
 
     def test_main_backtest_only(self, mock_env):
@@ -1078,7 +1078,7 @@ class TestMainFlowsExtended:
              mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value=mock_patch_cfg), \
              mock.patch('rolling_train.run_backtest_only') as mock_run:
             
-            rt.main()
+            rt._main_impl(args)
             mock_run.assert_called_once()
 
     def test_main_retrain_last(self, mock_env):
@@ -1095,7 +1095,7 @@ class TestMainFlowsExtended:
             mock_state.anchor_date = "2024-01-01"
             mock_state.get_last_completed_window_idx.return_value = 1
             
-            rt.main()
+            rt._main_impl(args)
             mock_state.remove_window.assert_called_with(1)
             mock_run_daily.assert_called_once()
 
@@ -1111,7 +1111,7 @@ class TestMainFlowsExtended:
 
             mock_state = mock_state_cls.return_value
             mock_state.anchor_date = None
-            rt.main()
+            rt._main_impl(args)
             # Should exit before run_daily due to no anchor_date
 
     def test_main_retrain_models_removes_and_merges(self, mock_env):
@@ -1134,7 +1134,7 @@ class TestMainFlowsExtended:
             mock_state.anchor_date = "2024-01-01"
             mock_state.remove_model.return_value = 5
 
-            rt.main()
+            rt._main_impl(args)
             mock_state.remove_model.assert_called_with('m1')
             # Should set merge=True and models='m1' and enter cold_start
             assert args.merge is True
@@ -1158,7 +1158,7 @@ class TestMainFlowsExtended:
             mock_state = mock_state_cls.return_value
             mock_state.anchor_date = None
 
-            rt.main()
+            rt._main_impl(args)
             # Should not reach run_cold_start
             mock_run_cold.assert_not_called()
 
@@ -1183,7 +1183,7 @@ class TestMainFlowsExtended:
             mock_state.anchor_date = "2024-01-01"
             mock_state.remove_model.return_value = 3
 
-            rt.main()
+            rt._main_impl(args)
             assert mock_state.remove_model.call_count == 3
             mock_state.remove_model.assert_any_call('m1')
             mock_state.remove_model.assert_any_call('m2')
@@ -1310,7 +1310,7 @@ class TestRunModesExtra:
             mock_state = mock_state_cls.return_value
             mock_state.anchor_date = None # No state
             
-            rt.main()
+            rt._main_impl(args)
             # Should return early without calling resolve_target_models
             mock_resolve.assert_not_called()
 
@@ -1334,7 +1334,7 @@ class TestRunModesExtra:
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('rolling_train.resolve_target_models', return_value={}):
             
-            rt.main()
+            rt._main_impl(args)
             # Should print "⚠️ 没有匹配的模型" and return
 
     def test_run_predict_only_no_state(self, mock_env):
@@ -1765,7 +1765,7 @@ class TestMoreMainFlows:
 
 
 class TestMainAdditionalBranches:
-    def test_show_state_uses_readonly_legacy_state_load(self, mock_env):
+    def test_show_state_uses_strict_readonly_inspection(self, mock_env, capsys):
         from types import SimpleNamespace
 
         rt, _ = mock_env
@@ -1773,19 +1773,13 @@ class TestMainAdditionalBranches:
             show_state=True, clear_state=False, dry_run=False,
             training_method=None,
         )
-        state = mock.MagicMock()
         with mock.patch("rolling_train.parse_args", return_value=args), \
-             mock.patch("quantpits.utils.config_loader.load_rolling_config", return_value={
-                 "training_method": "slide",
-             }), \
-             mock.patch("rolling_train.RollingState", return_value=state) as state_cls, \
+             mock.patch("rolling_train.RollingState") as state_cls, \
              mock.patch("quantpits.utils.env.safeguard") as safeguard, \
              mock.patch("quantpits.training.lease.TrainingExecutionLease.acquire") as acquire:
             rt.main()
-        state_cls.assert_called_once_with(
-            state_file=mock.ANY, readonly=True,
-        )
-        state.show.assert_called_once()
+        assert "Status: missing" in capsys.readouterr().out
+        state_cls.assert_not_called()
         safeguard.assert_not_called()
         acquire.assert_not_called()
 
@@ -1826,30 +1820,53 @@ class TestMainAdditionalBranches:
         from types import SimpleNamespace
 
         rt, _ = mock_env
-        args = SimpleNamespace(show_state=False, dry_run=False, clear_state=clear_state)
+        args = SimpleNamespace(
+            show_state=False, dry_run=False, clear_state=clear_state,
+            all_enabled=not clear_state,
+        )
         lease = mock.MagicMock()
+        prepared = mock.MagicMock()
+        prepared.options.action = "clear_state" if clear_state else "daily"
         order = []
         lease.acquire.side_effect = lambda **_kwargs: order.append("acquire")
         lease.release.side_effect = lambda: order.append("release")
         with mock.patch("rolling_train.parse_args", return_value=args), \
-             mock.patch("quantpits.utils.env.safeguard", side_effect=lambda _name: order.append("safeguard")), \
-             mock.patch("quantpits.utils.env.get_workspace_context", return_value=mock.sentinel.ctx), \
+             mock.patch("quantpits.rolling.command.prepare_rolling_run", side_effect=lambda *_args: order.append("prepare") or prepared), \
+             mock.patch("quantpits.utils.env.safeguard", side_effect=lambda _name, **_kwargs: order.append("safeguard")), \
              mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
-             mock.patch("rolling_train._main_impl", side_effect=lambda _args: order.append("execute")):
+             mock.patch("quantpits.rolling.legacy.recheck_prepared_inputs", side_effect=lambda _prepared: order.append("recheck")), \
+             mock.patch("rolling_train._activate_legacy_workspace", side_effect=lambda _ctx: order.append("activate")), \
+             mock.patch("quantpits.utils.env.init_qlib", side_effect=lambda: order.append("init")), \
+             mock.patch("rolling_train.get_base_params", return_value={"anchor_date": "2026-07-15"}), \
+             mock.patch("quantpits.rolling.windows.resolve_rolling_run", side_effect=lambda *_args: order.append("resolve") or mock.sentinel.resolved), \
+             mock.patch("quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute", side_effect=lambda *_args: order.append("execute")):
             rt.main()
-        assert order == ["safeguard", "acquire", "execute", "release"]
+        expected = ["prepare", "safeguard", "acquire", "recheck", "activate"]
+        if not clear_state:
+            expected.extend(["init", "resolve"])
+        expected.extend(["execute", "release"])
+        assert order == expected
 
     def test_real_route_releases_shared_lease_on_failure(self, mock_env):
         from types import SimpleNamespace
 
         rt, _ = mock_env
-        args = SimpleNamespace(show_state=False, dry_run=False, clear_state=False)
+        args = SimpleNamespace(
+            show_state=False, dry_run=False, clear_state=False, all_enabled=True,
+        )
+        prepared = mock.MagicMock()
+        prepared.options.action = "daily"
         lease = mock.MagicMock()
         with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch("quantpits.rolling.command.prepare_rolling_run", return_value=prepared), \
              mock.patch("quantpits.utils.env.safeguard"), \
-             mock.patch("quantpits.utils.env.get_workspace_context", return_value=mock.sentinel.ctx), \
              mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
-             mock.patch("rolling_train._main_impl", side_effect=RuntimeError("failed")):
+             mock.patch("quantpits.rolling.legacy.recheck_prepared_inputs"), \
+             mock.patch("rolling_train._activate_legacy_workspace"), \
+             mock.patch("quantpits.utils.env.init_qlib"), \
+             mock.patch("rolling_train.get_base_params", return_value={"anchor_date": "2026-07-15"}), \
+             mock.patch("quantpits.rolling.windows.resolve_rolling_run", return_value=mock.sentinel.resolved), \
+             mock.patch("quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute", side_effect=RuntimeError("failed")):
             with pytest.raises(RuntimeError, match="failed"):
                 rt.main()
         lease.acquire.assert_called_once()
@@ -1859,12 +1876,14 @@ class TestMainAdditionalBranches:
         from types import SimpleNamespace
 
         rt, _ = mock_env
-        args = SimpleNamespace(show_state=False, dry_run=False, clear_state=False)
+        args = SimpleNamespace(
+            show_state=False, dry_run=False, clear_state=False, all_enabled=True,
+        )
         lease = mock.MagicMock()
         lease.acquire.side_effect = RuntimeError("lease conflict")
         with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch("quantpits.rolling.command.prepare_rolling_run", return_value=mock.sentinel.prepared), \
              mock.patch("quantpits.utils.env.safeguard"), \
-             mock.patch("quantpits.utils.env.get_workspace_context", return_value=mock.sentinel.ctx), \
              mock.patch("quantpits.training.lease.TrainingExecutionLease.for_workspace", return_value=lease), \
              mock.patch("rolling_train._main_impl") as implementation:
             with pytest.raises(RuntimeError, match="lease conflict"):
@@ -1888,12 +1907,16 @@ class TestMainAdditionalBranches:
                 "rolling_train.parse_args",
                 return_value=SimpleNamespace(
                     show_state=False, dry_run=False, clear_state=False,
+                    all_enabled=True,
                 ),
+            ), mock.patch(
+                "quantpits.rolling.command.prepare_rolling_run",
+                return_value=mock.sentinel.prepared,
             ), mock.patch(
                 "quantpits.utils.env.safeguard"
             ), mock.patch(
-                "quantpits.utils.env.get_workspace_context", return_value=ctx,
-            ), mock.patch("rolling_train._main_impl") as implementation:
+                "quantpits.rolling.legacy.recheck_prepared_inputs"
+            ), mock.patch("quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute") as implementation:
                 with pytest.raises(TrainingLeaseError) as raised:
                     rt.main()
             assert raised.value.code == "training_execution_lease_conflict"
@@ -1902,11 +1925,22 @@ class TestMainAdditionalBranches:
             static_holder.release()
 
     def test_main_no_config(self, mock_env):
+        from types import SimpleNamespace
+
         rt, _ = mock_env
-        args = mock.MagicMock(show_state=False, clear_state=False)
+        args = SimpleNamespace(
+            show_state=False, clear_state=False, cold_start=True,
+            all_enabled=True,
+        )
+        from quantpits.rolling.errors import RollingConfigMissingError
         with mock.patch('rolling_train.parse_args', return_value=args), \
-             mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value=None):
-            rt.main() # Expect to print 找不到 config... / return
+             mock.patch(
+                 'quantpits.rolling.command.prepare_rolling_run',
+                 side_effect=RollingConfigMissingError(
+                     'config/rolling_config.yaml not found'
+                 ),
+             ):
+            assert rt.main() == 2
 
     def test_main_resume_all_enabled(self, mock_env):
         rt, _ = mock_env
@@ -1919,7 +1953,7 @@ class TestMainAdditionalBranches:
             
             mock_state = mock_state_cls.return_value
             mock_state.anchor_date = '2024-01-01'
-            rt.main()
+            rt._main_impl(args)
             assert args.all_enabled is True # This covers lines 1076-1077
 
     def test_main_no_selection_return(self, mock_env):
@@ -1927,7 +1961,7 @@ class TestMainAdditionalBranches:
         args = mock.MagicMock(show_state=False, clear_state=False, resume=False, backtest_only=False, cold_start=False, merge=False, predict_only=False, retrain_last=False, models=None, algorithm=None, dataset=None, tag=None, all_enabled=False)
         with mock.patch('rolling_train.parse_args', return_value=args), \
              mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}):
-            rt.main() # Covers lines 1080-1082
+            rt._main_impl(args) # Covers lines 1080-1082
 
     def test_main_daily_execution(self, mock_env):
         rt, _ = mock_env
@@ -1936,7 +1970,7 @@ class TestMainAdditionalBranches:
              mock.patch('quantpits.utils.config_loader.load_rolling_config', return_value={'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M', 'test_step_months': 3}), \
              mock.patch('rolling_train.resolve_target_models', return_value={'m1':{}}), \
              mock.patch('rolling_train.run_daily') as mock_run_daily:
-            rt.main()
+            rt._main_impl(args)
             mock_run_daily.assert_called_once() # Covers line 1103
 
 class TestParseArgsExtra:

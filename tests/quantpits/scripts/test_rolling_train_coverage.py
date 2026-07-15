@@ -62,7 +62,7 @@ def rt_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pd.DataFrame, "to_csv", Mock())
     monkeypatch.setattr(pd.Series, "to_csv", Mock())
-    monkeypatch.setattr("quantpits.utils.env.safeguard", lambda x: None)
+    monkeypatch.setattr("quantpits.utils.env.safeguard", lambda x, **kwargs: None)
 
     import rolling_train
     return rolling_train, workspace

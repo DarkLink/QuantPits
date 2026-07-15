@@ -37,24 +37,17 @@ Examples:
   python quantpits/scripts/rolling_train.py --resume
 """
 
-import os
 import sys
 import argparse
 
-from quantpits.utils import env
 from quantpits.utils.constants import MONTHS_PER_YEAR
-os.chdir(env.ROOT_DIR)
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = env.ROOT_DIR
-sys.path.append(SCRIPT_DIR)
 
 
 # ==========================================================================
 # Strategy dispatch
 # ==========================================================================
 
-def _get_strategy(training_method):
+def _get_strategy(training_method, ctx=None):
     """Resolve strategy module, key suffix, and state file path.
 
     Args:
@@ -63,21 +56,29 @@ def _get_strategy(training_method):
     Returns:
         (strategy_module, mode_suffix, state_file_path)
     """
-    from quantpits.utils.train_utils import ROLLING_STATE_FILE, ROLLING_STATE_FILE_CPCV
-
     if training_method == 'cpcv':
         from quantpits.scripts.rolling import strategy_cpcv as st
-        return st, 'cpcv_rolling', ROLLING_STATE_FILE_CPCV
+        state_file = (str(ctx.data_path('rolling_state_cpcv.json'))
+                      if ctx is not None else _legacy_rolling_paths()[1])
+        return st, 'cpcv_rolling', state_file
     else:
         from quantpits.scripts.rolling import strategy_slide as st
-        return st, 'rolling', ROLLING_STATE_FILE
+        state_file = (str(ctx.data_path('rolling_state.json'))
+                      if ctx is not None else _legacy_rolling_paths()[0])
+        return st, 'rolling', state_file
+
+
+def _legacy_rolling_paths():
+    """Resolve legacy path constants only after runtime activation."""
+    from quantpits.utils.train_utils import ROLLING_STATE_FILE, ROLLING_STATE_FILE_CPCV
+    return ROLLING_STATE_FILE, ROLLING_STATE_FILE_CPCV
 
 
 # ==========================================================================
 # CLI
 # ==========================================================================
 
-def parse_args():
+def build_parser():
     parser = argparse.ArgumentParser(
         description='Rolling Training: sliding time-window training + prediction stitching',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -162,6 +163,14 @@ Examples:
                       choices=['slide', 'cpcv'],
                       help='Override training_method from rolling_config.yaml. '
                            'Use to switch modes without editing config.')
+    ctrl.add_argument('--workspace', default=None,
+                      help='Explicit workspace root (otherwise QLIB_WORKSPACE_DIR).')
+    ctrl.add_argument('--explain-plan', action='store_true',
+                      help='Explain the read-only Rolling execution plan.')
+    ctrl.add_argument('--json-plan', action='store_true',
+                      help='Render the read-only Rolling plan as one JSON document.')
+    ctrl.add_argument('--run-id', default=None,
+                      help='Explicit operation identity for real execution.')
 
     info = parser.add_argument_group('Information')
     info.add_argument('--show-state', action='store_true',
@@ -169,25 +178,37 @@ Examples:
     info.add_argument('--clear-state', action='store_true',
                       help='Clear rolling state')
 
-    return parser.parse_args()
+    return parser
 
 
-def resolve_target_models(args):
+def parse_args(argv=None):
+    return build_parser().parse_args(argv)
+
+
+def resolve_target_models(args, registry=None):
     """Resolve target models (delegates to shared train_utils implementation)."""
     from quantpits.utils.train_utils import resolve_target_models as _resolve
-    return _resolve(args)
+    return _resolve(args, registry=registry)
 
 
-def get_base_params():
+def get_base_params(workspace_root=None, strict_calendar=False):
     """Get workspace base params (market, benchmark, etc.)."""
+    if workspace_root is None:
+        from quantpits.utils import env as runtime_env
+        workspace_root = runtime_env.ROOT_DIR
     from quantpits.utils.config_loader import load_workspace_config
-    config = load_workspace_config(ROOT_DIR)
+    config = load_workspace_config(workspace_root)
 
     from qlib.data import D
     try:
         last_trade_date = D.calendar(future=False)[-1:][0]
         anchor_date = last_trade_date.strftime('%Y-%m-%d')
     except Exception as e:
+        if strict_calendar:
+            from quantpits.rolling.errors import RollingWindowResolutionError
+            raise RollingWindowResolutionError(
+                "cannot resolve authoritative Qlib trading anchor: %s" % e
+            )
         print(f"⚠️  Warning: cannot get trading calendar from qlib "
               f"(env may be empty or uninitialized), using default '2024-12-31'. "
               f"Error: {e}")
@@ -219,7 +240,7 @@ def _print_fold_details(folds, indent=6):
 # Flow functions
 # ==========================================================================
 
-def run_cold_start(args, targets, rolling_cfg):
+def run_cold_start(args, targets, rolling_cfg, resolved=None):
     """Cold start / merge / resume: Model-First loop with subprocess isolation.
 
     Supports both slide and CPCV strategies via training_method config.
@@ -231,30 +252,41 @@ def run_cold_start(args, targets, rolling_cfg):
     from quantpits.scripts.rolling.memory import deep_cleanup_after_model
     from qlib.config import C
 
-    env.init_qlib()
-    params_base = get_base_params()
+    if resolved is None:
+        from quantpits.utils import env as runtime_env
+        runtime_env.init_qlib()
+        params_base = get_base_params()
+        windows = None
+        state_file_override = None
+    else:
+        params_base = dict(resolved.params)
+        windows = list(resolved.legacy_windows)
+        state_file_override = str(resolved.prepared.ctx.path(resolved.prepared.state.path))
     anchor_date = params_base['anchor_date']
     freq = params_base['freq'].upper()
     qlib_config = C
 
     training_method = rolling_cfg.get('training_method', 'slide')
     st, mode_suffix, state_file = _get_strategy(training_method)
+    if state_file_override is not None:
+        state_file = state_file_override
 
     # Generate windows: module-level name for slide (allows mock.patch),
     # strategy function for CPCV.
-    window_kwargs = dict(
-        rolling_start=rolling_cfg['rolling_start'],
-        train_years=rolling_cfg['train_years'],
-        test_step=rolling_cfg['test_step'],
-        anchor_date=anchor_date,
-    )
-    if training_method == 'cpcv':
-        window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
-        window_kwargs['freq'] = params_base['freq']
-        windows = st.generate_windows(**window_kwargs)
-    else:
-        window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
-        windows = generate_rolling_windows(**window_kwargs)
+    if windows is None:
+        window_kwargs = dict(
+            rolling_start=rolling_cfg['rolling_start'],
+            train_years=rolling_cfg['train_years'],
+            test_step=rolling_cfg['test_step'],
+            anchor_date=anchor_date,
+        )
+        if training_method == 'cpcv':
+            window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
+            window_kwargs['freq'] = params_base['freq']
+            windows = st.generate_windows(**window_kwargs)
+        else:
+            window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
+            windows = generate_rolling_windows(**window_kwargs)
 
     if not windows:
         print("❌ No rolling windows could be generated — "
@@ -343,8 +375,9 @@ def run_cold_start(args, targets, rolling_cfg):
 
         deep_cleanup_after_model(model_name)
 
-    # Merge mode: also stitch models not in this run's targets
-    if args.merge:
+    # Direct legacy calls retain their historical expansion behavior.  The
+    # authoritative CLI adapter must stay within the Prepared target tuple.
+    if args.merge and resolved is None:
         completed = state.get_all_completed_windows()
         extra_models = set()
         for win, models in completed.items():
@@ -391,7 +424,7 @@ def run_cold_start(args, targets, rolling_cfg):
     print(f"{'='*60}")
 
 
-def run_daily(args, targets, rolling_cfg):
+def run_daily(args, targets, rolling_cfg, resolved=None):
     """Daily mode: detect & train new windows. Model-First + subprocess.
 
     Falls back to predict-only when all windows are up to date.
@@ -402,14 +435,24 @@ def run_daily(args, targets, rolling_cfg):
     from quantpits.scripts.rolling.memory import deep_cleanup_after_model
     from qlib.config import C
 
-    env.init_qlib()
-    params_base = get_base_params()
+    if resolved is None:
+        from quantpits.utils import env as runtime_env
+        runtime_env.init_qlib()
+        params_base = get_base_params()
+        windows = None
+        state_file_override = None
+    else:
+        params_base = dict(resolved.params)
+        windows = list(resolved.legacy_windows)
+        state_file_override = str(resolved.prepared.ctx.path(resolved.prepared.state.path))
     anchor_date = params_base['anchor_date']
     freq = params_base['freq'].upper()
     qlib_config = C
 
     training_method = rolling_cfg.get('training_method', 'slide')
     st, mode_suffix, state_file = _get_strategy(training_method)
+    if state_file_override is not None:
+        state_file = state_file_override
 
     state = RollingState(state_file=state_file)
 
@@ -419,19 +462,20 @@ def run_daily(args, targets, rolling_cfg):
 
     # Generate windows: use module-level name for slide (allows mock.patch
     # interception in tests), strategy function for CPCV.
-    window_kwargs = dict(
-        rolling_start=rolling_cfg['rolling_start'],
-        train_years=rolling_cfg['train_years'],
-        test_step=rolling_cfg['test_step'],
-        anchor_date=anchor_date,
-    )
-    if training_method == 'cpcv':
-        window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
-        window_kwargs['freq'] = params_base['freq']
-        windows = st.generate_windows(**window_kwargs)
-    else:
-        window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
-        windows = generate_rolling_windows(**window_kwargs)
+    if windows is None:
+        window_kwargs = dict(
+            rolling_start=rolling_cfg['rolling_start'],
+            train_years=rolling_cfg['train_years'],
+            test_step=rolling_cfg['test_step'],
+            anchor_date=anchor_date,
+        )
+        if training_method == 'cpcv':
+            window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
+            window_kwargs['freq'] = params_base['freq']
+            windows = st.generate_windows(**window_kwargs)
+        else:
+            window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
+            windows = generate_rolling_windows(**window_kwargs)
 
     # Detect new windows: only count a window as "completed" when ALL
     # target models have finished it.  This prevents a new model (with no
@@ -534,20 +578,30 @@ def run_daily(args, targets, rolling_cfg):
                                           combined_exp_name, params_base)
 
 
-def run_predict_only(args, targets, rolling_cfg):
+def run_predict_only(args, targets, rolling_cfg, resolved=None):
     """Predict-only mode: use latest window models for current data."""
     # NOTE: orchestration/backtest/state functions are referenced via
     # module-level names (re-exported at bottom of file) so that
     # mock.patch('rolling_train.<func>') can intercept calls.
 
-    env.init_qlib()
-    params_base = get_base_params()
+    if resolved is None:
+        from quantpits.utils import env as runtime_env
+        runtime_env.init_qlib()
+        params_base = get_base_params()
+        windows = None
+        state_file_override = None
+    else:
+        params_base = dict(resolved.params)
+        windows = list(resolved.legacy_windows)
+        state_file_override = str(resolved.prepared.ctx.path(resolved.prepared.state.path))
     anchor_date = params_base['anchor_date']
     freq = params_base['freq'].upper()
     allow_stale = getattr(args, 'allow_stale_predict', False)
 
     training_method = rolling_cfg.get('training_method', 'slide')
     st, mode_suffix, state_file = _get_strategy(training_method)
+    if state_file_override is not None:
+        state_file = state_file_override
 
     state = RollingState(state_file=state_file)
     if not state.anchor_date:
@@ -555,19 +609,20 @@ def run_predict_only(args, targets, rolling_cfg):
         return
 
     # Generate windows: module-level for slide (mock.patch compat), strategy for CPCV
-    window_kwargs = dict(
-        rolling_start=rolling_cfg['rolling_start'],
-        train_years=rolling_cfg['train_years'],
-        test_step=rolling_cfg['test_step'],
-        anchor_date=anchor_date,
-    )
-    if training_method == 'cpcv':
-        window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
-        window_kwargs['freq'] = params_base['freq']
-        windows = st.generate_windows(**window_kwargs)
-    else:
-        window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
-        windows = generate_rolling_windows(**window_kwargs)
+    if windows is None:
+        window_kwargs = dict(
+            rolling_start=rolling_cfg['rolling_start'],
+            train_years=rolling_cfg['train_years'],
+            test_step=rolling_cfg['test_step'],
+            anchor_date=anchor_date,
+        )
+        if training_method == 'cpcv':
+            window_kwargs['cpcv_cfg'] = rolling_cfg.get('cpcv', {})
+            window_kwargs['freq'] = params_base['freq']
+            windows = st.generate_windows(**window_kwargs)
+        else:
+            window_kwargs['valid_years'] = rolling_cfg.get('valid_years', 1)
+            windows = generate_rolling_windows(**window_kwargs)
 
     rolling_exp_name = f"Rolling_Windows_{freq}"
     extra_preds = {}
@@ -638,47 +693,61 @@ def run_predict_only(args, targets, rolling_cfg):
 # Main
 # ==========================================================================
 
-def _render_rolling_dry_run(args, rolling_cfg, training_method):
-    """Render a filesystem-only preview without Qlib, locks, or operator logs."""
-    has_selection = any([
-        args.models, args.algorithm, args.dataset, args.tag, args.all_enabled,
-    ])
-    if args.resume or args.merge or args.backtest_only or args.retrain_last:
-        if not has_selection:
-            args.all_enabled = True
-            has_selection = True
-    if not has_selection:
-        print("❌ Specify models to train")
-        print("   Use --models, --algorithm, --dataset, --tag, or --all-enabled")
+def _render_information_error(args, code, message):
+    """Keep JSON-plan stdout machine-readable during the 28A migration."""
+    if getattr(args, "json_plan", False):
+        import json
+        print(json.dumps({
+            "error": {"code": code, "message": message},
+        }, ensure_ascii=False, indent=2, sort_keys=True))
         return
-    targets = resolve_target_models(args)
-    if not targets:
-        print("⚠️  No matching models")
-        return
-    action = next((name for name, enabled in (
-        ("cold-start", args.cold_start), ("merge", args.merge),
-        ("resume", args.resume), ("predict-only", args.predict_only),
-        ("backtest-only", args.backtest_only), ("retrain-last", args.retrain_last),
-        ("retrain-models", bool(args.retrain_models)),
-    ) if enabled), "daily")
-    print("\n🔍 Rolling dry-run plan")
-    print("   Training method: %s" % training_method)
-    print("   Action: %s" % action)
-    print("   Rolling start: %s" % rolling_cfg.get("rolling_start"))
-    print("   Test step: %s" % rolling_cfg.get("test_step"))
-    print("   Targets: %s" % ", ".join(sorted(targets)))
-    print("   Window dates: deferred until real execution initializes Qlib")
-    print("   Writes: none")
+    print("❌ [%s] %s" % (code, message), file=sys.stderr)
+
+
+def _render_prepared_rolling_plan(args, prepared):
+    """Render the one authoritative public payload for every plan flag."""
+    from quantpits.rolling.command import prepared_plan_json, render_prepared_plan
+    if getattr(args, "json_plan", False):
+        import json
+        print(json.dumps(prepared_plan_json(prepared), ensure_ascii=False,
+                         indent=2, sort_keys=True))
+        return 0
+    print(render_prepared_plan(prepared))
+    return 0
+
+
+def _render_strict_state(prepared):
+    inspection = prepared.state
+    print("\n📋 Rolling state inspection:")
+    print("  Status: %s" % inspection.status)
+    print("  Path: %s" % inspection.path)
+    if inspection.fingerprint:
+        print("  Fingerprint: %s" % inspection.fingerprint)
+    if inspection.anchor:
+        print("  Anchor: %s" % inspection.anchor)
+    if inspection.training_method:
+        print("  Training method: %s" % inspection.training_method)
+    if inspection.status == "valid_legacy":
+        print("  Completed windows: %s" % inspection.completed_windows)
+        print("  Completed model×window units: %s" % inspection.completed_units)
+        print("  Resume identity: legacy_partial")
+    return 0
 
 def _main_impl(args):
 
+    ctx = getattr(args, '_workspace_context', None)
+    if ctx is None:
+        from quantpits.rolling.command import resolve_workspace_context
+        ctx = resolve_workspace_context(getattr(args, 'workspace', None))
+
     # Load rolling config first (needed for training_method-aware state commands)
     from quantpits.utils.config_loader import load_rolling_config
-    rolling_cfg = load_rolling_config(ROOT_DIR)
+    rolling_cfg = load_rolling_config(ctx.root)
     if rolling_cfg is None and not (args.show_state or args.clear_state):
-        print("❌ config/rolling_config.yaml not found")
-        print("   Create a rolling config file first")
-        return
+        return _render_information_error(
+            args, "rolling_config_missing",
+            "config/rolling_config.yaml not found",
+        )
 
     # Determine effective training_method (config + CLI override)
     training_method = (rolling_cfg or {}).get('training_method', 'slide')
@@ -686,14 +755,23 @@ def _main_impl(args):
         training_method = args.training_method
         if rolling_cfg:
             if args.training_method != rolling_cfg.get('training_method', 'slide'):
-                print(f"  ℹ️  --training-method={args.training_method} overrides config")
+                stream = sys.stderr if getattr(args, 'json_plan', False) else sys.stdout
+                print(f"  ℹ️  --training-method={args.training_method} overrides config",
+                      file=stream)
             rolling_cfg['training_method'] = training_method
-    if getattr(args, "dry_run", False) is True:
-        if rolling_cfg is None:
-            print("❌ config/rolling_config.yaml not found")
-            return
-        return _render_rolling_dry_run(args, rolling_cfg, training_method)
-    _, mode_suffix, state_file = _get_strategy(training_method)
+    if (getattr(args, "dry_run", False) is True or
+            getattr(args, "explain_plan", False) is True or
+            getattr(args, "json_plan", False) is True):
+        prepared = getattr(args, '_prepared_rolling_run', None)
+        if prepared is None:
+            from quantpits.rolling.command import (
+                options_from_namespace, prepare_rolling_run,
+            )
+            prepared = prepare_rolling_run(
+                ctx, options_from_namespace(args), tuple(sys.argv[1:]),
+            )
+        return _render_prepared_rolling_plan(args, prepared)
+    _, mode_suffix, state_file = _get_strategy(training_method, ctx=ctx)
 
     # Info commands (now training-method-aware)
     if args.show_state:
@@ -803,7 +881,8 @@ def _main_impl(args):
     from quantpits.utils.operator_log import OperatorLog
     with OperatorLog("rolling_train", args=sys.argv[1:]) as oplog:
         if args.backtest_only:
-            env.init_qlib()
+            from quantpits.utils import env as runtime_env
+            runtime_env.init_qlib()
             params_base = get_base_params()
             # Use module-level re-export so mock.patch can intercept
             run_backtest_only(args, targets, params_base, mode=mode_suffix)
@@ -828,31 +907,84 @@ def _main_impl(args):
         if not args.predict_only and not args.backtest_only:
             try:
                 from quantpits.scripts.deep_analysis.promote_config import update_promote_status
-                update_promote_status(ROOT_DIR, model_names=list(targets.keys()))
+                update_promote_status(str(ctx.root), model_names=list(targets.keys()))
             except Exception:
                 pass
 
 
-def main():
-    """Legacy Rolling boundary with the shared workspace execution lease.
+def _activate_legacy_workspace(ctx):
+    """Activate legacy globals only after an actual route is selected."""
+    import os
 
-    Phase 27 deliberately keeps Rolling's existing orchestration/state model;
-    only real mutation is interlocked with static/CPCV execution.  Information
-    and dry-run routes do not create or acquire the lease.
-    """
-    from quantpits.utils import env as _env
+    os.environ['QLIB_WORKSPACE_DIR'] = str(ctx.root)
+    from quantpits.utils import env as runtime_env
+    runtime_env.set_root_dir(str(ctx.root))
+    return runtime_env
+
+
+def main(argv=None):
+    """Run the two-tier Prepared/Resolved Rolling command boundary."""
+    from quantpits.rolling.command import (
+        options_from_namespace, prepare_rolling_run, resolve_workspace_context,
+    )
+    from quantpits.rolling.errors import RollingCommandError
+
+    args = parse_args(argv)
+    cli_args = tuple(argv) if argv is not None else tuple(sys.argv[1:])
+    try:
+        ctx = resolve_workspace_context(getattr(args, 'workspace', None))
+        options = options_from_namespace(args)
+        prepared = prepare_rolling_run(ctx, options, cli_args)
+    except RollingCommandError as exc:
+        return _render_information_error(args, exc.code, str(exc)) or exc.exit_code
+    setattr(args, '_workspace_context', ctx)
+    setattr(args, '_prepared_rolling_run', prepared)
+    information_route = (
+        args.show_state or getattr(args, 'dry_run', False) is True or
+        getattr(args, 'explain_plan', False) is True or
+        getattr(args, 'json_plan', False) is True
+    )
+    if information_route:
+        if args.show_state and not (
+                getattr(args, 'dry_run', False) or
+                getattr(args, 'explain_plan', False) or
+                getattr(args, 'json_plan', False)):
+            return _render_strict_state(prepared)
+        return _main_impl(args)
+
+    # Importing the legacy environment is allowed only after the read-only
+    # command boundary has selected a real mutation route.
+    from quantpits.utils import env as runtime_env
     from quantpits.training.lease import TrainingExecutionLease
 
-    args = parse_args()
-    if args.show_state or getattr(args, "dry_run", False) is True:
-        return _main_impl(args)
-
-    _env.safeguard("Rolling Train")
-    ctx = _env.get_workspace_context()
+    runtime_env.safeguard("Rolling Train", workspace_root=ctx.root)
     lease = TrainingExecutionLease.for_workspace(ctx)
-    lease.acquire(run_id="rolling-%s" % os.getpid())
+    run_id = getattr(args, 'run_id', None)
+    if not isinstance(run_id, str) or not run_id.strip():
+        import uuid
+        run_id = "rolling-%s" % uuid.uuid4().hex[:12]
+    lease.acquire(run_id=run_id)
     try:
-        return _main_impl(args)
+        from quantpits.rolling.legacy import (
+            LegacyRollingExecutionAdapter, recheck_prepared_inputs,
+        )
+        from quantpits.rolling.windows import resolve_rolling_run
+
+        recheck_prepared_inputs(prepared)
+        _activate_legacy_workspace(ctx)
+        resolved = None
+        if prepared.options.action != "clear_state":
+            runtime_env.init_qlib()
+            params = get_base_params(workspace_root=ctx.root, strict_calendar=True)
+            resolved = resolve_rolling_run(prepared, params)
+        adapter = LegacyRollingExecutionAdapter(sys.modules[__name__])
+        try:
+            adapter.execute(args, prepared, resolved, run_id)
+        except RollingCommandError as exc:
+            return _render_information_error(args, exc.code, str(exc)) or exc.exit_code
+        return 0
+    except RollingCommandError as exc:
+        return _render_information_error(args, exc.code, str(exc)) or exc.exit_code
     finally:
         lease.release()
 
@@ -880,8 +1012,7 @@ from quantpits.scripts.rolling.backtest import (
     run_backtest_only,
 )
 from quantpits.scripts.rolling.state import RollingState
-from quantpits.utils.train_utils import resolve_target_models
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

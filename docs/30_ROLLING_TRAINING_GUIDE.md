@@ -1,12 +1,28 @@
 # Rolling Training Guide（滚动训练 · 总览）
 
+> Phase 28A/28B/28C 已建立 import-pure CLI、filesystem-only authoritative Prepared Plan，以及
+> lease 内的 Resolved Plan 与 legacy execution adapter。导入模块和
+> 执行 `--help` 不要求预先 `source run_env.sh`，也不会改变当前目录。`--dry-run`、
+> `--explain-plan` 与 `--json-plan` 来自同一个 typed plan，冻结 action、ordered targets、workflow
+> 及 workspace 输入指纹、legacy state 分类、预期副作用和 plan fingerprint；该路径不初始化
+> Qlib/MLflow，不获取 lease，也不写文件。registry 中的相对 workflow YAML 路径显式相对于所选
+> workspace 解析，并且不允许逃逸 workspace。
+>
+> Prepared Plan 不伪造交易日历事实：anchor、slide windows 与 CPCV folds 会标为 runtime deferred。
+> 真实命令在 safeguard 和 shared lease 后复核 Prepared inputs，激活显式 workspace、初始化一次 Qlib，
+> 冻结精确 anchor、ordered windows/CPCV folds、stable window keys 与 execution fingerprint。adapter 只消费
+> Prepared targets 和 Resolved windows，不重新扫描 registry 或再次生成窗口。Rolling 仍使用 legacy
+> unversioned state 与 legacy record merge，不具备新版 evidence/publication
+> closure parity。
+
 > Phase 27 过渡边界：Rolling/CPCV-rolling 仍使用既有 window/state 编排，尚未迁入 static/CPCV
 > execution service；但所有真实变更命令现在与 static/CPCV 共用 workspace training execution
 > lease，避免并发覆盖 current record。`--show-state` 与 `--dry-run` 不获取该 lease。完整的
-> plan/evidence/publication/closure 对齐仍属明确延后范围。
-> `--dry-run` 是严格的文件系统预览：只显示配置、动作与模型选择，不初始化 Qlib、不计算实际
-> window/fold 日期，也不创建 OperatorLog、state、manifest 或 lock；精确窗口在真实执行中解析。
-> `--show-state` 同样使用无 lock 的只读 state load；`--clear-state` 会备份/删除 state，因此仍经过
+> service-owned execution kernel、evidence/publication/closure 对齐仍属明确延后范围。
+> `--dry-run` 是严格的文件系统 Prepared Plan：显示配置、输入指纹、动作、ordered targets、state
+> 分类与预期副作用，但不初始化 Qlib、不计算实际 window/fold 日期，也不创建 OperatorLog、state、
+> manifest 或 lock；精确窗口在真实执行中解析。
+> `--show-state` 同样使用无 lock 的严格只读分类；`--clear-state` 会备份/删除 state，因此仍经过
 > safeguard 并持有 shared execution lease。
 
 > 30 系列文档专注于**滚动训练**——训练窗口随时间推进而滑动的训练范式。
@@ -56,6 +72,11 @@ rolling_train.py      ← CLI + 流程编排 + 策略分派
 ```
 
 ```
+quantpits/rolling/
+├── command.py            # filesystem-only PreparedRollingRun
+├── windows.py            # runtime ResolvedRollingRun + stable window keys
+└── legacy.py             # exact-scope legacy execution adapter + baseline recheck
+
 rolling/
 ├── state.py              # 状态管理（slide 和 CPCV 各自独立文件）
 ├── memory.py             # 3 层内存清理
@@ -97,9 +118,16 @@ cpcv_embargo_steps: 5           # 非对称 Embargo（交易周）
 conda activate qlib_cupy
 source workspaces/<name>/run_env.sh
 
+# 也可不 source，显式指定示例 workspace
+python -m quantpits.scripts.rolling_train --workspace workspaces/Demo_Workspace --help
+
 # ---- Slide 滚动 ----
 python quantpits/scripts/rolling_train.py --cold-start --dry-run \
   --models linear_Alpha158 --training-method slide
+
+# 同一 authoritative Prepared Plan 的单文档 JSON 形式
+python -m quantpits.scripts.rolling_train \
+  --workspace workspaces/Demo_Workspace --cold-start --all-enabled --json-plan
 
 # ---- CPCV 滚动 ----
 python quantpits/scripts/rolling_train.py --cold-start --dry-run \
@@ -120,8 +148,21 @@ python quantpits/scripts/rolling_train.py --backtest-only \
   --models linear_Alpha158 --training-method cpcv
 ```
 
-Phase 27 的 `--dry-run` 不再展示依赖 Qlib calendar 的精确窗口或 fold；`--show-folds` 仅在真实
-执行完成日期解析后生效。该取舍保证 dry-run 严格零写入、零 Qlib 初始化。
+Prepared Plan 不展示依赖 Qlib calendar 的精确窗口或 fold；`--show-folds` 在 plan 中只显示 deferred
+原因，精确内容由真实执行在 lease 内解析并传给 legacy adapter。该取舍保证 plan route 严格零写入、零 Qlib/MLflow
+初始化。多个 primary action（例如同时使用 `--cold-start --resume`）会在 safeguard、lease 和 backend
+之前以 `rolling_action_conflict` 拒绝；`--show-state` 会区分 `missing`、`valid_legacy`、`corrupt` 与
+`unsupported`，不会把损坏状态伪装成空状态。
+
+真实执行顺序为 safeguard → shared lease → input baseline recheck → workspace activation → Qlib init →
+Resolved Plan → legacy adapter → OperatorLog → lease release。`--clear-state` 不需要 Qlib，但仍在 lease 内
+复核 state baseline 后备份并清除。OperatorLog 显式记录 run ID、Prepared plan fingerprint 和 execution
+fingerprint；这不代表 Rolling 已获得新版 manifest/receipt closure。
+
+Phase 28 的全量 Python 测试与 workspace gate 由项目 owner 控制和执行。无写 gate 应使用
+`Demo_Workspace` 或 owner 明确选择的一次性 validation workspace，并对配置、state、current records、
+OperatorLog 与 MLflow 路径做前后快照；计划命令不得触发 safeguard、lease 或 backend 初始化。生产
+workspace 保持只读。最小真实 adapter smoke 仅在 owner 明确授权且 validation workspace 可丢弃时执行。
 
 > `--training-method` 可覆盖 `rolling_config.yaml` 中的设置，无需改配置文件即可切换模式对比效果。
 
