@@ -176,14 +176,18 @@ initialization with `rolling_state_precondition_failed`. OperatorLog, adapter ou
 share one command-level status. Successful actions retain `legacy_partial_visibility`; they do not
 prove immutable evidence for every target×window or manifest/receipt closure. A `predict-only`
 action that produces no prediction is recorded as `skipped`.
+`backtest-only` fails nonzero with `rolling_backtest_precondition_failed` when current records are
+missing or empty, the requested Rolling family is absent, or no historical Rolling record exists
+for the selected targets. It reports `success / legacy_partial_visibility` only after records are
+found and the legacy backtest is invoked.
 
 The project owner controls and runs the Phase 28 full Python suite and workspace gates. A no-write
 gate should use `Demo_Workspace` or a disposable validation workspace explicitly selected by the
 owner, with before/after snapshots of configuration, state, current records, OperatorLog, and MLflow
 paths. Plan commands must not trigger safeguard, lease acquisition, or backend initialization. The
-production workspace remains read-only. The 28E minimal real adapter/bootstrap smoke is an owner
-acceptance gate and may run only with explicit authorization in a disposable validation workspace;
-the agent does not run it against production or a historical Playground.
+production workspace remains read-only. A real adapter/bootstrap smoke is an owner acceptance gate
+and may run only with explicit authorization in a disposable validation workspace. Committed code
+and documentation must not contain private workspace identities, absolute paths, or runtime data.
 
 > `--training-method` overrides `rolling_config.yaml` — switch modes without editing files.
 

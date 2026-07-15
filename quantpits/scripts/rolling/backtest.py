@@ -235,14 +235,26 @@ def run_backtest_only(args, targets, params_base=None, mode='rolling'):
         records = None
 
     if not records or "models" not in records:
-        print("❌ 找不到有效的 latest_train_records.json 或内容为空。")
-        return
+        message = "找不到有效的 latest_train_records.json 或内容为空。"
+        print(f"❌ {message}")
+        return {
+            "status": "failed",
+            "reason_code": "rolling_backtest_precondition_failed",
+            "message": message,
+            "did_execute": False,
+        }
 
     # 从统一文件中过滤出指定模式的模型
     rolling_models = filter_models_by_mode(records.get('models', {}), mode)
     if not rolling_models:
-        print(f"❌ 统一训练记录中没有 @{mode} 模式的模型记录。")
-        return
+        message = f"统一训练记录中没有 @{mode} 模式的模型记录。"
+        print(f"❌ {message}")
+        return {
+            "status": "failed",
+            "reason_code": "rolling_backtest_precondition_failed",
+            "message": message,
+            "did_execute": False,
+        }
 
     # 构建一个 rolling-only 的 records dict 供下游使用
     records = dict(records)  # shallow copy
@@ -276,8 +288,14 @@ def run_backtest_only(args, targets, params_base=None, mode='rolling'):
             model_names.append(base_to_key[m])
 
     if not model_names:
-        print("❌ 选定的模型中没有找到历史滚动预测记录。")
-        return
+        message = "选定的模型中没有找到历史滚动预测记录。"
+        print(f"❌ {message}")
+        return {
+            "status": "failed",
+            "reason_code": "rolling_backtest_precondition_failed",
+            "message": message,
+            "did_execute": False,
+        }
 
     # 检查是否在单元测试中被 mock 了 run_combined_backtest
     import sys
@@ -288,3 +306,9 @@ def run_backtest_only(args, targets, params_base=None, mode='rolling'):
         rt_mod.run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
     else:
         run_combined_backtest(model_names, combined_records, combined_exp_name, params_base)
+    return {
+        "status": "success",
+        "reason_code": "legacy_partial_visibility",
+        "message": "backtest invoked for %s model(s)" % len(model_names),
+        "did_execute": True,
+    }

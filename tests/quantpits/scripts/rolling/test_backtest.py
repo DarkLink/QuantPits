@@ -459,8 +459,13 @@ class TestRunBacktestOnly:
 
         with patch.object(train_utils, "RECORD_OUTPUT_FILE",
                           str(tmp_path / "nonexistent.json")):
-            # Should print error and return without crash
-            run_backtest_only(args, targets)
+            result = run_backtest_only(args, targets)
+        assert result == {
+            "status": "failed",
+            "reason_code": "rolling_backtest_precondition_failed",
+            "message": "找不到有效的 latest_train_records.json 或内容为空。",
+            "did_execute": False,
+        }
 
     def test_empty_records(self, tmp_path):
         from quantpits.scripts.rolling.backtest import run_backtest_only
@@ -475,7 +480,10 @@ class TestRunBacktestOnly:
         params_base = {"freq": "week", "benchmark": "SH000300"}
 
         with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)):
-            run_backtest_only(args, targets, params_base)
+            result = run_backtest_only(args, targets, params_base)
+        assert result["status"] == "failed"
+        assert result["reason_code"] == "rolling_backtest_precondition_failed"
+        assert result["did_execute"] is False
 
     def test_records_without_models_key(self, tmp_path):
         from quantpits.scripts.rolling.backtest import run_backtest_only
@@ -489,7 +497,28 @@ class TestRunBacktestOnly:
         params_base = {"freq": "week", "benchmark": "SH000300"}
 
         with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)):
-            run_backtest_only(args, targets, params_base)
+            result = run_backtest_only(args, targets, params_base)
+        assert result["status"] == "failed"
+        assert result["reason_code"] == "rolling_backtest_precondition_failed"
+
+    def test_no_requested_rolling_family(self, tmp_path):
+        from quantpits.scripts.rolling.backtest import run_backtest_only
+        from quantpits.utils import train_utils
+
+        records_file = tmp_path / "records.json"
+        records_file.write_text(json.dumps({
+            "models": {"model_a@cpcv_rolling": "rid_001"},
+        }))
+        params_base = {"freq": "week", "benchmark": "SH000300"}
+
+        with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)):
+            result = run_backtest_only(
+                self._make_args(), self._make_targets(), params_base,
+                mode="rolling",
+            )
+        assert result["status"] == "failed"
+        assert result["reason_code"] == "rolling_backtest_precondition_failed"
+        assert result["did_execute"] is False
 
     def test_no_matching_models(self, tmp_path):
         from quantpits.scripts.rolling.backtest import run_backtest_only
@@ -506,7 +535,10 @@ class TestRunBacktestOnly:
         params_base = {"freq": "week", "benchmark": "SH000300"}
 
         with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)):
-            run_backtest_only(args, targets, params_base)
+            result = run_backtest_only(args, targets, params_base)
+        assert result["status"] == "failed"
+        assert result["reason_code"] == "rolling_backtest_precondition_failed"
+        assert result["did_execute"] is False
 
     def test_slide_mode(self, tmp_path):
         from quantpits.scripts.rolling.backtest import run_backtest_only
@@ -525,9 +557,14 @@ class TestRunBacktestOnly:
 
         with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)):
             with patch("quantpits.scripts.rolling.backtest.run_combined_backtest") as mock_rcb:
-                run_backtest_only(args, targets, params_base, mode="rolling")
+                result = run_backtest_only(
+                    args, targets, params_base, mode="rolling",
+                )
                 # Should call run_combined_backtest
                 mock_rcb.assert_called_once()
+        assert result["status"] == "success"
+        assert result["reason_code"] == "legacy_partial_visibility"
+        assert result["did_execute"] is True
 
     def test_cpcv_mode(self, tmp_path):
         from quantpits.scripts.rolling.backtest import run_backtest_only
@@ -546,8 +583,11 @@ class TestRunBacktestOnly:
 
         with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)):
             with patch("quantpits.scripts.rolling.backtest.run_combined_backtest") as mock_rcb:
-                run_backtest_only(args, targets, params_base, mode="cpcv_rolling")
+                result = run_backtest_only(
+                    args, targets, params_base, mode="cpcv_rolling",
+                )
                 mock_rcb.assert_called_once()
+        assert result["status"] == "success"
 
     def test_params_base_none(self, tmp_path):
         """When params_base is None, it's auto-detected."""

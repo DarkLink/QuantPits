@@ -220,3 +220,82 @@ def test_adapter_propagates_explicit_facade_skip_to_log_and_outcome(tmp_path):
     result = log_cls.return_value.set_result.call_args.args[0]
     assert result["status"] == outcome.status
     assert result["reason_code"] == outcome.reason_code
+
+
+def test_backtest_success_uses_explicit_facade_result_for_log_and_outcome(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    (tmp_path / "data").mkdir()
+    target = SimpleNamespace(
+        model_name="demo", target_key="demo@rolling",
+        workflow_path="config/demo.yaml", legacy_info={},
+    )
+    prepared = SimpleNamespace(
+        ctx=ctx,
+        state=SimpleNamespace(
+            path="data/rolling_state.json", status="valid_legacy",
+        ),
+        targets=(target,), options=SimpleNamespace(action="backtest_only"),
+        effective_config={"training_method": "slide"},
+        plan=SimpleNamespace(metadata={"family": "rolling"}),
+        plan_fingerprint="prepared-fingerprint", cli_args=(),
+    )
+    resolved = SimpleNamespace(
+        prepared=prepared, params={}, execution_fingerprint="execution-fingerprint",
+    )
+    facade = SimpleNamespace(run_backtest_only=mock.Mock(return_value={
+        "status": "success", "reason_code": "legacy_partial_visibility",
+        "message": "backtest invoked for 1 model(s)", "did_execute": True,
+    }))
+    with mock.patch("quantpits.utils.operator_log.OperatorLog") as log_cls:
+        log_cls.return_value.__enter__.return_value = log_cls.return_value
+        outcome = LegacyRollingExecutionAdapter(facade).execute(
+            SimpleNamespace(), prepared, resolved, "rolling-test",
+        )
+    result = log_cls.return_value.set_result.call_args.args[0]
+    assert outcome.status == "success"
+    assert outcome.reason_code == "legacy_partial_visibility"
+    assert outcome.message == "backtest invoked for 1 model(s)"
+    assert outcome.did_execute is True
+    assert result["status"] == outcome.status
+    assert result["reason_code"] == outcome.reason_code
+
+
+def test_backtest_precondition_failure_is_logged_and_returned_with_stable_code(
+    tmp_path,
+):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    (tmp_path / "data").mkdir()
+    target = SimpleNamespace(
+        model_name="demo", target_key="demo@rolling",
+        workflow_path="config/demo.yaml", legacy_info={},
+    )
+    prepared = SimpleNamespace(
+        ctx=ctx,
+        state=SimpleNamespace(
+            path="data/rolling_state.json", status="valid_legacy",
+        ),
+        targets=(target,), options=SimpleNamespace(action="backtest_only"),
+        effective_config={"training_method": "slide"},
+        plan=SimpleNamespace(metadata={"family": "rolling"}),
+        plan_fingerprint="prepared-fingerprint", cli_args=(),
+    )
+    resolved = SimpleNamespace(
+        prepared=prepared, params={}, execution_fingerprint="execution-fingerprint",
+    )
+    facade = SimpleNamespace(run_backtest_only=mock.Mock(return_value={
+        "status": "failed",
+        "reason_code": "rolling_backtest_precondition_failed",
+        "message": "no selected Rolling record", "did_execute": False,
+    }))
+    with mock.patch("quantpits.utils.operator_log.OperatorLog") as log_cls:
+        log_cls.return_value.__enter__.return_value = log_cls.return_value
+        outcome = LegacyRollingExecutionAdapter(facade).execute(
+            SimpleNamespace(), prepared, resolved, "rolling-test",
+        )
+    assert outcome.status == "failed"
+    assert outcome.reason_code == "rolling_backtest_precondition_failed"
+    assert outcome.did_execute is False
+    result = log_cls.return_value.set_result.call_args.args[0]
+    assert result["status"] == "failed"
+    assert result["reason_code"] == "rolling_backtest_precondition_failed"
+    assert result["did_execute"] is False

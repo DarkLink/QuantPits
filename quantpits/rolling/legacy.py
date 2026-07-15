@@ -164,17 +164,29 @@ class LegacyRollingExecutionAdapter:
             raise RollingExecutionError("unsupported Rolling action: %s" % action)
         if isinstance(facade_result, dict):
             result_status = facade_result.get("status")
-            if result_status == "failed":
-                raise RollingExecutionError(
-                    facade_result.get("message") or "legacy action reported failure"
-                )
-            if result_status == "skipped":
+            if result_status in ("success", "skipped", "failed"):
                 return (
-                    "skipped",
-                    facade_result.get("reason_code") or "rolling_action_skipped",
-                    facade_result.get("message") or "legacy action was skipped",
+                    result_status,
+                    facade_result.get("reason_code") or (
+                        "rolling_action_skipped" if result_status == "skipped"
+                        else (
+                            "rolling_execution_failed" if result_status == "failed"
+                            else "legacy_partial_visibility"
+                        )
+                    ),
+                    facade_result.get("message") or (
+                        "legacy action was skipped" if result_status == "skipped"
+                        else (
+                            "legacy action reported failure"
+                            if result_status == "failed"
+                            else "legacy action completed"
+                        )
+                    ),
                     bool(facade_result.get("did_execute", False)),
                 )
+            raise RollingExecutionError(
+                "legacy action returned invalid status: %r" % result_status
+            )
         return (
             "success", "legacy_partial_visibility",
             "legacy action returned without a command-level failure; "

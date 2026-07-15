@@ -58,10 +58,14 @@ safeguard 不导入 legacy `env`，activation 只在 safeguard → lease → bas
 `rolling_state_precondition_failed` 在 backend 前失败。已缺失 state 的 `--clear-state` 以及没有生成预测的
 `--predict-only` 明确记录为 `skipped`。OperatorLog、adapter outcome 与 CLI exit 使用同一个
 command-level status；成功 action 仍保留 `legacy_partial_visibility`，不代表 per-window evidence parity。
+`--backtest-only` 若缺少有效 current records、请求的 Rolling family 或选定 target 的历史 record，会以
+`rolling_backtest_precondition_failed` 返回非零，并在 OperatorLog 中记录同一 failure；只有已找到 records
+并调用 legacy backtest 的路径才记录 `success / legacy_partial_visibility`。
 
 全量回归与 workspace gate 由项目 owner 执行。无写验证只使用 `Demo_Workspace` 或 owner 明确选择的
-一次性 validation workspace；生产 workspace 始终只读。28E 的真实 Rolling adapter/bootstrap smoke 是 owner
-验收项，必须单独授权并只在可丢弃 validation workspace 执行。
+一次性 validation workspace；生产 workspace 始终只读。真实 Rolling adapter/bootstrap smoke 必须单独
+授权并只在可丢弃 validation workspace 执行；提交的代码和文档不得包含私有 workspace identity、绝对路径
+或运行数据。
 
 ### 信息查看
 

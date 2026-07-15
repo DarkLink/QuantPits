@@ -1934,6 +1934,54 @@ class TestMainAdditionalBranches:
         lease.acquire.assert_called_once()
         lease.release.assert_called_once()
 
+    def test_backtest_precondition_failure_is_nonzero_and_releases_lease(
+        self, mock_env, capsys,
+    ):
+        from types import SimpleNamespace
+
+        rt, _ = mock_env
+        args = SimpleNamespace(
+            show_state=False, dry_run=False, clear_state=False, all_enabled=True,
+        )
+        prepared = mock.MagicMock()
+        prepared.options.action = "backtest_only"
+        lease = mock.MagicMock()
+        with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch(
+                 "quantpits.rolling.command.prepare_rolling_run",
+                 return_value=prepared,
+             ), \
+             mock.patch("rolling_train._safeguard_explicit_workspace"), \
+             mock.patch(
+                 "quantpits.training.lease.TrainingExecutionLease.for_workspace",
+                 return_value=lease,
+             ), \
+             mock.patch("quantpits.rolling.legacy.recheck_prepared_inputs"), \
+             mock.patch(
+                 "rolling_train._activate_legacy_workspace",
+                 return_value=SimpleNamespace(init_qlib=lambda: None),
+             ), \
+             mock.patch(
+                 "rolling_train.get_base_params",
+                 return_value={"anchor_date": "2026-07-15"},
+             ), \
+             mock.patch(
+                 "quantpits.rolling.windows.resolve_rolling_run",
+                 return_value=mock.sentinel.resolved,
+             ), \
+             mock.patch(
+                 "quantpits.rolling.legacy.LegacyRollingExecutionAdapter.execute",
+                 return_value=SimpleNamespace(
+                     status="failed",
+                     reason_code="rolling_backtest_precondition_failed",
+                     message="no selected Rolling record",
+                 ),
+             ):
+            assert rt.main() == 2
+        assert "rolling_backtest_precondition_failed" in capsys.readouterr().err
+        lease.acquire.assert_called_once()
+        lease.release.assert_called_once()
+
     def test_activation_failure_has_stable_code_and_releases_lease(
         self, mock_env, capsys,
     ):

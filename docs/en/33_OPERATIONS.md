@@ -47,11 +47,16 @@ backend initialization with `rolling_state_precondition_failed`. An already-miss
 `--clear-state`, and `--predict-only` that creates no prediction, are explicitly `skipped`.
 OperatorLog, adapter outcome, and CLI exit share one command-level status. Successful actions retain
 `legacy_partial_visibility`; they do not claim per-window evidence parity.
+`--backtest-only` exits nonzero with `rolling_backtest_precondition_failed` when current records are
+missing or empty, the requested Rolling family is absent, or selected targets have no historical
+record. OperatorLog records the same failure; only a path that finds records and invokes the legacy
+backtest reports `success / legacy_partial_visibility`.
 
 The project owner runs the full regression suite and workspace gates. No-write validation uses only
 `Demo_Workspace` or a disposable validation workspace explicitly selected by the owner; production
-workspaces remain read-only. The 28E real Rolling adapter/bootstrap smoke is an owner acceptance gate
-and requires separate authorization in a disposable validation workspace.
+workspaces remain read-only. A real Rolling adapter/bootstrap smoke requires separate authorization
+in a disposable validation workspace. Committed code and documentation must not contain private
+workspace identities, absolute paths, or runtime data.
 
 ### Info Commands
 

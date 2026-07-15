@@ -167,12 +167,15 @@ Resolved Plan → legacy adapter → OperatorLog → lease release。`--clear-st
 `rolling_state_precondition_failed` 拒绝。OperatorLog、adapter outcome 与 CLI exit 共享同一个
 command-level status。成功 action 仍标注 `legacy_partial_visibility`；它不代表每个 target×window 都已有
 新版 immutable evidence 或 manifest/receipt closure。`predict-only` 没有生成 prediction 时记录 `skipped`。
+`backtest-only` 在 current records 缺失/为空、缺少请求的 Rolling family，或选定 target 没有历史 Rolling
+record 时，以 `rolling_backtest_precondition_failed` 失败并返回非零；只有找到 records 并实际调用 legacy
+backtest 后，才会返回 `success / legacy_partial_visibility`。
 
 Phase 28 的全量 Python 测试与 workspace gate 由项目 owner 控制和执行。无写 gate 应使用
 `Demo_Workspace` 或 owner 明确选择的一次性 validation workspace，并对配置、state、current records、
 OperatorLog 与 MLflow 路径做前后快照；计划命令不得触发 safeguard、lease 或 backend 初始化。生产
-workspace 保持只读。28E candidate 的最小真实 adapter/bootstrap smoke 是 owner 验收项，只能在 owner
-明确授权的可丢弃 validation workspace 执行；agent 不对生产或历史 Playground 执行该命令。
+workspace 保持只读。真实 adapter/bootstrap smoke 是 owner 验收项，只能在 owner 明确授权的可丢弃
+validation workspace 执行；不得将私有 workspace identity、绝对路径或运行数据写入提交内容。
 
 > `--training-method` 可覆盖 `rolling_config.yaml` 中的设置，无需改配置文件即可切换模式对比效果。
 
