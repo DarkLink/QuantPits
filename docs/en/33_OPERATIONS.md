@@ -51,6 +51,10 @@ OperatorLog, adapter outcome, and CLI exit share one command-level status. Succe
 missing or empty, the requested Rolling family is absent, or selected targets have no historical
 record. OperatorLog records the same failure; only a path that finds records and invokes the legacy
 backtest reports `success / legacy_partial_visibility`.
+Inside the shared lease and before backend initialization, every declared write path receives a
+symlink-aware containment check. State, record, history, MLflow, or OperatorLog paths that resolve
+outside the workspace fail with `rolling_output_outside_workspace`; do not share writable runtime
+state through cross-workspace symlinks.
 
 The project owner runs the full regression suite and workspace gates. No-write validation uses only
 `Demo_Workspace` or a disposable validation workspace explicitly selected by the owner; production

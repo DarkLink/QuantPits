@@ -6,12 +6,17 @@ from unittest import mock
 
 import pytest
 
-from quantpits.rolling.errors import RollingExecutionError, RollingInputChangedError
+from quantpits.rolling.errors import (
+    RollingExecutionError,
+    RollingInputChangedError,
+    RollingOutputOutsideWorkspaceError,
+)
 from quantpits.rolling.legacy import (
     LegacyRollingExecutionAdapter,
     recheck_prepared_inputs,
+    validate_prepared_write_paths,
 )
-from quantpits.runtime.command import InputRef
+from quantpits.runtime.command import InputRef, OutputRef, StateRef
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_file
 
 
@@ -35,6 +40,31 @@ def test_input_baseline_recheck_detects_creation_and_content_drift(tmp_path):
     (tmp_path / "optional.json").write_text("{}\n", encoding="utf-8")
     with pytest.raises(RollingInputChangedError):
         recheck_prepared_inputs(prepared)
+
+
+def test_declared_write_rejects_symlink_escape_before_execution(tmp_path):
+    workspace = tmp_path / "Demo_Workspace"
+    external = tmp_path / "external"
+    (workspace / "data").mkdir(parents=True)
+    external.mkdir()
+    (workspace / "data" / "history").symlink_to(
+        external, target_is_directory=True,
+    )
+    prepared = SimpleNamespace(
+        ctx=WorkspaceContext.from_root(workspace),
+        plan=SimpleNamespace(
+            outputs=(OutputRef(
+                "data/history/train_records_<timestamp>.json",
+            ),),
+            states=(StateRef(
+                "data/locks/training_execution.lock", "read_write",
+            ),),
+        ),
+    )
+    with pytest.raises(RollingOutputOutsideWorkspaceError) as caught:
+        validate_prepared_write_paths(prepared)
+    assert caught.value.code == "rolling_output_outside_workspace"
+    assert "data/history/train_records_<timestamp>.json" in str(caught.value)
 
 
 def test_adapter_passes_exact_prepared_targets_and_resolved_windows(tmp_path):
@@ -184,6 +214,8 @@ def test_adapter_failure_is_logged_and_raised_with_stable_code(tmp_path):
     result = log_cls.return_value.set_result.call_args.args[0]
     assert result["status"] == "failed"
     assert result["reason_code"] == "rolling_execution_failed"
+    assert result["target_keys"] == ["demo@rolling"]
+    assert result["execution_fingerprint"] == "execution-fingerprint"
 
 
 def test_adapter_propagates_explicit_facade_skip_to_log_and_outcome(tmp_path):

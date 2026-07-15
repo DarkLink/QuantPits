@@ -2008,6 +2008,42 @@ class TestMainAdditionalBranches:
         assert "rolling_workspace_activation_failed" in capsys.readouterr().err
         lease.release.assert_called_once()
 
+    def test_output_symlink_escape_fails_before_activation_and_releases_lease(
+        self, mock_env, capsys,
+    ):
+        from types import SimpleNamespace
+        from quantpits.rolling.errors import RollingOutputOutsideWorkspaceError
+
+        rt, _ = mock_env
+        args = SimpleNamespace(
+            show_state=False, dry_run=False, clear_state=False, all_enabled=True,
+        )
+        prepared = mock.MagicMock()
+        prepared.options.action = "merge"
+        lease = mock.MagicMock()
+        with mock.patch("rolling_train.parse_args", return_value=args), \
+             mock.patch(
+                 "quantpits.rolling.command.prepare_rolling_run",
+                 return_value=prepared,
+             ), \
+             mock.patch("rolling_train._safeguard_explicit_workspace"), \
+             mock.patch(
+                 "quantpits.training.lease.TrainingExecutionLease.for_workspace",
+                 return_value=lease,
+             ), \
+             mock.patch("quantpits.rolling.legacy.recheck_prepared_inputs"), \
+             mock.patch(
+                 "quantpits.rolling.legacy.validate_prepared_write_paths",
+                 side_effect=RollingOutputOutsideWorkspaceError(
+                     "history resolves outside workspace",
+                 ),
+             ), \
+             mock.patch("rolling_train._activate_legacy_workspace") as activate:
+            assert rt.main() == 2
+        assert "rolling_output_outside_workspace" in capsys.readouterr().err
+        activate.assert_not_called()
+        lease.release.assert_called_once()
+
     def test_shared_lease_conflict_blocks_real_rolling_route(self, mock_env):
         from types import SimpleNamespace
 

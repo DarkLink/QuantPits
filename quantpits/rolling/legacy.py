@@ -5,7 +5,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from quantpits.rolling.errors import RollingExecutionError, RollingInputChangedError
+from quantpits.rolling.errors import (
+    RollingExecutionError,
+    RollingInputChangedError,
+    RollingOutputOutsideWorkspaceError,
+)
 from quantpits.utils.workspace import fingerprint_file
 
 
@@ -41,6 +45,31 @@ def recheck_prepared_inputs(prepared):
     if changed:
         raise RollingInputChangedError(
             "prepared input changed: %s" % ", ".join(sorted(changed))
+        )
+
+
+def validate_prepared_write_paths(prepared):
+    """Reject declared writes whose resolved path escapes through a symlink."""
+
+    root = prepared.ctx.root.resolve()
+    refs = list(prepared.plan.outputs)
+    refs.extend(
+        ref for ref in prepared.plan.states if ref.action == "read_write"
+    )
+    escaped = []
+    for ref in refs:
+        static_path = ref.path.split("<", 1)[0].rstrip("/")
+        if not static_path:
+            continue
+        resolved = prepared.ctx.path(static_path).resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            escaped.append(ref.path)
+    if escaped:
+        raise RollingOutputOutsideWorkspaceError(
+            "prepared write path resolves outside workspace: %s"
+            % ", ".join(sorted(escaped))
         )
 
 
@@ -219,6 +248,12 @@ class LegacyRollingExecutionAdapter:
             run_id=run_id,
             plan_fingerprint=prepared.plan_fingerprint,
         )
+        result_context = {
+            "n_targets": len(targets),
+            "target_keys": [item.target_key for item in prepared.targets],
+            "execution_fingerprint": execution_fingerprint,
+            "training_method": prepared.effective_config["training_method"],
+        }
         with log:
             try:
                 status, reason_code, message, did_execute = self._run_action(
@@ -236,18 +271,16 @@ class LegacyRollingExecutionAdapter:
                     except Exception:
                         pass
                 log.set_result({
+                    **result_context,
                     "status": status,
                     "action": action,
                     "reason_code": reason_code,
                     "message": message,
                     "did_execute": did_execute,
-                    "n_targets": len(targets),
-                    "target_keys": [item.target_key for item in prepared.targets],
-                    "execution_fingerprint": execution_fingerprint,
-                    "training_method": prepared.effective_config["training_method"],
                 })
             except RollingExecutionError as exc:
                 log.set_result({
+                    **result_context,
                     "status": "failed", "action": action,
                     "reason_code": exc.code, "message": str(exc),
                     "did_execute": not (
@@ -261,6 +294,7 @@ class LegacyRollingExecutionAdapter:
                     "legacy Rolling execution failed: %s" % exc
                 )
                 log.set_result({
+                    **result_context,
                     "status": "failed", "action": action,
                     "reason_code": wrapped.code, "message": str(wrapped),
                     "did_execute": not (

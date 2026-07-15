@@ -170,6 +170,10 @@ command-level status。成功 action 仍标注 `legacy_partial_visibility`；它
 `backtest-only` 在 current records 缺失/为空、缺少请求的 Rolling family，或选定 target 没有历史 Rolling
 record 时，以 `rolling_backtest_precondition_failed` 失败并返回非零；只有找到 records 并实际调用 legacy
 backtest 后，才会返回 `success / legacy_partial_visibility`。
+真实执行还会在 Qlib/backend 初始化前解析所有声明写路径及其已有父目录；若 workspace 内的 symlink 令
+state、record、history、MLflow 或 OperatorLog 写入实际落到 workspace 外，会以
+`rolling_output_outside_workspace` 非零拒绝。Prepared Plan 会声明 current-record 的 history backup，避免
+legacy backup 成为未声明副作用。
 
 Phase 28 的全量 Python 测试与 workspace gate 由项目 owner 控制和执行。无写 gate 应使用
 `Demo_Workspace` 或 owner 明确选择的一次性 validation workspace，并对配置、state、current records、

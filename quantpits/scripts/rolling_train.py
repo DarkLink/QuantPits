@@ -1023,11 +1023,14 @@ def main(argv=None):
         return exc.exit_code
     try:
         from quantpits.rolling.legacy import (
-            LegacyRollingExecutionAdapter, recheck_prepared_inputs,
+            LegacyRollingExecutionAdapter,
+            recheck_prepared_inputs,
+            validate_prepared_write_paths,
         )
         from quantpits.rolling.windows import resolve_rolling_run
 
         recheck_prepared_inputs(prepared)
+        validate_prepared_write_paths(prepared)
         runtime_env = _activate_legacy_workspace(ctx)
         resolved = None
         if prepared.options.action != "clear_state":

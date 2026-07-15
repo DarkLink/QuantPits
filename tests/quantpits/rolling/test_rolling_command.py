@@ -109,6 +109,9 @@ def test_prepared_plan_freezes_registry_order_and_workflows(tmp_path):
     assert all(target.workflow_fingerprint for target in prepared.targets)
     assert prepared.plan.metadata["window_resolution"] == "deferred_to_runtime"
     assert prepared.plan.metadata["zero_write_plan_route"] is True
+    assert "data/history/train_records_<timestamp>.json" in {
+        output.path for output in prepared.plan.outputs
+    }
 
 
 def test_skip_preserves_registry_order_for_remaining_targets(tmp_path):

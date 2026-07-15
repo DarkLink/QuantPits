@@ -180,6 +180,11 @@ action that produces no prediction is recorded as `skipped`.
 missing or empty, the requested Rolling family is absent, or no historical Rolling record exists
 for the selected targets. It reports `success / legacy_partial_visibility` only after records are
 found and the legacy backtest is invoked.
+Before Qlib/backend initialization, a real command also resolves every declared write path and its
+existing parents. If an in-workspace symlink would place state, record, history, MLflow, or
+OperatorLog writes outside the workspace, the command fails nonzero with
+`rolling_output_outside_workspace`. The Prepared Plan declares the current-record history backup so
+that this legacy backup is not an undeclared side effect.
 
 The project owner controls and runs the Phase 28 full Python suite and workspace gates. A no-write
 gate should use `Demo_Workspace` or a disposable validation workspace explicitly selected by the

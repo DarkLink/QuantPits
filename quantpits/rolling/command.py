@@ -396,6 +396,8 @@ def _outputs_for_action(action, state_path, backtest):
     outputs = [
         OutputRef("latest_train_records.json", kind="record",
                   description="legacy current recorder merge", overwrite=True),
+        OutputRef("data/history/train_records_<timestamp>.json", kind="record",
+                  description="legacy current recorder backup"),
         OutputRef("mlruns/<rolling-experiments>/", kind="other",
                   description="per-window and combined legacy recorders"),
         OutputRef("data/operator_log.jsonl", kind="data",

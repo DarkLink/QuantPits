@@ -43,6 +43,10 @@ class RollingWorkflowOutsideWorkspaceError(RollingCommandError):
     code = "rolling_workflow_outside_workspace"
 
 
+class RollingOutputOutsideWorkspaceError(RollingCommandError):
+    code = "rolling_output_outside_workspace"
+
+
 class RollingStateCorruptError(RollingCommandError):
     code = "rolling_state_corrupt"
 

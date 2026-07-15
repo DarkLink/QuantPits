@@ -61,6 +61,9 @@ command-level status；成功 action 仍保留 `legacy_partial_visibility`，不
 `--backtest-only` 若缺少有效 current records、请求的 Rolling family 或选定 target 的历史 record，会以
 `rolling_backtest_precondition_failed` 返回非零，并在 OperatorLog 中记录同一 failure；只有已找到 records
 并调用 legacy backtest 的路径才记录 `success / legacy_partial_visibility`。
+shared lease 内、backend 初始化前还会对所有声明写路径做 symlink-aware containment 检查。任何实际解析到
+workspace 外的 state/record/history/MLflow/OperatorLog 路径都会以
+`rolling_output_outside_workspace` 拒绝；不要通过跨 workspace symlink 共享可写运行状态。
 
 全量回归与 workspace gate 由项目 owner 执行。无写验证只使用 `Demo_Workspace` 或 owner 明确选择的
 一次性 validation workspace；生产 workspace 始终只读。真实 Rolling adapter/bootstrap smoke 必须单独
