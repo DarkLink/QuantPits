@@ -168,8 +168,17 @@ Resolved Plan → legacy adapter → OperatorLog → lease release。`--clear-st
 command-level status。成功 action 仍标注 `legacy_partial_visibility`；它不代表每个 target×window 都已有
 新版 immutable evidence 或 manifest/receipt closure。`predict-only` 没有生成 prediction 时记录 `skipped`。
 `backtest-only` 在 current records 缺失/为空、缺少请求的 Rolling family，或选定 target 没有历史 Rolling
-record 时，以 `rolling_backtest_precondition_failed` 失败并返回非零；只有找到 records 并实际调用 legacy
-backtest 后，才会返回 `success / legacy_partial_visibility`。
+record 时，以 `rolling_backtest_precondition_failed` 失败并返回非零。找到 records 后，每个 selected model
+都会产生 recorder lookup、prediction load、backtest、publication 或 complete 的结构化结果；只有所有模型
+都完成回测并写回既定 metrics/artifacts，命令才返回 `success / rolling_backtest_completed`。任一模型的
+recorder/prediction 不可用、回测结果无效、执行异常或 publication 失败都会使整个 batch 返回非零，并由
+OperatorLog 记录 requested/attempted/succeeded/failed counts。`legacy_partial_visibility` 仅继续描述训练窗口，
+不再描述可准确汇总的 backtest batch。
+
+在 cold-start、merge/resume、daily 或 predict-only 后附加 `--backtest` 时，训练或预测可能已经落盘，随后
+backtest 子动作才失败。此时 command 仍以 stable backtest reason code 非零退出且 `did_execute=true`；非零
+不表示自动回滚已生成的 state、record 或 prediction，运维人员应先检查 OperatorLog 的 backtest 摘要再决定
+重试或清理。
 真实执行还会在 Qlib/backend 初始化前解析所有声明写路径及其已有父目录；若 workspace 内的 symlink 令
 state、record、history、MLflow 或 OperatorLog 写入实际落到 workspace 外，会以
 `rolling_output_outside_workspace` 非零拒绝。Prepared Plan 会声明 current-record 的 history backup，避免

@@ -178,8 +178,19 @@ prove immutable evidence for every target×window or manifest/receipt closure. A
 action that produces no prediction is recorded as `skipped`.
 `backtest-only` fails nonzero with `rolling_backtest_precondition_failed` when current records are
 missing or empty, the requested Rolling family is absent, or no historical Rolling record exists
-for the selected targets. It reports `success / legacy_partial_visibility` only after records are
-found and the legacy backtest is invoked.
+for the selected targets. Once records are found, every selected model produces a structured
+recorder-lookup, prediction-load, backtest, publication, or complete result. The command reports
+`success / rolling_backtest_completed` only when every model finishes the backtest and publishes
+the required metrics/artifacts. An unavailable recorder or prediction, invalid result, execution
+exception, or publication failure makes the whole batch exit nonzero; OperatorLog records the
+requested/attempted/succeeded/failed counts. `legacy_partial_visibility` remains limited to legacy
+training-window evidence and no longer describes an authoritative backtest batch.
+
+When `--backtest` is attached to cold-start, merge/resume, daily, or predict-only, training or
+prediction state may already be persisted before the backtest sub-action fails. The command then
+exits nonzero with the stable backtest reason and `did_execute=true`. Nonzero does not automatically
+roll back generated state, records, or predictions; inspect the OperatorLog backtest summary before
+retrying or cleaning up.
 Before Qlib/backend initialization, a real command also resolves every declared write path and its
 existing parents. If an in-workspace symlink would place state, record, history, MLflow, or
 OperatorLog writes outside the workspace, the command fails nonzero with

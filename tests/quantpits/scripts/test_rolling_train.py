@@ -1289,6 +1289,58 @@ class TestRunModesExtra:
             rt.run_predict_only(args, targets, cfg)
             mock_predict.assert_called_once()
 
+    def test_predict_only_backtest_failure_overrides_prediction_success(self, mock_env):
+        rt, _ = mock_env
+        args = mock.MagicMock()
+        args.allow_stale_predict = False
+        args.backtest = True
+        targets = {'m1': {}}
+        cfg = {
+            'rolling_start': '2020-01-01', 'train_years': 3,
+            'valid_years': 1, 'test_step': '3M',
+            'training_method': 'slide',
+        }
+        dates = pd.date_range('2024-01-01', periods=2)
+        pred = pd.DataFrame(
+            {'score': [0.5, 0.6]},
+            index=pd.MultiIndex.from_product(
+                [dates, ['S1']], names=['datetime', 'instrument'],
+            ),
+        )
+        strategy = mock.MagicMock()
+        strategy.predict_latest.return_value = pred
+        with mock.patch('quantpits.utils.env.init_qlib'), \
+             mock.patch('rolling_train.get_base_params', return_value={
+                 'anchor_date': '2024-01-08', 'freq': 'week',
+             }), \
+             mock.patch('rolling_train._get_strategy', return_value=(
+                 strategy, 'rolling', 'state.json',
+             )), \
+             mock.patch('rolling_train.RollingState') as state_cls, \
+             mock.patch('rolling_train.generate_rolling_windows', return_value=[{
+                 'window_idx': 0,
+             }]), \
+             mock.patch('rolling_train.concatenate_rolling_predictions',
+                        return_value={'m1': 'rid-1'}), \
+             mock.patch('rolling_train.save_rolling_records'), \
+             mock.patch('rolling_train.run_combined_backtest', return_value={
+                 'status': 'failed',
+                 'reason_code': 'rolling_backtest_execution_failed',
+                 'message': 'requested=1 succeeded=0 failed=1',
+                 'did_execute': True,
+                 'n_requested': 1, 'n_attempted': 1,
+                 'n_succeeded': 0, 'n_failed': 1, 'model_results': [],
+             }):
+            state_cls.return_value.anchor_date = '2024-01-01'
+            state_cls.return_value.get_completed_record_ids.return_value = [{
+                'window_idx': 0,
+            }]
+            result = rt.run_predict_only(args, targets, cfg)
+        assert result['status'] == 'failed'
+        assert result['reason_code'] == 'rolling_backtest_execution_failed'
+        assert result['did_execute'] is True
+        assert 'prediction may already have persisted' in result['message']
+
     def test_main_resume_no_state(self, mock_env):
         rt, _ = mock_env
         args = mock.MagicMock()
@@ -1568,10 +1620,22 @@ class TestMoreMainFlows:
             mock_state.anchor_date = '2024-01-01'
             mock_state.get_all_completed_windows.return_value = {'0': {'m1': 'r0'}}
             mock_state.is_window_model_done.return_value = False
-            
-            rt.run_daily(args, targets, cfg)
+            mock_bt.return_value = {
+                "status": "failed",
+                "reason_code": "rolling_backtest_execution_failed",
+                "message": "requested=1 succeeded=0 failed=1",
+                "did_execute": True,
+                "n_requested": 1, "n_attempted": 1,
+                "n_succeeded": 0, "n_failed": 1, "model_results": [],
+            }
+
+            result = rt.run_daily(args, targets, cfg)
             mock_save.assert_called_once()
             mock_bt.assert_called_once()
+            assert result["status"] == "failed"
+            assert result["reason_code"] == "rolling_backtest_execution_failed"
+            assert result["did_execute"] is True
+            assert "may already have persisted" in result["message"]
 
     def test_run_daily_dry_run(self, mock_env):
         rt, _ = mock_env
@@ -1663,9 +1727,20 @@ class TestMoreMainFlows:
              mock.patch('rolling_train.RollingState') as mock_state_cls:
             
             mock_base.return_value = {'anchor_date': '2024-02-01', 'freq': 'week'}
-            rt.run_cold_start(args, targets, cfg)
+            mock_bt.return_value = {
+                "status": "failed",
+                "reason_code": "rolling_backtest_publication_failed",
+                "message": "requested=1 succeeded=0 failed=1",
+                "did_execute": True,
+                "n_requested": 1, "n_attempted": 1,
+                "n_succeeded": 0, "n_failed": 1, "model_results": [],
+            }
+            result = rt.run_cold_start(args, targets, cfg)
             # This should cover line 716 and trigger run_combined_backtest (line 735)
             mock_bt.assert_called_once()
+            assert result["status"] == "failed"
+            assert result["reason_code"] == "rolling_backtest_publication_failed"
+            assert result["did_execute"] is True
 
 
     def test_run_daily_train_model_fails_and_skip(self, mock_env):

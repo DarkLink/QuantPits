@@ -59,8 +59,15 @@ safeguard 不导入 legacy `env`，activation 只在 safeguard → lease → bas
 `--predict-only` 明确记录为 `skipped`。OperatorLog、adapter outcome 与 CLI exit 使用同一个
 command-level status；成功 action 仍保留 `legacy_partial_visibility`，不代表 per-window evidence parity。
 `--backtest-only` 若缺少有效 current records、请求的 Rolling family 或选定 target 的历史 record，会以
-`rolling_backtest_precondition_failed` 返回非零，并在 OperatorLog 中记录同一 failure；只有已找到 records
-并调用 legacy backtest 的路径才记录 `success / legacy_partial_visibility`。
+`rolling_backtest_precondition_failed` 返回非零，并在 OperatorLog 中记录同一 failure。只有所有 selected
+models 都完成 recorder/prediction 读取、Qlib backtest 和 metrics/artifacts publication，才记录
+`success / rolling_backtest_completed`；任一模型失败或 mixed batch 都返回非零。OperatorLog 的 backtest
+摘要包含 requested/attempted/succeeded/failed counts 与精简的 model/stage/reason failure 列表。
+`legacy_partial_visibility` 只描述训练窗口 evidence，不描述 backtest batch。
+
+主动作附加 `--backtest` 时，训练、merge 或 prediction 可能已完成落盘，随后 backtest 失败仍使整个 command
+非零且 `did_execute=true`。这是部分执行后的诚实结果，不是事务回滚；不要仅因退出非零删除已生成 records，
+应先核对 OperatorLog 和 current records。
 shared lease 内、backend 初始化前还会对所有声明写路径做 symlink-aware containment 检查。任何实际解析到
 workspace 外的 state/record/history/MLflow/OperatorLog 路径都会以
 `rolling_output_outside_workspace` 拒绝；不要通过跨 workspace symlink 共享可写运行状态。
@@ -189,6 +196,11 @@ python quantpits/scripts/rolling_train.py --backtest-only --models linear_Alpha1
 ## 5. `--backtest-only` 输出
 
 回测输出与训练时的 `PortAnaRecord` 完全一致：
+
+成功时 batch reason 为 `rolling_backtest_completed`，且 `n_requested == n_succeeded`、`n_failed == 0`。
+recorder/prediction 前置失败使用 `rolling_backtest_precondition_failed`；Qlib 执行或结果无效使用
+`rolling_backtest_execution_failed`；metrics/artifacts 写回失败使用
+`rolling_backtest_publication_failed`。这些 reason code 来自结构化阶段分类，不解析下方的人类可读文本。
 
 ```
 The following are analysis results of benchmark return(1week).

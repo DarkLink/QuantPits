@@ -240,6 +240,54 @@ def _print_fold_details(folds, indent=6):
 # Flow functions
 # ==========================================================================
 
+
+def _backtest_not_run_result(n_requested, message):
+    """Return a truthful precondition failure when --backtest had no records."""
+    return {
+        "status": "failed",
+        "reason_code": "rolling_backtest_precondition_failed",
+        "message": message,
+        "did_execute": False,
+        "n_requested": n_requested,
+        "n_attempted": 0,
+        "n_succeeded": 0,
+        "n_failed": n_requested,
+        "model_results": [],
+    }
+
+
+def _consume_backtest_result(result, primary_action):
+    """Bind an embedded --backtest outcome to its already-run primary action."""
+    if not isinstance(result, dict) or result.get("status") not in (
+            "success", "failed"):
+        result = {
+            "status": "failed",
+            "reason_code": "rolling_backtest_execution_failed",
+            "message": "backtest returned no authoritative batch result",
+            "did_execute": True,
+            "n_requested": 0,
+            "n_attempted": 0,
+            "n_succeeded": 0,
+            "n_failed": 0,
+            "model_results": [],
+        }
+    outcome = dict(result)
+    if outcome["status"] == "failed":
+        outcome["message"] = (
+            "%s may already have persisted state or records; backtest failed: %s"
+            % (primary_action, result.get("message") or "unknown failure")
+        )
+        # The command did execute even when the backtest itself failed before
+        # reaching Qlib, because the primary action has already run.
+        outcome["did_execute"] = True
+    else:
+        outcome["message"] = (
+            "%s completed; %s"
+            % (primary_action, result.get("message") or "backtest completed")
+        )
+    return outcome
+
+
 def run_cold_start(args, targets, rolling_cfg, resolved=None):
     """Cold start / merge / resume: Model-First loop with subprocess isolation.
 
@@ -398,14 +446,19 @@ def run_cold_start(args, targets, rolling_cfg, resolved=None):
             combined_records.update(extra_combined)
 
     # Save records
+    backtest_result = None
     if combined_records:
         save_rolling_records(combined_records, combined_exp_name, anchor_date,
                              mode=mode_suffix, verify_recorders=True, config_payload=params_base)
         if args.backtest:
-            run_combined_backtest(
+            backtest_result = run_combined_backtest(
                 list(combined_records.keys()), combined_records,
                 combined_exp_name, params_base,
             )
+    elif args.backtest:
+        backtest_result = _backtest_not_run_result(
+            len(targets), "training produced no combined record to backtest",
+        )
 
     # Done
     print(f"\n{'='*60}")
@@ -422,6 +475,8 @@ def run_cold_start(args, targets, rolling_cfg, resolved=None):
     print(f"     Fusion: python quantpits/scripts/ensemble_fusion.py "
           f"--from-config --training-mode {mode_suffix}")
     print(f"{'='*60}")
+    if args.backtest:
+        return _consume_backtest_result(backtest_result, "rolling training")
 
 
 def run_daily(args, targets, rolling_cfg, resolved=None):
@@ -537,16 +592,23 @@ def run_daily(args, targets, rolling_cfg, resolved=None):
 
             deep_cleanup_after_model(model_name)
 
+        backtest_result = None
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name, anchor_date,
                                  mode=mode_suffix, verify_recorders=True, config_payload=params_base)
             if args.backtest:
-                run_combined_backtest(
+                backtest_result = run_combined_backtest(
                     list(combined_records.keys()), combined_records,
                     combined_exp_name, params_base,
                 )
+        elif args.backtest:
+            backtest_result = _backtest_not_run_result(
+                len(targets), "daily update produced no combined record to backtest",
+            )
 
         print(f"\n✅ Rolling update complete ({len(new_windows)} new windows)")
+        if args.backtest:
+            return _consume_backtest_result(backtest_result, "daily update")
 
     else:
         # All windows trained — predict-only with latest model
@@ -562,6 +624,7 @@ def run_daily(args, targets, rolling_cfg, resolved=None):
             if pred is not None and not pred.empty:
                 extra_preds[model_name] = pred
 
+        backtest_result = None
         if extra_preds:
             model_names = list(targets.keys())
             combined_records = concatenate_rolling_predictions(
@@ -574,8 +637,21 @@ def run_daily(args, targets, rolling_cfg, resolved=None):
                 save_rolling_records(combined_records, combined_exp_name,
                                      anchor_date, mode=mode_suffix, verify_recorders=True, config_payload=params_base)
                 if args.backtest:
-                    run_combined_backtest(model_names, combined_records,
-                                          combined_exp_name, params_base)
+                    backtest_result = run_combined_backtest(
+                        model_names, combined_records,
+                        combined_exp_name, params_base,
+                    )
+            elif args.backtest:
+                backtest_result = _backtest_not_run_result(
+                    len(targets),
+                    "daily prediction produced no combined record to backtest",
+                )
+        elif args.backtest:
+            backtest_result = _backtest_not_run_result(
+                len(targets), "daily prediction produced no prediction to backtest",
+            )
+        if args.backtest:
+            return _consume_backtest_result(backtest_result, "daily prediction")
 
 
 def run_predict_only(args, targets, rolling_cfg, resolved=None):
@@ -686,18 +762,31 @@ def run_predict_only(args, targets, rolling_cfg, resolved=None):
             targets=targets, params_base=params_base,
             repair_fn=st.repair_truncated,
         )
+        backtest_result = None
         if combined_records:
             save_rolling_records(combined_records, combined_exp_name,
                                  anchor_date, mode=mode_suffix, verify_recorders=True, config_payload=params_base)
             if args.backtest:
-                run_combined_backtest(model_names, combined_records,
-                                      combined_exp_name, params_base)
+                backtest_result = run_combined_backtest(
+                    model_names, combined_records,
+                    combined_exp_name, params_base,
+                )
+        elif args.backtest:
+            backtest_result = _backtest_not_run_result(
+                len(targets), "prediction produced no combined record to backtest",
+            )
+        if args.backtest:
+            return _consume_backtest_result(backtest_result, "prediction")
         return {
             "status": "success",
             "reason_code": "legacy_partial_visibility",
             "message": "generated predictions for %s model(s)" % len(extra_preds),
             "did_execute": True,
         }
+    if args.backtest:
+        return _consume_backtest_result(_backtest_not_run_result(
+            len(targets), "predict-only generated no prediction to backtest",
+        ), "prediction")
     return {
         "status": "skipped",
         "reason_code": "rolling_action_skipped",
@@ -897,28 +986,48 @@ def _main_impl(args):
 
     from quantpits.utils.operator_log import OperatorLog
     with OperatorLog("rolling_train", args=sys.argv[1:]) as oplog:
+        facade_result = None
         if args.backtest_only:
             from quantpits.utils import env as runtime_env
             runtime_env.init_qlib()
             params_base = get_base_params()
             # Use module-level re-export so mock.patch can intercept
-            run_backtest_only(args, targets, params_base, mode=mode_suffix)
+            facade_result = run_backtest_only(
+                args, targets, params_base, mode=mode_suffix,
+            )
         elif args.predict_only:
-            run_predict_only(args, targets, rolling_cfg)
+            facade_result = run_predict_only(args, targets, rolling_cfg)
         elif args.cold_start or args.resume or args.merge:
-            run_cold_start(args, targets, rolling_cfg)
+            facade_result = run_cold_start(args, targets, rolling_cfg)
         elif args.retrain_last:
-            run_daily(args, targets, rolling_cfg)
+            facade_result = run_daily(args, targets, rolling_cfg)
         else:
-            run_daily(args, targets, rolling_cfg)
+            facade_result = run_daily(args, targets, rolling_cfg)
 
-        oplog.set_result({
+        result_summary = {
             "n_targets": len(targets),
             "cold_start": args.cold_start,
             "resume": args.resume,
             "predict_only": args.predict_only,
             "training_method": training_method,
-        })
+        }
+        if isinstance(facade_result, dict):
+            result_summary.update({
+                key: facade_result[key] for key in (
+                    "status", "reason_code", "message", "did_execute",
+                    "n_requested", "n_attempted", "n_succeeded", "n_failed",
+                ) if key in facade_result
+            })
+        oplog.set_result(result_summary)
+
+        if (isinstance(facade_result, dict) and
+                facade_result.get("status") == "failed"):
+            _render_information_error(
+                args,
+                facade_result.get("reason_code") or "rolling_execution_failed",
+                facade_result.get("message") or "Rolling action failed",
+            )
+            return 2
 
         # Update promote status
         if not args.predict_only and not args.backtest_only:

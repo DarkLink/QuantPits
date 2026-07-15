@@ -49,8 +49,17 @@ OperatorLog, adapter outcome, and CLI exit share one command-level status. Succe
 `legacy_partial_visibility`; they do not claim per-window evidence parity.
 `--backtest-only` exits nonzero with `rolling_backtest_precondition_failed` when current records are
 missing or empty, the requested Rolling family is absent, or selected targets have no historical
-record. OperatorLog records the same failure; only a path that finds records and invokes the legacy
-backtest reports `success / legacy_partial_visibility`.
+record. OperatorLog records the same failure. It reports `success / rolling_backtest_completed`
+only when every selected model completes recorder/prediction loading, Qlib backtest, and required
+metrics/artifact publication; any single-model or mixed-batch failure exits nonzero. The OperatorLog
+backtest summary includes requested/attempted/succeeded/failed counts and concise model/stage/reason
+failure entries. `legacy_partial_visibility` applies only to training-window evidence, not to the
+authoritative backtest batch.
+
+With `--backtest` attached to a primary action, training, merge, or prediction outputs may already
+be persisted before the backtest fails. The entire command still exits nonzero with
+`did_execute=true`. This truthfully reports partial execution; it is not a transaction rollback, so
+inspect OperatorLog and current records before deleting or retrying generated output.
 Inside the shared lease and before backend initialization, every declared write path receives a
 symlink-aware containment check. State, record, history, MLflow, or OperatorLog paths that resolve
 outside the workspace fail with `rolling_output_outside_workspace`; do not share writable runtime
@@ -122,6 +131,13 @@ python quantpits/scripts/rolling_train.py --cold-start --models linear_Alpha158 
 Gap detection checks both window index and date difference.
 
 ## 5. Backtest Output
+
+A successful batch uses `rolling_backtest_completed`, with
+`n_requested == n_succeeded` and `n_failed == 0`. Recorder/prediction preconditions use
+`rolling_backtest_precondition_failed`; Qlib execution or invalid results use
+`rolling_backtest_execution_failed`; metrics/artifact write-back uses
+`rolling_backtest_publication_failed`. These codes come from structured stage classification, not
+from parsing the human-readable output below.
 
 Matches training-time `PortAnaRecord` format:
 

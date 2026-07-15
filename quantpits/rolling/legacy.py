@@ -84,6 +84,7 @@ class RollingExecutionOutcome:
     did_execute: bool = False
     execution_fingerprint: str = None
     target_keys: tuple = ()
+    details: dict = None
 
 
 class LegacyRollingExecutionAdapter:
@@ -130,6 +131,29 @@ class LegacyRollingExecutionAdapter:
         print("🔄 Window %s: cleared %s selected model(s)" % (last_idx, removed))
         return removed > 0
 
+    @staticmethod
+    def _result_details(facade_result):
+        """Keep concise authoritative backtest facts for outcome/operator log."""
+        count_keys = (
+            "n_requested", "n_attempted", "n_succeeded", "n_failed",
+        )
+        if not any(key in facade_result for key in count_keys):
+            return {}
+        summary = {
+            key: int(facade_result.get(key, 0) or 0) for key in count_keys
+        }
+        summary["model_failures"] = [
+            {
+                "model_key": item.get("model_key"),
+                "recorder_id": item.get("recorder_id"),
+                "stage": item.get("stage"),
+                "reason_code": item.get("reason_code"),
+            }
+            for item in facade_result.get("model_results", [])
+            if isinstance(item, dict) and item.get("status") == "failed"
+        ]
+        return {"backtest": summary}
+
     def _run_action(self, action, effective_args, prepared, resolved, targets,
                     state_path):
         """Return status metadata for command-visible legacy action results."""
@@ -138,13 +162,13 @@ class LegacyRollingExecutionAdapter:
 
         if action == "clear_state" and prepared.state.status == "missing":
             return ("skipped", "rolling_action_skipped",
-                    "legacy state is already missing", False)
+                    "legacy state is already missing", False, {})
         facade_result = None
         if action == "clear_state":
             RollingState(state_file=state_path).clear()
             return (
                 "success", "rolling_action_completed",
-                "legacy state was cleared", True,
+                "legacy state was cleared", True, {},
             )
         elif action == "retrain_models":
             self._edit_retrain_models(
@@ -163,7 +187,7 @@ class LegacyRollingExecutionAdapter:
             if not should_run:
                 return (
                     "skipped", "rolling_action_skipped",
-                    "no selected model record exists in the last window", False,
+                    "no selected model record exists in the last window", False, {},
                 )
             facade_result = self.facade.run_daily(
                 effective_args, targets, prepared.effective_config,
@@ -212,6 +236,7 @@ class LegacyRollingExecutionAdapter:
                         )
                     ),
                     bool(facade_result.get("did_execute", False)),
+                    self._result_details(facade_result),
                 )
             raise RollingExecutionError(
                 "legacy action returned invalid status: %r" % result_status
@@ -219,7 +244,7 @@ class LegacyRollingExecutionAdapter:
         return (
             "success", "legacy_partial_visibility",
             "legacy action returned without a command-level failure; "
-            "per-window completion remains legacy-managed", True,
+            "per-window completion remains legacy-managed", True, {},
         )
 
     def execute(self, args, prepared, resolved, run_id):
@@ -256,7 +281,7 @@ class LegacyRollingExecutionAdapter:
         }
         with log:
             try:
-                status, reason_code, message, did_execute = self._run_action(
+                status, reason_code, message, did_execute, details = self._run_action(
                     action, effective_args, prepared, resolved, targets, state_path,
                 )
                 if (status == "success" and action not in
@@ -277,6 +302,7 @@ class LegacyRollingExecutionAdapter:
                     "reason_code": reason_code,
                     "message": message,
                     "did_execute": did_execute,
+                    **details,
                 })
             except RollingExecutionError as exc:
                 log.set_result({
@@ -313,4 +339,5 @@ class LegacyRollingExecutionAdapter:
             did_execute=did_execute,
             execution_fingerprint=execution_fingerprint,
             target_keys=tuple(item.target_key for item in prepared.targets),
+            details=details,
         )

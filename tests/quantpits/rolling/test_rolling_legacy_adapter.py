@@ -275,8 +275,11 @@ def test_backtest_success_uses_explicit_facade_result_for_log_and_outcome(tmp_pa
         prepared=prepared, params={}, execution_fingerprint="execution-fingerprint",
     )
     facade = SimpleNamespace(run_backtest_only=mock.Mock(return_value={
-        "status": "success", "reason_code": "legacy_partial_visibility",
-        "message": "backtest invoked for 1 model(s)", "did_execute": True,
+        "status": "success", "reason_code": "rolling_backtest_completed",
+        "message": "backtest completed for all 1 requested model(s)",
+        "did_execute": True,
+        "n_requested": 1, "n_attempted": 1,
+        "n_succeeded": 1, "n_failed": 0, "model_results": [],
     }))
     with mock.patch("quantpits.utils.operator_log.OperatorLog") as log_cls:
         log_cls.return_value.__enter__.return_value = log_cls.return_value
@@ -285,11 +288,13 @@ def test_backtest_success_uses_explicit_facade_result_for_log_and_outcome(tmp_pa
         )
     result = log_cls.return_value.set_result.call_args.args[0]
     assert outcome.status == "success"
-    assert outcome.reason_code == "legacy_partial_visibility"
-    assert outcome.message == "backtest invoked for 1 model(s)"
+    assert outcome.reason_code == "rolling_backtest_completed"
+    assert outcome.message == "backtest completed for all 1 requested model(s)"
     assert outcome.did_execute is True
+    assert outcome.details["backtest"]["n_succeeded"] == 1
     assert result["status"] == outcome.status
     assert result["reason_code"] == outcome.reason_code
+    assert result["backtest"]["n_failed"] == 0
 
 
 def test_backtest_precondition_failure_is_logged_and_returned_with_stable_code(
@@ -318,6 +323,13 @@ def test_backtest_precondition_failure_is_logged_and_returned_with_stable_code(
         "status": "failed",
         "reason_code": "rolling_backtest_precondition_failed",
         "message": "no selected Rolling record", "did_execute": False,
+        "n_requested": 1, "n_attempted": 0,
+        "n_succeeded": 0, "n_failed": 1,
+        "model_results": [{
+            "model_key": "demo@rolling", "recorder_id": None,
+            "status": "failed", "stage": "recorder_lookup",
+            "reason_code": "rolling_backtest_recorder_unavailable",
+        }],
     }))
     with mock.patch("quantpits.utils.operator_log.OperatorLog") as log_cls:
         log_cls.return_value.__enter__.return_value = log_cls.return_value
@@ -331,3 +343,58 @@ def test_backtest_precondition_failure_is_logged_and_returned_with_stable_code(
     assert result["status"] == "failed"
     assert result["reason_code"] == "rolling_backtest_precondition_failed"
     assert result["did_execute"] is False
+    assert result["backtest"]["n_failed"] == 1
+    assert result["backtest"]["model_failures"][0]["stage"] == "recorder_lookup"
+
+
+def test_backtest_runtime_failure_is_logged_with_batch_counts(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    (tmp_path / "data").mkdir()
+    target = SimpleNamespace(
+        model_name="demo", target_key="demo@rolling",
+        workflow_path="config/demo.yaml", legacy_info={},
+    )
+    prepared = SimpleNamespace(
+        ctx=ctx,
+        state=SimpleNamespace(
+            path="data/rolling_state.json", status="valid_legacy",
+        ),
+        targets=(target,), options=SimpleNamespace(action="backtest_only"),
+        effective_config={"training_method": "slide"},
+        plan=SimpleNamespace(metadata={"family": "rolling"}),
+        plan_fingerprint="prepared-fingerprint", cli_args=(),
+    )
+    resolved = SimpleNamespace(
+        prepared=prepared, params={}, execution_fingerprint="execution-fingerprint",
+    )
+    facade = SimpleNamespace(run_backtest_only=mock.Mock(return_value={
+        "status": "failed",
+        "reason_code": "rolling_backtest_execution_failed",
+        "message": "backtest failed: requested=1 attempted=1 succeeded=0 failed=1",
+        "did_execute": True,
+        "n_requested": 1, "n_attempted": 1,
+        "n_succeeded": 0, "n_failed": 1,
+        "model_results": [{
+            "model_key": "demo@rolling", "recorder_id": "rid-001",
+            "status": "failed", "stage": "backtest",
+            "reason_code": "rolling_backtest_execution_failed",
+        }],
+    }))
+    with mock.patch("quantpits.utils.operator_log.OperatorLog") as log_cls:
+        log_cls.return_value.__enter__.return_value = log_cls.return_value
+        outcome = LegacyRollingExecutionAdapter(facade).execute(
+            SimpleNamespace(), prepared, resolved, "rolling-test",
+        )
+    assert outcome.status == "failed"
+    assert outcome.reason_code == "rolling_backtest_execution_failed"
+    assert outcome.did_execute is True
+    result = log_cls.return_value.set_result.call_args.args[0]
+    assert result["status"] == "failed"
+    assert result["did_execute"] is True
+    assert result["backtest"]["n_attempted"] == 1
+    assert result["backtest"]["n_failed"] == 1
+    assert result["backtest"]["model_failures"] == [{
+        "model_key": "demo@rolling", "recorder_id": "rid-001",
+        "stage": "backtest",
+        "reason_code": "rolling_backtest_execution_failed",
+    }]
