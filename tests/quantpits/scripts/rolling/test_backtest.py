@@ -288,6 +288,29 @@ class TestRunCombinedBacktest:
         )
         assert result["n_attempted"] == 0
 
+    def test_every_missing_requested_model_has_terminal_result(self):
+        from quantpits.scripts.rolling.backtest import run_combined_backtest
+
+        result = run_combined_backtest(
+            model_names=["model_a", "model_b"],
+            combined_records={},
+            combined_exp_name="test_exp",
+            params_base={"freq": "week", "benchmark": "SH000300"},
+        )
+
+        assert result["status"] == "failed"
+        assert result["n_requested"] == 2
+        assert result["n_attempted"] == 0
+        assert result["n_succeeded"] == 0
+        assert result["n_failed"] == 2
+        assert [item["model_key"] for item in result["model_results"]] == [
+            "model_a", "model_b",
+        ]
+        assert all(
+            item["reason_code"] == "rolling_backtest_recorder_unavailable"
+            for item in result["model_results"]
+        )
+
     def test_empty_predictions(self):
         """pred.pkl is None or empty is an authoritative failure."""
         from quantpits.scripts.rolling.backtest import run_combined_backtest
@@ -567,6 +590,42 @@ class TestRunCombinedBacktest:
         assert result["n_succeeded"] == 1
         assert result["n_failed"] == 1
 
+    def test_partial_records_keep_success_and_missing_results_in_request_order(self):
+        from quantpits.scripts.rolling.backtest import run_combined_backtest
+
+        recorder = MagicMock()
+        recorder.load_object.return_value = self._make_pred_df()
+        mock_bt_return = (
+            {"1week": (self._make_ts_df(n=20), pd.DataFrame())},
+            pd.DataFrame({"ffr": [0.5], "pa": [0.3], "pos": [100]}),
+        )
+        with patch("quantpits.utils.strategy.load_strategy_config", return_value={}), \
+             patch("quantpits.utils.strategy.get_backtest_config", return_value={
+                 "account": 1e8, "exchange_kwargs": {},
+             }), \
+             patch("quantpits.utils.strategy.create_backtest_strategy"), \
+             patch("qlib.workflow.R.get_recorder", return_value=recorder), \
+             patch("qlib.backtest.executor.SimulatorExecutor"), \
+             patch("qlib.backtest.backtest", return_value=mock_bt_return):
+            result = run_combined_backtest(
+                ["available", "missing"], {"available": "rid-available"},
+                "exp", {"freq": "week", "benchmark": "SH000300"},
+            )
+
+        assert result["status"] == "failed"
+        assert result["reason_code"] == "rolling_backtest_precondition_failed"
+        assert result["n_requested"] == 2
+        assert result["n_attempted"] == 1
+        assert result["n_succeeded"] == 1
+        assert result["n_failed"] == 1
+        assert [item["model_key"] for item in result["model_results"]] == [
+            "available", "missing",
+        ]
+        assert result["model_results"][0]["status"] == "success"
+        assert result["model_results"][1]["reason_code"] == (
+            "rolling_backtest_recorder_unavailable"
+        )
+
 
 # =========================================================================
 # run_backtest_only
@@ -606,6 +665,9 @@ class TestRunBacktestOnly:
         assert result["n_attempted"] == 0
         assert result["n_succeeded"] == 0
         assert result["n_failed"] == 2
+        assert [item["model_key"] for item in result["model_results"]] == [
+            "model_a@rolling", "model_b@rolling",
+        ]
 
     def test_empty_records(self, tmp_path):
         from quantpits.scripts.rolling.backtest import run_backtest_only
@@ -703,7 +765,12 @@ class TestRunBacktestOnly:
                     "message": "backtest completed for all 2 requested model(s)",
                     "did_execute": True,
                     "n_requested": 2, "n_attempted": 2,
-                    "n_succeeded": 2, "n_failed": 0, "model_results": [],
+                    "n_succeeded": 2, "n_failed": 0, "model_results": [
+                        {"model_key": "model_a@rolling", "status": "success",
+                         "did_execute": True},
+                        {"model_key": "model_b@rolling", "status": "success",
+                         "did_execute": True},
+                    ],
                 }
                 result = run_backtest_only(
                     args, targets, params_base, mode="rolling",
@@ -714,7 +781,45 @@ class TestRunBacktestOnly:
         assert result["reason_code"] == "rolling_backtest_completed"
         assert result["did_execute"] is True
 
-    def test_cpcv_mode(self, tmp_path):
+    def test_slide_partial_records_preserve_every_selected_target(self, tmp_path):
+        from quantpits.scripts.rolling.backtest import run_backtest_only
+        from quantpits.utils import train_utils
+
+        records_file = tmp_path / "records.json"
+        records_file.write_text(json.dumps({
+            "rolling_experiment_name": "roll_exp",
+            "models": {"model_a@rolling": "rid_001"},
+        }))
+        failed = {
+            "status": "failed",
+            "reason_code": "rolling_backtest_precondition_failed",
+            "message": "requested=2 succeeded=1 failed=1",
+            "did_execute": True,
+            "n_requested": 2, "n_attempted": 1,
+            "n_succeeded": 1, "n_failed": 1,
+            "model_results": [
+                {"model_key": "model_a@rolling", "status": "success",
+                 "did_execute": True},
+                {"model_key": "model_b@rolling", "status": "failed",
+                 "did_execute": False},
+            ],
+        }
+
+        with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)), \
+             patch("quantpits.scripts.rolling.backtest.run_combined_backtest",
+                   return_value=failed) as mock_rcb:
+            result = run_backtest_only(
+                self._make_args(), self._make_targets(),
+                {"freq": "week", "benchmark": "SH000300"}, mode="rolling",
+            )
+
+        assert mock_rcb.call_args.args[0] == [
+            "model_a@rolling", "model_b@rolling",
+        ]
+        assert result["status"] == "failed"
+        assert result["n_requested"] == 2
+
+    def test_cpcv_partial_records_preserve_every_selected_target(self, tmp_path):
         from quantpits.scripts.rolling.backtest import run_backtest_only
         from quantpits.utils import train_utils
 
@@ -732,16 +837,28 @@ class TestRunBacktestOnly:
         with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)):
             with patch("quantpits.scripts.rolling.backtest.run_combined_backtest") as mock_rcb:
                 mock_rcb.return_value = {
-                    "status": "success", "reason_code": "rolling_backtest_completed",
-                    "message": "completed", "did_execute": True,
-                    "n_requested": 1, "n_attempted": 1,
-                    "n_succeeded": 1, "n_failed": 0, "model_results": [],
+                    "status": "failed",
+                    "reason_code": "rolling_backtest_precondition_failed",
+                    "message": "requested=2 succeeded=1 failed=1",
+                    "did_execute": True,
+                    "n_requested": 2, "n_attempted": 1,
+                    "n_succeeded": 1, "n_failed": 1,
+                    "model_results": [
+                        {"model_key": "model_a@cpcv_rolling", "status": "success",
+                         "did_execute": True},
+                        {"model_key": "model_b@cpcv_rolling", "status": "failed",
+                         "did_execute": False},
+                    ],
                 }
                 result = run_backtest_only(
                     args, targets, params_base, mode="cpcv_rolling",
                 )
                 mock_rcb.assert_called_once()
-        assert result["status"] == "success"
+                assert mock_rcb.call_args.args[0] == [
+                    "model_a@cpcv_rolling", "model_b@cpcv_rolling",
+                ]
+        assert result["status"] == "failed"
+        assert result["n_requested"] == 2
 
     def test_runtime_failure_is_returned_unchanged(self, tmp_path):
         from quantpits.scripts.rolling.backtest import run_backtest_only
@@ -763,6 +880,7 @@ class TestRunBacktestOnly:
                 "model_key": "model_a@rolling", "recorder_id": "rid-001",
                 "status": "failed", "stage": "backtest",
                 "reason_code": "rolling_backtest_execution_failed",
+                "did_execute": True,
             }],
         }
         with patch.object(train_utils, "RECORD_OUTPUT_FILE", str(records_file)), \

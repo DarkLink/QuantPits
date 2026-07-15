@@ -306,12 +306,17 @@ def test_backtest_precondition_failure_is_logged_and_returned_with_stable_code(
         model_name="demo", target_key="demo@rolling",
         workflow_path="config/demo.yaml", legacy_info={},
     )
+    missing_target = SimpleNamespace(
+        model_name="missing", target_key="missing@rolling",
+        workflow_path="config/missing.yaml", legacy_info={},
+    )
     prepared = SimpleNamespace(
         ctx=ctx,
         state=SimpleNamespace(
             path="data/rolling_state.json", status="valid_legacy",
         ),
-        targets=(target,), options=SimpleNamespace(action="backtest_only"),
+        targets=(target, missing_target),
+        options=SimpleNamespace(action="backtest_only"),
         effective_config={"training_method": "slide"},
         plan=SimpleNamespace(metadata={"family": "rolling"}),
         plan_fingerprint="prepared-fingerprint", cli_args=(),
@@ -323,10 +328,14 @@ def test_backtest_precondition_failure_is_logged_and_returned_with_stable_code(
         "status": "failed",
         "reason_code": "rolling_backtest_precondition_failed",
         "message": "no selected Rolling record", "did_execute": False,
-        "n_requested": 1, "n_attempted": 0,
-        "n_succeeded": 0, "n_failed": 1,
+        "n_requested": 2, "n_attempted": 0,
+        "n_succeeded": 0, "n_failed": 2,
         "model_results": [{
             "model_key": "demo@rolling", "recorder_id": None,
+            "status": "failed", "stage": "recorder_lookup",
+            "reason_code": "rolling_backtest_recorder_unavailable",
+        }, {
+            "model_key": "missing@rolling", "recorder_id": None,
             "status": "failed", "stage": "recorder_lookup",
             "reason_code": "rolling_backtest_recorder_unavailable",
         }],
@@ -343,7 +352,9 @@ def test_backtest_precondition_failure_is_logged_and_returned_with_stable_code(
     assert result["status"] == "failed"
     assert result["reason_code"] == "rolling_backtest_precondition_failed"
     assert result["did_execute"] is False
-    assert result["backtest"]["n_failed"] == 1
+    assert result["backtest"]["n_requested"] == 2
+    assert result["backtest"]["n_failed"] == 2
+    assert len(result["backtest"]["model_failures"]) == 2
     assert result["backtest"]["model_failures"][0]["stage"] == "recorder_lookup"
 
 

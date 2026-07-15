@@ -241,35 +241,63 @@ def _print_fold_details(folds, indent=6):
 # ==========================================================================
 
 
-def _backtest_not_run_result(n_requested, message):
+def _backtest_not_run_result(model_keys, message):
     """Return a truthful precondition failure when --backtest had no records."""
+    model_results = [
+        {
+            "model_key": model_key,
+            "recorder_id": None,
+            "status": "failed",
+            "stage": "recorder_lookup",
+            "reason_code": "rolling_backtest_recorder_unavailable",
+            "message": message,
+            "did_execute": False,
+            "backtest_start": None,
+            "backtest_end": None,
+        }
+        for model_key in model_keys
+    ]
     return {
         "status": "failed",
         "reason_code": "rolling_backtest_precondition_failed",
         "message": message,
         "did_execute": False,
-        "n_requested": n_requested,
+        "n_requested": len(model_results),
         "n_attempted": 0,
         "n_succeeded": 0,
-        "n_failed": n_requested,
-        "model_results": [],
+        "n_failed": len(model_results),
+        "model_results": model_results,
     }
 
 
-def _consume_backtest_result(result, primary_action):
+def _consume_backtest_result(result, primary_action, requested_models=()):
     """Bind an embedded --backtest outcome to its already-run primary action."""
-    if not isinstance(result, dict) or result.get("status") not in (
-            "success", "failed"):
+    if not _is_authoritative_batch_result(result, requested_models):
+        message = "backtest returned no authoritative batch result"
+        model_results = [
+            {
+                "model_key": model_key,
+                "recorder_id": None,
+                "status": "failed",
+                "stage": "backtest",
+                "reason_code": "rolling_backtest_execution_failed",
+                "message": message,
+                "did_execute": True,
+                "backtest_start": None,
+                "backtest_end": None,
+            }
+            for model_key in requested_models
+        ]
         result = {
             "status": "failed",
             "reason_code": "rolling_backtest_execution_failed",
-            "message": "backtest returned no authoritative batch result",
+            "message": message,
             "did_execute": True,
-            "n_requested": 0,
-            "n_attempted": 0,
+            "n_requested": len(model_results),
+            "n_attempted": len(model_results),
             "n_succeeded": 0,
-            "n_failed": 0,
-            "model_results": [],
+            "n_failed": len(model_results),
+            "model_results": model_results,
         }
     outcome = dict(result)
     if outcome["status"] == "failed":
@@ -286,6 +314,15 @@ def _consume_backtest_result(result, primary_action):
             % (primary_action, result.get("message") or "backtest completed")
         )
     return outcome
+
+
+def _requested_backtest_models(targets, combined_records=()):
+    """Keep every selected target, then explicit direct-legacy additions."""
+    requested = list(targets)
+    requested.extend(
+        model_key for model_key in combined_records if model_key not in targets
+    )
+    return requested
 
 
 def run_cold_start(args, targets, rolling_cfg, resolved=None):
@@ -451,13 +488,17 @@ def run_cold_start(args, targets, rolling_cfg, resolved=None):
         save_rolling_records(combined_records, combined_exp_name, anchor_date,
                              mode=mode_suffix, verify_recorders=True, config_payload=params_base)
         if args.backtest:
+            requested_models = _requested_backtest_models(
+                targets, combined_records,
+            )
             backtest_result = run_combined_backtest(
-                list(combined_records.keys()), combined_records,
+                requested_models, combined_records,
                 combined_exp_name, params_base,
             )
     elif args.backtest:
+        requested_models = list(targets)
         backtest_result = _backtest_not_run_result(
-            len(targets), "training produced no combined record to backtest",
+            requested_models, "training produced no combined record to backtest",
         )
 
     # Done
@@ -476,7 +517,9 @@ def run_cold_start(args, targets, rolling_cfg, resolved=None):
           f"--from-config --training-mode {mode_suffix}")
     print(f"{'='*60}")
     if args.backtest:
-        return _consume_backtest_result(backtest_result, "rolling training")
+        return _consume_backtest_result(
+            backtest_result, "rolling training", requested_models,
+        )
 
 
 def run_daily(args, targets, rolling_cfg, resolved=None):
@@ -597,18 +640,25 @@ def run_daily(args, targets, rolling_cfg, resolved=None):
             save_rolling_records(combined_records, combined_exp_name, anchor_date,
                                  mode=mode_suffix, verify_recorders=True, config_payload=params_base)
             if args.backtest:
+                requested_models = _requested_backtest_models(
+                    targets, combined_records,
+                )
                 backtest_result = run_combined_backtest(
-                    list(combined_records.keys()), combined_records,
+                    requested_models, combined_records,
                     combined_exp_name, params_base,
                 )
         elif args.backtest:
+            requested_models = list(targets)
             backtest_result = _backtest_not_run_result(
-                len(targets), "daily update produced no combined record to backtest",
+                requested_models,
+                "daily update produced no combined record to backtest",
             )
 
         print(f"\n✅ Rolling update complete ({len(new_windows)} new windows)")
         if args.backtest:
-            return _consume_backtest_result(backtest_result, "daily update")
+            return _consume_backtest_result(
+                backtest_result, "daily update", requested_models,
+            )
 
     else:
         # All windows trained — predict-only with latest model
@@ -643,15 +693,18 @@ def run_daily(args, targets, rolling_cfg, resolved=None):
                     )
             elif args.backtest:
                 backtest_result = _backtest_not_run_result(
-                    len(targets),
+                    model_names,
                     "daily prediction produced no combined record to backtest",
                 )
         elif args.backtest:
+            model_names = list(targets)
             backtest_result = _backtest_not_run_result(
-                len(targets), "daily prediction produced no prediction to backtest",
+                model_names, "daily prediction produced no prediction to backtest",
             )
         if args.backtest:
-            return _consume_backtest_result(backtest_result, "daily prediction")
+            return _consume_backtest_result(
+                backtest_result, "daily prediction", model_names,
+            )
 
 
 def run_predict_only(args, targets, rolling_cfg, resolved=None):
@@ -773,10 +826,12 @@ def run_predict_only(args, targets, rolling_cfg, resolved=None):
                 )
         elif args.backtest:
             backtest_result = _backtest_not_run_result(
-                len(targets), "prediction produced no combined record to backtest",
+                model_names, "prediction produced no combined record to backtest",
             )
         if args.backtest:
-            return _consume_backtest_result(backtest_result, "prediction")
+            return _consume_backtest_result(
+                backtest_result, "prediction", model_names,
+            )
         return {
             "status": "success",
             "reason_code": "legacy_partial_visibility",
@@ -784,9 +839,10 @@ def run_predict_only(args, targets, rolling_cfg, resolved=None):
             "did_execute": True,
         }
     if args.backtest:
+        model_names = list(targets)
         return _consume_backtest_result(_backtest_not_run_result(
-            len(targets), "predict-only generated no prediction to backtest",
-        ), "prediction")
+            model_names, "predict-only generated no prediction to backtest",
+        ), "prediction", model_names)
     return {
         "status": "skipped",
         "reason_code": "rolling_action_skipped",
@@ -1188,6 +1244,7 @@ from quantpits.scripts.rolling.orchestration import (
     _filter_pred_to_test_segment,
 )
 from quantpits.scripts.rolling.backtest import (
+    _is_authoritative_batch_result,
     run_combined_backtest,
     run_backtest_only,
 )

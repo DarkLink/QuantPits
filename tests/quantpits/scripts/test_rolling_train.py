@@ -1329,7 +1329,10 @@ class TestRunModesExtra:
                  'message': 'requested=1 succeeded=0 failed=1',
                  'did_execute': True,
                  'n_requested': 1, 'n_attempted': 1,
-                 'n_succeeded': 0, 'n_failed': 1, 'model_results': [],
+                 'n_succeeded': 0, 'n_failed': 1, 'model_results': [{
+                     'model_key': 'm1', 'status': 'failed',
+                     'did_execute': True,
+                 }],
              }):
             state_cls.return_value.anchor_date = '2024-01-01'
             state_cls.return_value.get_completed_record_ids.return_value = [{
@@ -1604,7 +1607,10 @@ class TestMoreMainFlows:
         args = mock.MagicMock()
         args.dry_run = False
         args.backtest = True
-        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        targets = {
+            'm1': {'yaml_file': 'm1.yaml'},
+            'm2': {'yaml_file': 'm2.yaml'},
+        }
         cfg = {'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
         
         with mock.patch('quantpits.utils.env.init_qlib'), \
@@ -1623,15 +1629,21 @@ class TestMoreMainFlows:
             mock_bt.return_value = {
                 "status": "failed",
                 "reason_code": "rolling_backtest_execution_failed",
-                "message": "requested=1 succeeded=0 failed=1",
+                "message": "requested=2 succeeded=0 failed=2",
                 "did_execute": True,
-                "n_requested": 1, "n_attempted": 1,
-                "n_succeeded": 0, "n_failed": 1, "model_results": [],
+                "n_requested": 2, "n_attempted": 1,
+                "n_succeeded": 0, "n_failed": 2, "model_results": [
+                    {"model_key": "m1", "status": "failed",
+                     "did_execute": True},
+                    {"model_key": "m2", "status": "failed",
+                     "did_execute": False},
+                ],
             }
 
             result = rt.run_daily(args, targets, cfg)
             mock_save.assert_called_once()
             mock_bt.assert_called_once()
+            assert mock_bt.call_args.args[0] == ['m1', 'm2']
             assert result["status"] == "failed"
             assert result["reason_code"] == "rolling_backtest_execution_failed"
             assert result["did_execute"] is True
@@ -1715,7 +1727,10 @@ class TestMoreMainFlows:
         args.resume = False
         args.dry_run = False
         args.backtest = True
-        targets = {'m1': {'yaml_file': 'm1.yaml'}}
+        targets = {
+            'm1': {'yaml_file': 'm1.yaml'},
+            'm2': {'yaml_file': 'm2.yaml'},
+        }
         cfg = {'rolling_start': '2020-01-01', 'train_years': 3, 'valid_years': 1, 'test_step': '3M'}
         
         with mock.patch('quantpits.utils.env.init_qlib'), \
@@ -1730,14 +1745,20 @@ class TestMoreMainFlows:
             mock_bt.return_value = {
                 "status": "failed",
                 "reason_code": "rolling_backtest_publication_failed",
-                "message": "requested=1 succeeded=0 failed=1",
+                "message": "requested=2 succeeded=0 failed=2",
                 "did_execute": True,
-                "n_requested": 1, "n_attempted": 1,
-                "n_succeeded": 0, "n_failed": 1, "model_results": [],
+                "n_requested": 2, "n_attempted": 1,
+                "n_succeeded": 0, "n_failed": 2, "model_results": [
+                    {"model_key": "m1", "status": "failed",
+                     "did_execute": True},
+                    {"model_key": "m2", "status": "failed",
+                     "did_execute": False},
+                ],
             }
             result = rt.run_cold_start(args, targets, cfg)
             # This should cover line 716 and trigger run_combined_backtest (line 735)
             mock_bt.assert_called_once()
+            assert mock_bt.call_args.args[0] == ['m1', 'm2']
             assert result["status"] == "failed"
             assert result["reason_code"] == "rolling_backtest_publication_failed"
             assert result["did_execute"] is True
@@ -2239,3 +2260,41 @@ class TestParseArgsExtra:
             assert args.no_pretrain is True
             assert args.show_state is True
             assert args.clear_state is True
+
+
+class TestBacktestResultCompleteness:
+    def test_synthetic_precondition_has_one_terminal_result_per_target(
+            self, mock_env):
+        rt, _ = mock_env
+
+        result = rt._backtest_not_run_result(
+            ["model_a", "model_b"], "no combined records",
+        )
+
+        assert result["n_requested"] == 2
+        assert result["n_attempted"] == 0
+        assert result["n_succeeded"] == 0
+        assert result["n_failed"] == 2
+        assert [item["model_key"] for item in result["model_results"]] == [
+            "model_a", "model_b",
+        ]
+        assert all(item["did_execute"] is False
+                   for item in result["model_results"])
+
+    def test_invalid_embedded_batch_has_complete_terminal_results(
+            self, mock_env):
+        rt, _ = mock_env
+
+        result = rt._consume_backtest_result(
+            None, "rolling training", ["model_a", "model_b"],
+        )
+
+        assert result["status"] == "failed"
+        assert result["reason_code"] == "rolling_backtest_execution_failed"
+        assert result["n_requested"] == 2
+        assert result["n_attempted"] == 2
+        assert result["n_succeeded"] == 0
+        assert result["n_failed"] == 2
+        assert [item["model_key"] for item in result["model_results"]] == [
+            "model_a", "model_b",
+        ]

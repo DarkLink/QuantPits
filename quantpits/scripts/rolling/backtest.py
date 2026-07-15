@@ -91,6 +91,51 @@ def _precondition_batch(model_keys, message):
     return result
 
 
+def _invalid_batch(model_keys):
+    """Describe an invoked backend that returned no authoritative result."""
+    return _batch_result([
+        _model_result(
+            model_key, None, "failed", "backtest",
+            _BACKTEST_EXECUTION_FAILED,
+            "backtest returned no authoritative batch result", True,
+        )
+        for model_key in model_keys
+    ])
+
+
+def _is_authoritative_batch_result(result, requested_models):
+    """Require complete per-model facts and counts that can be recomputed."""
+    if not isinstance(result, dict) or result.get("status") not in (
+            "success", "failed"):
+        return False
+    model_results = result.get("model_results")
+    if not isinstance(model_results, list):
+        return False
+    if [item.get("model_key") for item in model_results
+            if isinstance(item, dict)] != list(requested_models):
+        return False
+    if len(model_results) != len(requested_models):
+        return False
+    if any(item.get("status") not in ("success", "failed") or
+           not isinstance(item.get("did_execute"), bool)
+           for item in model_results):
+        return False
+    succeeded = sum(item["status"] == "success" for item in model_results)
+    failed = sum(item["status"] == "failed" for item in model_results)
+    attempted = sum(item["did_execute"] for item in model_results)
+    expected_status = (
+        "success" if model_results and succeeded == len(model_results)
+        else "failed"
+    )
+    return (
+        result["status"] == expected_status and
+        result.get("n_requested") == len(model_results) and
+        result.get("n_attempted") == attempted and
+        result.get("n_succeeded") == succeeded and
+        result.get("n_failed") == failed
+    )
+
+
 def _print_portfolio_metrics(raw_portfolio_metrics, model_name, freq):
     """Print detailed portfolio analysis tables matching qlib PortAnaRecord format.
 
@@ -205,32 +250,48 @@ def run_combined_backtest(model_names, combined_records, combined_exp_name, para
     if not requested_models:
         return _batch_result([])
 
-    try:
-        st_config = strategy.load_strategy_config()
-        bt_config = strategy.get_backtest_config(st_config)
-    except Exception as exc:
-        print(f"  Backtest configuration failed: {exc}")
-        traceback.print_exc()
-        return _batch_result([
-            _model_result(
-                model_name, combined_records.get(model_name), "failed",
-                "backtest", _BACKTEST_EXECUTION_FAILED,
-                "backtest configuration is unavailable", False,
-            )
-            for model_name in requested_models
-        ])
-    model_results = []
+    requested_order = {
+        model_name: index for index, model_name in enumerate(requested_models)
+    }
 
+    def ordered_batch(results):
+        return _batch_result(sorted(
+            results,
+            key=lambda item: requested_order[item["model_key"]],
+        ))
+
+    model_results = []
+    available_models = []
     for model_name in requested_models:
-        if model_name not in combined_records:
+        if model_name in combined_records:
+            available_models.append(model_name)
+        else:
             model_results.append(_model_result(
                 model_name, None, "failed", "recorder_lookup",
                 "rolling_backtest_recorder_unavailable",
                 "no combined recorder was declared for the requested model",
                 False,
             ))
-            continue
 
+    if not available_models:
+        return ordered_batch(model_results)
+
+    try:
+        st_config = strategy.load_strategy_config()
+        bt_config = strategy.get_backtest_config(st_config)
+    except Exception as exc:
+        print(f"  Backtest configuration failed: {exc}")
+        traceback.print_exc()
+        return ordered_batch(model_results + [
+            _model_result(
+                model_name, combined_records.get(model_name), "failed",
+                "backtest", _BACKTEST_EXECUTION_FAILED,
+                "backtest configuration is unavailable", False,
+            )
+            for model_name in available_models
+        ])
+
+    for model_name in available_models:
         record_id = combined_records[model_name]
         print(f"\n  [{model_name}] 提取合并预测以进行回测 (Record: {record_id})...")
 
@@ -367,7 +428,7 @@ def run_combined_backtest(model_names, combined_records, combined_exp_name, para
             bt_start, bt_end,
         ))
 
-    return _batch_result(model_results)
+    return ordered_batch(model_results)
 
 
 def run_backtest_only(args, targets, params_base=None, mode='rolling'):
@@ -382,8 +443,23 @@ def run_backtest_only(args, targets, params_base=None, mode='rolling'):
     import os
     import json
     from quantpits.utils.train_utils import (
-        RECORD_OUTPUT_FILE, filter_models_by_mode, parse_model_key,
+        RECORD_OUTPUT_FILE, filter_models_by_mode, make_model_key,
+        parse_model_key,
     )
+
+    target_names = list(targets)
+
+    def requested_keys(available_models=None):
+        available_models = available_models or {}
+        base_to_key = {}
+        for key in available_models:
+            base_name, _ = parse_model_key(key)
+            base_to_key[base_name] = key
+        return [
+            (name if name in available_models else
+             base_to_key.get(name, make_model_key(name, mode)))
+            for name in target_names
+        ]
 
     if params_base is None:
         import sys
@@ -403,14 +479,14 @@ def run_backtest_only(args, targets, params_base=None, mode='rolling'):
     if not records or "models" not in records:
         message = "找不到有效的 latest_train_records.json 或内容为空。"
         print(f"❌ {message}")
-        return _precondition_batch(list(targets), message)
+        return _precondition_batch(requested_keys(), message)
 
     # 从统一文件中过滤出指定模式的模型
     rolling_models = filter_models_by_mode(records.get('models', {}), mode)
     if not rolling_models:
         message = f"统一训练记录中没有 @{mode} 模式的模型记录。"
         print(f"❌ {message}")
-        return _precondition_batch(list(targets), message)
+        return _precondition_batch(requested_keys(), message)
 
     # 构建一个 rolling-only 的 records dict 供下游使用
     records = dict(records)  # shallow copy
@@ -429,24 +505,9 @@ def run_backtest_only(args, targets, params_base=None, mode='rolling'):
         combined_exp_name = f"Rolling_Combined_{freq}"
 
     combined_records = records["models"]
-    # records 的 key 是 model@mode 格式，targets 是裸名
-    # 构建 base_name -> full_key 的映射
-    base_to_key = {}
-    for key in combined_records:
-        base_name, _ = parse_model_key(key)
-        base_to_key[base_name] = key
-
-    model_names = []
-    for m in targets.keys():
-        if m in combined_records:
-            model_names.append(m)
-        elif m in base_to_key:
-            model_names.append(base_to_key[m])
-
-    if not model_names:
-        message = "选定的模型中没有找到历史滚动预测记录。"
-        print(f"❌ {message}")
-        return _precondition_batch(list(targets), message)
+    # The requested set is authoritative.  Available records provide recorder
+    # identity only and must never silently remove a selected target.
+    model_names = requested_keys(combined_records)
 
     # 检查是否在单元测试中被 mock 了 run_combined_backtest
     import sys
@@ -461,17 +522,6 @@ def run_backtest_only(args, targets, params_base=None, mode='rolling'):
         result = run_combined_backtest(
             model_names, combined_records, combined_exp_name, params_base,
         )
-    if not isinstance(result, dict) or result.get("status") not in (
-            "success", "failed"):
-        return {
-            "status": "failed",
-            "reason_code": _BACKTEST_EXECUTION_FAILED,
-            "message": "backtest returned no authoritative batch result",
-            "did_execute": True,
-            "n_requested": len(model_names),
-            "n_attempted": 0,
-            "n_succeeded": 0,
-            "n_failed": len(model_names),
-            "model_results": [],
-        }
+    if not _is_authoritative_batch_result(result, model_names):
+        return _invalid_batch(model_names)
     return result
