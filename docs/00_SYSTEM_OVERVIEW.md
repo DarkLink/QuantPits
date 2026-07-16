@@ -638,6 +638,10 @@ workspace/experiment/artifact 和实际预测覆盖。
 
 `ensemble_fusion` 还提供独立的 typed command boundary：`quantpits/ensemble/command.py` 负责参数合同和 prepare/explain/execute 路由，`quantpits/ensemble/service.py` 负责执行生命周期，脚本层只负责 process exit semantics。Engine 层不会调用 `sys.exit()`，因此 notebook、scheduler、测试或其他 Python 流程可以复用 command runner，并自行处理结构化 outcome 与 typed domain error。
 
+### 跨命令语义验证通道
+
+开发者可运行 `make test-semantic`（等价于 `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/quantpits/semantic -q --tb=short --no-cov -p no:cacheprovider`）验证 Training/Rolling、Ensemble、Post-trade 与 Order 之间的身份、结果、持久化副作用和恢复守恒。该通道只使用 pytest 临时生成的 sanitized workspace 和确定性 fake 外部边界，不读取真实 workspace，不初始化真实 Qlib/MLflow，不需要网络、GPU，也不替代 owner 执行的全量测试或真实后端 smoke。
+
 `OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint`、`transaction_id` 字段。`ensemble_fusion.py`、`order_gen.py` 和 post-trade 已将相关字段与运行清单关联；未使用 transaction 的命令保持 `null`。
 
 ### ⑧ 文件归档工具

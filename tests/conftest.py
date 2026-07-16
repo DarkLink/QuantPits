@@ -6,6 +6,14 @@ import shutil as _shutil
 import sys
 import tempfile as _tempfile
 
+_SEMANTIC_ONLY_INVOCATION = any(
+    "tests/quantpits/semantic" in str(value).replace("\\", "/")
+    for value in sys.argv[1:]
+)
+if _SEMANTIC_ONLY_INVOCATION:
+    # The standalone semantic lane promises zero repository bytecode writes.
+    sys.dont_write_bytecode = True
+
 # ── Session-wide test workspace bootstrap ────────────────────────────
 # env.py enforces QLIB_WORKSPACE_DIR at import time (line 29).  Pytest
 # imports test modules during collection *before* any fixture runs, so we
@@ -20,7 +28,11 @@ _TEST_WORKSPACE = _tempfile.mkdtemp(prefix="qp_test_ws_")
 os.makedirs(os.path.join(_TEST_WORKSPACE, "config"), exist_ok=True)
 os.makedirs(os.path.join(_TEST_WORKSPACE, "data", "history"), exist_ok=True)
 os.makedirs(os.path.join(_TEST_WORKSPACE, "output", "predictions"), exist_ok=True)
-os.environ.setdefault("QLIB_WORKSPACE_DIR", _TEST_WORKSPACE)
+if _SEMANTIC_ONLY_INVOCATION:
+    os.environ["QLIB_WORKSPACE_DIR"] = _TEST_WORKSPACE
+    os.environ.pop("MLFLOW_TRACKING_URI", None)
+else:
+    os.environ.setdefault("QLIB_WORKSPACE_DIR", _TEST_WORKSPACE)
 
 
 @_atexit.register
@@ -31,7 +43,7 @@ def _cleanup_test_workspace() -> None:
 import pytest
 
 @pytest.fixture(autouse=True)
-def prevent_mlruns(monkeypatch, tmp_path):
+def prevent_mlruns(monkeypatch, tmp_path, request):
     """
     Globally redirect MLflowExpManager's URI to a temporary SQLite database so
     that unmocked instances of Qlib workflow recorder won't create artefacts in
@@ -42,6 +54,12 @@ def prevent_mlruns(monkeypatch, tmp_path):
     guard: some tests reload env.py which may detect legacy mlruns/ data and
     set a file:// URI; the env var prevents mlflow ≥ 3.0 from blocking it.
     """
+    # The semantic lane proves that its public boundaries do not initialize
+    # a real backend. Importing Qlib here would invalidate that observation.
+    if request.node.get_closest_marker("semantic") is not None:
+        yield
+        return
+
     # Guard against mlflow ≥ 3.0 file-store gate for any file:// URIs that
     # might be set by tests that reload env.py with legacy mlruns/ data.
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
@@ -55,7 +73,7 @@ def prevent_mlruns(monkeypatch, tmp_path):
 
         # Log the caller so we can clean up the tests later
         import traceback
-        with open("unmocked_mlruns.log", "a") as f:
+        with open(tmp_path / "unmocked_mlruns.log", "a") as f:
             f.write("=" * 60 + "\\n")
             f.write(f"WARNING: Unmocked MLflowExpManager created for {default_exp_name}!\\n")
             f.write("This means a test failed to properly mock qlib.workflow.R.\\n")
@@ -65,6 +83,7 @@ def prevent_mlruns(monkeypatch, tmp_path):
         original_init(self, safe_uri, default_exp_name, *args, **kwargs)
 
     monkeypatch.setattr(qlib.workflow.expm.MLflowExpManager, "__init__", mocked_init)
+    yield
 
 
 # Add scripts directory to sys.path so bare `import env` and other script module imports work

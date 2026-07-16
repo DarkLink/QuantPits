@@ -1,4 +1,4 @@
-.PHONY: run-daily-pipeline release release-check version
+.PHONY: run-daily-pipeline test-semantic release release-check version
 
 # ──────────────────────────────────────────────
 # Daily Pipeline
@@ -8,6 +8,11 @@ run-daily-pipeline:
 	python quantpits/scripts/ensemble_fusion.py --from-config-all
 	python quantpits/scripts/prod_post_trade.py --scope all
 	python quantpits/scripts/order_gen.py
+
+# Hermetic L3 contracts: pytest temp only; no real Qlib/MLflow, network, GPU,
+# production workspace, or repository-root writes. Does not replace full suite.
+test-semantic:
+	PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/quantpits/semantic -q --tb=short --no-cov -p no:cacheprovider
 
 # ──────────────────────────────────────────────
 # Release Management

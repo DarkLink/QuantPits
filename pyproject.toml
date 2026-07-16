@@ -45,6 +45,10 @@ testpaths = [
 pythonpath = [
     ".",
 ]
+markers = [
+    "semantic: hermetic cross-command semantic contracts; no real backend or workspace",
+    "real_workspace: opt-in tests that read owner-provided workspace data",
+]
 
 [tool.coverage.run]
 omit = [

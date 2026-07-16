@@ -638,6 +638,10 @@ workspace/experiment/artifact identity and actual prediction coverage.
 
 `ensemble_fusion` also exposes a typed command boundary: `quantpits/ensemble/command.py` owns the argument contract and prepare/explain/execute routing, `quantpits/ensemble/service.py` owns the execution lifecycle, and the script layer owns process exit semantics only. The engine layer never calls `sys.exit()`, so notebooks, schedulers, tests, and other Python workflows can reuse the command runner and handle structured outcomes or typed domain errors themselves.
 
+### Cross-command semantic verification lane
+
+Developers can run `make test-semantic` (equivalent to `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/quantpits/semantic -q --tb=short --no-cov -p no:cacheprovider`) to verify identity, outcome, durable-effect, and recovery conservation across Training/Rolling, Ensemble, Post-trade, and Order. The lane uses only pytest-generated sanitized workspaces and deterministic fakes at external boundaries. It does not read a real workspace, initialize real Qlib/MLflow, require network or GPU access, or replace the owner-operated full suite and real-backend smoke checks.
+
 `OperatorLog` has compatible optional fields for `run_id`, `manifest_path`, `plan_fingerprint`, and `transaction_id`. `ensemble_fusion.py`, `order_gen.py`, and post-trade link the relevant fields to their run manifests; commands without a transaction keep it as `null`.
 
 ### ⑧ File Archiving Tool

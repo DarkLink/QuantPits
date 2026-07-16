@@ -1,9 +1,8 @@
 """
-Integration test: run PortfolioAnalyzer on real Demo_Workspace production data.
+Integration test: run PortfolioAnalyzer on explicitly provided Demo_Workspace data.
 
-This file is automatically excluded from collection (via conftest.py
-``collect_ignore_glob``) when ``QLIB_WORKSPACE_DIR`` does not point at a
-workspace with production data.  It will never show as SKIPPED in CI.
+This file is an explicit ``real_workspace`` lane. It remains visible and
+skips when ``QLIB_WORKSPACE_DIR`` does not provide the required opt-in data.
 
 Run with:
   QLIB_WORKSPACE_DIR=workspaces/Demo_Workspace \
@@ -16,6 +15,14 @@ import numpy as np
 from quantpits.utils.constants import TRADING_DAYS_PER_YEAR
 
 WORKSPACE = os.environ.get("QLIB_WORKSPACE_DIR", "")
+
+pytestmark = [
+    pytest.mark.real_workspace,
+    pytest.mark.skipif(
+        not WORKSPACE or not os.path.isfile(os.path.join(WORKSPACE, "data", "daily_amount_log_full.csv")),
+        reason="real workspace data was not explicitly provided",
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +42,7 @@ def qlib_init():
 
 @pytest.fixture(scope="module")
 def prod_data():
-    """Load production data files."""
+    """Load explicitly provided real-workspace data files."""
     da = pd.read_csv(os.path.join(WORKSPACE, "data", "daily_amount_log_full.csv"))
     if "成交日期" in da.columns:
         da["成交日期"] = pd.to_datetime(da["成交日期"])
