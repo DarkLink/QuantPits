@@ -351,3 +351,40 @@ def test_delete_faults_preserve_complete_or_missing_authoritative_state(
         assert receipt.did_write is False
         assert repository.state_path.read_bytes() == preimage
     _assert_lock_reacquirable(repository.lock_path)
+
+
+@pytest.mark.parametrize("swap_target", ["root", "data"])
+def test_delete_parent_swap_before_reread_never_reports_canonical_deleted(
+        tmp_path, swap_target):
+    context = _context(tmp_path)
+    repository, prepared = _prepared(context)
+    failed = _state(context, phase="failed")
+    failed_receipt = repository.commit(failed, prepared.after_baseline)
+    preimage = repository.state_path.read_bytes()
+    displaced = tmp_path / ("displaced-delete-%s" % swap_target)
+
+    def swap_parent(point):
+        if point == "after_directory_fsync_before_reread":
+            if swap_target == "root":
+                context.root.rename(displaced)
+                context.root.mkdir()
+                (context.root / "data").mkdir()
+            else:
+                context.data_dir.rename(displaced)
+                context.data_dir.mkdir()
+            repository.state_path.write_bytes(preimage)
+
+    faulted = RollingStateRepository.for_workspace(
+        context, "rolling", fault_hook=swap_parent,
+    )
+    receipt = faulted.delete(failed_receipt.after_baseline)
+    assert receipt.status == "durability_uncertain"
+    assert receipt.did_write is True
+    assert receipt.cas_baseline is None
+    assert repository.state_path.read_bytes() == preimage
+    displaced_state = (
+        displaced / "data" / "rolling_state.json"
+        if swap_target == "root"
+        else displaced / "rolling_state.json"
+    )
+    assert not displaced_state.exists()

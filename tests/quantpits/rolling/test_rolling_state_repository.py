@@ -283,6 +283,58 @@ def test_receipt_rejects_operation_phase_and_cas_baseline_contradictions():
             )
 
 
+def test_receipt_enforces_baseline_phase_and_interrupted_fact_consistency():
+    missing = RollingStateBaseline(
+        "data/rolling_state.json", "missing", False,
+    )
+    before = RollingStateBaseline(
+        "data/rolling_state.json", "file", True, 1, "a" * 64,
+    )
+    after = RollingStateBaseline(
+        "data/rolling_state.json", "file", True, 1, "b" * 64,
+    )
+    contradictions = (
+        ("transition", "conflict", "rolling_state_cas_conflict", False,
+         missing, None, "completed", None),
+        ("transition", "durability_uncertain",
+         "rolling_state_durability_uncertain", True,
+         before, None, "executing", "failed"),
+        ("transition", "interrupted", "rolling_state_interrupted", False,
+         before, after, "executing", "failed"),
+        ("create", "interrupted", "rolling_state_interrupted", True,
+         before, after, "prepared", "prepared"),
+        ("transition", "interrupted", "rolling_state_interrupted", True,
+         missing, after, None, "prepared"),
+        ("transition", "interrupted", "rolling_state_interrupted", True,
+         before, None, None, None),
+        ("delete", "interrupted", "rolling_state_interrupted", True,
+         before, missing, "executing", None),
+    )
+    for facts in contradictions:
+        with pytest.raises(RollingIdentityError):
+            RollingStateMutationReceipt(
+                *facts[:4], "data/rolling_state.json", *facts[4:],
+            )
+    coherent = (
+        ("create", False, None, None, None, None),
+        ("create", True, missing, after, None, "prepared"),
+        ("transition", False, before, None, "executing", None),
+        ("transition", True, before, after, "executing", "failed"),
+        ("delete", True, before, missing, "failed", None),
+    )
+    for facts in coherent:
+        (
+            operation, did_write, before_fact, after_fact,
+            before_phase, after_phase,
+        ) = facts
+        receipt = RollingStateMutationReceipt(
+            operation, "interrupted", "rolling_state_interrupted", did_write,
+            "data/rolling_state.json", before_fact, after_fact,
+            before_phase, after_phase,
+        )
+        assert receipt.status == "interrupted"
+
+
 def test_missing_create_and_pre_evidence_phase_transitions_are_monotonic(tmp_path):
     context = _context(tmp_path)
     repository = RollingStateRepository.for_workspace(context, "rolling")

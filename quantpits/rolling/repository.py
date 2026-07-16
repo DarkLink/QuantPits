@@ -185,6 +185,12 @@ class RollingStateMutationReceipt:
         for phase in (self.before_phase, self.after_phase):
             if phase is not None and phase not in _STATE_PHASES:
                 raise RollingIdentityError("repository receipt phase is invalid")
+        if ((self.before_baseline is None or not self.before_baseline.existed)
+                and self.before_phase is not None):
+            raise RollingIdentityError("receipt preimage phase lacks existing bytes")
+        if ((self.after_baseline is None or not self.after_baseline.existed)
+                and self.after_phase is not None):
+            raise RollingIdentityError("receipt postimage phase lacks existing bytes")
         if self.status in ("committed", "deleted"):
             if not self.did_write or self.after_baseline is None:
                 raise RollingIdentityError("committed receipt lacks an observed postimage")
@@ -254,6 +260,46 @@ class RollingStateMutationReceipt:
             elif (not self.before_baseline.existed
                   or self.before_phase != "failed" or self.after_phase is not None):
                 raise RollingIdentityError("uncertain delete facts are contradictory")
+        if self.status == "interrupted":
+            if not self.did_write and self.after_baseline is not None:
+                raise RollingIdentityError("unwritten interrupt exposes a postimage")
+            if self.did_write and self.before_baseline is None:
+                raise RollingIdentityError("written interrupt lacks an observed preimage")
+            if self.did_write:
+                if self.operation == "create":
+                    if self.before_baseline.existed:
+                        raise RollingIdentityError(
+                            "interrupted create preimage is contradictory"
+                        )
+                elif (not self.before_baseline.existed
+                      or (self.operation == "transition"
+                          and self.before_phase
+                          not in ("prepared", "executing", "failed"))
+                      or (self.operation == "delete"
+                          and self.before_phase != "failed")):
+                    raise RollingIdentityError(
+                        "interrupted mutation preimage is contradictory"
+                    )
+            if self.after_phase is not None:
+                if not self.did_write or self.before_baseline is None:
+                    raise RollingIdentityError(
+                        "interrupted postimage lacks mutation facts"
+                    )
+                if self.operation == "create":
+                    if self.after_phase != "prepared":
+                        raise RollingIdentityError(
+                            "interrupted create postimage is contradictory"
+                        )
+                elif (self.operation == "transition"
+                      and (self.before_phase, self.after_phase)
+                      not in _COMMITTED_PHASE_TRANSITIONS):
+                    raise RollingIdentityError(
+                        "interrupted transition phases are contradictory"
+                    )
+                elif self.operation == "delete":
+                    raise RollingIdentityError(
+                        "interrupted delete postimage is contradictory"
+                    )
 
     @property
     def cas_baseline(self):
@@ -820,6 +866,7 @@ class RollingStateRepository:
                 self._fault("after_replace_before_directory_fsync")
                 os.fsync(directory_fd)
                 self._fault("after_directory_fsync_before_reread")
+                self._verify_parent_identity(directory_fd)
                 final_view = self._read_view(directory_fd)
                 after = final_view.baseline
                 if after.existed:
