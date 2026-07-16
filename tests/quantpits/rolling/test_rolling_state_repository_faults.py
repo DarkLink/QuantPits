@@ -247,4 +247,3 @@ def test_delete_faults_preserve_complete_or_missing_authoritative_state(
         assert receipt.did_write is False
         assert repository.state_path.read_bytes() == preimage
     _assert_lock_reacquirable(repository.lock_path)
-
