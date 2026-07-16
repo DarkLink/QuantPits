@@ -137,6 +137,16 @@ def test_run_identity_fingerprint_equals_execution_fingerprint():
     assert len(identity.fingerprint) == 64
 
 
+@pytest.mark.parametrize("window_key", [
+    "arbitrary-window",
+    "slide:2024-01-01:2024-03-31:abcdef123456",
+    "cpcv_rolling:2024-01-01:2024-03-31:abcdef123456",
+])
+def test_run_identity_rejects_noncanonical_or_foreign_family_window_keys(window_key):
+    with pytest.raises(RollingIdentityError):
+        _run(window_keys=(window_key,))
+
+
 def test_attempt_and_renderer_flags_do_not_change_logical_execution_identity():
     baseline = _run(attempt_id="attempt-a")
     retried = replace(baseline, attempt_id="attempt-b")

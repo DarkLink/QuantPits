@@ -300,6 +300,8 @@ class RollingRunIdentity:
             if identity.family != self.family:
                 _invalid("run target family does not match run family")
         windows = tuple(self.window_keys)
+        for key in windows:
+            parse_rolling_window_key(key, expected_family=self.family)
         if len(targets) != len(set(targets)) or len(windows) != len(set(windows)):
             _invalid("run target/window identities must be unique")
         object.__setattr__(self, "target_keys", targets)

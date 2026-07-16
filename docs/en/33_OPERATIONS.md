@@ -91,9 +91,12 @@ Fully independent. `--cold-start` clears only the current method's state.
 
 Only valid legacy state can currently enter legacy execution. The reader validates a
 `schema_version=2` identity envelope for diagnostics, but V2 is display-only: mutation, clear, or
-resume rejects it before safeguard, lease, and backend activation. Zero-byte files, `{}`, duplicate
-JSON keys, non-canonical window indexes, family/workspace/config identity mismatches, and external
-symlinks fail closed. Completion or recorder claims in state are not recovery reuse authority; CAS
+resume rejects it before safeguard, lease, and backend activation. The version must be the JSON
+integer `2`; floats `2.0`/`2e0` are unsupported. Zero-byte files, `{}`, duplicate JSON keys,
+non-canonical window/run identities, family/workspace/config identity mismatches, and external
+symlinks fail closed. A legacy config is reported as `checked` only when present in state and its
+fingerprint was actually compared; mismatch inspections expose no raw legacy payload. Completion or
+recorder claims in state are not recovery reuse authority; CAS
 writes, explicit migration, and immutable evidence remain separate later boundaries.
 
 ### Cross-Mode Isolation

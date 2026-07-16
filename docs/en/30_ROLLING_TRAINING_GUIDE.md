@@ -32,8 +32,10 @@
 > `--show-state` uses the single-byte-snapshot classifier in `quantpits.rolling.state`. Zero-byte
 > files, duplicate JSON keys, unsupported schemas, cross-workspace symlinks, ambiguous indexes, and
 > identity mismatches never degrade to missing/empty. The reader recognizes the State V2 identity
-> envelope, but V2 is display-only and cannot enter the legacy writer until the CAS repository is
-> implemented. `--clear-state` backs up/deletes
+> envelope, accepts only the JSON integer `schema_version: 2` (rejecting `2.0`/`2e0`), and keeps V2
+> display-only until the CAS repository is implemented. A legacy `rolling_config` is reported as
+> `checked` only when it exists in state and its fingerprint was compared; mismatch inspections do
+> not expose a raw compatibility payload. `--clear-state` backs up/deletes
 > state, so it still passes safeguard and holds the shared execution lease.
 
 > The 30-series covers **rolling training** — paradigms where training windows slide forward over time.

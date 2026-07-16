@@ -257,7 +257,8 @@ class RollingStateInspection:
         return getattr(self.snapshot, "attempt_id", None)
 
     def legacy_payload(self):
-        if isinstance(self.snapshot, LegacyRollingStateSnapshot):
+        if (self.classification == "valid_legacy"
+                and isinstance(self.snapshot, LegacyRollingStateSnapshot)):
             return self.snapshot.raw_payload()
         return None
 
@@ -384,7 +385,7 @@ def _parse_legacy(payload, family):
         current_model=current_model,
         total_windows=total,
         rolling_config_fingerprint=(
-            fingerprint_value(rolling_config) if rolling_config else None
+            fingerprint_value(rolling_config) if rolling_config is not None else None
         ),
         unknown_fields=tuple(sorted(set(payload) - known)),
         _raw_payload_json=json.dumps(
@@ -642,10 +643,11 @@ def inspect_rolling_state(path, workspace_root, expectation=None):
             )
         checked = []
         blockers = []
-        if expectation is not None and expectation.config_fingerprint is not None:
+        if (expectation is not None
+                and expectation.config_fingerprint is not None
+                and snapshot.rolling_config_fingerprint is not None):
             checked.append("config_fingerprint")
-            if (snapshot.rolling_config_fingerprint is not None
-                    and snapshot.rolling_config_fingerprint != expectation.config_fingerprint):
+            if snapshot.rolling_config_fingerprint != expectation.config_fingerprint:
                 blockers.append("legacy rolling_config does not match expectation")
         if blockers:
             return _inspection(
@@ -669,7 +671,7 @@ def inspect_rolling_state(path, workspace_root, expectation=None):
             snapshot, checked=checked, warnings=warnings,
         )
     version = payload.get("schema_version")
-    if isinstance(version, bool) or version != 2:
+    if type(version) is not int or version != 2:
         return _unsupported(
             relative, path_kind, fingerprint,
             "state schema_version is unsupported",

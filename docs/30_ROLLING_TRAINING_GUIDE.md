@@ -28,7 +28,9 @@
 > `--show-state` 同样使用 `quantpits.rolling.state` 的单次 byte snapshot 严格只读分类；zero-byte、重复
 > JSON key、unsupported schema、跨 workspace symlink、ambiguous index 与 identity mismatch 都不会退化成
 > missing/empty。该 reader 能识别 State V2 identity envelope，但在 CAS repository 完成前 V2 仅可展示，
-> 不能进入 legacy writer。`--clear-state` 会备份/删除 state，因此仍经过
+> 且只接受 JSON integer `schema_version: 2`（`2.0`/`2e0` 均拒绝），不能进入 legacy writer。legacy
+> `rolling_config` 只有在 state 中真实存在并完成 fingerprint 比较时才标记为 `checked`；mismatch inspection
+> 不会向旧调用方返回 raw compatibility payload。`--clear-state` 会备份/删除 state，因此仍经过
 > safeguard 并持有 shared execution lease。
 
 > 30 系列文档专注于**滚动训练**——训练窗口随时间推进而滑动的训练范式。

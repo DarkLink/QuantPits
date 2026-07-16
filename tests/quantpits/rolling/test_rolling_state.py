@@ -12,6 +12,7 @@ from quantpits.rolling.state import (
     RollingStateV2Snapshot,
     inspect_rolling_state,
 )
+from quantpits.utils.workspace import fingerprint_value
 
 
 def _root(tmp_path):
@@ -147,6 +148,8 @@ def test_v2_identity_envelope_round_trips_to_immutable_snapshot(tmp_path):
     ('{"schema_version": 3}', "unsupported_schema"),
     ('{"schema_version": true}', "unsupported_schema"),
     ('{"schema_version": "2"}', "unsupported_schema"),
+    ('{"schema_version": 2.0}', "unsupported_schema"),
+    ('{"schema_version": 2e0}', "unsupported_schema"),
     ('{"schema_version": 2, "schema_version": 2}', "corrupt"),
     ('{"schema_version": 2, "value": NaN}', "corrupt"),
 ])
@@ -255,6 +258,48 @@ def test_expectation_classifies_config_target_window_and_run_mismatch(
     assert inspection.reason_code == "rolling_state_identity_mismatch"
     assert field in inspection.checked
     assert inspection.to_public_dict()["expectation_checks"]["attempt_id"] == "not_checked"
+
+
+def test_legacy_empty_config_is_fingerprinted_compared_and_payload_is_fail_closed(
+    tmp_path,
+):
+    root = _root(tmp_path)
+    path = root / "data" / "rolling_state.json"
+    payload = _legacy()
+    _write(path, payload)
+
+    matching = inspect_rolling_state(
+        path, root,
+        RollingStateExpectation(config_fingerprint=fingerprint_value({})),
+    )
+    assert matching.classification == "valid_legacy"
+    assert "config_fingerprint" in matching.checked
+    assert matching.legacy_payload() == payload
+
+    mismatch = inspect_rolling_state(
+        path, root,
+        RollingStateExpectation(config_fingerprint=fingerprint_value({"x": 1})),
+    )
+    assert mismatch.classification == "identity_mismatch"
+    assert "config_fingerprint" in mismatch.checked
+    assert mismatch.legacy_payload() is None
+
+
+def test_legacy_missing_config_does_not_claim_the_expectation_was_checked(tmp_path):
+    root = _root(tmp_path)
+    path = root / "data" / "rolling_state.json"
+    payload = _legacy()
+    del payload["rolling_config"]
+    _write(path, payload)
+    inspection = inspect_rolling_state(
+        path, root,
+        RollingStateExpectation(config_fingerprint=fingerprint_value({})),
+    )
+    assert inspection.classification == "valid_legacy"
+    assert "config_fingerprint" not in inspection.checked
+    assert inspection.to_public_dict()["expectation_checks"][
+        "config_fingerprint"
+    ] == "not_checked"
 
 
 def test_completion_claim_without_evidence_is_not_reuse_authority(tmp_path):
