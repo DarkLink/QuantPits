@@ -35,6 +35,33 @@ class TrainingHealthAgent(BaseAgent):
             ))
             return AgentFindings(self.name, ctx.window_label, findings, recommendations, raw_metrics)
 
+        state_diagnostics = {}
+        for mode, inspection in tc.rolling_state_inspections.items():
+            classification = inspection.classification
+            state_diagnostics[mode] = {
+                "classification": classification,
+                "reason_code": inspection.reason_code,
+                "fingerprint": inspection.fingerprint,
+            }
+            if classification in ("missing", "valid_legacy"):
+                continue
+            severity = (
+                "info" if classification == "valid_versioned" else "warning"
+            )
+            findings.append(self._make_finding(
+                severity,
+                f"Rolling state classification: {mode}",
+                f"Rolling state for '{mode}' is {classification} "
+                f"({inspection.reason_code}); legacy progress analysis is blocked.",
+                {
+                    "mode": mode,
+                    "classification": classification,
+                    "reason_code": inspection.reason_code,
+                    "consumption": inspection.consumption,
+                },
+            ))
+        raw_metrics["rolling_state_inspections"] = state_diagnostics
+
         # --- 1. Mode Coverage Audit ---
         coverage_stats = {}
         for name, modes_dict in tc.models_by_name.items():

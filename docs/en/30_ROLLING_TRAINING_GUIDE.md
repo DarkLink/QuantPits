@@ -4,7 +4,7 @@
 > and an in-lease Resolved Plan plus legacy execution adapter.
 > Importing the module and running `--help` require no prior `source run_env.sh` and do not change the
 > current directory. `--dry-run`, `--explain-plan`, and `--json-plan` render the same typed plan,
-> freezing the action, ordered targets, workflow and workspace input fingerprints, legacy-state
+> freezing the action, ordered targets, workflow and workspace input fingerprints, typed-state
 > classification, expected effects, and plan fingerprint. This route does not initialize Qlib or
 > MLflow, acquire the lease, or write files. Relative workflow YAML paths are resolved against the
 > selected workspace and may not escape it.
@@ -13,7 +13,9 @@
 > runtime-deferred. A real command renders safeguard directly from the Prepared `WorkspaceContext`
 > without importing legacy `env`; after acquiring the shared lease it rechecks Prepared inputs,
 > activates that same explicit workspace, initializes Qlib once, and freezes the exact
-> anchor, ordered windows/CPCV folds, stable window keys, and execution fingerprint. The adapter
+> anchor, ordered canonical windows/CPCV folds, and execution fingerprint. Target, fold, window, and
+> logical execution identities have one owner in `quantpits.rolling.identity`; display indexes, run
+> IDs, and attempt IDs do not alter execution identity. The adapter
 > consumes only Prepared targets and Resolved windows; it does not rescan the registry or generate a
 > second window set. Rolling still uses unversioned legacy state and legacy record
 > merge, without the newer evidence/publication closure parity.
@@ -27,7 +29,11 @@
 > fingerprints, the action, ordered targets, state classification, and expected effects without
 > initializing Qlib, resolving exact window/fold dates, or creating OperatorLog, state, manifest, or
 > lock files. Exact windows are resolved by real execution.
-> `--show-state` likewise uses lock-free strict readonly classification. `--clear-state` backs up/deletes
+> `--show-state` uses the single-byte-snapshot classifier in `quantpits.rolling.state`. Zero-byte
+> files, duplicate JSON keys, unsupported schemas, cross-workspace symlinks, ambiguous indexes, and
+> identity mismatches never degrade to missing/empty. The reader recognizes the State V2 identity
+> envelope, but V2 is display-only and cannot enter the legacy writer until the CAS repository is
+> implemented. `--clear-state` backs up/deletes
 > state, so it still passes safeguard and holds the shared execution lease.
 
 > The 30-series covers **rolling training** — paradigms where training windows slide forward over time.
@@ -81,7 +87,9 @@ rolling_train.py      ← CLI + orchestration + strategy dispatch
 ```
 quantpits/rolling/
 ├── command.py            # filesystem-only PreparedRollingRun
-├── windows.py            # runtime ResolvedRollingRun + stable window keys
+├── identity.py           # pure canonical target/fold/window/run identities
+├── state.py              # single-snapshot, version-aware readonly classifier
+├── windows.py            # runtime ResolvedRollingRun + canonical identities
 └── legacy.py             # exact-scope legacy adapter + baseline recheck
 
 rolling/
@@ -162,8 +170,10 @@ The Prepared Plan does not render exact Qlib-calendar windows or folds. In plan 
 only exposes the deferred reason; exact content is available after real execution resolves dates.
 This preserves a zero-write route with no Qlib/MLflow initialization. Conflicting primary actions,
 such as `--cold-start --resume`, fail with `rolling_action_conflict` before safeguard, lease, or
-backend activation. `--show-state` distinguishes `missing`, `valid_legacy`, `corrupt`, and
-`unsupported` instead of treating damaged state as empty.
+backend activation. `--show-state` reports `missing`, `valid_legacy`, `valid_versioned`, `corrupt`,
+`unsupported_schema`, `ambiguous`, `foreign`, `identity_mismatch`, or `unverified_completion` with a
+stable reason code. A state `completed`/success flag or recorder ID is only a claim; it is not
+immutable unit evidence or a publication receipt.
 
 `--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared
 context as the sole workspace identity; legacy `env` does not reselect it from process `sys.argv`.

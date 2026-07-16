@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import builtins
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from quantpits.order.command import (
 )
 from quantpits.post_trade.command import PostTradeRunOptions, prepare_post_trade_run
 from quantpits.rolling.command import RollingRunOptions, prepare_rolling_run
+from quantpits.rolling.state import inspect_rolling_state
 from quantpits.training.command import TrainingRunOptions, prepare_training_run
 
 from .artifact_graph import observe_artifact_graph
@@ -101,6 +103,66 @@ def test_rolling_cli_workspace_forms_match_programmatic_plan(workspace_form, tmp
     )
     assert cli["plan_fingerprint"] == programmatic.plan_fingerprint
     assert cli["plan"]["metadata"]["target_keys"] == ["demo@rolling"]
+    assert cli["plan"]["metadata"]["workspace_fingerprint"] == programmatic.plan.metadata["workspace_fingerprint"]
+    assert cli["plan"]["metadata"]["state_inspection"] == programmatic.plan.metadata["state_inspection"]
     after = observe_artifact_graph(workspace.root)
     assert after.artifacts == before.artifacts
     assert after.physical_escapes == before.physical_escapes == ()
+
+
+def test_rolling_state_classifications_are_zero_write_and_backend_free(
+    tmp_path, monkeypatch,
+):
+    from quantpits.rolling.identity import workspace_fingerprint
+
+    workspace = ScenarioWorkspace.create(tmp_path)
+    state_path = workspace.root / "data" / "rolling_state.json"
+    legacy = json.dumps({
+        "anchor_date": "2026-07-17",
+        "training_method": "slide",
+        "completed_windows": {"0": {"demo": "recorder-demo"}},
+        "current_window_idx": 0,
+        "current_model": "demo",
+        "total_windows": 1,
+    }).encode("utf-8")
+    versioned = json.dumps({
+        "schema_version": 2,
+        "workspace_fingerprint": workspace_fingerprint(workspace.root),
+        "run_id": "semantic-demo", "family": "rolling", "action": "daily",
+        "plan_fingerprint": "a" * 64,
+        "execution_fingerprint": "b" * 64,
+        "config_fingerprint": "c" * 64,
+        "anchor_date": "2026-07-17",
+        "target_keys": ["demo@rolling"],
+        "window_keys": ["rolling:2026-04-01:2026-06-30:abcdef123456"],
+        "attempt_id": None, "phase": "executing", "units": [],
+    }).encode("utf-8")
+    cwd = os.getcwd()
+    environment = dict(os.environ)
+    imported = []
+    real_import = builtins.__import__
+
+    def rejecting_import(name, *args, **kwargs):
+        if name.startswith(("qlib", "mlflow", "quantpits.utils.env")):
+            imported.append(name)
+            raise AssertionError("classifier attempted backend import: %s" % name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", rejecting_import)
+    observed = []
+    for data in (None, b"", legacy, versioned):
+        if data is None:
+            state_path.unlink(missing_ok=True)
+        else:
+            state_path.write_bytes(data)
+        before = observe_artifact_graph(workspace.root)
+        inspection = inspect_rolling_state(state_path, workspace.root)
+        after = observe_artifact_graph(workspace.root)
+        observed.append(inspection.classification)
+        assert after.artifacts == before.artifacts
+        assert after.physical_escapes == before.physical_escapes == ()
+
+    assert observed == ["missing", "corrupt", "valid_legacy", "valid_versioned"]
+    assert imported == []
+    assert os.getcwd() == cwd
+    assert dict(os.environ) == environment

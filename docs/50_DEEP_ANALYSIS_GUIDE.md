@@ -231,11 +231,16 @@ python -m quantpits.scripts.run_deep_analysis --stage custom_liquidity_check --s
 | `data/rolling_training_history.jsonl` | 滚动训练事件（slide + CPCV），与静态文件分离（Phase 2c） |
 | `data/rolling_prediction_history.jsonl` | 滚动仅预测事件（slide + CPCV）（Phase 2c） |
 | `config/rolling_config.yaml` | 滚动调度器配置 |
-| `data/rolling_state.json` | 滑动滚动进度 (slide) |
-| `data/rolling_state_cpcv.json` | CPCV 滚动进度 |
+| `data/rolling_state.json` | 经 `quantpits.rolling.state` 单次快照分类的 slide 滚动进度 |
+| `data/rolling_state_cpcv.json` | 经同一只读 classifier 分类的 CPCV 滚动进度 |
 | `config/model_config.json` | CPCV 参数 (purged_cv) |
 
 > **Phase 2c 文件分离设计**: 滚动训练有独立的代码路径（直接调用 `model.fit()`，不经过 `train_utils` 包装函数），且产生"薄"日志（无 epoch 级数据）。因此滚动事件写入独立文件，与静态训练日志完全隔离。未启用滚动的用户不会产生这些文件，零额外开销。
+
+`TrainingModeContext` 不再自行 `json.load()` Rolling state。valid legacy payload 继续提供现有分析字段；
+corrupt、unsupported、foreign、mismatch 或 versioned state 则通过 `rolling_state_inspections` 暴露明确
+classification、reason 与 byte fingerprint，不会被静默当作 missing。State completion claim 仍不是 immutable
+evidence，Deep Analysis 不据此授权 recovery/reuse。
 
 #### `@suffix` 模型键约定
 

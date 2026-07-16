@@ -85,3 +85,28 @@ def test_training_health_agent(tmp_path):
 
     # Check for Barra size exposure drift
     assert any("极端微盘漂移" in t for t in finding_types)
+
+
+def test_training_health_surfaces_invalid_state_from_authoritative_inspection(tmp_path):
+    workspace = tmp_path / "Demo_Workspace"
+    (workspace / "config").mkdir(parents=True)
+    (workspace / "data").mkdir()
+    (workspace / "output").mkdir()
+    (workspace / "data" / "rolling_state.json").write_text(
+        "{broken", encoding="utf-8",
+    )
+    training_context = TrainingModeContext.from_workspace(str(workspace))
+    ctx = AnalysisContext(
+        start_date="2026-07-01", end_date="2026-07-03", window_label="3d",
+        workspace_root=str(workspace), training_context=training_context,
+    )
+
+    results = TrainingHealthAgent().analyze(ctx)
+
+    matching = [
+        finding for finding in results.findings
+        if finding.title == "Rolling state classification: rolling"
+    ]
+    assert len(matching) == 1
+    assert matching[0].data["classification"] == "corrupt"
+    assert matching[0].data["reason_code"] == "rolling_state_corrupt"

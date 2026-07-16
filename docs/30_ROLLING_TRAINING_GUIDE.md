@@ -4,14 +4,16 @@
 > lease 内的 Resolved Plan 与 legacy execution adapter。导入模块和
 > 执行 `--help` 不要求预先 `source run_env.sh`，也不会改变当前目录。`--dry-run`、
 > `--explain-plan` 与 `--json-plan` 来自同一个 typed plan，冻结 action、ordered targets、workflow
-> 及 workspace 输入指纹、legacy state 分类、预期副作用和 plan fingerprint；该路径不初始化
+> 及 workspace 输入指纹、typed state 分类、预期副作用和 plan fingerprint；该路径不初始化
 > Qlib/MLflow，不获取 lease，也不写文件。registry 中的相对 workflow YAML 路径显式相对于所选
 > workspace 解析，并且不允许逃逸 workspace。
 >
 > Prepared Plan 不伪造交易日历事实：anchor、slide windows 与 CPCV folds 会标为 runtime deferred。
 > 真实命令直接用 Prepared `WorkspaceContext` 显示 safeguard，不导入 legacy `env`；随后在 shared lease
 > 内复核 Prepared inputs，再激活同一个显式 workspace、初始化一次 Qlib，
-> 冻结精确 anchor、ordered windows/CPCV folds、stable window keys 与 execution fingerprint。adapter 只消费
+> 冻结精确 anchor、ordered canonical windows/CPCV folds 与 execution fingerprint。target、fold、window
+> 和 logical execution identity 由 `quantpits.rolling.identity` 统一生成；display index、run ID 与 attempt ID
+> 不会改变 execution identity。adapter 只消费
 > Prepared targets 和 Resolved windows，不重新扫描 registry 或再次生成窗口。Rolling 仍使用 legacy
 > unversioned state 与 legacy record merge，不具备新版 evidence/publication
 > closure parity。
@@ -23,7 +25,10 @@
 > `--dry-run` 是严格的文件系统 Prepared Plan：显示配置、输入指纹、动作、ordered targets、state
 > 分类与预期副作用，但不初始化 Qlib、不计算实际 window/fold 日期，也不创建 OperatorLog、state、
 > manifest 或 lock；精确窗口在真实执行中解析。
-> `--show-state` 同样使用无 lock 的严格只读分类；`--clear-state` 会备份/删除 state，因此仍经过
+> `--show-state` 同样使用 `quantpits.rolling.state` 的单次 byte snapshot 严格只读分类；zero-byte、重复
+> JSON key、unsupported schema、跨 workspace symlink、ambiguous index 与 identity mismatch 都不会退化成
+> missing/empty。该 reader 能识别 State V2 identity envelope，但在 CAS repository 完成前 V2 仅可展示，
+> 不能进入 legacy writer。`--clear-state` 会备份/删除 state，因此仍经过
 > safeguard 并持有 shared execution lease。
 
 > 30 系列文档专注于**滚动训练**——训练窗口随时间推进而滑动的训练范式。
@@ -75,7 +80,9 @@ rolling_train.py      ← CLI + 流程编排 + 策略分派
 ```
 quantpits/rolling/
 ├── command.py            # filesystem-only PreparedRollingRun
-├── windows.py            # runtime ResolvedRollingRun + stable window keys
+├── identity.py           # pure canonical target/fold/window/run identities
+├── state.py              # single-snapshot, version-aware readonly classifier
+├── windows.py            # runtime ResolvedRollingRun + canonical identities
 └── legacy.py             # exact-scope legacy execution adapter + baseline recheck
 
 rolling/
@@ -155,8 +162,10 @@ python quantpits/scripts/rolling_train.py --backtest-only \
 Prepared Plan 不展示依赖 Qlib calendar 的精确窗口或 fold；`--show-folds` 在 plan 中只显示 deferred
 原因，精确内容由真实执行在 lease 内解析并传给 legacy adapter。该取舍保证 plan route 严格零写入、零 Qlib/MLflow
 初始化。多个 primary action（例如同时使用 `--cold-start --resume`）会在 safeguard、lease 和 backend
-之前以 `rolling_action_conflict` 拒绝；`--show-state` 会区分 `missing`、`valid_legacy`、`corrupt` 与
-`unsupported`，不会把损坏状态伪装成空状态。
+之前以 `rolling_action_conflict` 拒绝；`--show-state` 会显示 `missing`、`valid_legacy`、
+`valid_versioned`、`corrupt`、`unsupported_schema`、`ambiguous`、`foreign`、`identity_mismatch` 或
+`unverified_completion` 及稳定 reason code。State 中的 `completed`、success 或 recorder ID 只是 claim，
+不等于 immutable unit evidence 或 publication receipt。
 
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一
 workspace identity，不依赖进程 `sys.argv` 让 legacy `env` 再次选择 workspace。真实执行顺序为

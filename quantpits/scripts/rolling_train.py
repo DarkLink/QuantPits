@@ -881,7 +881,11 @@ def _render_prepared_rolling_plan(args, prepared):
 def _render_strict_state(prepared):
     inspection = prepared.state
     print("\n📋 Rolling state inspection:")
+    print("  Classification: %s" % inspection.classification)
     print("  Status: %s" % inspection.status)
+    print("  Reason: %s" % inspection.reason_code)
+    print("  Protocol: %s" % inspection.protocol)
+    print("  Consumption: %s" % inspection.consumption)
     print("  Path: %s" % inspection.path)
     if inspection.fingerprint:
         print("  Fingerprint: %s" % inspection.fingerprint)
@@ -889,10 +893,14 @@ def _render_strict_state(prepared):
         print("  Anchor: %s" % inspection.anchor)
     if inspection.training_method:
         print("  Training method: %s" % inspection.training_method)
-    if inspection.status == "valid_legacy":
+    if inspection.classification == "valid_legacy":
         print("  Completed windows: %s" % inspection.completed_windows)
         print("  Completed model×window units: %s" % inspection.completed_units)
         print("  Resume identity: legacy_partial")
+    for warning in inspection.warnings:
+        print("  Warning: %s" % warning)
+    for blocker in inspection.blockers:
+        print("  Blocker: %s" % blocker)
     return 0
 
 def _main_impl(args):

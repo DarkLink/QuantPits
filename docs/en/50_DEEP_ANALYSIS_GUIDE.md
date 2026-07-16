@@ -241,11 +241,17 @@ As of Phase 2b, the Deep Analysis system has full training mode awareness. `Trai
 | `data/rolling_training_history.jsonl` | Rolling training events (slide + CPCV), separate from static (Phase 2c) |
 | `data/rolling_prediction_history.jsonl` | Rolling predict-only events (slide + CPCV) (Phase 2c) |
 | `config/rolling_config.yaml` | Rolling scheduler configuration |
-| `data/rolling_state.json` | Slide rolling progress |
-| `data/rolling_state_cpcv.json` | CPCV rolling progress |
+| `data/rolling_state.json` | Slide rolling progress classified from one byte snapshot by `quantpits.rolling.state` |
+| `data/rolling_state_cpcv.json` | CPCV rolling progress classified by the same readonly classifier |
 | `config/model_config.json` | CPCV parameters (purged_cv) |
 
 > **Phase 2c file separation**: Rolling training has independent code paths (calls `model.fit()` directly, bypassing `train_utils` wrappers) and produces "thin" log entries (no epoch-level data). Rolling events are therefore written to dedicated files, fully isolated from static training logs. Users not using rolling training never create these files — zero overhead.
+
+`TrainingModeContext` no longer parses Rolling state with its own `json.load()`. Valid legacy payloads
+continue to feed existing analysis fields; corrupt, unsupported, foreign, mismatched, or versioned
+state is exposed through `rolling_state_inspections` with an explicit classification, reason, and byte
+fingerprint instead of being silently treated as missing. A completion claim is not immutable evidence,
+so Deep Analysis does not grant recovery/reuse authority from state alone.
 
 #### `@suffix` Model Key Convention
 

@@ -36,6 +36,8 @@ import os
 import sys
 before = os.getcwd()
 import quantpits.scripts.rolling_train as rolling_train
+import quantpits.rolling.identity
+import quantpits.rolling.state
 assert os.getcwd() == before
 assert 'quantpits.utils.env' not in sys.modules
 assert callable(rolling_train.build_parser)
@@ -120,6 +122,8 @@ assert dict(os.environ) == before_env
     plan = payload["plan"]
     assert plan["metadata"]["action"] == "cold_start"
     assert plan["metadata"]["target_keys"] == ["demo_model@rolling"]
+    assert plan["metadata"]["state_inspection"]["classification"] == "missing"
+    assert len(plan["metadata"]["workspace_fingerprint"]) == 64
     assert [item["model_name"] for item in plan["metadata"]["targets"]] == [
         "demo_model",
     ]

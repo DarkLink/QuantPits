@@ -46,7 +46,8 @@
 | `--allow-stale-predict` | 允许 `--predict-only` 用旧权重预测新数据 |
 
 Prepared Plan 是严格的文件系统只读操作，不初始化 Qlib/MLflow，不获取 shared lease，也不写
-OperatorLog。它会冻结 registry 顺序的 targets 和 workspace-contained workflow，分类 legacy state，并
+OperatorLog。它会冻结 registry 顺序的 canonical targets 和 workspace-contained workflow，通过唯一
+只读 classifier 分类 legacy/V2 state，并
 如实声明真实命令可能写入的 state、record、history、MLflow artifacts 和 OperatorLog。日历 anchor、
 windows/CPCV folds 在 Prepared Plan 中保持 deferred；真实执行会在 shared lease 内复核 input baselines，
 初始化一次 Qlib，并用 Resolved Plan 绑定精确 anchor、ordered windows/folds、stable window keys 和 execution
@@ -81,7 +82,7 @@ workspace 外的 state/record/history/MLflow/OperatorLog 路径都会以
 
 | 参数 | 说明 |
 |------|------|
-| `--show-state` | 严格只读分类：`missing` / `valid_legacy` / `corrupt` / `unsupported` |
+| `--show-state` | 严格只读 typed 分类与 reason：missing/valid legacy/V2/corrupt/unsupported/ambiguous/foreign/mismatch/unverified completion |
 | `--clear-state` | 清除当前模式的训练状态（自动备份） |
 
 > `--show-state` / `--clear-state` 支持 `--training-method` 选择目标模式。
@@ -98,6 +99,12 @@ workspace 外的 state/record/history/MLflow/OperatorLog 路径都会以
 | CPCV | `data/rolling_state_cpcv.json` |
 
 两个文件完全独立。`--cold-start` 只清空当前模式的状态，不影响另一模式。
+
+现有 legacy state 仍是唯一可进入 legacy execution 的协议。reader 可以验证 `schema_version=2` 的 identity
+envelope，但 V2 当前仅用于诊断；任何 mutation、clear 或 resume 都会在 safeguard、lease 和 backend 之前拒绝。
+zero-byte、`{}`、duplicate JSON key、非规范 window index、family/workspace/config identity mismatch 与外部
+symlink 都 fail closed。State 中的 completion/recorder claim 不提供 recovery reuse authority；CAS 写入、显式
+migration 与 immutable evidence 分属后续独立边界。
 
 ### 状态结构
 

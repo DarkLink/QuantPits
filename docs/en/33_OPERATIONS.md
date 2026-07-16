@@ -33,7 +33,7 @@
 
 Preparing a plan is strictly filesystem-read-only: it does not initialize Qlib/MLflow, acquire the
 shared lease, or write an OperatorLog. The plan freezes registry-ordered targets and
-workspace-contained workflows, classifies legacy state, and truthfully declares state, record,
+workspace-contained workflows, uses the sole readonly classifier for legacy/V2 state, and truthfully declares state, record,
 history, MLflow artifact, and OperatorLog effects of a real command. Calendar anchors, windows, and
 CPCV folds remain deferred in the Prepared Plan. Real execution rechecks input baselines inside the
 shared lease, initializes Qlib once, and binds the exact anchor, ordered windows/folds, stable window
@@ -75,7 +75,7 @@ workspace identities, absolute paths, or runtime data.
 
 | Flag | Purpose |
 |------|---------|
-| `--show-state` | Strict readonly classification: `missing` / `valid_legacy` / `corrupt` / `unsupported` |
+| `--show-state` | Strict typed classification/reason for missing, valid legacy/V2, corrupt, unsupported, ambiguous, foreign, mismatch, or unverified completion |
 | `--clear-state` | Clear current method's training state (auto-backup) |
 
 > `--show-state` / `--clear-state` accept `--training-method` to target a specific mode.
@@ -88,6 +88,13 @@ workspace identities, absolute paths, or runtime data.
 | CPCV | `data/rolling_state_cpcv.json` |
 
 Fully independent. `--cold-start` clears only the current method's state.
+
+Only valid legacy state can currently enter legacy execution. The reader validates a
+`schema_version=2` identity envelope for diagnostics, but V2 is display-only: mutation, clear, or
+resume rejects it before safeguard, lease, and backend activation. Zero-byte files, `{}`, duplicate
+JSON keys, non-canonical window indexes, family/workspace/config identity mismatches, and external
+symlinks fail closed. Completion or recorder claims in state are not recovery reuse authority; CAS
+writes, explicit migration, and immutable evidence remain separate later boundaries.
 
 ### Cross-Mode Isolation
 

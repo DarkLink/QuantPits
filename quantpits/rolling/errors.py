@@ -35,6 +35,10 @@ class RollingTargetUnknownError(RollingCommandError):
     code = "rolling_target_unknown"
 
 
+class RollingIdentityError(RollingCommandError):
+    code = "rolling_identity_invalid"
+
+
 class RollingWorkflowMissingError(RollingCommandError):
     code = "rolling_workflow_missing"
 
@@ -52,7 +56,15 @@ class RollingStateCorruptError(RollingCommandError):
 
 
 class RollingStateUnsupportedError(RollingCommandError):
-    code = "rolling_state_unsupported"
+    code = "rolling_state_schema_unsupported"
+
+
+class RollingStateRejectedError(RollingCommandError):
+    """Reject a typed state classification at the command boundary."""
+
+    def __init__(self, message, code="rolling_state_rejected"):
+        super().__init__(message)
+        self.code = code
 
 
 class RollingResumeStateMissingError(RollingCommandError):

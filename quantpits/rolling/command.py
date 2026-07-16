@@ -20,11 +20,22 @@ from quantpits.rolling.errors import (
     RollingStatePreconditionError,
     RollingStateCorruptError,
     RollingStateUnsupportedError,
+    RollingStateRejectedError,
     RollingTargetSelectionEmptyError,
     RollingTargetUnknownError,
     RollingWorkflowMissingError,
     RollingWorkflowOutsideWorkspaceError,
     RollingWorkspaceRequiredError,
+)
+from quantpits.rolling.identity import (
+    RollingTargetIdentity,
+    family_for_training_method,
+    workspace_fingerprint,
+)
+from quantpits.rolling.state import (
+    RollingStateExpectation,
+    RollingStateInspection,
+    inspect_rolling_state,
 )
 from quantpits.runtime.command import (
     CommandPlan,
@@ -65,25 +76,26 @@ class RollingRunOptions:
 
 @dataclass(frozen=True)
 class RollingTarget:
-    target_key: str
-    model_name: str
-    family: str
+    identity: RollingTargetIdentity
     workflow_path: str
     workflow_fingerprint: str
     selected_by: str
     legacy_info: dict
 
+    @property
+    def target_key(self):
+        return self.identity.target_key
 
-@dataclass(frozen=True)
-class LegacyRollingStateInspection:
-    status: str
-    path: str
-    fingerprint: str = None
-    anchor: str = None
-    training_method: str = None
-    completed_windows: int = 0
-    completed_units: int = 0
-    warning: str = None
+    @property
+    def model_name(self):
+        return self.identity.model_name
+
+    @property
+    def family(self):
+        return self.identity.family
+
+
+LegacyRollingStateInspection = RollingStateInspection
 
 
 @dataclass(frozen=True)
@@ -291,7 +303,7 @@ def _select_targets(ctx, registry, options, family):
             raise RollingConfigInvalidError("registry model %s must be a mapping" % name)
         workflow, relative = _contained_workflow(ctx, info.get("yaml_file"))
         targets.append(RollingTarget(
-            target_key="%s@%s" % (name, suffix), model_name=name, family=family,
+            identity=RollingTargetIdentity(model_name=name, family=suffix),
             workflow_path=relative, workflow_fingerprint=fingerprint_file(workflow),
             selected_by=selected_by, legacy_info=dict(info),
         ))
@@ -299,54 +311,9 @@ def _select_targets(ctx, registry, options, family):
 
 
 def inspect_legacy_state(path, workspace_root):
-    relative = path.relative_to(workspace_root).as_posix()
-    try:
-        if not path.exists() or path.stat().st_size == 0:
-            return LegacyRollingStateInspection(status="missing", path=relative)
-    except OSError as exc:
-        return LegacyRollingStateInspection(
-            status="corrupt", path=relative,
-            warning="state cannot be inspected: %s" % exc.__class__.__name__,
-        )
-    try:
-        fingerprint = fingerprint_file(path)
-        with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return LegacyRollingStateInspection(
-            status="corrupt", path=relative, fingerprint=locals().get("fingerprint"),
-            warning="state cannot be decoded: %s" % exc.__class__.__name__,
-        )
-    if not isinstance(payload, dict):
-        return LegacyRollingStateInspection(
-            status="unsupported", path=relative, fingerprint=fingerprint,
-            warning="state root must be a mapping",
-        )
-    completed = payload.get("completed_windows", {})
-    if not isinstance(completed, dict) or any(
-            not isinstance(value, dict) for value in completed.values()):
-        return LegacyRollingStateInspection(
-            status="unsupported", path=relative, fingerprint=fingerprint,
-            warning="completed_windows must map window keys to model mappings",
-        )
-    anchor = payload.get("anchor_date")
-    method = payload.get("training_method", "slide")
-    if anchor is not None and not isinstance(anchor, str):
-        return LegacyRollingStateInspection(
-            status="unsupported", path=relative, fingerprint=fingerprint,
-            warning="anchor_date must be a string or null",
-        )
-    if method not in ("slide", "cpcv"):
-        return LegacyRollingStateInspection(
-            status="unsupported", path=relative, fingerprint=fingerprint,
-            warning="training_method is unsupported",
-        )
-    return LegacyRollingStateInspection(
-        status="valid_legacy", path=relative, fingerprint=fingerprint,
-        anchor=anchor, training_method=method, completed_windows=len(completed),
-        completed_units=sum(len(value) for value in completed.values()),
-        warning="legacy state has partial target/run identity",
-    )
+    """Deprecated compatibility alias for the authoritative classifier."""
+
+    return inspect_rolling_state(path, workspace_root)
 
 
 def _input_ref(ctx, relative, kind="config", required=False, description=""):
@@ -370,7 +337,9 @@ def _validate_mapping_file(path, label, loader):
 
 def _outputs_for_action(action, state_path, backtest):
     if action in ("show_state",):
-        return (), (StateRef(state_path, "read", "strict readonly legacy state inspection"),)
+        return (), (StateRef(
+            state_path, "read", "strict typed readonly state inspection",
+        ),)
     if action == "clear_state":
         return (
             OutputRef("data/history/rolling_state_<timestamp>.json", kind="state",
@@ -438,15 +407,37 @@ def prepare_rolling_run(ctx, options, cli_args=()):
     )
     effective = _normalize_rolling_config(raw_config, options.training_method)
     training_method = effective["training_method"]
-    family = "cpcv_rolling" if training_method == "cpcv" else "rolling"
+    family = family_for_training_method(training_method)
     state_path = ctx.data_path(
         "rolling_state_cpcv.json" if training_method == "cpcv" else "rolling_state.json"
     )
-    state = inspect_legacy_state(state_path, ctx.root)
-    if state.status == "corrupt" and options.action != "show_state":
+    source_fp = fingerprint_file(rolling_path)
+    normalized_fp = fingerprint_value(_normalize_rolling_config(raw_config, None))
+    effective_fp = fingerprint_value(effective)
+    state = inspect_rolling_state(
+        state_path,
+        ctx.root,
+        RollingStateExpectation(
+            workspace_fingerprint=workspace_fingerprint(ctx.root),
+            family=family,
+            config_fingerprint=effective_fp,
+        ),
+    )
+    if state.classification == "corrupt" and options.action != "show_state":
         raise RollingStateCorruptError("%s: %s" % (state.path, state.warning))
-    if state.status == "unsupported" and options.action != "show_state":
+    if state.classification == "unsupported_schema" and options.action != "show_state":
         raise RollingStateUnsupportedError("%s: %s" % (state.path, state.warning))
+    if (state.classification not in ("missing", "valid_legacy")
+            and options.action != "show_state"):
+        code = (
+            "rolling_state_versioned_read_only"
+            if state.classification == "valid_versioned"
+            else state.reason_code
+        )
+        raise RollingStateRejectedError(
+            "%s: %s" % (state.path, state.warning or state.classification),
+            code=code,
+        )
     if options.action == "resume" and (state.status != "valid_legacy" or not state.anchor):
         raise RollingResumeStateMissingError("resume requires valid legacy state with anchor")
     if options.action in ("daily", "predict_only") and (
@@ -513,9 +504,6 @@ def prepare_rolling_run(ctx, options, cli_args=()):
     if state.fingerprint:
         fingerprints[state.path] = state.fingerprint
 
-    source_fp = fingerprint_file(rolling_path)
-    normalized_fp = fingerprint_value(_normalize_rolling_config(raw_config, None))
-    effective_fp = fingerprint_value(effective)
     fingerprints["rolling_source"] = source_fp
     fingerprints["rolling_normalized"] = normalized_fp
     fingerprints["rolling_effective"] = effective_fp
@@ -573,13 +561,8 @@ def prepare_rolling_run(ctx, options, cli_args=()):
             } for target in targets],
             "effective_config": effective,
             "effective_config_fingerprint": effective_fp,
-            "state_inspection": {
-                "status": state.status, "path": state.path,
-                "fingerprint": state.fingerprint, "anchor": state.anchor,
-                "training_method": state.training_method,
-                "completed_windows": state.completed_windows,
-                "completed_units": state.completed_units,
-            },
+            "workspace_fingerprint": workspace_fingerprint(ctx.root),
+            "state_inspection": state.to_public_dict(),
             "anchor_resolution": (
                 "legacy_state_hint" if options.action == "resume" and state.anchor
                 else "deferred_to_qlib_calendar"
@@ -596,7 +579,7 @@ def prepare_rolling_run(ctx, options, cli_args=()):
             "resume_identity_strength": "legacy_partial" if state.status == "valid_legacy" else "none",
             "publication_protocol": "legacy_record_merge",
             "manifest_protocol": "not_yet_service_backed",
-            "state_protocol": "legacy_unversioned",
+            "state_protocol": state.protocol,
         },
     )
     return PreparedRollingRun(
@@ -608,7 +591,7 @@ def prepare_rolling_run(ctx, options, cli_args=()):
                         else "deferred_to_qlib_calendar"),
             configured_value=state.anchor,
         ),
-        plan=plan, plan_fingerprint=fingerprint_command_plan(plan),
+        plan=plan, plan_fingerprint=fingerprint_command_plan(plan, length=64),
         input_fingerprints=fingerprints,
     )
 
@@ -650,8 +633,8 @@ def render_prepared_plan(prepared):
         "  - Action: %s" % metadata["action"],
         "  - Family: %s" % metadata["family"],
         "  - Training method: %s" % metadata["training_method"],
-        "  - Legacy state: %s (%s)" % (
-            metadata["state_inspection"]["status"],
+        "  - State classification: %s (%s)" % (
+            metadata["state_inspection"]["classification"],
             metadata["state_inspection"]["path"],
         ),
         "  - Anchor resolution: %s" % metadata["anchor_resolution"],
@@ -675,7 +658,7 @@ def resolve_legacy_targets(ctx, args):
         "config/rolling_config.yaml",
     )
     method = _normalize_rolling_config(raw, options.training_method)["training_method"]
-    family = "cpcv_rolling" if method == "cpcv" else "rolling"
+    family = family_for_training_method(method)
     registry = _load_yaml(
         ctx.config_path("model_registry.yaml"), RollingConfigMissingError,
         "config/model_registry.yaml",

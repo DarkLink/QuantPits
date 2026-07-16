@@ -56,6 +56,7 @@ class TrainingModeContext:
         last_prediction: Optional[Dict[str, dict]] = None,
         last_train: Optional[Dict[str, dict]] = None,
         is_predict_only_cycle: bool = False,
+        rolling_state_inspections: Optional[Dict[str, object]] = None,
     ):
         self.workspace_root = workspace_root
         self.anchor_date = anchor_date
@@ -64,6 +65,7 @@ class TrainingModeContext:
         self.available_modes = available_modes or []
         self.rolling_config = rolling_config or {}
         self.rolling_states = rolling_states or {}
+        self.rolling_state_inspections = rolling_state_inspections or {}
         self.cpcv_config = cpcv_config or {}
         self.last_prediction = last_prediction or {}
         self.last_train = last_train or {}
@@ -164,19 +166,37 @@ class TrainingModeContext:
                 logger.error(f"Failed to load config/rolling_config.yaml: {e}")
 
         # 3. Parse rolling states (rolling_state.json -> slide, rolling_state_cpcv.json -> cpcv)
+        from quantpits.rolling.identity import workspace_fingerprint
+        from quantpits.rolling.state import (
+            RollingStateExpectation,
+            inspect_rolling_state,
+        )
+
         rolling_states = {}
+        rolling_state_inspections = {}
         state_files = {
             "rolling": "rolling_state.json",
             "cpcv_rolling": "rolling_state_cpcv.json"
         }
         for mode, filename in state_files.items():
             state_path = os.path.join(workspace_root, "data", filename)
-            if os.path.exists(state_path):
-                try:
-                    with open(state_path, "r", encoding="utf-8") as f:
-                        rolling_states[mode] = json.load(f)
-                except Exception as e:
-                    logger.error(f"Failed to load {filename}: {e}")
+            inspection = inspect_rolling_state(
+                state_path,
+                workspace_root,
+                RollingStateExpectation(
+                    workspace_fingerprint=workspace_fingerprint(workspace_root),
+                    family=mode,
+                ),
+            )
+            rolling_state_inspections[mode] = inspection
+            legacy_payload = inspection.legacy_payload()
+            if legacy_payload is not None:
+                rolling_states[mode] = legacy_payload
+            elif inspection.classification != "missing":
+                logger.error(
+                    "Rolling state %s classified as %s (%s)",
+                    filename, inspection.classification, inspection.reason_code,
+                )
 
         # 4. Parse config/model_config.json
         cpcv_config = {}
@@ -272,6 +292,7 @@ class TrainingModeContext:
             available_modes=sorted(list(available_modes)),
             rolling_config=rolling_config,
             rolling_states=rolling_states,
+            rolling_state_inspections=rolling_state_inspections,
             cpcv_config=cpcv_config,
             last_prediction=last_prediction,
             last_train=last_train,

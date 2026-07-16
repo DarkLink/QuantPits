@@ -526,7 +526,7 @@ latest_train_records.json   prod_config.json (Update Pos/Cash)
 | `order_history/` | Historical order suggestions, trade details, exported brokerage Excel files (supervised by archiver) |
 | `run_state.json` | Locked/CAS-protected static/CPCV Training State V3; Rolling uses separate state |
 | `training_runs/<run_id>/` | Immutable static/CPCV target evidence and recoverable closure state |
-| `rolling_state.json` | Rolling training state tracker (crash recovery) |
+| `rolling_state.json` / `rolling_state_cpcv.json` | Legacy Rolling progress; the canonical readonly classifier fails closed and the V2 envelope is diagnostic-only, never written yet |
 | `migrate_records.py` | (Tool) Upgrades legacy dual-file record system to unified `model@mode` format |
 | `trade_log_full.csv` | Cumulative trade log (both buys and sells) |
 | `holding_log_full.csv` | Cumulative holdings log |
@@ -583,6 +583,7 @@ The `quantpits/utils/` directory provides shared capabilities for all scripts, e
 | `config_contracts/` | Workspace config validation, normalization, and fingerprints for pre-run checks and future plan/manifest reuse | Global |
 | `runtime/` | Shared `CommandPlan` / `RunManifest` / plan renderer / manifest writer runtime primitives | Integrated by `ensemble_fusion` and `order_gen` |
 | `training/` | Static/CPCV plans, pure recovery classifier, immutable target evidence, workspace lease, State V3, retryable publication/closure, and service lifecycle | Training and predict-only |
+| `rolling/` | Canonical Rolling target/fold/window/run identity, version-aware single-snapshot readonly state classifier, Prepared/Resolved plans, and the legacy adapter boundary | Rolling plans, diagnostics, and the legacy execution gate |
 | `order/` | Order command, prepared source, execution service, pure opinion calculation, atomic persistence, and actual artifact ledger | Order generation |
 | `ensemble/` | Ensemble fusion service, I/O, and reporting layer: explicit config loading, workspace-bound execution paths, plan/render, manifest, OperatorLog linkage, prediction persistence, fusion ledger, correlation/LOO analytics, risk/leaderboard/chart reports, and execution lifecycle | Fusion |
 | `strategy.py` | Strategy config / backtest strategy construction | Ensemble Search, Fusion, Analysis |
