@@ -16,7 +16,7 @@ class SemanticScenarioExpectation:
     requested_identities: Tuple[str, ...]
     terminal_members: Tuple[TerminalMemberExpectation, ...]
     authoritative_inputs: Tuple[str, ...]
-    allowed_write_prefixes: Tuple[str, ...]
+    allowed_write_paths: Tuple[str, ...]
     forbidden_paths: Tuple[str, ...] = ()
 
     @property

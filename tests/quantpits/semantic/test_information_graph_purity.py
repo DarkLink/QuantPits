@@ -60,7 +60,8 @@ def test_programmatic_information_graph_is_zero_write(tmp_path):
     )
 
     after = observe_artifact_graph(workspace.root)
-    assert before.files == after.files
+    assert before.artifacts == after.artifacts
+    assert before.physical_escapes == after.physical_escapes == ()
     assert os.getcwd() == cwd and dict(os.environ) == environment
     assert training.plan.metadata["target_keys"] == ["demo@static"]
     assert rolling.plan.metadata["target_keys"] == ["demo@rolling"]
@@ -93,4 +94,6 @@ def test_rolling_cli_equal_workspace_form_matches_programmatic_plan(tmp_path):
     )
     assert cli["plan_fingerprint"] == programmatic.plan_fingerprint
     assert cli["plan"]["metadata"]["target_keys"] == ["demo@rolling"]
-    assert observe_artifact_graph(workspace.root).files == before.files
+    after = observe_artifact_graph(workspace.root)
+    assert after.artifacts == before.artifacts
+    assert after.physical_escapes == before.physical_escapes == ()

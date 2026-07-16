@@ -2,7 +2,7 @@ import json
 
 from quantpits.post_trade.transaction import PostTradeTransactionManager
 
-from .artifact_graph import assert_declared_writes, observe_artifact_graph
+from .artifact_graph import assert_write_conservation, observe_artifact_graph
 from .drivers import execute_order
 from .scenario_workspace import ScenarioWorkspace
 
@@ -43,9 +43,7 @@ def test_post_trade_postimage_is_exact_order_account_input(tmp_path):
     assert order_manifest["status"] == "success"
     assert observed.json("data/.post_trade_transactions/post-trade-semantic/journal.json")["cursor_after"] == "2026-07-17"
     assert observed.jsonl("data/operator_log.jsonl")[-1]["script"] == "order_gen"
-    assert not observed.physical_escapes
-    assert_declared_writes(
-        observed.changed_paths(baseline),
+    assert_write_conservation(
+        observed, baseline,
         ("config/prod_config.json", "data/.post_trade_transactions/", "output/", "data/operator_log.jsonl"),
     )
-

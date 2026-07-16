@@ -3,11 +3,13 @@
 from dataclasses import dataclass
 import pandas as pd
 
+from quantpits.ensemble.command import EnsembleCommandDependencies
 from quantpits.ensemble.config import load_ensemble_run_config
+from quantpits.ensemble.execution import EnsembleExecutionError
 from quantpits.ensemble.input_integrity import load_strict_prediction_bundle
 from quantpits.ensemble.persistence import PredictionSaveRequest, save_ensemble_predictions
-from quantpits.ensemble.service import EnsembleFusionService, prepare_ensemble_run
-from quantpits.ensemble.types import EnsembleExecutionHooks, EnsembleRunOptions
+from quantpits.ensemble.service import EnsembleFusionService
+from quantpits.ensemble.types import EnsembleExecutionHooks
 from quantpits.order.command import OrderRunOptions, load_order_run_config, prepare_order_run
 from quantpits.order.execution import LoadedOrderPrediction, OrderExecutionHooks
 from quantpits.order.persistence import persist_order_artifacts
@@ -60,7 +62,10 @@ def recorder_inventory(workspace, *, foreign_key=None, missing_key=None):
     return inventory
 
 
-def execute_ensemble(workspace, inventory, *, output_recorder="ensemble-sentinel", run_id="ensemble-semantic", monkeypatch=None):
+def ensemble_command_dependencies(
+    workspace, inventory, *, output_recorder="ensemble-sentinel", monkeypatch=None,
+    publication_error=False,
+):
     if monkeypatch is None:
         raise ValueError("semantic ensemble driver requires pytest monkeypatch")
 
@@ -68,6 +73,8 @@ def execute_ensemble(workspace, inventory, *, output_recorder="ensemble-sentinel
         artifact = workspace.root / "mlruns" / output_recorder / "artifacts" / "pred.pkl"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(kwargs["pred"].to_csv().encode("utf-8"))
+        if publication_error:
+            raise EnsembleExecutionError("semantic publication failed after recorder bytes")
         return output_recorder
 
     monkeypatch.setattr(
@@ -75,13 +82,6 @@ def execute_ensemble(workspace, inventory, *, output_recorder="ensemble-sentinel
         save_fake_recorder,
     )
     run_config = load_ensemble_run_config(workspace.ctx)
-    prepared = prepare_ensemble_run(
-        ctx=workspace.ctx,
-        options=EnsembleRunOptions(from_config=True, run_id=run_id, no_backtest=True, no_charts=True),
-        cli_args=("--from-config", "--run-id", run_id),
-        run_config=run_config,
-        validate=False,
-    )
 
     def getter(recorder_id, experiment_name):
         del experiment_name
@@ -137,7 +137,14 @@ def execute_ensemble(workspace, inventory, *, output_recorder="ensemble-sentinel
         compare_combos=lambda *args, **kwargs: None,
         load_prediction_bundle=load_bundle,
     )
-    return prepared, EnsembleFusionService(hooks).execute(prepared)
+    service = EnsembleFusionService(hooks)
+    dependencies = EnsembleCommandDependencies(
+        get_workspace_context=lambda: workspace.ctx,
+        load_run_config=lambda ctx, record_file: run_config,
+        safeguard=lambda label: None,
+        service_factory=lambda: service,
+    )
+    return dependencies, service
 
 
 class RecordingOrderGenerator:

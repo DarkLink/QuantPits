@@ -60,7 +60,7 @@ def test_interrupted_post_trade_commit_recovers_before_order_consumption(tmp_pat
     assert tuple(item.path for item in recovered.artifacts) == (
         "config/cashflow.json", "config/prod_config.json",
     )
-    assert first_graph.files == second_graph.files
+    assert first_graph.artifacts == second_graph.artifacts
+    assert first_graph.physical_escapes == second_graph.physical_escapes == ()
     assert config.merged_config["current_cash"] == 2048.0
     assert prepared.plan.metadata["current_state_date"] == "2026-07-17"
-

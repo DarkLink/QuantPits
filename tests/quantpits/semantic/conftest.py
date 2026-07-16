@@ -1,28 +1,20 @@
 """Semantic-lane marker and isolation checks."""
 
-import hashlib
 import warnings
 from pathlib import Path
 
 import pytest
+
+from .artifact_graph import observe_artifact_graph
 
 
 _REPOSITORY_BASELINE = None
 
 
 def _repository_snapshot(repository):
-    roots = [
-        repository / name
-        for name in ("quantpits", "tests", "docs", ".pytest_cache", "__pycache__", "mlruns", "output")
-    ]
-    files = [path for path in repository.iterdir() if path.is_file()]
-    for root in roots:
-        if root.exists():
-            files.extend(path for path in root.rglob("*") if path.is_file())
-    return {
-        path.relative_to(repository).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(set(files))
-    }
+    # The repository guard covers every source/document/build path. Private,
+    # uncommitted workspaces are an explicit non-observation boundary.
+    return observe_artifact_graph(repository, excluded_roots=(".git/", "workspaces/"))
 
 
 def _semantic_only(config):
@@ -42,15 +34,11 @@ def pytest_sessionfinish(session, exitstatus):
         return
     repository = Path(str(session.config.rootpath)).resolve()
     after = _repository_snapshot(repository)
-    if after != _REPOSITORY_BASELINE:
-        changed = sorted(set(after) ^ set(_REPOSITORY_BASELINE))
-        changed.extend(
-            key for key in set(after) & set(_REPOSITORY_BASELINE)
-            if after[key] != _REPOSITORY_BASELINE[key]
-        )
+    changed = after.changed_paths(_REPOSITORY_BASELINE)
+    if changed or after.physical_escapes != _REPOSITORY_BASELINE.physical_escapes:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
         warnings.warn(
-            pytest.PytestWarning("semantic lane wrote repository files: %s" % sorted(set(changed)))
+            pytest.PytestWarning("semantic lane wrote repository paths: %s" % list(changed))
         )
 
 
