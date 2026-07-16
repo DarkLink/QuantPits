@@ -183,12 +183,15 @@ stable reason code. A state `completed`/success flag or recorder ID is only a cl
 immutable unit evidence or a publication receipt.
 
 The State V2 repository is a standalone domain API for later execution/evidence consumers, not a
-new CLI. It requires an exact baseline token, rereads and classifies the same byte snapshot under
-the canonical sibling lock, validates a pre-evidence transition, writes a same-directory temporary
-file, then performs file fsync, a pre-replace CAS recheck, atomic replace, directory fsync, and an
+new CLI. It requires an exact baseline token; `WorkspaceContext.data_dir` must equal `root/data`,
+and family-specific state/lock paths are read-only derived mappings. It rereads and classifies the
+same byte snapshot under the canonical sibling lock, validates workspace identity and a
+pre-evidence transition, writes a same-directory temporary file, then performs file fsync, a
+pre-replace CAS recheck, atomic replace, directory fsync, and an
 actual reread. Conflicts, invalid sources/transitions, write failures, and interruption are never
 reported as committed; uncertain directory durability or postimage reread produces only
-`durability_uncertain`. Existing legacy `rolling_train.py`, `--clear-state`, resume, and backup
+`durability_uncertain`. Compare-and-delete accepts only an exact `failed` V2 and has no public
+parameter that can relax this rule. Existing legacy `rolling_train.py`, `--clear-state`, resume, and backup
 behavior is unchanged and no workspace is migrated automatically.
 
 `--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared

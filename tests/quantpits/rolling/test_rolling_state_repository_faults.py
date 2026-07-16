@@ -2,6 +2,8 @@
 
 import dataclasses
 import fcntl
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -161,6 +163,108 @@ def test_pre_replace_drift_is_conflict_not_overwrite(tmp_path):
     assert receipt.status == "conflict"
     assert receipt.did_write is False
     assert repository.state_path.read_bytes() == foreign_complete
+    assert not any(item.name.endswith(".tmp") for item in context.data_dir.iterdir())
+
+
+def test_os_replace_syscall_failure_preserves_preimage(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    repository, prepared = _prepared(context)
+    preimage = repository.state_path.read_bytes()
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("injected os.replace failure")
+
+    monkeypatch.setattr("quantpits.rolling.repository.os.replace", fail_replace)
+    proposed = _state(context, phase="executing", attempt_id="attempt-1")
+    receipt = repository.commit(proposed, prepared.after_baseline)
+    assert receipt.status == "write_failed_before_replace"
+    assert receipt.did_write is False
+    assert repository.state_path.read_bytes() == preimage
+    assert not any(item.name.endswith(".tmp") for item in context.data_dir.iterdir())
+
+
+def test_real_directory_fsync_failure_is_durability_uncertain(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    repository, prepared = _prepared(context)
+    real_fsync = os.fsync
+
+    def fail_directory_fsync(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("injected directory fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(
+        "quantpits.rolling.repository.os.fsync", fail_directory_fsync,
+    )
+    proposed = _state(context, phase="executing", attempt_id="attempt-1")
+    receipt = repository.commit(proposed, prepared.after_baseline)
+    assert receipt.status == "durability_uncertain"
+    assert receipt.did_write is True
+    assert receipt.cas_baseline is None
+    assert repository.state_path.read_bytes() == serialize_rolling_state_v2(proposed)
+
+
+def test_reread_content_mismatch_is_durability_uncertain(tmp_path):
+    context = _context(tmp_path)
+    repository, prepared = _prepared(context)
+
+    def corrupt_postimage(point):
+        if point == "after_directory_fsync_before_reread":
+            repository.state_path.write_bytes(b"{}")
+
+    faulted = RollingStateRepository.for_workspace(
+        context, "rolling", fault_hook=corrupt_postimage,
+    )
+    proposed = _state(context, phase="executing", attempt_id="attempt-1")
+    receipt = faulted.commit(proposed, prepared.after_baseline)
+    assert receipt.status == "durability_uncertain"
+    assert receipt.did_write is True
+    assert receipt.after_baseline.fingerprint != prepared.after_baseline.fingerprint
+    assert receipt.cas_baseline is None
+
+
+def test_root_identity_swap_before_temp_fails_closed(tmp_path):
+    context = _context(tmp_path)
+    repository, prepared = _prepared(context)
+    preimage = repository.state_path.read_bytes()
+    displaced = tmp_path / "displaced-demo"
+
+    def swap_root(point):
+        if point == "after_source_read_before_temp_create":
+            context.root.rename(displaced)
+            context.root.mkdir()
+            (context.root / "data").mkdir()
+
+    faulted = RollingStateRepository.for_workspace(
+        context, "rolling", fault_hook=swap_root,
+    )
+    proposed = _state(context, phase="executing", attempt_id="attempt-1")
+    receipt = faulted.commit(proposed, prepared.after_baseline)
+    assert receipt.status == "invalid_source"
+    assert receipt.did_write is False
+    assert (displaced / "data" / "rolling_state.json").read_bytes() == preimage
+    assert tuple((context.root / "data").iterdir()) == ()
+
+
+def test_lock_identity_swap_before_temp_fails_closed(tmp_path):
+    context = _context(tmp_path)
+    repository, prepared = _prepared(context)
+    preimage = repository.state_path.read_bytes()
+    displaced_lock = context.data_dir / "displaced.lock"
+
+    def swap_lock(point):
+        if point == "after_source_read_before_temp_create":
+            repository.lock_path.rename(displaced_lock)
+            repository.lock_path.touch()
+
+    faulted = RollingStateRepository.for_workspace(
+        context, "rolling", fault_hook=swap_lock,
+    )
+    proposed = _state(context, phase="executing", attempt_id="attempt-1")
+    receipt = faulted.commit(proposed, prepared.after_baseline)
+    assert receipt.status == "invalid_source"
+    assert receipt.did_write is False
+    assert repository.state_path.read_bytes() == preimage
     assert not any(item.name.endswith(".tmp") for item in context.data_dir.iterdir())
 
 

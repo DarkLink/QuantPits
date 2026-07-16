@@ -102,7 +102,9 @@ recorder claims in state are not recovery reuse authority. The repository permit
 pre-evidence `prepared`/`executing`/`failed` transitions and continues to reject
 `units_complete`/`completed`. Legacy migration produces only a deterministic, zero-write,
 proposal-only postimage audit with no CLI or `apply()` capability; immutable evidence remains a
-later boundary.
+later boundary. Repository data/state/lock mappings cannot be redirected through a context or
+public field, create rejects a foreign workspace identity before temp/replace, and
+compare-and-delete accepts only an exact `failed` V2.
 
 ### Cross-Mode Isolation
 

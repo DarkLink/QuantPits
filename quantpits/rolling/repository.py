@@ -14,7 +14,7 @@ from quantpits.rolling.errors import (
     RollingStatePathError,
     RollingStateTransitionError,
 )
-from quantpits.rolling.identity import ROLLING_FAMILIES
+from quantpits.rolling.identity import ROLLING_FAMILIES, workspace_fingerprint
 from quantpits.rolling.state import (
     RollingStateExpectation,
     RollingStateInspection,
@@ -54,6 +54,30 @@ _REASON_FOR_STATUS = {
     "durability_uncertain": "rolling_state_durability_uncertain",
     "interrupted": "rolling_state_interrupted",
 }
+_STATUSES_FOR_OPERATION = {
+    "create": frozenset((
+        "committed", "conflict", "invalid_source", "invalid_transition",
+        "lock_unavailable", "write_failed_before_replace",
+        "durability_uncertain", "interrupted",
+    )),
+    "transition": frozenset((
+        "committed", "unchanged", "conflict", "invalid_source",
+        "invalid_transition", "lock_unavailable",
+        "write_failed_before_replace", "durability_uncertain", "interrupted",
+    )),
+    "delete": frozenset((
+        "deleted", "missing_noop", "conflict", "invalid_source",
+        "lock_unavailable", "write_failed_before_replace",
+        "durability_uncertain", "interrupted",
+    )),
+}
+_COMMITTED_PHASE_TRANSITIONS = frozenset((
+    ("prepared", "executing"),
+    ("prepared", "failed"),
+    ("executing", "executing"),
+    ("executing", "failed"),
+    ("failed", "executing"),
+))
 
 
 def _is_digest(value):
@@ -144,6 +168,8 @@ class RollingStateMutationReceipt:
             raise RollingIdentityError("repository receipt operation is invalid")
         if self.status not in _RECEIPT_STATUSES:
             raise RollingIdentityError("repository receipt status is invalid")
+        if self.status not in _STATUSES_FOR_OPERATION[self.operation]:
+            raise RollingIdentityError("repository receipt operation contradicts status")
         if self.reason_code != _REASON_FOR_STATUS[self.status]:
             raise RollingIdentityError("repository receipt reason contradicts status")
         if type(self.did_write) is not bool:
@@ -176,6 +202,58 @@ class RollingStateMutationReceipt:
             raise RollingIdentityError("committed receipt lacks an observed phase")
         if self.status in ("deleted", "missing_noop") and self.after_baseline.existed:
             raise RollingIdentityError("delete receipt postimage still exists")
+        if self.status == "committed":
+            if self.before_baseline is None or self.before_baseline == self.after_baseline:
+                raise RollingIdentityError("committed receipt preimage is contradictory")
+            if self.operation == "create":
+                if (self.before_baseline.existed or self.before_phase is not None
+                        or self.after_phase != "prepared"):
+                    raise RollingIdentityError("create receipt phase facts are contradictory")
+            elif (not self.before_baseline.existed
+                  or (self.before_phase, self.after_phase)
+                  not in _COMMITTED_PHASE_TRANSITIONS):
+                raise RollingIdentityError("transition receipt phase facts are contradictory")
+        if self.status == "unchanged":
+            if (self.before_baseline is None
+                    or self.before_baseline != self.after_baseline
+                    or not self.before_baseline.existed
+                    or self.before_phase is None
+                    or self.before_phase != self.after_phase):
+                raise RollingIdentityError("unchanged receipt facts are contradictory")
+        if self.status == "deleted":
+            if (self.before_baseline is None or not self.before_baseline.existed
+                    or self.before_phase != "failed" or self.after_phase is not None):
+                raise RollingIdentityError("deleted receipt facts are contradictory")
+        if self.status == "missing_noop":
+            if (self.before_baseline is None
+                    or self.before_baseline != self.after_baseline
+                    or self.before_baseline.existed
+                    or self.before_phase is not None or self.after_phase is not None):
+                raise RollingIdentityError("missing no-op receipt facts are contradictory")
+        if (self.status in (
+                "conflict", "invalid_source", "invalid_transition",
+                "lock_unavailable", "write_failed_before_replace",
+        ) and self.after_baseline is not None):
+            raise RollingIdentityError("non-write receipt exposes a postimage")
+        if self.status == "durability_uncertain" and not self.did_write:
+            raise RollingIdentityError("uncertain receipt must follow an authoritative mutation")
+        if self.status == "durability_uncertain":
+            if self.before_baseline is None:
+                raise RollingIdentityError("uncertain receipt lacks an observed preimage")
+            if self.operation == "create":
+                if (self.before_baseline.existed or self.before_phase is not None
+                        or self.after_phase not in (None, "prepared")):
+                    raise RollingIdentityError("uncertain create facts are contradictory")
+            elif self.operation == "transition":
+                if (not self.before_baseline.existed
+                        or self.before_phase not in ("prepared", "executing", "failed")
+                        or (self.after_phase is not None
+                            and (self.before_phase, self.after_phase)
+                            not in _COMMITTED_PHASE_TRANSITIONS)):
+                    raise RollingIdentityError("uncertain transition facts are contradictory")
+            elif (not self.before_baseline.existed
+                  or self.before_phase != "failed" or self.after_phase is not None):
+                raise RollingIdentityError("uncertain delete facts are contradictory")
 
     @property
     def cas_baseline(self):
@@ -211,14 +289,39 @@ class RollingStateRepository:
             raise RollingStatePathError("repository requires WorkspaceContext")
         if family not in ROLLING_FAMILIES:
             raise RollingStatePathError("repository family is unsupported")
-        self.context = context
-        self.family = family
-        self.state_name = _STATE_NAMES[family]
-        self.relative_path = "data/%s" % self.state_name
-        self.state_path = context.data_dir / self.state_name
-        self.lock_name = self.state_name + ".lock"
-        self.lock_path = context.data_dir / self.lock_name
+        if context.data_dir != context.root / "data":
+            raise RollingStatePathError("workspace data path is not canonical")
+        self._context = context
+        self._family = family
         self._fault_hook = fault_hook
+
+    @property
+    def context(self):
+        return self._context
+
+    @property
+    def family(self):
+        return self._family
+
+    @property
+    def state_name(self):
+        return _STATE_NAMES[self._family]
+
+    @property
+    def relative_path(self):
+        return "data/%s" % self.state_name
+
+    @property
+    def state_path(self):
+        return self._context.data_dir / self.state_name
+
+    @property
+    def lock_name(self):
+        return self.state_name + ".lock"
+
+    @property
+    def lock_path(self):
+        return self._context.data_dir / self.lock_name
 
     @classmethod
     def for_workspace(cls, context, family, fault_hook=None):
@@ -266,6 +369,8 @@ class RollingStateRepository:
     def _validate_data_parent(self, allow_missing=False):
         root = Path(self.context.root).expanduser().absolute()
         data = Path(self.context.data_dir).expanduser().absolute()
+        if data != root / "data":
+            raise RollingStatePathError("workspace data path is not canonical")
         if root.resolve() != root:
             raise RollingStatePathError("workspace root contains a symlink")
         try:
@@ -302,13 +407,32 @@ class RollingStateRepository:
         return descriptor
 
     def _verify_parent_identity(self, descriptor):
+        root = os.stat(str(self.context.root), follow_symlinks=False)
         current = os.stat(str(self.context.data_dir), follow_symlinks=False)
         opened = os.fstat(descriptor)
-        if (not stat.S_ISDIR(current.st_mode)
+        parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        parent_flags |= getattr(os, "O_NOFOLLOW", 0)
+        parent_fd = os.open("..", parent_flags, dir_fd=descriptor)
+        try:
+            opened_parent = os.fstat(parent_fd)
+        finally:
+            os.close(parent_fd)
+        if (not stat.S_ISDIR(root.st_mode) or not stat.S_ISDIR(current.st_mode)
                 or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)):
             raise RollingStatePathError("workspace data directory identity changed")
+        if (root.st_dev, root.st_ino) != (opened_parent.st_dev, opened_parent.st_ino):
+            raise RollingStatePathError("workspace root identity changed")
         resolved = Path(self.context.data_dir).resolve(strict=True)
         resolved.relative_to(Path(self.context.root).resolve(strict=True))
+
+    def _verify_lock_identity(self, directory_fd, lock_fd):
+        current = os.stat(
+            self.lock_name, dir_fd=directory_fd, follow_symlinks=False,
+        )
+        opened = os.fstat(lock_fd)
+        if (not stat.S_ISREG(current.st_mode)
+                or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise RollingStatePathError("state lock identity changed")
 
     def _read_bytes(self, directory_fd):
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -360,7 +484,7 @@ class RollingStateRepository:
     @contextmanager
     def _locked_directory(self, blocking=True):
         if not self._mutation_platform_supported():
-            yield None, False
+            yield None, None, False
             return
         directory_fd = self._validate_data_parent(allow_missing=False)
         lock_fd = None
@@ -387,7 +511,9 @@ class RollingStateRepository:
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN):
                     raise
-            yield directory_fd, acquired
+            if acquired:
+                self._verify_lock_identity(directory_fd, lock_fd)
+            yield directory_fd, lock_fd, acquired
         finally:
             if acquired and lock_fd is not None:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -423,6 +549,8 @@ class RollingStateRepository:
             raise RollingStateTransitionError("proposed state is not State V2")
         if proposed.family != self.family:
             raise RollingStateTransitionError("proposed state family is foreign")
+        if proposed.workspace_fingerprint != workspace_fingerprint(self.context.root):
+            raise RollingStateTransitionError("proposed state workspace is foreign")
         if proposed.phase in ("units_complete", "completed"):
             raise RollingStateTransitionError("completion requires immutable evidence")
         if any(unit.status in ("success", "completed")
@@ -544,7 +672,7 @@ class RollingStateRepository:
         try:
             self._fault("before_lock")
             with self._locked_directory(blocking=blocking) as locked:
-                directory_fd, acquired = locked
+                directory_fd, lock_fd, acquired = locked
                 if not acquired:
                     return self._receipt(operation, "lock_unavailable")
                 self._fault("after_lock_before_source_read")
@@ -580,6 +708,7 @@ class RollingStateRepository:
                     )
                 self._fault("after_source_read_before_temp_create")
                 self._verify_parent_identity(directory_fd)
+                self._verify_lock_identity(directory_fd, lock_fd)
                 temporary = self._write_temp(directory_fd, payload)
                 try:
                     current = self._read_view(directory_fd)
@@ -592,6 +721,7 @@ class RollingStateRepository:
                         )
                     self._fault("after_cas_recheck_before_replace")
                     self._verify_parent_identity(directory_fd)
+                    self._verify_lock_identity(directory_fd, lock_fd)
                     os.replace(
                         temporary, self.state_name,
                         src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
@@ -643,7 +773,7 @@ class RollingStateRepository:
                 did_write=replaced,
             )
 
-    def delete(self, expected, require_failed=True, blocking=True):
+    def delete(self, expected, blocking=True):
         temporary = None
         unlinked = False
         before = after = None
@@ -651,7 +781,7 @@ class RollingStateRepository:
         try:
             self._fault("before_lock")
             with self._locked_directory(blocking=blocking) as locked:
-                directory_fd, acquired = locked
+                directory_fd, lock_fd, acquired = locked
                 if not acquired:
                     return self._receipt("delete", "lock_unavailable")
                 self._fault("after_lock_before_source_read")
@@ -669,7 +799,7 @@ class RollingStateRepository:
                         "delete", "missing_noop", before=before, after=before,
                     )
                 if (view.inspection.classification != "valid_versioned"
-                        or (require_failed and before_phase != "failed")):
+                        or before_phase != "failed"):
                     return self._receipt(
                         "delete", "invalid_source", before=before,
                         before_phase=before_phase,
@@ -684,6 +814,7 @@ class RollingStateRepository:
                     )
                 self._fault("after_cas_recheck_before_replace")
                 self._verify_parent_identity(directory_fd)
+                self._verify_lock_identity(directory_fd, lock_fd)
                 os.unlink(self.state_name, dir_fd=directory_fd)
                 unlinked = True
                 self._fault("after_replace_before_directory_fsync")

@@ -174,10 +174,12 @@ Prepared Plan 不展示依赖 Qlib calendar 的精确窗口或 fold；`--show-fo
 不等于 immutable unit evidence 或 publication receipt。
 
 State V2 repository 是供后续 execution/evidence consumer 使用的独立 domain API，不是新的 CLI。它只接受 exact
-baseline token，在 canonical sibling lock 内重新读取并分类同一 byte snapshot，验证 pre-evidence transition，
+baseline token；`WorkspaceContext.data_dir` 必须严格等于 `root/data`，family 对应的 state/lock 路径是只读派生映射。
+repository 在 canonical sibling lock 内重新读取并分类同一 byte snapshot，验证 workspace identity 和 pre-evidence transition，
 写入同目录临时文件并完成 file fsync、pre-replace CAS、atomic replace、directory fsync 和 actual reread。
 `conflict`、invalid source/transition、写入失败和 interruption 不会被报告为 committed；directory durability 或
-postimage reread 无法确认时只返回 `durability_uncertain`。当前 legacy `rolling_train.py`、`--clear-state`、resume
+postimage reread 无法确认时只返回 `durability_uncertain`；compare-delete 只接受 exact `failed` V2，不能由公开参数放宽。
+当前 legacy `rolling_train.py`、`--clear-state`、resume
 和 state backup 行为保持不变，不会自动迁移任何 workspace。
 
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一

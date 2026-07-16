@@ -90,6 +90,28 @@ def test_repository_factory_uses_canonical_family_path_and_sibling_lock(tmp_path
         RollingStateRepository.for_workspace(context, "slide")
 
 
+def test_repository_rejects_noncanonical_context_and_paths_are_readonly(tmp_path):
+    context = _context(tmp_path)
+    foreign_data = context.root / "nested" / "data"
+    malformed = dataclasses.replace(context, data_dir=foreign_data)
+    with pytest.raises(RollingStatePathError, match="not canonical"):
+        RollingStateRepository.for_workspace(malformed, "rolling")
+
+    repository = RollingStateRepository.for_workspace(context, "rolling")
+    for field, value in (
+            ("context", malformed),
+            ("family", "cpcv_rolling"),
+            ("state_name", "foreign.json"),
+            ("lock_name", "foreign.lock"),
+            ("relative_path", "data/foreign.json"),
+            ("state_path", context.root / "foreign.json"),
+            ("lock_path", context.root / "foreign.lock")):
+        with pytest.raises(AttributeError):
+            setattr(repository, field, value)
+    assert repository.state_path == context.root / "data" / "rolling_state.json"
+    assert repository.lock_path == context.root / "data" / "rolling_state.json.lock"
+
+
 def test_readonly_view_is_one_coherent_snapshot_and_creates_nothing(tmp_path):
     root = tmp_path / "Demo_Workspace"
     context = WorkspaceContext.from_root(root)
@@ -219,6 +241,48 @@ def test_receipt_rejects_status_write_and_postimage_contradictions():
         )
 
 
+def test_receipt_rejects_operation_phase_and_cas_baseline_contradictions():
+    missing = RollingStateBaseline(
+        "data/rolling_state.json", "missing", False,
+    )
+    before = RollingStateBaseline(
+        "data/rolling_state.json", "file", True, 1, "a" * 64,
+    )
+    after = RollingStateBaseline(
+        "data/rolling_state.json", "file", True, 1, "b" * 64,
+    )
+    contradictions = (
+        ("delete", "committed", "rolling_state_committed", True,
+         before, after, "failed", "executing"),
+        ("transition", "unchanged", "rolling_state_unchanged", False,
+         before, after, "executing", "executing"),
+        ("transition", "unchanged", "rolling_state_unchanged", False,
+         before, before, "prepared", "executing"),
+        ("create", "committed", "rolling_state_committed", True,
+         missing, after, None, "executing"),
+        ("transition", "committed", "rolling_state_committed", True,
+         before, after, "failed", "failed"),
+        ("delete", "deleted", "rolling_state_deleted", True,
+         before, missing, "prepared", None),
+        ("delete", "missing_noop", "rolling_state_missing", False,
+         missing, missing, "failed", None),
+        ("create", "durability_uncertain",
+         "rolling_state_durability_uncertain", True,
+         before, after, "executing", "prepared"),
+        ("transition", "durability_uncertain",
+         "rolling_state_durability_uncertain", True,
+         before, after, "failed", "failed"),
+        ("delete", "durability_uncertain",
+         "rolling_state_durability_uncertain", True,
+         before, missing, "executing", None),
+    )
+    for facts in contradictions:
+        with pytest.raises(RollingIdentityError):
+            RollingStateMutationReceipt(
+                *facts[:4], "data/rolling_state.json", *facts[4:],
+            )
+
+
 def test_missing_create_and_pre_evidence_phase_transitions_are_monotonic(tmp_path):
     context = _context(tmp_path)
     repository = RollingStateRepository.for_workspace(context, "rolling")
@@ -268,6 +332,18 @@ def test_transition_rejects_identity_attempt_phase_and_unit_regression(tmp_path)
     )
     rejected = repository.commit(regressed, progress_receipt.after_baseline)
     assert rejected.status == "invalid_transition"
+
+
+def test_create_rejects_foreign_workspace_before_temp_or_replace(tmp_path):
+    context = _context(tmp_path)
+    repository = RollingStateRepository.for_workspace(context, "rolling")
+    expected = repository.inspect_readonly().baseline
+    proposed = _state(context, workspace_fingerprint="f" * 64)
+    receipt = repository.commit(proposed, expected)
+    assert receipt.status == "invalid_transition"
+    assert receipt.did_write is False
+    assert not repository.state_path.exists()
+    assert not any(item.name.endswith(".tmp") for item in context.data_dir.iterdir())
 
 
 def test_completion_claim_is_denied_until_evidence_phase(tmp_path):
@@ -386,6 +462,8 @@ def test_compare_and_delete_requires_exact_failed_v2_baseline(tmp_path):
     _commit_prepared(repository, context)
     prepared = repository.inspect_readonly().baseline
     assert repository.delete(prepared).status == "invalid_source"
+    with pytest.raises(TypeError):
+        repository.delete(prepared, require_failed=False)
     failed = _state(context, phase="failed")
     failed_receipt = repository.commit(failed, prepared)
     stale = prepared
