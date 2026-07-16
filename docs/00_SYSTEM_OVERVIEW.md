@@ -640,7 +640,7 @@ workspace/experiment/artifact 和实际预测覆盖。
 
 ### 跨命令语义验证通道
 
-开发者可运行 `make test-semantic`（等价于 `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/quantpits/semantic -q --tb=short --no-cov -p no:cacheprovider`）验证 Training/Rolling、Ensemble、Post-trade 与 Order 之间的身份、结果、持久化副作用和恢复守恒。独立 artifact observer 同时记录文件、空目录、symlink 与物理 containment，并监测除 `.git` 和明确禁止读取的私有 `workspaces/` 之外的完整 repository tree；成功、输入失败与 publication failure 都由同一次真实 command/service 调用核对 manifest、OperatorLog 和 CLI 映射。该通道只使用 pytest 临时生成的 sanitized workspace 和确定性 fake 外部边界，不读取真实 workspace，不初始化真实 Qlib/MLflow，不需要网络、GPU，也不替代 owner 执行的全量测试或真实后端 smoke。
+开发者可运行 `make test-semantic`（等价于 `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/quantpits/semantic -q --tb=short --no-cov -p no:cacheprovider`）验证 Training/Rolling、Ensemble、Post-trade 与 Order 之间的身份、结果、持久化副作用和恢复守恒。独立 artifact observer 同时记录文件、空目录、symlink 与物理 containment，并在 test collection 导入测试模块及 production modules 之前建立 repository baseline，监测除 `.git` 和明确禁止读取的私有 `workspaces/` 之外的完整 repository tree；成功、输入失败与 publication failure 都由同一次真实 command/service 调用核对 manifest、OperatorLog 和 CLI 映射。该通道只使用 pytest 临时生成的 sanitized workspace 和确定性 fake 外部边界，不读取真实 workspace，不初始化真实 Qlib/MLflow，不需要网络、GPU，也不替代 owner 执行的全量测试或真实后端 smoke。
 
 `OperatorLog` 兼容扩展了 `run_id`、`manifest_path`、`plan_fingerprint`、`transaction_id` 字段。`ensemble_fusion.py`、`order_gen.py` 和 post-trade 已将相关字段与运行清单关联；未使用 transaction 的命令保持 `null`。
 

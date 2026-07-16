@@ -63,7 +63,18 @@ def test_training_record_to_ensemble_to_order_lineage(family, tmp_path, monkeypa
     assert ensemble.run_id == ensemble_manifest["run_id"] == ensemble_prepared.plan.run_id
     assert tuple(ensemble.input_evidence) == tuple(ensemble_manifest["records"]["input_models"])
     assert ensemble_manifest["records"]["combos"][0]["recorder_id"] == ensemble.combo_results[0]["recorder_id"]
-    assert order_manifest["records"]["source"]["record_id"] == order_prepared.source.record_id
+    assert order.run_id == order_manifest["run_id"] == order_prepared.plan.run_id
+    assert order.manifest_path == "output/manifests/order_gen/order-semantic.json"
+    assert order.source_label == order_prepared.source.source_label
+    assert tuple(order_manifest["args"]) == order_prepared.plan.args
+    assert order_manifest["config_fingerprints"] == order_prepared.plan.config_fingerprints
+    assert order_manifest["records"]["source"] == {
+        "mode": order_prepared.source.mode,
+        "requested_name": order_prepared.source.requested_name,
+        "resolved_name": order_prepared.source.resolved_name,
+        "record_id": order_prepared.source.record_id,
+        "experiment_name": order_prepared.source.experiment_name,
+    }
     logs = observed.jsonl("data/operator_log.jsonl")
     assert [(item["script"], item["exception"]) for item in logs] == [
         ("ensemble_fusion", None), ("order_gen", None),
@@ -78,5 +89,12 @@ def test_training_record_to_ensemble_to_order_lineage(family, tmp_path, monkeypa
         "experiment_name": ensemble.experiment_name,
         "manifest_path": ensemble.manifest_path,
     }
+    order_log = logs[1]
+    assert tuple(order_log["args"]) == order_prepared.cli_args
+    assert order_log["run_id"] == order.run_id
+    assert order_log["plan_fingerprint"] == order_prepared.plan_fingerprint
+    assert order_log["manifest_path"] == order.manifest_path
+    assert order_log["result_summary"] == order_manifest["records"]
+    assert order_log["result_summary"]["source"] == order_manifest["records"]["source"]
     assert_write_conservation(observed, baseline, expected.allowed_write_paths)
     assert "Demo_Workspace" in json.dumps(ensemble_manifest)

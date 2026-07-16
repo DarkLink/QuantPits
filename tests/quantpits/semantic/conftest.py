@@ -22,10 +22,12 @@ def _semantic_only(config):
     return bool(args) and all("tests/quantpits/semantic" in value for value in args)
 
 
-def pytest_collection_finish(session):
+def pytest_configure(config):
+    """Snapshot before collection imports semantic tests and production modules."""
+
     global _REPOSITORY_BASELINE
-    if _semantic_only(session.config):
-        _REPOSITORY_BASELINE = _repository_snapshot(Path(str(session.config.rootpath)).resolve())
+    if _semantic_only(config):
+        _REPOSITORY_BASELINE = _repository_snapshot(Path(str(config.rootpath)).resolve())
 
 
 def pytest_sessionfinish(session, exitstatus):

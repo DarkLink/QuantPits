@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from quantpits.ensemble.command import (
     EnsembleCommandDependencies, EnsembleCommandRequest, build_ensemble_arg_parser, run_ensemble_command,
 )
@@ -71,7 +73,8 @@ def test_programmatic_information_graph_is_zero_write(tmp_path):
     assert post_trade.plan.metadata["scope"] == "all"
 
 
-def test_rolling_cli_equal_workspace_form_matches_programmatic_plan(tmp_path):
+@pytest.mark.parametrize("workspace_form", ("equal", "separated"))
+def test_rolling_cli_workspace_forms_match_programmatic_plan(workspace_form, tmp_path):
     workspace = ScenarioWorkspace.create(tmp_path)
     before = observe_artifact_graph(workspace.root)
     environment = os.environ.copy()
@@ -79,11 +82,15 @@ def test_rolling_cli_equal_workspace_form_matches_programmatic_plan(tmp_path):
     environment.pop("MLFLOW_TRACKING_URI", None)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
+    workspace_args = (
+        ["--workspace=%s" % workspace.root]
+        if workspace_form == "equal"
+        else ["--workspace", str(workspace.root)]
+    )
     completed = subprocess.run(
-        [
-            sys.executable, "-m", "quantpits.scripts.rolling_train",
-            "--workspace=%s" % workspace.root, "--cold-start", "--all-enabled", "--json-plan",
-        ],
+        [sys.executable, "-m", "quantpits.scripts.rolling_train"]
+        + workspace_args
+        + ["--cold-start", "--all-enabled", "--json-plan"],
         cwd=str(tmp_path), env=environment, capture_output=True, text=True, check=False,
     )
     assert completed.returncode == 0, completed.stderr
