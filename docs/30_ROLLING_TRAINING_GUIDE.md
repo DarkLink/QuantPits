@@ -27,8 +27,11 @@
 > manifest 或 lock；精确窗口在真实执行中解析。
 > `--show-state` 同样使用 `quantpits.rolling.state` 的单次 byte snapshot 严格只读分类；zero-byte、重复
 > JSON key、unsupported schema、跨 workspace symlink、ambiguous index 与 identity mismatch 都不会退化成
-> missing/empty。该 reader 能识别 State V2 identity envelope，但在 CAS repository 完成前 V2 仅可展示，
-> 且只接受 JSON integer `schema_version: 2`（`2.0`/`2e0` 均拒绝），不能进入 legacy writer。legacy
+> missing/empty。该 reader 能识别 State V2 identity envelope，且只接受 JSON integer
+> `schema_version: 2`（`2.0`/`2e0` 均拒绝）。`quantpits.rolling.repository` 现在提供显式
+> `WorkspaceContext` 下的 canonical path、sibling lock、CAS、atomic replace/delete 与真实 postimage receipt，
+> 但 public Rolling runtime 尚未采用它，V2 仍不能进入 legacy writer、CLI mutation 或 recovery/reuse。
+> legacy → V2 只提供 deterministic、zero-write、无 `apply()` 的 proposal audit。legacy
 > `rolling_config` 只有在 state 中真实存在并完成 fingerprint 比较时才标记为 `checked`；mismatch inspection
 > 不会向旧调用方返回 raw compatibility payload。`--clear-state` 会备份/删除 state，因此仍经过
 > safeguard 并持有 shared execution lease。
@@ -83,7 +86,8 @@ rolling_train.py      ← CLI + 流程编排 + 策略分派
 quantpits/rolling/
 ├── command.py            # filesystem-only PreparedRollingRun
 ├── identity.py           # pure canonical target/fold/window/run identities
-├── state.py              # single-snapshot, version-aware readonly classifier
+├── state.py              # strict V2 serializer + readonly classifier/migration proposal
+├── repository.py         # canonical lock + CAS + atomic State V2 persistence
 ├── windows.py            # runtime ResolvedRollingRun + canonical identities
 └── legacy.py             # exact-scope legacy execution adapter + baseline recheck
 
@@ -168,6 +172,13 @@ Prepared Plan 不展示依赖 Qlib calendar 的精确窗口或 fold；`--show-fo
 `valid_versioned`、`corrupt`、`unsupported_schema`、`ambiguous`、`foreign`、`identity_mismatch` 或
 `unverified_completion` 及稳定 reason code。State 中的 `completed`、success 或 recorder ID 只是 claim，
 不等于 immutable unit evidence 或 publication receipt。
+
+State V2 repository 是供后续 execution/evidence consumer 使用的独立 domain API，不是新的 CLI。它只接受 exact
+baseline token，在 canonical sibling lock 内重新读取并分类同一 byte snapshot，验证 pre-evidence transition，
+写入同目录临时文件并完成 file fsync、pre-replace CAS、atomic replace、directory fsync 和 actual reread。
+`conflict`、invalid source/transition、写入失败和 interruption 不会被报告为 committed；directory durability 或
+postimage reread 无法确认时只返回 `durability_uncertain`。当前 legacy `rolling_train.py`、`--clear-state`、resume
+和 state backup 行为保持不变，不会自动迁移任何 workspace。
 
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一
 workspace identity，不依赖进程 `sys.argv` 让 legacy `env` 再次选择 workspace。真实执行顺序为

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import dataclasses
 
 import pytest
 
@@ -9,9 +10,14 @@ from quantpits.rolling.identity import workspace_fingerprint
 from quantpits.rolling.state import (
     LegacyRollingStateSnapshot,
     RollingStateExpectation,
+    RollingStateUnitClaim,
     RollingStateV2Snapshot,
+    build_legacy_migration_proposal,
     inspect_rolling_state,
+    parse_rolling_state_v2_bytes,
+    serialize_rolling_state_v2,
 )
+from quantpits.rolling.errors import RollingIdentityError
 from quantpits.utils.workspace import fingerprint_value
 
 
@@ -330,3 +336,204 @@ def test_classification_is_byte_stable_and_zero_write(tmp_path):
     assert first.fingerprint == hashlib.sha256(before_bytes).hexdigest()
     assert path.read_bytes() == before_bytes
     assert tuple(sorted(item.name for item in path.parent.iterdir())) == before_entries
+
+
+def _typed_v2(root, **changes):
+    payload = _v2(root, **changes)
+    raw = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    return parse_rolling_state_v2_bytes(raw)
+
+
+def test_v2_serializer_round_trips_deterministic_bytes_and_extensions(tmp_path):
+    root = _root(tmp_path)
+    unit = {
+        "target_key": "demo@rolling",
+        "window_key": "rolling:2024-01-01:2024-03-31:abcdef123456",
+        "status": "running",
+        "extensions": {"operator_note": {"value": 0}},
+    }
+    snapshot = _typed_v2(
+        root,
+        units=[unit],
+        extensions={"empty": {}, "enabled": False},
+    )
+    first = serialize_rolling_state_v2(snapshot)
+    second = serialize_rolling_state_v2(parse_rolling_state_v2_bytes(first))
+    assert first == second
+    assert first.endswith(b"\n")
+    reparsed = parse_rolling_state_v2_bytes(first)
+    assert reparsed.extensions == {"empty": {}, "enabled": False}
+    assert reparsed.units[0].extensions == {"operator_note": {"value": 0}}
+    assert hashlib.sha256(first).hexdigest() == hashlib.sha256(second).hexdigest()
+
+    absent = _typed_v2(root, units=[{
+        "target_key": "demo@rolling",
+        "window_key": "rolling:2024-01-01:2024-03-31:abcdef123456",
+        "status": "running",
+    }])
+    present_empty = _typed_v2(root, units=[{
+        "target_key": "demo@rolling",
+        "window_key": "rolling:2024-01-01:2024-03-31:abcdef123456",
+        "status": "running",
+        "extensions": {},
+    }])
+    assert b'"extensions": {}' not in serialize_rolling_state_v2(absent).split(
+        b'"units":', 1,
+    )[1]
+    assert serialize_rolling_state_v2(absent) != serialize_rolling_state_v2(
+        present_empty,
+    )
+
+
+def test_v2_serializer_revalidates_direct_snapshot_members_and_family(tmp_path):
+    root = _root(tmp_path)
+    valid = _typed_v2(root)
+    invalid_unit = RollingStateUnitClaim(
+        "other@rolling",
+        "rolling:2024-01-01:2024-03-31:abcdef123456",
+        "running",
+    )
+    with pytest.raises(RollingIdentityError):
+        serialize_rolling_state_v2(dataclasses.replace(valid, units=(invalid_unit,)))
+    with pytest.raises(RollingIdentityError):
+        serialize_rolling_state_v2(dataclasses.replace(
+            valid,
+            window_keys=(
+                "cpcv_rolling:2024-01-01:2024-03-31:abcdef123456",
+            ),
+        ))
+
+
+def test_v2_serializer_rejects_closest_invalid_representations(tmp_path):
+    root = _root(tmp_path)
+    valid = _typed_v2(
+        root,
+        target_keys=["demo@rolling", "other@rolling"],
+        window_keys=[
+            "rolling:2024-01-01:2024-03-31:abcdef123456",
+            "rolling:2024-04-01:2024-06-30:111111111111",
+        ],
+    )
+    out_of_order = (
+        RollingStateUnitClaim(
+            "other@rolling",
+            "rolling:2024-04-01:2024-06-30:111111111111",
+            "running",
+        ),
+        RollingStateUnitClaim(
+            "demo@rolling",
+            "rolling:2024-01-01:2024-03-31:abcdef123456",
+            "running",
+        ),
+    )
+    with pytest.raises(RollingIdentityError):
+        serialize_rolling_state_v2(dataclasses.replace(valid, units=out_of_order))
+    with pytest.raises(RollingIdentityError):
+        serialize_rolling_state_v2(dataclasses.replace(
+            valid, _extensions_json='[]',
+        ))
+    with pytest.raises(RollingIdentityError):
+        serialize_rolling_state_v2(dataclasses.replace(
+            valid, _extensions_json='{"same": 1, "same": 2}',
+        ))
+    for raw in (b'{"schema_version": true}', b'{"schema_version": 2.0}'):
+        with pytest.raises(RollingIdentityError):
+            parse_rolling_state_v2_bytes(raw)
+
+
+def _migration(root, inspection, **changes):
+    values = {
+        "inspection": inspection,
+        "workspace_identity": workspace_fingerprint(root),
+        "run_id": "migration-demo-run",
+        "family": "rolling",
+        "action": "daily",
+        "plan_fingerprint": "a" * 64,
+        "execution_fingerprint": "b" * 64,
+        "config_fingerprint": fingerprint_value({}),
+        "anchor_date": "2024-03-31",
+        "target_keys": ("demo@rolling", "other@rolling"),
+        "window_keys": (
+            "rolling:2024-01-01:2024-03-31:abcdef123456",
+            "rolling:2024-04-01:2024-06-30:111111111111",
+        ),
+        "index_window_keys": {
+            0: "rolling:2024-01-01:2024-03-31:abcdef123456",
+            1: "rolling:2024-04-01:2024-06-30:111111111111",
+        },
+    }
+    values.update(changes)
+    return build_legacy_migration_proposal(**values)
+
+
+def test_legacy_migration_proposal_is_deterministic_and_zero_write(tmp_path):
+    root = _root(tmp_path)
+    path = root / "data" / "rolling_state.json"
+    payload = _legacy()
+    _write(path, payload)
+    inspection = inspect_rolling_state(path, root)
+    before = path.read_bytes()
+    entries = tuple(sorted(item.name for item in path.parent.iterdir()))
+    first = _migration(root, inspection)
+    second = _migration(root, inspection)
+    assert first.status == "candidate"
+    assert first.capability == "proposal_only"
+    assert first.proposed_bytes == second.proposed_bytes
+    assert first.proposed_fingerprint == second.proposed_fingerprint
+    assert first.source_fingerprint == inspection.fingerprint
+    assert path.read_bytes() == before
+    assert tuple(sorted(item.name for item in path.parent.iterdir())) == entries
+    assert not hasattr(first, "apply")
+
+
+def test_migration_proposal_preserves_requested_order_and_marks_legacy_claims_unverified(
+        tmp_path):
+    root = _root(tmp_path)
+    path = root / "data" / "rolling_state.json"
+    payload = _legacy()
+    payload["completed_windows"] = {
+        "0": {"other": "recorder-other", "demo": "recorder-demo"},
+    }
+    payload["current_model"] = "demo"
+    _write(path, payload)
+    proposal = _migration(root, inspect_rolling_state(path, root))
+    assert proposal.status == "candidate"
+    snapshot = proposal.proposed_snapshot
+    assert snapshot.target_keys == ("demo@rolling", "other@rolling")
+    assert snapshot.window_keys == (
+        "rolling:2024-01-01:2024-03-31:abcdef123456",
+        "rolling:2024-04-01:2024-06-30:111111111111",
+    )
+    assert [unit.target_key for unit in snapshot.units] == [
+        "demo@rolling", "other@rolling",
+    ]
+    assert all(unit.status == "success" for unit in snapshot.units)
+    assert all(unit.evidence_id is None for unit in snapshot.units)
+    assert all(unit.extensions["claim_authority"] == "legacy_unverified"
+               for unit in snapshot.units)
+
+
+@pytest.mark.parametrize("change", [
+    {"index_window_keys": {
+        0: "rolling:2024-01-01:2024-03-31:abcdef123456",
+    }},
+    {"target_keys": ("other@rolling",)},
+    {"family": "cpcv_rolling"},
+    {"anchor_date": "2024-04-01"},
+])
+def test_migration_proposal_blocks_missing_partial_foreign_or_out_of_scope_mapping(
+        tmp_path, change):
+    root = _root(tmp_path)
+    path = root / "data" / "rolling_state.json"
+    _write(path, _legacy())
+    proposal = _migration(root, inspect_rolling_state(path, root), **change)
+    assert proposal.status == "blocked"
+    assert proposal.capability == "none"
+    assert proposal.proposed_bytes is None
+    assert proposal.proposed_snapshot is None
+
+    missing_path = root / "data" / "missing.json"
+    missing = inspect_rolling_state(missing_path, root)
+    not_applicable = _migration(root, missing)
+    assert not_applicable.status == "not_applicable"
+    assert not_applicable.proposed_bytes is None

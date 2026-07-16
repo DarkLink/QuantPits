@@ -65,6 +65,17 @@ def _strict_json_bytes(data):
     )
 
 
+def _extensions_mapping(value):
+    if value is None:
+        return {}
+    if not isinstance(value, str):
+        raise ValueError("extensions representation must be canonical JSON text")
+    parsed = _strict_json_bytes(value.encode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError("extensions must decode to a mapping")
+    return parsed
+
+
 def _is_digest(value):
     return isinstance(value, str) and _DIGEST_RE.match(value) is not None
 
@@ -148,15 +159,23 @@ class RollingStateUnitClaim:
     status: str
     record_id: str = None
     evidence_id: str = None
+    _extensions_json: str = None
+
+    @property
+    def extensions(self):
+        return _extensions_mapping(self._extensions_json)
 
     def to_public_dict(self):
-        return {
+        payload = {
             "target_key": self.target_key,
             "window_key": self.window_key,
             "status": self.status,
             "record_id": self.record_id,
             "evidence_id": self.evidence_id,
         }
+        if self._extensions_json is not None:
+            payload["extensions"] = self.extensions
+        return payload
 
 
 @dataclass(frozen=True)
@@ -178,7 +197,7 @@ class RollingStateV2Snapshot:
 
     @property
     def extensions(self):
-        return json.loads(self._extensions_json)
+        return _extensions_mapping(self._extensions_json)
 
     def to_public_dict(self):
         return {
@@ -442,7 +461,11 @@ def _parse_v2(payload):
         raise ValueError("V2 units must be a list")
     units = []
     identities = set()
-    scope = {(target, window) for target in targets for window in windows}
+    ordered_scope = [
+        (target, window) for target in targets for window in windows
+    ]
+    scope = set(ordered_scope)
+    last_position = -1
     for raw in raw_units:
         if not isinstance(raw, dict) or set(raw) - _UNIT_FIELDS:
             raise ValueError("V2 unit has an invalid shape")
@@ -454,6 +477,10 @@ def _parse_v2(payload):
         if identity in identities:
             raise KeyError("V2 unit identity is duplicated")
         identities.add(identity)
+        position = ordered_scope.index(identity)
+        if position <= last_position:
+            raise KeyError("V2 unit identities are out of canonical order")
+        last_position = position
         status_value = raw["status"]
         if status_value not in _UNIT_STATUSES:
             raise ValueError("V2 unit status is unsupported")
@@ -464,9 +491,16 @@ def _parse_v2(payload):
                 raise ValueError("V2 unit %s must be null or non-empty" % label)
         if "extensions" in raw and not isinstance(raw["extensions"], dict):
             raise ValueError("V2 unit extensions must be a mapping")
+        unit_extensions = raw.get("extensions")
         units.append(RollingStateUnitClaim(
             target_key=identity[0], window_key=identity[1], status=status_value,
             record_id=record_id, evidence_id=evidence_id,
+            _extensions_json=(
+                json.dumps(
+                    unit_extensions, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True,
+                ) if unit_extensions is not None else None
+            ),
         ))
     return RollingStateV2Snapshot(
         workspace_fingerprint=payload["workspace_fingerprint"], run_id=run_id,
@@ -478,6 +512,224 @@ def _parse_v2(payload):
         attempt_id=attempt, phase=phase, units=tuple(units),
         _extensions_json=json.dumps(
             extensions, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        ),
+    )
+
+
+def parse_rolling_state_v2_bytes(data):
+    """Parse strict State V2 bytes through the canonical schema owner."""
+
+    if not isinstance(data, bytes):
+        raise RollingIdentityError("Rolling State V2 payload must be bytes")
+    try:
+        payload = _strict_json_bytes(data)
+        if not isinstance(payload, dict):
+            raise ValueError("State V2 root must be a mapping")
+        if type(payload.get("schema_version")) is not int:
+            raise ValueError("State V2 schema_version must be an integer")
+        if payload.get("schema_version") != 2:
+            raise ValueError("State V2 schema_version is unsupported")
+        return _parse_v2(payload)
+    except (KeyError, TypeError, UnicodeError, ValueError, json.JSONDecodeError,
+            RollingIdentityError) as exc:
+        if isinstance(exc, RollingIdentityError):
+            raise
+        raise RollingIdentityError("invalid Rolling State V2: %s" % exc)
+
+
+def serialize_rolling_state_v2(snapshot):
+    """Return deterministic canonical bytes after aggregate revalidation."""
+
+    if not isinstance(snapshot, RollingStateV2Snapshot):
+        raise RollingIdentityError("State V2 serializer requires a typed snapshot")
+    try:
+        payload = snapshot.to_public_dict()
+        validated = _parse_v2(payload)
+        canonical = validated.to_public_dict()
+    except (KeyError, TypeError, ValueError, RollingIdentityError) as exc:
+        if isinstance(exc, RollingIdentityError):
+            raise
+        raise RollingIdentityError("invalid Rolling State V2 snapshot: %s" % exc)
+    return (
+        json.dumps(canonical, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+
+
+@dataclass(frozen=True)
+class RollingStateMigrationProposal:
+    status: str
+    reason_code: str
+    capability: str
+    source_path: str
+    source_fingerprint: str = None
+    proposed_snapshot: object = None
+    _proposed_bytes: bytes = None
+    proposed_fingerprint: str = None
+    warnings: tuple = ()
+    blockers: tuple = ()
+
+    def __post_init__(self):
+        if self.status not in ("candidate", "blocked", "not_applicable"):
+            raise RollingIdentityError("unsupported migration proposal status")
+        if self.capability not in ("proposal_only", "none"):
+            raise RollingIdentityError("unsupported migration proposal capability")
+        if self.status == "candidate":
+            if (self.source_path not in (
+                    "data/rolling_state.json",
+                    "data/rolling_state_cpcv.json",
+                ) or not _is_digest(self.source_fingerprint)
+                    or self.capability != "proposal_only"
+                    or not isinstance(self.proposed_snapshot,
+                                      RollingStateV2Snapshot)
+                    or not isinstance(self._proposed_bytes, bytes)
+                    or hashlib.sha256(self._proposed_bytes).hexdigest()
+                    != self.proposed_fingerprint):
+                raise RollingIdentityError("candidate migration proposal is incomplete")
+            parsed = parse_rolling_state_v2_bytes(self._proposed_bytes)
+            if parsed.to_public_dict() != self.proposed_snapshot.to_public_dict():
+                raise RollingIdentityError("migration proposal postimage facts disagree")
+            if self.reason_code != "rolling_state_migration_candidate":
+                raise RollingIdentityError("migration proposal reason contradicts status")
+        elif (self.proposed_snapshot is not None or self._proposed_bytes is not None
+              or self.proposed_fingerprint is not None):
+            raise RollingIdentityError("blocked migration proposal exposes a postimage")
+        elif self.capability != "none":
+            raise RollingIdentityError("non-candidate migration cannot grant capability")
+
+    @property
+    def proposed_bytes(self):
+        return self._proposed_bytes if self.status == "candidate" else None
+
+    def to_public_dict(self):
+        return {
+            "status": self.status,
+            "reason_code": self.reason_code,
+            "capability": self.capability,
+            "source_path": self.source_path,
+            "source_fingerprint": self.source_fingerprint,
+            "proposed_fingerprint": self.proposed_fingerprint,
+            "warnings": list(self.warnings),
+            "blockers": list(self.blockers),
+        }
+
+
+def build_legacy_migration_proposal(
+        inspection, workspace_identity, run_id, family, action,
+        plan_fingerprint, execution_fingerprint, config_fingerprint,
+        anchor_date, target_keys, window_keys, index_window_keys,
+        attempt_id="legacy-migration-proposal"):
+    """Build a deterministic, read-only legacy-to-V2 postimage audit."""
+
+    source_path = getattr(inspection, "path", "rolling_state.json")
+    source_fingerprint = getattr(inspection, "fingerprint", None)
+
+    def blocked(reason, message, status="blocked"):
+        return RollingStateMigrationProposal(
+            status=status,
+            reason_code=reason,
+            capability="none",
+            source_path=source_path,
+            source_fingerprint=source_fingerprint,
+            blockers=(message,),
+        )
+
+    if inspection.classification == "missing":
+        return blocked(
+            "rolling_state_migration_not_applicable",
+            "missing state has no legacy bytes to migrate",
+            status="not_applicable",
+        )
+    if (inspection.classification != "valid_legacy"
+            or not isinstance(inspection.snapshot, LegacyRollingStateSnapshot)):
+        return blocked(
+            "rolling_state_migration_blocked",
+            "only valid legacy state can produce a migration proposal",
+        )
+    snapshot = inspection.snapshot
+    try:
+        if family != snapshot.family:
+            raise ValueError("legacy family does not match explicit family")
+        if snapshot.anchor_date is not None and snapshot.anchor_date != anchor_date:
+            raise ValueError("legacy anchor does not match explicit anchor")
+        if not _is_digest(workspace_identity):
+            raise ValueError("workspace identity must be a lowercase SHA-256")
+        targets = tuple(target_keys)
+        windows = tuple(window_keys)
+        for target in targets:
+            if RollingTargetIdentity.parse(target).family != family:
+                raise ValueError("migration target family is foreign")
+        for window in windows:
+            parse_rolling_window_key(window, expected_family=family)
+        if len(targets) != len(set(targets)) or len(windows) != len(set(windows)):
+            raise ValueError("migration scope contains duplicate identities")
+        if not isinstance(index_window_keys, dict):
+            raise ValueError("legacy index mapping must be a mapping")
+        if set(index_window_keys) != set(range(len(windows))):
+            raise ValueError("legacy index mapping must cover the explicit window scope")
+        if any(index_window_keys[index] != windows[index]
+               for index in range(len(windows))):
+            raise ValueError("legacy index mapping does not preserve window order")
+        requested_scope = [
+            (target, window) for target in targets for window in windows
+        ]
+        legacy_claims = {}
+        for index, models in snapshot.completed_windows:
+            if index not in index_window_keys:
+                raise ValueError("legacy completed index is outside explicit windows")
+            window_key = index_window_keys[index]
+            for target_key, record_id in models:
+                identity = (target_key, window_key)
+                if identity not in requested_scope:
+                    raise ValueError("legacy completed target is outside explicit scope")
+                legacy_claims[identity] = record_id
+        units = []
+        for identity in requested_scope:
+            if identity not in legacy_claims:
+                continue
+            units.append(RollingStateUnitClaim(
+                target_key=identity[0],
+                window_key=identity[1],
+                status="success",
+                record_id=legacy_claims[identity],
+                evidence_id=None,
+                _extensions_json=json.dumps(
+                    {"claim_authority": "legacy_unverified"},
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                ),
+            ))
+        proposed = RollingStateV2Snapshot(
+            workspace_fingerprint=workspace_identity,
+            run_id=run_id,
+            family=family,
+            action=action,
+            plan_fingerprint=plan_fingerprint,
+            execution_fingerprint=execution_fingerprint,
+            config_fingerprint=config_fingerprint,
+            anchor_date=anchor_date,
+            target_keys=targets,
+            window_keys=windows,
+            attempt_id=attempt_id,
+            phase="executing",
+            units=tuple(units),
+            _extensions_json=json.dumps(
+                {"migration": "legacy_proposal_only"},
+                sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+            ),
+        )
+        proposed_bytes = serialize_rolling_state_v2(proposed)
+    except (KeyError, TypeError, ValueError, RollingIdentityError) as exc:
+        return blocked("rolling_state_migration_blocked", str(exc))
+    return RollingStateMigrationProposal(
+        status="candidate",
+        reason_code="rolling_state_migration_candidate",
+        capability="proposal_only",
+        source_path=source_path,
+        source_fingerprint=source_fingerprint,
+        proposed_snapshot=parse_rolling_state_v2_bytes(proposed_bytes),
+        _proposed_bytes=proposed_bytes,
+        proposed_fingerprint=hashlib.sha256(proposed_bytes).hexdigest(),
+        warnings=(
+            "legacy completion claims remain unverified and cannot be applied",
         ),
     )
 
@@ -587,6 +839,29 @@ def inspect_rolling_state(path, workspace_root, expectation=None):
                 "state bytes cannot be read: %s" % exc.__class__.__name__,
             ),
         )
+    return inspect_rolling_state_bytes(
+        data,
+        relative_path=relative,
+        workspace_root=root,
+        expectation=expectation,
+        path_kind=path_kind,
+    )
+
+
+def inspect_rolling_state_bytes(data, relative_path, workspace_root,
+                                expectation=None, path_kind="file"):
+    """Classify one already-observed byte snapshot without another read."""
+
+    relative = Path(relative_path).as_posix()
+    if data is None:
+        return _inspection(
+            "missing", "none", "rolling_state_missing", "absent",
+            "not_applicable", relative, "missing",
+        )
+    if not isinstance(data, bytes):
+        raise RollingIdentityError("Rolling state observation must be bytes")
+    root = Path(workspace_root).expanduser().resolve()
+    path = Path(relative)
     fingerprint = hashlib.sha256(data).hexdigest()
     if not data:
         return _inspection(
@@ -735,5 +1010,7 @@ def inspect_rolling_state(path, workspace_root, expectation=None):
         "valid_versioned", "rolling_state_v2", "rolling_state_versioned_valid",
         "future_repository", "not_applicable", relative, path_kind, fingerprint,
         snapshot, checked=checked,
-        warnings=("V2 state is read-only until the CAS repository phase",),
+        warnings=(
+            "V2 CAS repository is available; legacy execution integration remains blocked",
+        ),
     )

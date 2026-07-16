@@ -67,6 +67,24 @@ class RollingStateRejectedError(RollingCommandError):
         self.code = code
 
 
+class RollingStateRepositoryError(RollingCommandError):
+    """Base failure for the durable State V2 repository boundary."""
+
+    code = "rolling_state_repository_error"
+
+
+class RollingStatePathError(RollingStateRepositoryError):
+    code = "rolling_state_path_invalid"
+
+
+class RollingStateTransitionError(RollingStateRepositoryError):
+    code = "rolling_state_transition_invalid"
+
+
+class RollingStatePersistenceError(RollingStateRepositoryError):
+    code = "rolling_state_write_failed"
+
+
 class RollingResumeStateMissingError(RollingCommandError):
     code = "rolling_resume_state_missing"
 

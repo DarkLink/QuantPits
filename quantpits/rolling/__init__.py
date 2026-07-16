@@ -15,7 +15,14 @@ from quantpits.rolling.command import (
     render_prepared_plan,
     resolve_workspace_context,
 )
-from quantpits.rolling.errors import RollingCommandError, RollingWorkspaceRequiredError
+from quantpits.rolling.errors import (
+    RollingCommandError,
+    RollingStatePathError,
+    RollingStatePersistenceError,
+    RollingStateRepositoryError,
+    RollingStateTransitionError,
+    RollingWorkspaceRequiredError,
+)
 from quantpits.rolling.identity import (
     RollingFoldIdentity,
     RollingRunIdentity,
@@ -40,8 +47,20 @@ from quantpits.rolling.state import (
     LegacyRollingStateSnapshot,
     RollingStateExpectation,
     RollingStateInspection,
+    RollingStateMigrationProposal,
+    RollingStateUnitClaim,
     RollingStateV2Snapshot,
+    build_legacy_migration_proposal,
     inspect_rolling_state,
+    inspect_rolling_state_bytes,
+    parse_rolling_state_v2_bytes,
+    serialize_rolling_state_v2,
+)
+from quantpits.rolling.repository import (
+    RollingStateBaseline,
+    RollingStateMutationReceipt,
+    RollingStateRepository,
+    RollingStateRepositoryView,
 )
 
 __all__ = [
@@ -59,10 +78,20 @@ __all__ = [
     "RollingExecutionOutcome",
     "LegacyRollingExecutionAdapter",
     "RollingWorkspaceRequiredError",
+    "RollingStateRepositoryError",
+    "RollingStatePathError",
+    "RollingStateTransitionError",
+    "RollingStatePersistenceError",
     "RollingStateExpectation",
     "RollingStateInspection",
+    "RollingStateMigrationProposal",
+    "RollingStateUnitClaim",
     "LegacyRollingStateSnapshot",
     "RollingStateV2Snapshot",
+    "RollingStateBaseline",
+    "RollingStateRepositoryView",
+    "RollingStateMutationReceipt",
+    "RollingStateRepository",
     "options_from_namespace",
     "prepare_rolling_run",
     "prepared_plan_json",
@@ -71,6 +100,10 @@ __all__ = [
     "resolve_rolling_run",
     "recheck_prepared_inputs",
     "inspect_rolling_state",
+    "inspect_rolling_state_bytes",
+    "parse_rolling_state_v2_bytes",
+    "serialize_rolling_state_v2",
+    "build_legacy_migration_proposal",
     "family_for_training_method",
     "parse_rolling_window_key",
     "training_method_for_family",

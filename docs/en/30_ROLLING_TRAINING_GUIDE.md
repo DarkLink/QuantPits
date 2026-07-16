@@ -32,8 +32,12 @@
 > `--show-state` uses the single-byte-snapshot classifier in `quantpits.rolling.state`. Zero-byte
 > files, duplicate JSON keys, unsupported schemas, cross-workspace symlinks, ambiguous indexes, and
 > identity mismatches never degrade to missing/empty. The reader recognizes the State V2 identity
-> envelope, accepts only the JSON integer `schema_version: 2` (rejecting `2.0`/`2e0`), and keeps V2
-> display-only until the CAS repository is implemented. A legacy `rolling_config` is reported as
+> envelope and accepts only the JSON integer `schema_version: 2` (rejecting `2.0`/`2e0`).
+> `quantpits.rolling.repository` now provides canonical paths, sibling locks, CAS, atomic
+> replace/delete, and actual-postimage receipts under an explicit `WorkspaceContext`. Public Rolling
+> runtime has not adopted it, so V2 still cannot enter the legacy writer, CLI mutation, or
+> recovery/reuse. Legacy-to-V2 support is a deterministic, zero-write proposal audit with no
+> `apply()` capability. A legacy `rolling_config` is reported as
 > `checked` only when it exists in state and its fingerprint was compared; mismatch inspections do
 > not expose a raw compatibility payload. `--clear-state` backs up/deletes
 > state, so it still passes safeguard and holds the shared execution lease.
@@ -90,7 +94,8 @@ rolling_train.py      ← CLI + orchestration + strategy dispatch
 quantpits/rolling/
 ├── command.py            # filesystem-only PreparedRollingRun
 ├── identity.py           # pure canonical target/fold/window/run identities
-├── state.py              # single-snapshot, version-aware readonly classifier
+├── state.py              # strict V2 serializer + readonly classifier/migration proposal
+├── repository.py         # canonical lock + CAS + atomic State V2 persistence
 ├── windows.py            # runtime ResolvedRollingRun + canonical identities
 └── legacy.py             # exact-scope legacy adapter + baseline recheck
 
@@ -176,6 +181,15 @@ backend activation. `--show-state` reports `missing`, `valid_legacy`, `valid_ver
 `unsupported_schema`, `ambiguous`, `foreign`, `identity_mismatch`, or `unverified_completion` with a
 stable reason code. A state `completed`/success flag or recorder ID is only a claim; it is not
 immutable unit evidence or a publication receipt.
+
+The State V2 repository is a standalone domain API for later execution/evidence consumers, not a
+new CLI. It requires an exact baseline token, rereads and classifies the same byte snapshot under
+the canonical sibling lock, validates a pre-evidence transition, writes a same-directory temporary
+file, then performs file fsync, a pre-replace CAS recheck, atomic replace, directory fsync, and an
+actual reread. Conflicts, invalid sources/transitions, write failures, and interruption are never
+reported as committed; uncertain directory durability or postimage reread produces only
+`durability_uncertain`. Existing legacy `rolling_train.py`, `--clear-state`, resume, and backup
+behavior is unchanged and no workspace is migrated automatically.
 
 `--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared
 context as the sole workspace identity; legacy `env` does not reselect it from process `sys.argv`.

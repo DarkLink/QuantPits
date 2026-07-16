@@ -414,7 +414,7 @@ def test_valid_legacy_action_compatibility_matrix(tmp_path, action):
     assert prepared.options.action == action
 
 
-def test_valid_v2_is_display_only_until_cas_repository_phase(tmp_path):
+def test_valid_v2_is_display_only_until_repository_integration(tmp_path):
     from quantpits.rolling.identity import workspace_fingerprint
     from quantpits.rolling.errors import RollingStateRejectedError
     from quantpits.utils.workspace import fingerprint_value
@@ -448,6 +448,9 @@ def test_valid_v2_is_display_only_until_cas_repository_phase(tmp_path):
     )
     shown = prepare_rolling_run(ctx, RollingRunOptions(action="show_state"))
     assert shown.state.classification == "valid_versioned"
+    assert shown.state.warnings == (
+        "V2 CAS repository is available; legacy execution integration remains blocked",
+    )
     with pytest.raises(RollingStateRejectedError) as caught:
         prepare_rolling_run(
             ctx, RollingRunOptions(action="cold_start", all_enabled=True),

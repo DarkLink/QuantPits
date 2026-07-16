@@ -90,14 +90,19 @@ workspace identities, absolute paths, or runtime data.
 Fully independent. `--cold-start` clears only the current method's state.
 
 Only valid legacy state can currently enter legacy execution. The reader validates a
-`schema_version=2` identity envelope for diagnostics, but V2 is display-only: mutation, clear, or
-resume rejects it before safeguard, lease, and backend activation. The version must be the JSON
+`schema_version=2` identity envelope. A standalone `RollingStateRepository` now provides the
+canonical sibling lock, exact-baseline CAS, atomic replace/delete, and truthful receipts, but it is
+not connected to the CLI. Public mutation, clear, or resume therefore still rejects V2 before
+safeguard, lease, and backend activation. The version must be the JSON
 integer `2`; floats `2.0`/`2e0` are unsupported. Zero-byte files, `{}`, duplicate JSON keys,
 non-canonical window/run identities, family/workspace/config identity mismatches, and external
 symlinks fail closed. A legacy config is reported as `checked` only when present in state and its
 fingerprint was actually compared; mismatch inspections expose no raw legacy payload. Completion or
-recorder claims in state are not recovery reuse authority; CAS
-writes, explicit migration, and immutable evidence remain separate later boundaries.
+recorder claims in state are not recovery reuse authority. The repository permits only
+pre-evidence `prepared`/`executing`/`failed` transitions and continues to reject
+`units_complete`/`completed`. Legacy migration produces only a deterministic, zero-write,
+proposal-only postimage audit with no CLI or `apply()` capability; immutable evidence remains a
+later boundary.
 
 ### Cross-Mode Isolation
 

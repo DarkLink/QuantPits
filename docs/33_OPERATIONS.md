@@ -101,12 +101,16 @@ workspace 外的 state/record/history/MLflow/OperatorLog 路径都会以
 两个文件完全独立。`--cold-start` 只清空当前模式的状态，不影响另一模式。
 
 现有 legacy state 仍是唯一可进入 legacy execution 的协议。reader 可以验证 `schema_version=2` 的 identity
-envelope，但 V2 当前仅用于诊断；任何 mutation、clear 或 resume 都会在 safeguard、lease 和 backend 之前拒绝。
+envelope；独立的 `RollingStateRepository` 已提供 canonical sibling lock、exact-baseline CAS、atomic
+replace/delete 和 truthful receipt，但尚未接入 CLI。因而 public mutation、clear 或 resume 仍会在 safeguard、lease
+和 backend 之前拒绝 V2。
 V2 版本必须是 JSON integer `2`，float `2.0`/`2e0` 也属于 unsupported schema。zero-byte、`{}`、duplicate
 JSON key、非规范 window/run identity、family/workspace/config identity mismatch 与外部 symlink 都 fail closed。
 legacy config 只有在 state 中存在且实际比较 fingerprint 时才显示为 `checked`，mismatch 不提供 raw legacy
-payload。State 中的 completion/recorder claim 不提供 recovery reuse authority；CAS 写入、显式
-migration 与 immutable evidence 分属后续独立边界。
+payload。State 中的 completion/recorder claim 不提供 recovery reuse authority；repository 只允许
+`prepared/executing/failed` 的 pre-evidence transition，`units_complete/completed` 继续拒绝。legacy migration
+仅生成 deterministic、zero-write、proposal-only postimage audit，没有 CLI 或 `apply()`，immutable evidence
+仍属后续独立边界。
 
 ### 状态结构
 
