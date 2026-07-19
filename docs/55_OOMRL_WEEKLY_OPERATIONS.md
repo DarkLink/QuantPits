@@ -59,7 +59,7 @@ source workspaces/Demo_Workspace/run_env.sh
 # 导入券商结算文件，更新现金和持仓
 python -m quantpits.scripts.prod_post_trade --scope all
 
-# 若券商只提供一个覆盖完整窗口的区间交割文件，必须显式选择；缺行日期仍需单独确认
+# 若券商只提供一个覆盖完整交易日窗口的区间交割文件，必须显式选择；cursor 后的休市日无需覆盖，缺行交易日仍需单独确认
 python -m quantpits.scripts.prod_post_trade --scope all \
   --end-date <YYYY-MM-DD> \
   --settlement-bundle data/<START>-<END>-table.xlsx \

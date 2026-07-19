@@ -349,6 +349,18 @@ def execute_prepared(
         dates = tuple(resolve_trade_dates(state_start, catalog.date_to))
         settlement_dates = dates
         if catalog.settlement_bundle is not None:
+            if dates and (
+                catalog.settlement_bundle.coverage_start > min(dates)
+                or catalog.settlement_bundle.coverage_end < max(dates)
+            ):
+                raise PostTradeInputError(
+                    "Settlement bundle coverage %s..%s does not cover resolved trading dates %s..%s"
+                    % (
+                        catalog.settlement_bundle.coverage_start,
+                        catalog.settlement_bundle.coverage_end,
+                        min(dates), max(dates),
+                    )
+                )
             verify_settlement_bundle(prepared.ctx, catalog.settlement_bundle)
     parsed, catalog = parse_pending_sources_with_catalog(
         catalog, adapter,

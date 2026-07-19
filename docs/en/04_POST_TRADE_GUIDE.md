@@ -140,8 +140,9 @@ An interval export must use a workspace-relative path and the exact
 `YYYY-MM-DD-YYYY-MM-DD-table.xlsx` name. The command parses that physical file once, partitions it in memory by normalized
 `交收日期`, and never creates or overwrites daily XLSX files. Once selected, it is the invocation's only physical
 settlement source; coexisting daily exports are retained but not consumed. The filename range must cover the complete
-requested state window, and every row date must belong to the filename range, requested window, and resolved trading
-calendar. Absence of rows for a trading day is not observed empty evidence: `--allow-missing-settlement` is still required
+resolved trading-date window; adjacent weekend or market-closure calendar days after the cursor need not appear in the
+filename range. Every row date must belong to the filename range, requested window, and resolved trading calendar.
+Absence of rows for a trading day is not observed empty evidence: `--allow-missing-settlement` is still required
 to classify that day as `assumed_empty`.
 
 The light plan records the interval export's relative path, SHA-256, and declared range once. Strict dry-run and real

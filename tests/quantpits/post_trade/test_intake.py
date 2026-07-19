@@ -242,10 +242,8 @@ def test_bundle_rejects_duplicate_date_columns(tmp_path):
 @pytest.mark.parametrize("name", [
     "bundle.xlsx",
     "2026-01-06-2026-01-02-table.xlsx",
-    "2026-01-03-2026-01-05-table.xlsx",
-    "2026-01-02-2026-01-04-table.xlsx",
 ])
-def test_bundle_filename_and_coverage_are_strict(tmp_path, name):
+def test_bundle_filename_is_strict(tmp_path, name):
     ctx, _ = _bundle_ctx(tmp_path, name=name)
     with pytest.raises(PostTradePlanError):
         discover_inputs(

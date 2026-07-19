@@ -59,7 +59,7 @@ source workspaces/Demo_Workspace/run_env.sh
 # Import broker settlement files, update cash and holdings
 python -m quantpits.scripts.prod_post_trade --scope all
 
-# If the broker supplies one interval export, select it explicitly; missing row dates still require acknowledgement
+# If the broker supplies one export covering all resolved trading dates, select it explicitly; closed calendar days need no coverage and missing trading dates still require acknowledgement
 python -m quantpits.scripts.prod_post_trade --scope all \
   --end-date <YYYY-MM-DD> \
   --settlement-bundle data/<START>-<END>-table.xlsx \

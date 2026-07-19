@@ -200,6 +200,55 @@ def _bundle_frame(*dates):
     })
 
 
+def test_bundle_coverage_uses_resolved_trading_dates_not_cursor_calendar_days(tmp_path):
+    ctx = _ctx(tmp_path)
+    ctx.config_path("prod_config.json").write_text(json.dumps({
+        "current_date": "2026-07-10", "last_processed_date": "2026-07-10",
+        "current_cash": 123456, "current_holding": [], "broker": "gtja",
+    }))
+    ctx.data_path("2026-07-13-2026-07-17-table.xlsx").write_bytes(b"bundle")
+
+    class Adapter:
+        def parse_settlement(self, _):
+            return _bundle_frame(
+                "2026-07-13", "2026-07-14", "2026-07-15", "2026-07-16",
+            )
+
+    prepared = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="state", end_date="2026-07-17", allow_missing_settlement=True,
+        settlement_bundle="data/2026-07-13-2026-07-17-table.xlsx",
+    ))
+    summary = execute_prepared(
+        prepared, Adapter(), init_qlib=lambda: None,
+        resolve_trade_dates=lambda *_: (
+            "2026-07-13", "2026-07-14", "2026-07-15", "2026-07-16", "2026-07-17",
+        ),
+    )
+    assert summary.prepared.catalog.date_from == "2026-07-11"
+    assert summary.prepared.catalog.source_for_date(
+        "settlement", "2026-07-17",
+    ).status == "assumed_empty"
+
+
+@pytest.mark.parametrize("name", [
+    "2026-01-03-2026-01-05-table.xlsx",
+    "2026-01-02-2026-01-04-table.xlsx",
+])
+def test_bundle_coverage_must_cover_resolved_trading_dates(tmp_path, name):
+    ctx = _ctx(tmp_path)
+    ctx.data_path(name).write_bytes(b"bundle")
+    prepared = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="state", end_date="2026-01-05",
+        settlement_bundle="data/%s" % name,
+    ))
+
+    with pytest.raises(PostTradeInputError, match="resolved trading dates"):
+        execute_prepared(
+            prepared, object(), init_qlib=lambda: None,
+            resolve_trade_dates=lambda *_: ("2026-01-02", "2026-01-05"),
+        )
+
+
 def test_bundle_plan_records_one_physical_input_and_strict_logical_evidence(tmp_path):
     ctx = _ctx(tmp_path)
     bundle = ctx.data_path("2026-01-02-2026-01-05-table.xlsx")

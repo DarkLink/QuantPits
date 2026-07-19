@@ -48,7 +48,7 @@ def _parse_iso_date(value: str, *, label: str) -> str:
 
 
 def prepare_settlement_bundle(
-    ctx: WorkspaceContext, value: str, *, requested_start: str, requested_end: str,
+    ctx: WorkspaceContext, value: str,
 ) -> SettlementBundleRef:
     """Resolve and identity-bind one explicit workspace-contained bundle."""
     if not isinstance(value, str) or not value.strip():
@@ -67,11 +67,9 @@ def prepare_settlement_bundle(
     coverage_end = _parse_iso_date(match.group(2), label="bundle end")
     if coverage_start > coverage_end:
         raise PostTradePlanError("Settlement bundle start date must not be after end date")
-    if coverage_start > requested_start or coverage_end < requested_end:
-        raise PostTradePlanError(
-            "Settlement bundle coverage %s..%s does not cover requested state window %s..%s"
-            % (coverage_start, coverage_end, requested_start, requested_end)
-        )
+    # Coverage is checked against the resolved trading calendar during strict
+    # preflight.  The raw state window can begin on a weekend or holiday and is
+    # therefore not an authoritative coverage boundary.
     root = ctx.root.resolve(strict=True)
     try:
         display_path = public_path.relative_to(root).as_posix()
@@ -232,11 +230,7 @@ def discover_inputs(
         ))
     bundle = None
     if settlement_bundle is not None:
-        settlement_start = (stream_date_from or {}).get("settlement", date_from)
-        bundle = prepare_settlement_bundle(
-            ctx, settlement_bundle,
-            requested_start=settlement_start, requested_end=date_to,
-        )
+        bundle = prepare_settlement_bundle(ctx, settlement_bundle)
     return PostTradeInputCatalog(
         date_from=date_from, date_to=date_to,
         settlement_sources=tuple(grouped["settlement"]),
