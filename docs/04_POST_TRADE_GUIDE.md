@@ -144,7 +144,7 @@ python quantpits/scripts/prod_post_trade.py --no-manifest
 文件中没有某交易日的行不等于观察到空日，仍须通过
 `--allow-missing-settlement` 显式确认为 `assumed_empty`。
 
-轻量 plan 记录一次区间文件的相对路径、SHA-256 和声明区间。严格 dry-run/真实执行增加每日
+轻量 plan 记录一次区间文件的相对路径、SHA-256 和声明区间。严格 dry-run 会在 stdout 输出、真实执行会在审计证据中记录每日
 `observed`/`assumed_empty`、行数和逻辑 fingerprint，并在第一处 writer 前重新核对 workspace root、父目录、
 设备/inode、大小、mtime 和 SHA-256。路径越界、符号链接逃逸、文件替换或改写都会 fail closed。
 

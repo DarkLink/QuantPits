@@ -911,6 +911,12 @@ def main():
             lock_context = None
     if args.dry_run:
         print(render_prepared(summary.prepared))
+        settlement_evidence = _settlement_operator_result(summary.prepared)
+        if settlement_evidence["settlement_source_mode"] == "bundle":
+            print(
+                "\n[DRY-RUN] Settlement evidence: %s"
+                % json.dumps(settlement_evidence, ensure_ascii=False, sort_keys=True)
+            )
         if summary.state_result is not None:
             print("\n[DRY-RUN] Strict broker intake validation passed. State calculation passed: %s" % json.dumps(summary.state_result.public_summary(), sort_keys=True))
         else:

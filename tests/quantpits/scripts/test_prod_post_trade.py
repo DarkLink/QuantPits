@@ -302,6 +302,33 @@ def test_main_dry_run(mock_get_dates, mock_env):
     with patch.object(sys, 'argv', ['prod_post_trade.py', '--dry-run', '--allow-missing-settlement']):
         post_trade.main()
 
+
+def test_bundle_dry_run_evidence_exposes_logical_dates(mock_env):
+    post_trade, _ = mock_env
+    prepared = MagicMock()
+    prepared.catalog.settlement_bundle.display_path = "data/week-table.xlsx"
+    prepared.catalog.settlement_bundle.coverage_start = "2026-03-02"
+    prepared.catalog.settlement_bundle.coverage_end = "2026-03-03"
+    prepared.catalog.settlement_bundle.fingerprint = "a" * 64
+    observed = MagicMock(
+        trade_date="2026-03-02", status="present", row_count=2,
+        fingerprint="b" * 64,
+    )
+    assumed = MagicMock(
+        trade_date="2026-03-03", status="assumed_empty", row_count=0,
+        fingerprint=None,
+    )
+    prepared.catalog.settlement_sources = (observed, assumed)
+
+    evidence = post_trade._settlement_operator_result(prepared)
+
+    assert evidence["settlement_source_mode"] == "bundle"
+    assert evidence["settlement_dates"]["2026-03-02"]["status"] == "observed"
+    assert evidence["settlement_dates"]["2026-03-02"]["row_count"] == 2
+    assert evidence["settlement_dates"]["2026-03-03"] == {
+        "status": "assumed_empty", "row_count": 0, "fingerprint": None,
+    }
+
 @patch('quantpits.scripts.prod_post_trade.get_trade_dates')
 @patch('quantpits.scripts.prod_post_trade.process_single_day')
 @patch('quantpits.scripts.prod_post_trade.save_prod_config')

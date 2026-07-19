@@ -145,8 +145,8 @@ filename range. Every row date must belong to the filename range, requested wind
 Absence of rows for a trading day is not observed empty evidence: `--allow-missing-settlement` is still required
 to classify that day as `assumed_empty`.
 
-The light plan records the interval export's relative path, SHA-256, and declared range once. Strict dry-run and real
-execution add each logical day's `observed`/`assumed_empty` status, row count, and logical fingerprint. Immediately before
+The light plan records the interval export's relative path, SHA-256, and declared range once. Strict dry-run prints to
+stdout, and real execution records in audit evidence, each logical day's `observed`/`assumed_empty` status, row count, and logical fingerprint. Immediately before
 the first writer, the command rechecks the workspace root, parent, device/inode, size, mtime, and SHA-256. Path escape,
 symlink escape, replacement, or byte drift fails closed.
 
