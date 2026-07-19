@@ -3,7 +3,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from quantpits.post_trade.contracts import ValuationMissingError
+from quantpits.post_trade.contracts import ValuationMissingError, ValuationSchemaError
 from quantpits.post_trade.valuation import QlibValuationProvider
 
 
@@ -31,3 +31,18 @@ def test_valuation_missing_instrument_fails(monkeypatch):
     monkeypatch.setattr(qlib.data, "D", type("D", (), {"features": staticmethod(lambda **kwargs: pd.DataFrame())})())
     with pytest.raises(ValuationMissingError):
         QlibValuationProvider().snapshot("2026-01-02", ("SH000001",), "SH000300")
+
+
+def test_valuation_accepts_qlib_float_quantization_within_one_cent():
+    value = QlibValuationProvider._validated_derived_quote(
+        Decimal("25.372746"), Decimal("0.6673526"), Decimal("38.019997"),
+        "SH600036",
+    )
+    assert value == Decimal("38.02")
+
+
+def test_valuation_rejects_close_factor_mismatch_across_cent_boundary():
+    with pytest.raises(ValuationSchemaError, match="SH600036"):
+        QlibValuationProvider._validated_derived_quote(
+            Decimal("20"), Decimal("2"), Decimal("10.011"), "SH600036",
+        )

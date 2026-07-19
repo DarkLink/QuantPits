@@ -182,7 +182,7 @@ cash_after = cash_before + 卖出收入 - 买入支出 + 红利利息 + cashflow
 
 所有期末持仓和基准都必须有有效收盘价；缺失估值会在写盘前失败，不再静默丢失持仓或写入假的零基准。
 
-账户估值会同时读取 `$close`、`$factor` 和 `Div($close,$factor)`。持仓证券会验证 close/factor 派生关系；指数基准保留三字段但按 provider-reported 口径记录，不把个股 factor 公式强加给指数。未来真实 state transaction 会把原始字段、factor、派生价格、用途和价格口径写入 `data/valuation_evidence.jsonl`。该 sidecar 与状态日志一起恢复提交，位于 daily log 之后、cashflow 与 cursor 之前；旧 CSV schema 不变。
+账户估值会同时读取 `$close`、`$factor` 和 `Div($close,$factor)`。持仓证券会按现有金额规则使用 `ROUND_HALF_UP` 量化到分，并在同一分值精度验证 close/factor 派生关系；Qlib 单精度字段的微小舍入差不会制造假失败，跨越一分钱边界仍会 fail closed。指数基准保留三字段但按 provider-reported 口径记录，不把个股 factor 公式强加给指数。未来真实 state transaction 会把原始字段、factor、量化后的业务价格、用途和价格口径写入 `data/valuation_evidence.jsonl`。该 sidecar 与状态日志一起恢复提交，位于 daily log 之后、cashflow 与 cursor 之前；旧 CSV schema 不变。
 
 ### 估值日期与券商资产快照
 

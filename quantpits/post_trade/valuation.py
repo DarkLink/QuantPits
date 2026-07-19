@@ -6,7 +6,10 @@ from decimal import Decimal
 from typing import Mapping, Protocol, Tuple
 
 from quantpits.post_trade.contracts import ValuationMissingError, ValuationSchemaError
-from quantpits.post_trade.state import ValuationSnapshot, decimal_value, normalize_instrument
+from quantpits.post_trade.state import (
+    MONEY_QUANTUM, ROUNDING_MODE, ValuationSnapshot, decimal_value,
+    normalize_instrument,
+)
 from quantpits.post_trade.valuation_provenance import ValuationQuoteEvidence
 
 
@@ -40,14 +43,20 @@ class MappingValuationProvider:
 
 class QlibValuationProvider:
     @staticmethod
-    def _validated_derived_quote(raw, factor, derived, instrument, tolerance=Decimal("0.000001")):
+    def _validated_derived_quote(raw, factor, derived, instrument):
         if factor == 0:
             raise ValuationSchemaError("Factor must be nonzero for %s" % instrument)
-        if abs((raw / factor) - derived) > tolerance:
+        calculated_price = (raw / factor).quantize(
+            MONEY_QUANTUM, rounding=ROUNDING_MODE,
+        )
+        operational_price = derived.quantize(
+            MONEY_QUANTUM, rounding=ROUNDING_MODE,
+        )
+        if calculated_price != operational_price:
             raise ValuationSchemaError(
                 "Raw close/factor does not match derived close for %s" % instrument
             )
-        return derived
+        return operational_price
 
     def snapshot(self, trade_date, instruments, benchmark):
         from qlib.data import D
@@ -70,8 +79,11 @@ class QlibValuationProvider:
                 normalized = normalize_instrument(instrument)
                 raw = decimal_value(group.iloc[0]["$close"], field="raw close")
                 factor = decimal_value(group.iloc[0]["$factor"], field="factor")
-                value = decimal_value(group.iloc[0][derived], field="close")
-                self._validated_derived_quote(raw, factor, value, normalized)
+                value = self._validated_derived_quote(
+                    raw, factor,
+                    decimal_value(group.iloc[0][derived], field="close"),
+                    normalized,
+                )
                 closes[normalized] = value
                 evidence[normalized] = ValuationQuoteEvidence(
                     normalized, value, "account_valuation", trade_date, None, trade_date,
@@ -89,9 +101,10 @@ class QlibValuationProvider:
             raise ValuationSchemaError("Benchmark valuation data is missing exact fields")
         benchmark_raw = decimal_value(benchmark_reset.iloc[0]["$close"], field="benchmark raw close")
         benchmark_factor = decimal_value(benchmark_reset.iloc[0]["$factor"], field="benchmark factor")
-        benchmark_value = decimal_value(benchmark_reset.iloc[0][derived], field="benchmark")
-        self._validated_derived_quote(
-            benchmark_raw, benchmark_factor, benchmark_value, normalize_instrument(benchmark)
+        benchmark_value = self._validated_derived_quote(
+            benchmark_raw, benchmark_factor,
+            decimal_value(benchmark_reset.iloc[0][derived], field="benchmark"),
+            normalize_instrument(benchmark),
         )
         benchmark_evidence = ValuationQuoteEvidence(
             normalize_instrument(benchmark), benchmark_value, "account_valuation", trade_date,

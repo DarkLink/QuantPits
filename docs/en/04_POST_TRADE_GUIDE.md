@@ -189,7 +189,7 @@ Every ending position and the benchmark must have a valid close. Missing
 valuation fails before the first state write instead of silently dropping a
 position or writing a fake zero benchmark.
 
-Account valuation queries `$close`, `$factor`, and `Div($close,$factor)` together. It validates the close/factor derivation for held securities; benchmark indices retain all three fields as provider-reported evidence because index factor semantics are not forced through the equity formula. Future real state transactions persist raw fields, factor, derived price, purpose, and basis evidence in `data/valuation_evidence.jsonl`. The sidecar participates in recovery after the daily log and before cashflow/cursor targets; legacy CSV schemas remain unchanged.
+Account valuation queries `$close`, `$factor`, and `Div($close,$factor)` together. Held-security prices use the existing `ROUND_HALF_UP` money rule at cent precision, and the close/factor derivation is validated at that same precision. Tiny Qlib single-precision rounding differences therefore do not create false failures, while a mismatch crossing a cent boundary still fails closed. Benchmark indices retain all three fields as provider-reported evidence because index factor semantics are not forced through the equity formula. Future real state transactions persist raw fields, factor, the quantized operational price, purpose, and basis evidence in `data/valuation_evidence.jsonl`. The sidecar participates in recovery after the daily log and before cashflow/cursor targets; legacy CSV schemas remain unchanged.
 
 ### Valuation dates and broker asset snapshots
 
