@@ -353,6 +353,74 @@ def test_resume_preserves_receipt_outputs_and_reruns_only_failed_target(tmp_path
     assert not (root / "data/run_state.json").exists()
 
 
+def test_predict_resume_preserves_success_and_reruns_only_failed_target(tmp_path):
+    root = workspace(tmp_path, ("a", "b"))
+    (root / "latest_train_records.json").write_text(json.dumps({
+        "models": {
+            "a@static": "source-a",
+            "b@static": "source-b",
+        },
+        "experiment_name": "source-experiment",
+    }))
+    first = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="predict_only", all_enabled=True,
+            run_id="predict-resume-run",
+        ),
+    )
+
+    def prediction_result(request, *, outcome="success"):
+        target = request.target
+        if outcome == "failed":
+            return TrainingTargetResult(
+                target.key, target.operation, "failed", error_code="predict_failed"
+            )
+        name, mode = target.key.rsplit("@", 1)
+        source = target.source_entry
+        entry = ModelRecordEntry(
+            target.key, name, mode, target.operation, "ready", "output-" + name,
+            request.resolved_run.output_experiment_name,
+            requested_anchor=request.resolved_run.anchor_date,
+            prediction_start=request.resolved_run.anchor_date,
+            prediction_end=request.resolved_run.anchor_date,
+            prediction_rows=1,
+            source_recorder_id=source.recorder_id,
+            source_experiment_name=source.experiment_name,
+            source_operation=source.operation,
+        )
+        return TrainingTargetResult(
+            target.key, target.operation, "success", entry, {"IC_Mean": 0.1}
+        )
+
+    with pytest.raises(TrainingExecutionError):
+        TrainingExecutionService(hooks([], lambda request: prediction_result(
+            request,
+            outcome="failed" if request.target.key == "b@static" else "success",
+        ))).execute(first)
+
+    called = []
+    resumed = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="predict_only", all_enabled=True,
+            resume=True, run_id="predict-resume-run",
+        ),
+    )
+
+    def retry(request):
+        called.append(request.target.key)
+        return prediction_result(request)
+
+    summary = TrainingExecutionService(hooks([], retry)).execute(resumed)
+
+    assert called == ["b@static"]
+    outcomes = {item["key"]: item for item in summary.outcomes}
+    assert outcomes["a@static"]["already_published"] is True
+    assert outcomes["b@static"]["published_this_attempt"] is True
+    assert not (root / "data/run_state.json").exists()
+
+
 def test_resume_retries_warning_closure_without_rerunning_target(tmp_path):
     root = workspace(tmp_path)
     prepared = prepare_training_run(

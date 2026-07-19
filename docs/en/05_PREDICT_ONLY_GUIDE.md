@@ -64,6 +64,15 @@ be batch-published, but the command still returns an execution failure. The mani
 `published_this_attempt` from `already_published` and reports only receipt-verified outputs. A
 same-identity `--resume` closes interrupted publication/manifest work without rerunning a target whose
 commit is already proven by the receipt.
+If partial successes have already advanced current pointers, resume identity still uses the original
+sources recorded by V3 state rather than treating this run's outputs as new inputs.
+
+Qlib's `MTSDatasetH`, used by TRA, internally reads learn data. During predict-only dataset
+construction, the engine removes `DropnaLabel` from an in-memory configuration copy so that the
+newest trading dates are not discarded merely because their forward labels are not observable yet.
+All other learn processors, all infer processors, and the workspace YAML remain unchanged. Persisted
+predictions must still pass requested-anchor coverage validation; an output that ends before the
+anchor is not published.
 
 ---
 
@@ -204,3 +213,4 @@ python quantpits/scripts/static_train.py --list
 3. **Identifier Distinction**: Native operation routes completely through an independent `Prod_Predict_{Freq}` branch tag inside MLruns effectively protecting discrete training sequences records.
 4. **Chronology Constraints**: Evaluation intervals bound strictly through `model_config.json` maintaining strict parity with explicit training mapping architecture.
 5. **Recovery Evidence**: Every publication stores preimage/postimage evidence and a receipt under `data/training_transactions/`.
+6. **TRA Tail Dates**: Predict-only retains unlabeled inference rows in `MTSDatasetH`; they are used to generate predictions and do not imply that future labels are known.

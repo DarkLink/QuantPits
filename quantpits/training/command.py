@@ -63,8 +63,10 @@ class TrainingRunOptions:
             raise TrainingPlanError("unsupported training action")
         if self.cache_size_mb is not None and self.cache_size_mb < 0:
             raise TrainingPlanError("cache size must be non-negative")
-        if self.resume and self.action != "incremental":
-            raise TrainingPlanError("resume is supported only for incremental training")
+        if self.resume and self.action not in ("incremental", "predict_only"):
+            raise TrainingPlanError(
+                "resume is supported only for incremental or predict-only training"
+            )
         if self.run_id is not None and not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", self.run_id):
             raise TrainingPlanError("run id must use safe filename characters")
         if self.action != "full" and not (
@@ -99,6 +101,7 @@ class PreparedResumeState:
     action: str
     target_keys: Tuple[str, ...]
     phase: str
+    source_identities: Tuple[Tuple[str, str, str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -294,9 +297,25 @@ def prepare_training_run(
             raise TrainingPlanError("resume target selection differs from persisted state")
         options = replace(options, run_id=persisted.run_id)
         state_fp = state_baseline.fingerprint
+        source_identities = []
+        if persisted.action == "predict_only":
+            for key in persisted.target_keys:
+                outcome = persisted.outcomes.get(key, {})
+                source = (
+                    outcome.get("source_recorder_id"),
+                    outcome.get("source_experiment_name"),
+                    outcome.get("source_operation"),
+                )
+                if any(value is not None for value in source):
+                    if not all(isinstance(value, str) and value for value in source):
+                        raise TrainingPlanError(
+                            "persisted predict-only source identity is incomplete"
+                        )
+                    source_identities.append((key,) + source)
         resume_state = PreparedResumeState(
             persisted.run_id, persisted.schema_version, state_fp, persisted.family,
             persisted.action, persisted.target_keys, persisted.phase,
+            tuple(source_identities),
         )
         fingerprints["data/run_state.json"] = state_fp
         input_refs.append(InputRef(

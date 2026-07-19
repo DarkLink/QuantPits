@@ -119,6 +119,44 @@ def test_resume_adopts_persisted_run_id_without_creating_a_lock(tmp_path):
     assert not lock.exists()
 
 
+def test_predict_only_resume_adopts_persisted_identity(tmp_path):
+    root = workspace(tmp_path)
+    (root / "latest_train_records.json").write_text(json.dumps({
+        "models": {"demo@static": "source-recorder"},
+        "experiment_name": "source-experiment",
+    }))
+    TrainingStateRepository(root / "data/run_state.json").save(TrainingRunState(
+        run_id="predict-resume", family="static", action="predict_only",
+        plan_fingerprint="plan", execution_fingerprint="execution",
+        resume_fingerprint="resume", anchor_date="2026-07-10",
+        target_keys=("demo@static",),
+        outcomes={"demo@static": {
+            "outcome": "failed", "published": False,
+            "source_recorder_id": "source-recorder",
+            "source_experiment_name": "source-experiment",
+            "source_operation": "legacy_import",
+        }},
+        phase="failed",
+    ))
+
+    prepared = prepare_training_run(
+        ctx=WorkspaceContext.from_root(root),
+        options=TrainingRunOptions(
+            family="static", action="predict_only", all_enabled=True, resume=True,
+        ),
+    )
+
+    assert prepared.plan.run_id == "predict-resume"
+    assert prepared.resume_state.source_identities == ((
+        "demo@static", "source-recorder", "source-experiment", "legacy_import",
+    ),)
+
+
+def test_full_training_rejects_resume():
+    with pytest.raises(TrainingPlanError, match="incremental or predict-only"):
+        TrainingRunOptions(family="static", action="full", resume=True)
+
+
 def test_resume_rejects_explicit_run_id_mismatch(tmp_path):
     root = workspace(tmp_path)
     TrainingStateRepository(root / "data/run_state.json").save(TrainingRunState(

@@ -167,12 +167,24 @@ def test_predict_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
     
     task_config = {
         "task": {
-            "dataset": {}, 
+            "dataset": {
+                "class": "MTSDatasetH",
+                "kwargs": {
+                    "handler": {
+                        "kwargs": {
+                            "learn_processors": [
+                                {"class": "DropnaLabel"},
+                                {"class": "CSRankNorm"},
+                            ]
+                        }
+                    }
+                },
+            },
             "record": [{"class": "SigAnaRecord", "kwargs": {"model": "<MODEL>", "dataset": "<DATASET>"}}]
         }
     }
     
-    with patch('qlib.utils.init_instance_by_config', side_effect=[mock_model, mock_dataset, MagicMock()]):
+    with patch('qlib.utils.init_instance_by_config', side_effect=[mock_model, mock_dataset, MagicMock()]) as mock_init:
         with patch('qlib.workflow.R') as mock_R:
             mock_R.get_recorder.return_value = mock_recorder
             mock_recorder.load_object.side_effect = [mock_model, pd.Series([0.5])]
@@ -180,6 +192,65 @@ def test_predict_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
                 with patch('os.path.exists', return_value=True):
                     res = train_utils.predict_single_model("M1", {"yaml_file": str(yaml_file)}, params, "E", source)
                     assert res['success']
+                    dataset_arg = mock_init.call_args_list[0].args[0]
+                    assert dataset_arg["kwargs"]["handler"]["kwargs"]["learn_processors"] == [
+                        {"class": "CSRankNorm"}
+                    ]
+                    assert task_config["task"]["dataset"]["kwargs"]["handler"]["kwargs"]["learn_processors"][0] == {
+                        "class": "DropnaLabel"
+                    }
+
+
+def test_prepare_predict_only_mts_dataset_removes_dropna_label(mock_env_constants):
+    train_utils, _ = mock_env_constants
+    dataset_cfg = {
+        "class": "MTSDatasetH",
+        "module_path": "qlib.contrib.data.dataset",
+        "kwargs": {
+            "handler": {
+                "class": "Alpha360",
+                "kwargs": {
+                    "infer_processors": [{"class": "Fillna"}],
+                    "learn_processors": [
+                        {"class": "DropnaLabel"},
+                        {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}},
+                    ],
+                },
+            }
+        },
+    }
+
+    prepared = train_utils._prepare_predict_only_dataset_config(dataset_cfg)
+
+    assert prepared is not dataset_cfg
+    assert prepared["kwargs"]["handler"]["kwargs"]["learn_processors"] == [
+        {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}}
+    ]
+    assert prepared["kwargs"]["handler"]["kwargs"]["infer_processors"] == [
+        {"class": "Fillna"}
+    ]
+    assert dataset_cfg["kwargs"]["handler"]["kwargs"]["learn_processors"][0] == {
+        "class": "DropnaLabel"
+    }
+
+
+def test_prepare_predict_only_dataset_leaves_regular_dataset_unchanged(mock_env_constants):
+    train_utils, _ = mock_env_constants
+    dataset_cfg = {
+        "class": "DatasetH",
+        "kwargs": {
+            "handler": {
+                "kwargs": {"learn_processors": ["DropnaLabel"]}
+            }
+        },
+    }
+
+    prepared = train_utils._prepare_predict_only_dataset_config(dataset_cfg)
+
+    assert prepared is dataset_cfg
+    assert prepared["kwargs"]["handler"]["kwargs"]["learn_processors"] == [
+        "DropnaLabel"
+    ]
 
 def test_show_model_list(mock_env_constants, capsys):
     train_utils, _ = mock_env_constants

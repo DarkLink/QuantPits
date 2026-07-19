@@ -84,17 +84,29 @@ def resolve_training_run(prepared: PreparedTrainingRun, params: Mapping[str, Any
         performance_path, display_path=performance_relative
     )
     resolved_params_fingerprint = fingerprint_value(dict(params))
+    persisted_sources = {
+        key: {
+            "key": key,
+            "recorder_id": recorder_id,
+            "experiment_name": experiment_name,
+            "operation": operation,
+        }
+        for key, recorder_id, experiment_name, operation in (
+            prepared.resume_state.source_identities
+            if prepared.resume_state is not None else ()
+        )
+    }
     resume_payload = {
         "params": dict(params),
         "target_keys": [item.key for item in targets],
         "operations": [item.operation for item in targets],
         "sources": [
-            {
+            persisted_sources.get(item.key, {
                 "key": item.key,
                 "recorder_id": item.source_entry.recorder_id,
                 "experiment_name": item.source_entry.experiment_name,
                 "operation": item.source_entry.operation,
-            }
+            })
             for item in targets if item.source_entry is not None
         ],
         "output_experiment_name": experiment,

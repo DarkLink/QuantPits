@@ -13,6 +13,7 @@
 - 运行状态管理 (save_run_state, load_run_state)
 """
 
+import copy
 import os
 import json
 import yaml
@@ -2758,6 +2759,54 @@ def show_model_list(args, source_records_file=None):
             print(f"    无记录: {', '.join(not_available)}")
 
 
+def _prepare_predict_only_dataset_config(dataset_cfg):
+    """Return a dataset config that preserves unlabeled inference rows for TRA.
+
+    Qlib's ``MTSDatasetH`` currently materializes ``handler._learn`` even when
+    ``model.predict`` prepares the test segment.  A ``DropnaLabel`` learn
+    processor therefore removes the newest rows whose forward label is not yet
+    observable, shortening persisted predictions before the requested anchor.
+
+    For predict-only construction, remove only ``DropnaLabel`` from a copied
+    MTSDatasetH handler config.  Other learn processors (for example label
+    normalization) and every infer processor retain their configured semantics.
+    Training configs and non-MTSDatasetH datasets are left untouched.
+    """
+    if not isinstance(dataset_cfg, dict):
+        return dataset_cfg
+
+    dataset_class = dataset_cfg.get("class")
+    if dataset_class not in {"MTSDatasetH", "PurgedMTSDatasetH"}:
+        return dataset_cfg
+
+    prepared = copy.deepcopy(dataset_cfg)
+    dataset_kwargs = prepared.get("kwargs")
+    if not isinstance(dataset_kwargs, dict):
+        return prepared
+    handler_cfg = dataset_kwargs.get("handler")
+    if not isinstance(handler_cfg, dict):
+        return prepared
+    handler_kwargs = handler_cfg.get("kwargs")
+    if not isinstance(handler_kwargs, dict):
+        return prepared
+    processors = handler_kwargs.get("learn_processors")
+    if not isinstance(processors, list):
+        return prepared
+
+    def _processor_class(processor):
+        if isinstance(processor, str):
+            return processor
+        if isinstance(processor, dict):
+            return processor.get("class")
+        return None
+
+    handler_kwargs["learn_processors"] = [
+        processor for processor in processors
+        if _processor_class(processor) != "DropnaLabel"
+    ]
+    return prepared
+
+
 def predict_single_model(model_name, model_info, params, experiment_name,
                          source_records, no_pretrain=False, cache_mgr=None,
                          history_file=None, workspace_root=None):
@@ -2858,7 +2907,9 @@ def predict_single_model(model_name, model_info, params, experiment_name,
         task_config = inject_config(yaml_file, params, model_name=model_name,
                                     no_pretrain=no_pretrain)
 
-        dataset_cfg = task_config['task']['dataset']
+        dataset_cfg = _prepare_predict_only_dataset_config(
+            task_config['task']['dataset']
+        )
         if cache_mgr is not None:
             dataset = cache_mgr.create_dataset(dataset_cfg)
         else:

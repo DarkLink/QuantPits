@@ -589,11 +589,25 @@ class TrainingExecutionService:
                 )
             evidence = repository.load(key, expected_fingerprint=fingerprint)
             target = targets.get(key)
-            expected_source_identity = None if target is None or target.source_entry is None else {
-                "recorder_id": target.source_entry.recorder_id,
-                "experiment_name": target.source_entry.experiment_name,
-                "operation": target.source_entry.operation,
-            }
+            saved_source = (
+                saved.get("source_recorder_id"),
+                saved.get("source_experiment_name"),
+                saved.get("source_operation"),
+            )
+            if any(value is not None for value in saved_source):
+                expected_source_identity = {
+                    "recorder_id": saved_source[0],
+                    "experiment_name": saved_source[1],
+                    "operation": saved_source[2],
+                }
+            else:
+                expected_source_identity = (
+                    None if target is None or target.source_entry is None else {
+                        "recorder_id": target.source_entry.recorder_id,
+                        "experiment_name": target.source_entry.experiment_name,
+                        "operation": target.source_entry.operation,
+                    }
+                )
             if target is None or (
                 evidence.operation != target.operation
                 or evidence.anchor_date != run.anchor_date
