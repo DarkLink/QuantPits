@@ -80,6 +80,9 @@ class PostTradeService:
     def run_state(self, prepared, parsed, trade_dates):
         before = capture_state_fingerprints(prepared.ctx)
         change_set = self.calculate(prepared, parsed, trade_dates)
+        if prepared.catalog.settlement_bundle is not None:
+            from quantpits.post_trade.intake import verify_settlement_bundle
+            verify_settlement_bundle(prepared.ctx, prepared.catalog.settlement_bundle)
         if prepared.options.dry_run:
             return PostTradeStateResult(change_set, None, True)
         if not change_set.processed_dates:

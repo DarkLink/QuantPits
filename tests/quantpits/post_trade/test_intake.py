@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from quantpits.post_trade.contracts import ExecutionEvidenceGapError, ParsedPostTradeInput, PostTradeSourceRef, SourceChangedError
-from quantpits.post_trade.intake import discover_inputs, parse_pending_sources, validate_cross_stream, verify_parsed_sources
+from quantpits.post_trade.contracts import ExecutionEvidenceGapError, ParsedPostTradeInput, PostTradeInputError, PostTradePlanError, PostTradeSourceRef, SourceChangedError
+from quantpits.post_trade.intake import discover_inputs, parse_pending_sources, parse_pending_sources_with_catalog, validate_cross_stream, verify_parsed_sources
 from quantpits.utils.workspace import WorkspaceContext
 
 
@@ -137,3 +137,131 @@ def test_pre_writer_verification_detects_change_after_parse(tmp_path):
     parsed = parse_pending_sources(catalog, adapter)
     with pytest.raises(SourceChangedError):
         verify_parsed_sources(parsed)
+
+
+def _bundle_ctx(tmp_path, name="2026-01-02-2026-01-05-table.xlsx"):
+    ctx = WorkspaceContext.from_root(tmp_path)
+    ctx.data_dir.mkdir()
+    path = ctx.data_path(name)
+    path.write_bytes(b"bundle")
+    return ctx, path
+
+
+def test_explicit_bundle_is_only_physical_settlement_and_is_parsed_once(tmp_path):
+    ctx, bundle = _bundle_ctx(tmp_path)
+    ctx.data_path("2026-01-02-table.xlsx").write_bytes(b"daily-must-be-ignored")
+    catalog = discover_inputs(
+        ctx, "2026-01-02", "2026-01-05",
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    )
+    assert not catalog.settlement_sources
+    assert catalog.settlement_bundle.display_path == bundle.relative_to(ctx.root).as_posix()
+    adapter = MagicMock()
+    adapter.parse_settlement.return_value = pd.DataFrame({
+        "交收日期": [20260102, 20260102, 20260105],
+        "交易类别": ["利息归本", "利息归本", "利息归本"],
+    })
+    parsed, resolved = parse_pending_sources_with_catalog(catalog, adapter)
+    adapter.parse_settlement.assert_called_once_with(catalog.settlement_bundle.path)
+    assert [item.trade_date for item in resolved.settlement_sources] == ["2026-01-02", "2026-01-05"]
+    assert [item.row_count for item in resolved.settlement_sources] == [2, 1]
+    assert all(item.source_kind == "bundle_partition" for item in resolved.settlement_sources)
+    assert parsed[("settlement", "2026-01-02")].row_count == 2
+
+
+def test_bundle_partitions_reuse_the_strict_daily_accounting_contract(tmp_path):
+    from quantpits.post_trade.state import normalize_settlement_frame
+
+    ctx, _ = _bundle_ctx(tmp_path)
+    catalog = discover_inputs(
+        ctx, "2026-01-02", "2026-01-05",
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    )
+    frame = pd.DataFrame({
+        "证券代码": ["000001", "000002"],
+        "交易类别": ["深圳A股普通股票竞价买入", "深圳A股普通股票竞价买入"],
+        "成交价格": [10, 20], "成交数量": [100, 100],
+        "成交金额": [1000, 2000], "资金发生数": [-1000, -2000],
+        "交收日期": [20260102, 20260105],
+    })
+    adapter = MagicMock(); adapter.parse_settlement.return_value = frame
+    parsed, _ = parse_pending_sources_with_catalog(catalog, adapter)
+    for date in ("2026-01-02", "2026-01-05"):
+        logical = parsed[("settlement", date)].dataframe
+        events, warnings = normalize_settlement_frame(logical, date)
+        assert len(events) == 1 and warnings == ()
+
+
+def test_unselected_bundle_is_ignored_and_daily_discovery_is_unchanged(tmp_path):
+    ctx, _ = _bundle_ctx(tmp_path)
+    ctx.data_path("2026-01-02-table.xlsx").write_bytes(b"daily")
+    catalog = discover_inputs(ctx, "2026-01-02", "2026-01-05")
+    assert catalog.settlement_bundle is None
+    assert [item.trade_date for item in catalog.settlement_sources] == ["2026-01-02"]
+
+
+@pytest.mark.parametrize("bad_date", [None, "", True, [], 20260102.5, "20260102.5", "NaT", "not-a-date", "2026-01-06"])
+def test_bundle_rejects_missing_invalid_or_out_of_range_row_dates(tmp_path, bad_date):
+    ctx, _ = _bundle_ctx(tmp_path)
+    catalog = discover_inputs(
+        ctx, "2026-01-02", "2026-01-05",
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    )
+    adapter = MagicMock()
+    adapter.parse_settlement.return_value = pd.DataFrame({"交收日期": [bad_date]})
+    with pytest.raises(PostTradeInputError):
+        parse_pending_sources_with_catalog(catalog, adapter)
+
+
+@pytest.mark.parametrize("bad_frame", [None, "not-a-frame"])
+def test_bundle_rejects_non_dataframe_parser_results(tmp_path, bad_frame):
+    ctx, _ = _bundle_ctx(tmp_path)
+    catalog = discover_inputs(
+        ctx, "2026-01-02", "2026-01-05",
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    )
+    adapter = MagicMock(); adapter.parse_settlement.return_value = bad_frame
+    with pytest.raises(PostTradeInputError, match="DataFrame"):
+        parse_pending_sources_with_catalog(catalog, adapter)
+
+
+def test_bundle_rejects_duplicate_date_columns(tmp_path):
+    ctx, _ = _bundle_ctx(tmp_path)
+    catalog = discover_inputs(
+        ctx, "2026-01-02", "2026-01-05",
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    )
+    adapter = MagicMock()
+    adapter.parse_settlement.return_value = pd.DataFrame(
+        [[20260102, 20260102]], columns=["交收日期", "交收日期"],
+    )
+    with pytest.raises(PostTradeInputError, match="交收日期"):
+        parse_pending_sources_with_catalog(catalog, adapter)
+
+
+@pytest.mark.parametrize("name", [
+    "bundle.xlsx",
+    "2026-01-06-2026-01-02-table.xlsx",
+    "2026-01-03-2026-01-05-table.xlsx",
+    "2026-01-02-2026-01-04-table.xlsx",
+])
+def test_bundle_filename_and_coverage_are_strict(tmp_path, name):
+    ctx, _ = _bundle_ctx(tmp_path, name=name)
+    with pytest.raises(PostTradePlanError):
+        discover_inputs(
+            ctx, "2026-01-02", "2026-01-05",
+            settlement_bundle="data/%s" % name,
+        )
+
+
+def test_bundle_rejects_symlink_escape(tmp_path):
+    ctx = WorkspaceContext.from_root(tmp_path / "workspace")
+    ctx.data_dir.mkdir(parents=True)
+    outside = tmp_path / "2026-01-02-2026-01-05-table.xlsx"
+    outside.write_bytes(b"private")
+    ctx.data_path(outside.name).symlink_to(outside)
+    with pytest.raises(PostTradePlanError, match="outside"):
+        discover_inputs(
+            ctx, "2026-01-02", "2026-01-05",
+            settlement_bundle="data/%s" % outside.name,
+        )

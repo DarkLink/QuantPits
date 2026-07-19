@@ -13,7 +13,8 @@ The unified post-trade command handles three complementary broker evidence strea
 
 ### Data authority boundaries
 
-- `YYYY-MM-DD-table.xlsx` (settlement) is the sole authority for cash, holdings, fees, and dividends.
+- `YYYY-MM-DD-table.xlsx` (daily settlement), or an explicitly selected
+  `YYYY-MM-DD-YYYY-MM-DD-table.xlsx` interval export, is the sole authority for cash, holdings, fees, and dividends.
 - `YYYY-MM-DD-order.xlsx` records execution intent, fill/cancel quantities, and status.
 - `YYYY-MM-DD-trade.xlsx` records intraday fill timestamps, quantities, and prices.
 
@@ -38,6 +39,7 @@ QuantPits/
         │   └── cashflow.json             # Deposit/Withdrawal mapping records
         └── data/
             ├── YYYY-MM-DD-table.xlsx     # Daily discrete exported trade spreadsheets (Current parsing matched to: Guotai Junan Securities export format)
+            ├── YYYY-MM-DD-YYYY-MM-DD-table.xlsx # Optional interval export; consumed only when explicitly selected
             ├── YYYY-MM-DD-order.xlsx     # Order evidence
             ├── YYYY-MM-DD-trade.xlsx     # Intraday fill evidence
             ├── emp-table.xlsx            # Legacy helper only; no implicit command fallback
@@ -114,6 +116,11 @@ python quantpits/scripts/prod_post_trade.py --scope execution
 # Target End Date Override:
 python quantpits/scripts/prod_post_trade.py --end-date 2026-02-10
 
+# Explicitly select one interval export covering the complete state window
+python quantpits/scripts/prod_post_trade.py \
+  --end-date 2026-02-06 \
+  --settlement-bundle data/2026-02-03-2026-02-06-table.xlsx
+
 # Verbosity Trace: Ouputs individual transaction ledger items implicitly to stdout
 python quantpits/scripts/prod_post_trade.py --verbose
 
@@ -128,6 +135,19 @@ python quantpits/scripts/prod_post_trade.py --no-manifest
 ```
 
 Missing settlement evidence is an error by default; the primary command no longer silently substitutes `emp-table.xlsx`. Use `--allow-missing-settlement` only after explicitly confirming no activity. Evidence of fills still blocks that acknowledgement.
+
+An interval export must use a workspace-relative path and the exact
+`YYYY-MM-DD-YYYY-MM-DD-table.xlsx` name. The command parses that physical file once, partitions it in memory by normalized
+`交收日期`, and never creates or overwrites daily XLSX files. Once selected, it is the invocation's only physical
+settlement source; coexisting daily exports are retained but not consumed. The filename range must cover the complete
+requested state window, and every row date must belong to the filename range, requested window, and resolved trading
+calendar. Absence of rows for a trading day is not observed empty evidence: `--allow-missing-settlement` is still required
+to classify that day as `assumed_empty`.
+
+The light plan records the interval export's relative path, SHA-256, and declared range once. Strict dry-run and real
+execution add each logical day's `observed`/`assumed_empty` status, row count, and logical fingerprint. Immediately before
+the first writer, the command rechecks the workspace root, parent, device/inode, size, mtime, and SHA-256. Path escape,
+symlink escape, replacement, or byte drift fails closed.
 
 Execution ingestion uses source path + SHA-256 receipts in `post_trade_ingestion_state.json`, not a maximum-date cursor. Late historical exports are therefore discovered. Changed content at an already-receipted path fails closed instead of silently mixing corrected rows into history.
 
@@ -263,6 +283,7 @@ Optional Overrides:
   --start-date TEXT Start date; state/all cannot precede the next state date
   --end-date TEXT   Override cursor target date (YYYY-MM-DD); bypasses fetching current day
   --allow-missing-settlement  Explicitly acknowledge no activity for missing statements
+  --settlement-bundle PATH  Explicit YYYY-MM-DD-YYYY-MM-DD-table.xlsx interval settlement source
   --dry-run         Full parse, reconciliation, valuation and state calculation; writes nothing
   --explain-plan    Light text plan; no Qlib initialization or Excel parsing
   --json-plan       Light JSON plan; stdout is one JSON payload
@@ -282,7 +303,9 @@ Optional Overrides:
 > Inspect `--explain-plan` first, then use `--dry-run` for strict input validation before a real run. Dry-run creates no lock or files; if an unfinished transaction exists, it refuses recalculation and requires recovery first.
 
 > [!WARNING]
-> Name the three exports `YYYY-MM-DD-table.xlsx`, `YYYY-MM-DD-order.xlsx`, and `YYYY-MM-DD-trade.xlsx`. Missing settlement fails by default; no empty template is substituted unless `--allow-missing-settlement` explicitly acknowledges no activity.
+> Daily evidence uses strict `YYYY-MM-DD-table.xlsx`, `YYYY-MM-DD-order.xlsx`, and `YYYY-MM-DD-trade.xlsx` names; an
+> explicitly selected interval export uses `YYYY-MM-DD-YYYY-MM-DD-table.xlsx`. Missing settlement fails by default; no
+> empty template is substituted unless `--allow-missing-settlement` explicitly acknowledges no activity.
 
 > [!WARNING]
 > Real state execution currently uses a recoverable cursor-last protocol:

@@ -640,6 +640,9 @@ def _run_classification(ctx, manager, journal):
 
 def _write_run_audit(prepared, summary, *, started_at, journal=None, warning=None,
                      status="success", error=None, linked_transaction_id=None):
+    # Strict execution may replace the light catalog with bundle partitions
+    # and assumed-empty dates. Audit the effective prepared run.
+    prepared = summary.prepared
     manifest_display = None
     if not prepared.options.no_manifest:
         from quantpits.post_trade.audit import write_post_trade_manifest
@@ -655,6 +658,32 @@ def _write_run_audit(prepared, summary, *, started_at, journal=None, warning=Non
     return manifest_display
 
 
+def _settlement_operator_result(prepared):
+    bundle = prepared.catalog.settlement_bundle
+    return {
+        "settlement_source_mode": (
+            "bundle" if bundle is not None else "daily"
+        ),
+        "settlement_bundle": ({
+            "path": bundle.display_path,
+            "coverage_start": bundle.coverage_start,
+            "coverage_end": bundle.coverage_end,
+            "fingerprint": bundle.fingerprint,
+        } if bundle is not None else None),
+        "settlement_dates": {
+            item.trade_date: {
+                "status": (
+                    "assumed_empty" if item.status == "assumed_empty" else "observed"
+                ),
+                "row_count": item.row_count,
+                "fingerprint": item.fingerprint,
+            }
+            for item in prepared.catalog.settlement_sources
+            if bundle is not None
+        },
+    }
+
+
 def main():
     args = parse_args()
     ctx = env.get_workspace_context()
@@ -666,7 +695,7 @@ def main():
             for value in raw_argv for name in names
         )
     if args.transaction_status:
-        if args.dry_run or args.retry_classification:
+        if args.dry_run or args.retry_classification or args.settlement_bundle:
             build_parser().error("--transaction-status cannot be combined with execution modes")
         from quantpits.post_trade.transaction import PostTradeTransactionManager
         print(json.dumps(PostTradeTransactionManager(ctx).status_summary(), ensure_ascii=False, indent=2, sort_keys=True))
@@ -674,7 +703,9 @@ def main():
     if args.retry_classification:
         if (
             args.dry_run or args.explain_plan or args.json_plan
-            or _explicit_option("--scope", "--start-date", "--end-date")
+            or _explicit_option(
+                "--scope", "--start-date", "--end-date", "--settlement-bundle"
+            )
         ):
             build_parser().error("--retry-classification cannot be combined with plan/dry-run modes")
         env.safeguard("Post Trade Classification Retry")
@@ -825,11 +856,12 @@ def main():
             if journal:
                 journal = transaction_manager.complete(journal, manifest_path=manifest_display)
             _append_operator_log(
-                ctx, prepared, manifest_path=manifest_display, journal=journal,
-                result={"scope": prepared.options.scope,
+                ctx, summary.prepared, manifest_path=manifest_display, journal=journal,
+                result={"scope": summary.prepared.options.scope,
                         "processed_date_count": len(journal.processed_dates) if journal else 0,
                         "transaction_id": journal.transaction_id if journal else None,
-                        "classification_status": journal.classification.status if journal else "not_applicable"},
+                        "classification_status": journal.classification.status if journal else "not_applicable",
+                        **_settlement_operator_result(summary.prepared)},
             )
     except Exception as exc:
         from quantpits.post_trade.contracts import PostTradeExecutionError, PostTradePartialExecutionError
@@ -853,7 +885,7 @@ def main():
                 try:
                     from quantpits.post_trade.audit import redact_error, write_post_trade_manifest
                     write_post_trade_manifest(
-                        prepared, failure_summary, started_at=started_at,
+                        failure_summary.prepared, failure_summary, started_at=started_at,
                         status="failed", error=redact_error(ctx, exc),
                         journal=failure_journal, actual_state_paths=actual_state_paths,
                     )
@@ -861,9 +893,10 @@ def main():
                     print("[WARN] Failed to write post-trade failure manifest: %s" % manifest_exc)
             if not args.dry_run:
                 _append_operator_log(
-                    ctx, prepared,
+                    ctx, failure_summary.prepared,
                     result={"scope": prepared.options.scope, "status": "failed",
-                            "execution_ingestion_status": "committed" if failure_summary.ingestion is not None else "not_run"},
+                            "execution_ingestion_status": "committed" if failure_summary.ingestion is not None else "not_run",
+                            **_settlement_operator_result(failure_summary.prepared)},
                     journal=failure_journal,
                 )
             print("[ERROR] %s" % exc)

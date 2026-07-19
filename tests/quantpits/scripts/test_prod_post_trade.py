@@ -269,6 +269,30 @@ def test_load_trade_file(mock_env):
     assert df["model"].iloc[0] == "modelA"
     assert "a" in df.columns
 
+
+def test_settlement_bundle_cli_forms_and_duplicate_rejection(mock_env):
+    post_trade, _ = mock_env
+    from quantpits.post_trade.command import options_from_namespace
+    from quantpits.post_trade.contracts import PostTradePlanError
+
+    separate = options_from_namespace(post_trade.build_parser().parse_args([
+        "--settlement-bundle", "data/2026-01-01-2026-01-02-table.xlsx",
+    ]))
+    equals = options_from_namespace(post_trade.build_parser().parse_args([
+        "--settlement-bundle=data/2026-01-01-2026-01-02-table.xlsx",
+    ]))
+    assert separate.settlement_bundle == equals.settlement_bundle
+
+    duplicate = post_trade.build_parser().parse_args([
+        "--settlement-bundle", "data/2026-01-01-2026-01-02-table.xlsx",
+        "--settlement-bundle=data/2026-01-01-2026-01-02-table.xlsx",
+    ])
+    with pytest.raises(PostTradePlanError, match="exactly once"):
+        options_from_namespace(duplicate)
+    empty = post_trade.build_parser().parse_args(["--settlement-bundle="])
+    with pytest.raises(PostTradePlanError, match="non-empty"):
+        options_from_namespace(empty)
+
 @patch('quantpits.scripts.prod_post_trade.get_trade_dates')
 def test_main_dry_run(mock_get_dates, mock_env):
     post_trade, workspace = mock_env

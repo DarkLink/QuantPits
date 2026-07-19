@@ -13,7 +13,8 @@ Post-Trade 命令统一处理三类互补的券商证据：交割单、委托和
 
 ### 数据权威边界
 
-- `YYYY-MM-DD-table.xlsx`（settlement）是现金、持仓、费用和红利的唯一权威来源。
+- `YYYY-MM-DD-table.xlsx`（每日 settlement），或通过 `--settlement-bundle` 显式选择的
+  `YYYY-MM-DD-YYYY-MM-DD-table.xlsx`（区间 settlement），是现金、持仓、费用和红利的唯一权威来源。
 - `YYYY-MM-DD-order.xlsx`（order）记录委托意图、成交率、撤单和状态。
 - `YYYY-MM-DD-trade.xlsx`（trade）记录逐笔成交时间、数量和价格。
 
@@ -38,6 +39,7 @@ QuantPits/
         │   └── cashflow.json             # 出入金记录
         └── data/
             ├── YYYY-MM-DD-table.xlsx     # 交易软件导出文件（每日一个，当前来源：国泰君安交割单脱敏导出）
+            ├── YYYY-MM-DD-YYYY-MM-DD-table.xlsx # 可选区间交割文件；只有显式选择才会消费
             ├── YYYY-MM-DD-order.xlsx     # 委托证据
             ├── YYYY-MM-DD-trade.xlsx     # 逐笔成交证据
             ├── emp-table.xlsx            # 仅保留给旧 helper；主命令不再隐式回退
@@ -114,6 +116,11 @@ python quantpits/scripts/prod_post_trade.py --scope execution
 # 指定结束日期
 python quantpits/scripts/prod_post_trade.py --end-date 2026-02-10
 
+# 显式选择一个覆盖完整 state 窗口的区间交割文件
+python quantpits/scripts/prod_post_trade.py \
+  --end-date 2026-02-06 \
+  --settlement-bundle data/2026-02-03-2026-02-06-table.xlsx
+
 # 详细输出：显示每笔交易明细
 python quantpits/scripts/prod_post_trade.py --verbose
 
@@ -128,6 +135,17 @@ python quantpits/scripts/prod_post_trade.py --no-manifest
 ```
 
 缺失交割单默认是错误，不再静默使用 `emp-table.xlsx`。确认某些交易日确实无活动时，可显式使用 `--allow-missing-settlement`；若 order/trade 已证明存在成交，该参数仍不能绕过一致性检查。
+
+区间交割文件必须使用 workspace-relative 路径，并严格命名为
+`YYYY-MM-DD-YYYY-MM-DD-table.xlsx`。程序只解析该物理文件一次，按规范化的 `交收日期` 在内存中形成
+每日逻辑分区，不生成或覆盖每日 XLSX。显式选择后，它是本次命令唯一的 settlement 物理来源；同目录中的
+每日交割文件仍保留，但不会被同时消费。文件名区间必须覆盖完整请求窗口，每行日期必须位于文件名区间、
+请求窗口和解析后的交易日历内。文件中没有某交易日的行不等于观察到空日，仍须通过
+`--allow-missing-settlement` 显式确认为 `assumed_empty`。
+
+轻量 plan 记录一次区间文件的相对路径、SHA-256 和声明区间。严格 dry-run/真实执行增加每日
+`observed`/`assumed_empty`、行数和逻辑 fingerprint，并在第一处 writer 前重新核对 workspace root、父目录、
+设备/inode、大小、mtime 和 SHA-256。路径越界、符号链接逃逸、文件替换或改写都会 fail closed。
 
 execution ingestion 使用 `post_trade_ingestion_state.json` 中的 source path + SHA-256 receipt，而不是最大日期游标，因此后到的旧日期文件仍会被发现。同一路径内容变化会 hard fail，避免更正文件与历史日志静默混合。
 
@@ -258,6 +276,7 @@ python quantpits/scripts/prod_post_trade.py --help
   --start-date TEXT 起始日期；state/all 不得早于 state cursor 的下一日
   --end-date TEXT   结束日期 (YYYY-MM-DD)，默认为今天
   --allow-missing-settlement  显式确认缺失交割单的日期无活动
+  --settlement-bundle PATH  显式选择一个 YYYY-MM-DD-YYYY-MM-DD-table.xlsx 区间交割文件
   --dry-run         完整解析、对账、估值和状态计算，不写入任何文件
   --explain-plan    轻量文本计划；不初始化 Qlib、不打开 Excel
   --json-plan       轻量 JSON 计划；stdout 只输出一个 JSON payload
@@ -277,7 +296,9 @@ python quantpits/scripts/prod_post_trade.py --help
 > 建议先用 `--explain-plan` 查看轻量计划，再用 `--dry-run` 完成严格输入预检。`--dry-run` 不创建锁或任何文件；若发现未完成 transaction，会拒绝重新计算并要求先恢复。
 
 > [!WARNING]
-> 三类文件必须严格命名为 `YYYY-MM-DD-table.xlsx`、`YYYY-MM-DD-order.xlsx`、`YYYY-MM-DD-trade.xlsx`。缺失 settlement 默认失败，不会隐式使用空模板；只有显式 `--allow-missing-settlement` 才能确认无活动。
+> 每日三类文件必须严格命名为 `YYYY-MM-DD-table.xlsx`、`YYYY-MM-DD-order.xlsx`、`YYYY-MM-DD-trade.xlsx`；
+> 显式区间交割文件必须命名为 `YYYY-MM-DD-YYYY-MM-DD-table.xlsx`。缺失 settlement 默认失败，不会隐式
+> 使用空模板；只有显式 `--allow-missing-settlement` 才能确认无活动。
 
 > [!WARNING]
 ### 可恢复事务与运行审计

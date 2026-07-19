@@ -9,6 +9,7 @@ from typing import Literal, Optional, Tuple
 PostTradeScope = Literal["all", "state", "execution"]
 PostTradeStream = Literal["settlement", "order", "trade"]
 SourceStatus = Literal["present", "missing", "assumed_empty", "already_ingested", "changed"]
+SettlementSourceKind = Literal["daily", "bundle_partition", "assumed_empty"]
 IssueSeverity = Literal["info", "warning", "error"]
 
 
@@ -21,6 +22,33 @@ class PostTradeSourceRef:
     status: SourceStatus
     fingerprint: Optional[str] = None
     size_bytes: Optional[int] = None
+    source_kind: SettlementSourceKind = "daily"
+    row_count: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class SettlementBundleRef:
+    """Identity-bound physical settlement bundle selected by the operator."""
+
+    path: Path
+    resolved_path: Path
+    display_path: str
+    coverage_start: str
+    coverage_end: str
+    fingerprint: str
+    size_bytes: int
+    mtime_ns: int
+    device: int
+    inode: int
+    entry_device: int
+    entry_inode: int
+    entry_mtime_ns: int
+    entry_mode: int
+    root_device: int
+    root_inode: int
+    parent_path: Path
+    parent_device: int
+    parent_inode: int
 
 
 @dataclass(frozen=True)
@@ -40,6 +68,7 @@ class PostTradeInputCatalog:
     order_sources: Tuple[PostTradeSourceRef, ...] = ()
     trade_sources: Tuple[PostTradeSourceRef, ...] = ()
     issues: Tuple[PostTradeIntakeIssue, ...] = ()
+    settlement_bundle: Optional[SettlementBundleRef] = None
 
     def sources_for(self, stream: PostTradeStream) -> Tuple[PostTradeSourceRef, ...]:
         return getattr(self, "%s_sources" % stream)

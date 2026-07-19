@@ -9,14 +9,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, Tuple
 
+import pandas as pd
+
 from quantpits.post_trade.contracts import (
-    PostTradeInputCatalog, PostTradeIntakeIssue, PostTradePlanError,
+    ParsedPostTradeInput, PostTradeInputCatalog, PostTradeInputError,
+    PostTradeIntakeIssue, PostTradePlanError,
     PostTradeScope,
 )
 from quantpits.post_trade.contracts import PostTradeInputMissingError, PostTradeSourceRef
 from quantpits.post_trade.intake import (
-    discover_inputs, load_ingestion_receipts, parse_pending_sources, validate_cross_stream,
-    verify_parsed_sources,
+    discover_inputs, load_ingestion_receipts, parse_pending_sources_with_catalog,
+    validate_cross_stream, verify_parsed_sources, verify_settlement_bundle,
 )
 from quantpits.post_trade.ingestion import IngestionResult, ingest_execution_evidence
 from quantpits.runtime import CommandPlan, CommandStep, InputRef, OutputRef, StateRef
@@ -36,6 +39,7 @@ class PostTradeRunOptions:
     explain_plan: bool = False
     json_plan: bool = False
     allow_missing_settlement: bool = False
+    settlement_bundle: Optional[str] = None
     verbose: bool = False
     run_id: Optional[str] = None
     no_manifest: bool = False
@@ -101,6 +105,10 @@ def add_post_trade_arguments(parser: argparse.ArgumentParser, *, default_scope: 
     parser.add_argument("--end-date")
     parser.add_argument("--broker", default=None)
     parser.add_argument("--allow-missing-settlement", action="store_true")
+    parser.add_argument(
+        "--settlement-bundle", action="append", metavar="PATH",
+        help="Explicit YYYY-MM-DD-YYYY-MM-DD-table.xlsx settlement source",
+    )
     parser.add_argument("--dry-run", action="store_true")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--explain-plan", action="store_true")
@@ -116,7 +124,17 @@ def add_post_trade_arguments(parser: argparse.ArgumentParser, *, default_scope: 
 def options_from_namespace(args: argparse.Namespace) -> PostTradeRunOptions:
     if args.dry_run and (args.explain_plan or args.json_plan):
         raise PostTradePlanError("--dry-run cannot be combined with plan-only modes")
-    return PostTradeRunOptions(**{name: getattr(args, name) for name in PostTradeRunOptions.__dataclass_fields__})
+    values = {name: getattr(args, name) for name in PostTradeRunOptions.__dataclass_fields__}
+    bundles = values.get("settlement_bundle")
+    if bundles is not None:
+        if not isinstance(bundles, list):
+            bundles = [bundles]
+        if len(bundles) != 1:
+            raise PostTradePlanError("--settlement-bundle may be provided exactly once")
+        if not isinstance(bundles[0], str) or not bundles[0].strip():
+            raise PostTradePlanError("--settlement-bundle requires a non-empty path")
+        values["settlement_bundle"] = bundles[0]
+    return PostTradeRunOptions(**values)
 
 
 def _read_json(path: Path, default: dict) -> dict:
@@ -149,7 +167,18 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
         _ref(ctx, ctx.data_path("post_trade_ingestion_state.json"), kind="state"),
         _ref(ctx, ctx.data_path(".order_trade_state.json"), kind="state"),
     ])
-    for stream in ("settlement", "order", "trade"):
+    if catalog.settlement_bundle is not None:
+        bundle = catalog.settlement_bundle
+        inputs.append(InputRef(
+            bundle.display_path, kind="data", fingerprint=bundle.fingerprint,
+            required=True, description="settlement_bundle",
+        ))
+    else:
+        inputs.extend(InputRef(
+            x.display_path, kind="data", fingerprint=x.fingerprint,
+            required=False, description="settlement",
+        ) for x in catalog.settlement_sources)
+    for stream in ("order", "trade"):
         inputs.extend(InputRef(x.display_path, kind="data", fingerprint=x.fingerprint, required=False, description=stream) for x in catalog.sources_for(stream))
     states = []
     outputs = []
@@ -195,15 +224,39 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
         "scope": options.scope, "broker": config.broker_name,
         "requested_date_from": catalog.date_from, "requested_date_to": catalog.date_to,
         "state_cursor": config.state_cursor, "legacy_execution_cursor": config.legacy_execution_cursor,
-        "source_counts": {stream: len(catalog.sources_for(stream)) for stream in ("settlement", "order", "trade")},
+        "source_counts": {
+            "settlement": 1 if catalog.settlement_bundle is not None else len(catalog.settlement_sources),
+            "order": len(catalog.order_sources), "trade": len(catalog.trade_sources),
+        },
         "source_status_counts": {
             stream: {
-                status: sum(item.status == status for item in catalog.sources_for(stream))
+                status: (
+                    int(status == "present")
+                    if stream == "settlement" and catalog.settlement_bundle is not None
+                    else sum(item.status == status for item in catalog.sources_for(stream))
+                )
                 for status in ("present", "missing", "assumed_empty", "already_ingested", "changed")
             }
             for stream in ("settlement", "order", "trade")
         },
         "allow_missing_settlement": options.allow_missing_settlement,
+        "settlement_source_mode": "bundle" if catalog.settlement_bundle is not None else "daily",
+        "settlement_bundle": ({
+            "path": catalog.settlement_bundle.display_path,
+            "coverage_start": catalog.settlement_bundle.coverage_start,
+            "coverage_end": catalog.settlement_bundle.coverage_end,
+        } if catalog.settlement_bundle is not None else None),
+        "settlement_logical_partitions": {
+            item.trade_date: {
+                "status": (
+                    "assumed_empty" if item.status == "assumed_empty" else "observed"
+                ),
+                "row_count": item.row_count,
+                "fingerprint": item.fingerprint,
+            }
+            for item in catalog.settlement_sources
+            if catalog.settlement_bundle is not None
+        },
         "calendar_resolution": "deferred" if options.scope in {"all", "state"} else "not_required",
     }
     return CommandPlan(command="post-trade", workspace=ctx.root.name, run_id=options.run_id or generate_run_id("post_trade"), mode=options.scope, args=cli_args, inputs=tuple(inputs), outputs=tuple(outputs), states=tuple(states), steps=tuple(steps), warnings=tuple(warnings), metadata=metadata)
@@ -233,16 +286,21 @@ def prepare_post_trade_run(
     start = execution_start if options.scope == "execution" else settlement_start
     end = options.end_date or datetime.now().strftime("%Y-%m-%d")
     if start > end: raise PostTradePlanError("start date must not be after end date")
+    if options.settlement_bundle is not None and options.scope == "execution":
+        raise PostTradePlanError("--settlement-bundle requires state or all scope")
     stream_starts = {
         "settlement": settlement_start,
         "order": execution_start if options.scope in {"all", "execution"} else settlement_start,
         "trade": execution_start if options.scope in {"all", "execution"} else settlement_start,
     }
-    catalog = discovery(ctx, min(stream_starts.values()), end, stream_date_from=stream_starts)
+    discovery_kwargs = {"stream_date_from": stream_starts}
+    if options.settlement_bundle is not None:
+        discovery_kwargs["settlement_bundle"] = options.settlement_bundle
+    catalog = discovery(ctx, min(stream_starts.values()), end, **discovery_kwargs)
     if options.scope == "state":
         catalog = replace(catalog, order_sources=(), trade_sources=())
     elif options.scope == "execution":
-        catalog = replace(catalog, settlement_sources=())
+        catalog = replace(catalog, settlement_sources=(), settlement_bundle=None)
     # date_from is the operator-visible requested/state boundary. Historical
     # execution bootstrap is represented by the individual source refs.
     catalog = replace(catalog, date_from=start)
@@ -290,14 +348,36 @@ def execute_prepared(
         ).strftime("%Y-%m-%d")
         dates = tuple(resolve_trade_dates(state_start, catalog.date_to))
         settlement_dates = dates
+        if catalog.settlement_bundle is not None:
+            verify_settlement_bundle(prepared.ctx, catalog.settlement_bundle)
+    parsed, catalog = parse_pending_sources_with_catalog(
+        catalog, adapter,
+        reparse_execution_dates=settlement_dates if prepared.options.scope == "all" else (),
+    )
+    if prepared.options.scope in {"all", "state"} and resolve_trade_dates:
         known = {item.trade_date for item in catalog.settlement_sources}
+        if catalog.settlement_bundle is not None:
+            unexpected = sorted(known - set(dates))
+            if unexpected:
+                raise PostTradeInputError(
+                    "Settlement bundle contains dates outside the requested trading calendar: %s"
+                    % ", ".join(unexpected)
+                )
         missing = [date for date in dates if date not in known]
         if missing and not prepared.options.allow_missing_settlement:
             raise PostTradeInputMissingError("Missing settlement evidence for: %s" % ", ".join(missing))
         assumed = tuple(PostTradeSourceRef(
             stream="settlement", trade_date=date,
-            path=prepared.ctx.data_path("%s-table.xlsx" % date),
-            display_path="data/%s-table.xlsx" % date, status="assumed_empty",
+            path=(
+                catalog.settlement_bundle.path if catalog.settlement_bundle is not None
+                else prepared.ctx.data_path("%s-table.xlsx" % date)
+            ),
+            display_path=(
+                catalog.settlement_bundle.display_path if catalog.settlement_bundle is not None
+                else "data/%s-table.xlsx" % date
+            ),
+            status="assumed_empty",
+            source_kind="assumed_empty", row_count=0,
         ) for date in missing)
         assumed_issues = tuple(PostTradeIntakeIssue(
             code="assumed_empty_settlement", severity="warning",
@@ -312,10 +392,10 @@ def execute_prepared(
             )),
             issues=tuple(catalog.issues) + assumed_issues,
         )
-    parsed = parse_pending_sources(
-        catalog, adapter,
-        reparse_execution_dates=settlement_dates if prepared.options.scope == "all" else (),
-    )
+        for source in assumed:
+            parsed[("settlement", source.trade_date)] = ParsedPostTradeInput(
+                source, pd.DataFrame(), 0,
+            )
     validate_cross_stream(
         parsed, scope=prepared.options.scope,
         settlement_required_dates=settlement_dates,
@@ -331,6 +411,8 @@ def execute_prepared(
         )
         effective_prepared = replace(prepared, catalog=catalog, plan=effective_plan)
     verify_parsed_sources(parsed)
+    if catalog.settlement_bundle is not None:
+        verify_settlement_bundle(prepared.ctx, catalog.settlement_bundle)
     if prepared.options.dry_run:
         state_result = None
         if prepared.options.scope in {"all", "state"} and state_callback:

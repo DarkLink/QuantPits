@@ -59,7 +59,29 @@ def write_post_trade_manifest(
         "processed_date_count": len(journal.processed_dates) if journal else 0,
         "processed_date_from": journal.processed_dates[0] if journal and journal.processed_dates else None,
         "processed_date_to": journal.processed_dates[-1] if journal and journal.processed_dates else None,
-        "settlement_source_count": len(prepared.catalog.settlement_sources),
+        "settlement_source_count": (
+            1 if prepared.catalog.settlement_bundle is not None
+            else len(prepared.catalog.settlement_sources)
+        ),
+        "settlement_source_mode": (
+            "bundle" if prepared.catalog.settlement_bundle is not None else "daily"
+        ),
+        "settlement_bundle_coverage": ({
+            "path": prepared.catalog.settlement_bundle.display_path,
+            "start": prepared.catalog.settlement_bundle.coverage_start,
+            "end": prepared.catalog.settlement_bundle.coverage_end,
+        } if prepared.catalog.settlement_bundle is not None else None),
+        "settlement_logical_partitions": {
+            item.trade_date: {
+                "status": (
+                    "assumed_empty" if item.status == "assumed_empty" else "observed"
+                ),
+                "row_count": item.row_count,
+                "fingerprint": item.fingerprint,
+            }
+            for item in prepared.catalog.settlement_sources
+            if prepared.catalog.settlement_bundle is not None
+        },
         "order_source_count": len(prepared.catalog.order_sources),
         "trade_source_count": len(prepared.catalog.trade_sources),
         "ingested_source_count": len(getattr(ingestion, "ingested_sources", ())) if ingestion else 0,

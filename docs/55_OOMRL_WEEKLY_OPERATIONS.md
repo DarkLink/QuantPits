@@ -59,11 +59,21 @@ source workspaces/Demo_Workspace/run_env.sh
 # 导入券商结算文件，更新现金和持仓
 python -m quantpits.scripts.prod_post_trade --scope all
 
+# 若券商只提供一个覆盖完整窗口的区间交割文件，必须显式选择；缺行日期仍需单独确认
+python -m quantpits.scripts.prod_post_trade --scope all \
+  --end-date <YYYY-MM-DD> \
+  --settlement-bundle data/<START>-<END>-table.xlsx \
+  --allow-missing-settlement
+
 # 若上次运行中断，先只读检查；正常命令会恢复 transaction，并继续闭合 pending/running classification
 python -m quantpits.scripts.prod_post_trade --transaction-status
 ```
 
 这一步会更新 `prod_config.json` 中的 `cash` 和 `holdings`，是后续分析的基础。
+
+区间交割入口不会自动扫描：显式选择后，该文件是本次运行唯一的 settlement 物理来源，并在内存中按
+`交收日期` 拆成每日逻辑证据。先运行 `--explain-plan` 和严格 `--dry-run`，核对声明区间、物理 fingerprint、
+每日行数、`observed`/`assumed_empty` 分类以及零写；不能把“区间文件中没有行”自动当成无交割证明。
 
 ### 步骤 3：跑 Deep Analysis（Critic 模式）
 

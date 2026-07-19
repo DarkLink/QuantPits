@@ -59,11 +59,22 @@ source workspaces/Demo_Workspace/run_env.sh
 # Import broker settlement files, update cash and holdings
 python -m quantpits.scripts.prod_post_trade --scope all
 
+# If the broker supplies one interval export, select it explicitly; missing row dates still require acknowledgement
+python -m quantpits.scripts.prod_post_trade --scope all \
+  --end-date <YYYY-MM-DD> \
+  --settlement-bundle data/<START>-<END>-table.xlsx \
+  --allow-missing-settlement
+
 # After an interrupted run, inspect first; the normal command recovers the transaction and closes pending/running classification
 python -m quantpits.scripts.prod_post_trade --transaction-status
 ```
 
 This updates `cash` and `holdings` in `prod_config.json`, which is required for downstream analysis.
+
+The interval entry point is never auto-discovered. Once explicitly selected, the file is the invocation's only physical
+settlement source and is partitioned in memory by `交收日期`. Run `--explain-plan` and strict `--dry-run` first; verify the
+declared range, physical fingerprint, daily row counts, `observed`/`assumed_empty` classifications, and zero writes.
+The absence of rows for a date in an interval export does not automatically prove that the date had no settlement activity.
 
 ### Step 3: Run Deep Analysis (Critic Mode)
 

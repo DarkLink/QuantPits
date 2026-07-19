@@ -6,7 +6,8 @@ from quantpits.post_trade.command import (
     PostTradeRunOptions, execute_prepared, prepare_post_trade_run, render_prepared,
 )
 from quantpits.post_trade.contracts import (
-    PostTradePartialExecutionError, PostTradePlanError, SourceChangedError,
+    PostTradeInputError, PostTradeInputMissingError, PostTradePartialExecutionError,
+    PostTradePlanError, SourceChangedError,
 )
 from quantpits.utils.workspace import WorkspaceContext
 
@@ -108,6 +109,15 @@ def test_allow_missing_settlement_changes_semantic_fingerprint(tmp_path):
     assert strict.plan_fingerprint != acknowledged.plan_fingerprint
 
 
+def test_execution_scope_rejects_settlement_bundle(tmp_path):
+    ctx = _ctx(tmp_path)
+    with pytest.raises(PostTradePlanError, match="state or all"):
+        prepare_post_trade_run(ctx, PostTradeRunOptions(
+            scope="execution",
+            settlement_bundle="data/2026-01-02-2026-01-02-table.xlsx",
+        ))
+
+
 def test_dry_run_is_byte_stable_and_detects_pre_writer_source_drift(tmp_path):
     ctx = _ctx(tmp_path)
     order = ctx.data_path("2026-01-02-order.xlsx"); order.write_bytes(b"order")
@@ -181,3 +191,148 @@ def test_state_failure_preserves_committed_ingestion_ledger(tmp_path):
     assert summary.ingestion is not None
     assert summary.ingestion.ingested_sources
     assert ctx.data_path("post_trade_ingestion_state.json") in summary.ingestion.outputs
+
+
+def _bundle_frame(*dates):
+    return pd.DataFrame({
+        "交收日期": [date.replace("-", "") for date in dates],
+        "交易类别": ["利息归本"] * len(dates),
+    })
+
+
+def test_bundle_plan_records_one_physical_input_and_strict_logical_evidence(tmp_path):
+    ctx = _ctx(tmp_path)
+    bundle = ctx.data_path("2026-01-02-2026-01-05-table.xlsx")
+    bundle.write_bytes(b"bundle")
+    ctx.data_path("2026-01-02-table.xlsx").write_bytes(b"daily-ignored")
+
+    class Adapter:
+        calls = 0
+        def parse_settlement(self, _):
+            self.calls += 1
+            return _bundle_frame("2026-01-02", "2026-01-02", "2026-01-05")
+
+    prepared = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="state", end_date="2026-01-05", dry_run=True,
+        allow_missing_settlement=True,
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    ))
+    physical = [item for item in prepared.plan.inputs if item.description == "settlement_bundle"]
+    assert len(physical) == 1
+    assert json.dumps(prepared.plan.to_public_dict()).count(physical[0].fingerprint) == 1
+    assert not [item for item in prepared.plan.inputs if item.description == "settlement"]
+    before = {path.relative_to(ctx.root): path.read_bytes() for path in ctx.root.rglob("*") if path.is_file()}
+    adapter = Adapter()
+    summary = execute_prepared(
+        prepared, adapter, init_qlib=lambda: None,
+        resolve_trade_dates=lambda *_: ("2026-01-02", "2026-01-05"),
+    )
+    assert adapter.calls == 1
+    logical = summary.prepared.plan.metadata["settlement_logical_partitions"]
+    assert logical["2026-01-02"]["row_count"] == 2
+    assert logical["2026-01-05"]["row_count"] == 1
+    assert all(item["status"] == "observed" for item in logical.values())
+    assert summary.prepared.plan.metadata["source_status_counts"]["settlement"]["present"] == 1
+    assert not ctx.data_path("2026-01-05-table.xlsx").exists()
+    after = {path.relative_to(ctx.root): path.read_bytes() for path in ctx.root.rglob("*") if path.is_file()}
+    assert after == before
+
+
+def test_bundle_missing_trading_day_requires_explicit_acknowledgement(tmp_path):
+    ctx = _ctx(tmp_path)
+    ctx.data_path("2026-01-02-2026-01-05-table.xlsx").write_bytes(b"bundle")
+
+    class Adapter:
+        def parse_settlement(self, _):
+            return _bundle_frame("2026-01-02")
+
+    prepared = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="state", end_date="2026-01-05",
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    ))
+    with pytest.raises(PostTradeInputMissingError, match="2026-01-05"):
+        execute_prepared(
+            prepared, Adapter(), init_qlib=lambda: None,
+            resolve_trade_dates=lambda *_: ("2026-01-02", "2026-01-05"),
+        )
+
+    acknowledged = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="state", end_date="2026-01-05", allow_missing_settlement=True,
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    ))
+    summary = execute_prepared(
+        acknowledged, Adapter(), init_qlib=lambda: None,
+        resolve_trade_dates=lambda *_: ("2026-01-02", "2026-01-05"),
+    )
+    missing = summary.prepared.catalog.source_for_date("settlement", "2026-01-05")
+    assert missing.status == "assumed_empty"
+    assert missing.row_count == 0
+    logical = summary.prepared.plan.metadata["settlement_logical_partitions"]
+    assert logical["2026-01-05"] == {
+        "status": "assumed_empty", "row_count": 0, "fingerprint": None,
+    }
+
+
+def test_bundle_rejects_non_trading_logical_partition(tmp_path):
+    ctx = _ctx(tmp_path)
+    ctx.data_path("2026-01-02-2026-01-05-table.xlsx").write_bytes(b"bundle")
+
+    class Adapter:
+        def parse_settlement(self, _):
+            return _bundle_frame("2026-01-03")
+
+    prepared = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="state", end_date="2026-01-05", allow_missing_settlement=True,
+        settlement_bundle="data/2026-01-02-2026-01-05-table.xlsx",
+    ))
+    with pytest.raises(PostTradeInputError, match="trading calendar"):
+        execute_prepared(
+            prepared, Adapter(), init_qlib=lambda: None,
+            resolve_trade_dates=lambda *_: ("2026-01-02", "2026-01-05"),
+        )
+
+
+def test_bundle_drift_after_single_parse_fails_before_callback(tmp_path):
+    ctx = _ctx(tmp_path)
+    bundle = ctx.data_path("2026-01-02-2026-01-02-table.xlsx")
+    bundle.write_bytes(b"bundle")
+
+    class MutatingAdapter:
+        def parse_settlement(self, _):
+            bundle.write_bytes(b"replacement")
+            return _bundle_frame("2026-01-02")
+
+    prepared = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="state", end_date="2026-01-02",
+        settlement_bundle="data/2026-01-02-2026-01-02-table.xlsx",
+    ))
+    called = []
+    with pytest.raises(SourceChangedError):
+        execute_prepared(
+            prepared, MutatingAdapter(), init_qlib=lambda: None,
+            resolve_trade_dates=lambda *_: ("2026-01-02",),
+            state_callback=lambda *_: called.append(True),
+        )
+    assert called == []
+
+
+def test_bundle_same_bytes_namespace_replacement_is_source_drift(tmp_path):
+    ctx = _ctx(tmp_path)
+    bundle = ctx.data_path("2026-01-02-2026-01-02-table.xlsx")
+    bundle.write_bytes(b"bundle")
+
+    class ReplacingAdapter:
+        def parse_settlement(self, _):
+            bundle.unlink()
+            bundle.write_bytes(b"bundle")
+            return _bundle_frame("2026-01-02")
+
+    prepared = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="state", end_date="2026-01-02",
+        settlement_bundle="data/2026-01-02-2026-01-02-table.xlsx",
+    ))
+    with pytest.raises(SourceChangedError):
+        execute_prepared(
+            prepared, ReplacingAdapter(), init_qlib=lambda: None,
+            resolve_trade_dates=lambda *_: ("2026-01-02",),
+        )
