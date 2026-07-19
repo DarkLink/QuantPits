@@ -131,6 +131,18 @@ def test_show_state_is_read_only(script, capsys):
     assert (root / "data/run_state.json").read_bytes() == before
 
 
+def test_clear_state_removes_legacy_state_after_safeguard(script):
+    module, root = script
+    path = root / "data/run_state.json"
+    path.write_text(json.dumps({"mode": "cpcv_incremental", "completed": ["demo"]}))
+
+    with patch("quantpits.utils.env.safeguard") as safeguard:
+        assert module.main(["--workspace", str(root), "--clear-state"]) is None
+
+    safeguard.assert_called_once()
+    assert not path.exists()
+
+
 def test_script_contains_no_legacy_orchestration_entrypoints(script):
     module, _ = script
     assert not hasattr(module, "run_full_train")

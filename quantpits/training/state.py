@@ -309,10 +309,14 @@ class TrainingStateRepository:
 
     def clear(self, *, expected: Optional[FileBaseline] = None, require_terminal=False) -> None:
         with self._lock():
-            state, observed = self._read_unlocked()
+            raw, observed = read_with_baseline(
+                self.path, display_path="data/run_state.json",
+            )
             if expected is not None and not self._same_baseline(observed, expected):
                 raise TrainingStateConflictError("training state changed before clear")
-            if require_terminal and state is not None and state.phase not in TERMINAL_PHASES:
-                raise TrainingStateConflictError("cannot clear a nonterminal training state")
+            if require_terminal and raw is not None:
+                state = TrainingRunState.from_dict(json.loads(raw.decode("utf-8")))
+                if state.phase not in TERMINAL_PHASES:
+                    raise TrainingStateConflictError("cannot clear a nonterminal training state")
             if self.path.exists():
                 self.path.unlink()

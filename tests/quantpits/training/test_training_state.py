@@ -42,6 +42,26 @@ def test_readonly_state_inspect_creates_nothing(tmp_path):
     assert not (tmp_path / "missing").exists()
 
 
+def test_explicit_clear_accepts_legacy_state_without_parsing_it(tmp_path):
+    path = tmp_path / "run_state.json"
+    path.write_text('{"mode":"cpcv_incremental","completed":["demo"]}')
+
+    TrainingStateRepository(path).clear()
+
+    assert not path.exists()
+
+
+def test_terminal_only_clear_rejects_legacy_state_without_deleting_it(tmp_path):
+    path = tmp_path / "run_state.json"
+    original = b'{"mode":"cpcv_incremental","completed":["demo"]}'
+    path.write_bytes(original)
+
+    with pytest.raises(TrainingStateConflictError, match="legacy.*display-only"):
+        TrainingStateRepository(path).clear(require_terminal=True)
+
+    assert path.read_bytes() == original
+
+
 def test_state_v3_round_trips_recovery_evidence_fields():
     value = state(
         "closing", attempt_id="attempt-1", receipt_fingerprint="receipt",

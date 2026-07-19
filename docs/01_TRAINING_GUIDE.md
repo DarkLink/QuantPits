@@ -291,6 +291,10 @@ python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158 --resum
 python quantpits/scripts/static_train.py --clear-state
 ```
 
+显式的 `--clear-state` 是 operator 确认过的重新开始边界，因此也可以删除无法恢复的 legacy
+schema state，而不会先尝试把它解析为 V3。自动 closure 使用的 terminal-only 清理仍会严格解析
+V3 并拒绝 legacy 或非 terminal state。清理生产 state 前应先用 `--show-state` 和文件指纹保存证据。
+
 **注意**：`--resume` 会保留 receipt 已证明且仍为 current pointer 的模型，重新执行失败模型；若
 模型工作和 publication 已完成但 manifest/state closure 中断，则只完成审计闭环，不重复训练。
 普通 `--resume` 不需要再次传 `--run-id`；如果显式传入，该 ID 必须与 state 完全一致，否则会在

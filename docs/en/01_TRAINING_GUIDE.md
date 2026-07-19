@@ -302,6 +302,11 @@ python quantpits/scripts/static_train.py --models gru,mlp,alstm_Alpha158 --resum
 python quantpits/scripts/static_train.py --clear-state
 ```
 
+Explicit `--clear-state` is an operator-confirmed restart boundary, so it can also delete an
+unresumable legacy-schema state without first parsing it as V3. The terminal-only cleanup used by
+automatic closure still parses V3 strictly and rejects legacy or nonterminal state. Before clearing
+production state, preserve evidence with `--show-state` and a file fingerprint.
+
 **Note**: `--resume` preserves receipt-proven models that remain current and reruns failed models. If
 model work and publication completed but manifest/state closure was interrupted, resume closes audit
 evidence without retraining.
