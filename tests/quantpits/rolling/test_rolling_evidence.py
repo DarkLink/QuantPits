@@ -21,6 +21,7 @@ from quantpits.rolling import (
     RollingUnitEvidenceInspection,
     RollingUnitEvidenceRequest,
     RollingWindowIdentity,
+    classify_rolling_recovery,
     inspect_rolling_evidence,
     workspace_fingerprint,
 )
@@ -37,6 +38,11 @@ class MaliciousPrediction:
 
     def __reduce__(self):
         return os.system, ("touch %s" % self.marker,)
+
+
+class ExplodingMetadata(str):
+    def strip(self, *args, **kwargs):
+        raise RuntimeError("metadata normalization unavailable")
 
 
 class FakeEvidenceBackend:
@@ -354,6 +360,16 @@ def test_source_recorder_or_unit_identity_mismatch_denies_capability(tmp_path):
         rendered = repr(evidence.to_public_dict())
         assert uri_shape not in rendered
         assert windows_shape not in rendered
+    context, request, candidate, backend = make_valid_case(tmp_path / "operational-error")
+    run = replace(request.run_identity, target_keys=(request.target_key, "beta@rolling"))
+    first = replace(request, run_identity=run)
+    second = replace(first, target_key="beta@rolling", recorder_id="recorder-2")
+    candidate["recorder_id"] = ExplodingMetadata(candidate["recorder_id"])
+    backend.candidates = (candidate,)
+    evidence = inspect_rolling_evidence(context, (first, second), backend)
+    assert tuple(item.classification for item in evidence.unit_results) == ("not_comparable", "missing")
+    assert evidence.requested_unit_keys == (first.unit_key, second.unit_key)
+    assert evidence.n_candidates == 1
 
 
 def test_missing_required_artifact_is_partial(tmp_path):
@@ -514,6 +530,42 @@ def test_orphan_candidate_is_reported_without_expanding_requested_results(tmp_pa
     assert tuple(item.unit_key for item in evidence.orphan_observations) == ((orphan["target_key"], orphan["window_key"]),)
     assert evidence.orphan_observations[0].candidate_count == 2
     assert evidence.n_candidates == 3
+    assert evidence.n_unassigned_candidates == 0
+    observed_orphan = evidence.orphan_observations[0]
+    with pytest.raises(ValueError):
+        replace(observed_orphan, candidate_count=99)
+    public_orphan = RollingOrphanObservation(observed_orphan.unit_key, source_summary=observed_orphan.source_summary)
+    assert public_orphan.candidate_count == 0
+    with pytest.raises(RollingEvidenceContractError):
+        RollingOrphanObservation((
+            "orphan@rolling", "cpcv_rolling:2026-01-05:2026-01-06:123456789abc",
+        ))
+
+    mixed_family = dict(
+        orphan, window_key="cpcv_rolling:2026-01-05:2026-01-06:123456789abc",
+        recorder_id="mixed-family", source_manifest_fingerprint="e" * 64,
+    )
+    unparseable = dict(
+        orphan, target_key=True, window_key=object(), recorder_id="unparseable",
+        source_manifest_fingerprint="d" * 64,
+    )
+    backend.candidates = (candidate, mixed_family, unparseable)
+    mixed = inspect_rolling_evidence(context, (request,), backend)
+    assert mixed.n_candidates == 3
+    assert mixed.n_unassigned_candidates == 2
+    assert mixed.orphan_observations == ()
+    assert classify_rolling_recovery((request,), mixed).orphan_unit_keys == ()
+
+    collision = dict(
+        orphan, recorder_id=request.recorder_id,
+        source_manifest_fingerprint=request.source_manifest_fingerprint,
+    )
+    backend.candidates = (collision,)
+    collided = inspect_rolling_evidence(context, (request,), backend)
+    assert collided.unit_results[0].classification == "identity_mismatch"
+    assert collided.orphan_observations == ()
+    assert collided.n_candidates == 1
+    assert collided.n_unassigned_candidates == 0
 
 
 def test_inventory_or_public_path_drift_invalidates_the_observation(tmp_path, monkeypatch):
@@ -623,6 +675,14 @@ def test_counts_are_recomputed_from_terminal_members(tmp_path):
         RollingEvidenceSetInspection(**dict(evidence.__dict__, n_valid=99))
     with pytest.raises(TypeError):
         RollingEvidenceSetInspection(**dict(evidence.__dict__, n_candidates=99))
+    unit = evidence.unit_results[0]
+    with pytest.raises(ValueError):
+        replace(unit, candidate_count=99)
+    replayed = RollingUnitEvidenceInspection(
+        unit.unit_key, "missing", "rolling_evidence_missing", unit.source_protocol,
+        unit.request_fingerprint, blockers=("missing",), _observed_candidate_count=99,
+    )
+    assert replayed.candidate_count == 0
 
 
 def test_fake_backend_self_probe_detects_missing_duplicate_foreign_corrupt_and_drift(tmp_path):

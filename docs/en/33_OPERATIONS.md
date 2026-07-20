@@ -125,11 +125,15 @@ public path blocks only that unit.
 Prediction pickles are decoded by a restricted unpickler. A payload that references globals beyond
 the required pandas/numpy object graph, or an arbitrary reducer, becomes `corrupt /
 prediction_decode_failed`; the reducer is not executed.
-`checked` lists only predicates actually executed with comparable inputs, while `n_candidates` is
-recomputed from terminal and orphan member cardinalities. A `valid` leaf also carries internal
-inspector provenance, so public construction or field replay cannot grant reuse. Malformed backend
-metadata is redacted into the corresponding requested unit's terminal result; it cannot abort later
-members or expose a local-path-shaped identifier.
+`checked` lists only predicates actually executed with comparable inputs. `n_candidates` comes
+directly from authoritative inventory cardinality; each member is assigned at most once, and
+`n_unassigned_candidates` exposes members that cannot form a valid target/window identity.
+Leaf/orphan cardinality requires inspector provenance and cannot be forged through public
+constructors, and recovery accepts only an aggregate retaining that provenance. A `valid` leaf has the same provenance protection, so public construction or field
+replay cannot grant reuse. Malformed backend metadata and other non-interrupt operational exceptions
+are redacted into the corresponding requested unit's terminal result; they cannot abort later
+members or expose a local-path-shaped identifier. A target/window family mismatch cannot be accepted
+as an orphan by evidence and then rejected by recovery.
 
 `classify_rolling_recovery(requests, evidence_set)` returns only an `all_reusable`, `incomplete`,
 `no_reusable_evidence`, or `blocked` proposal. It has no `apply()` method and does not train, fill a

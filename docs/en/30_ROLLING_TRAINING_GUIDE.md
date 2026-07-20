@@ -205,9 +205,13 @@ component-by-component no-follow semantics, then checks the exact byte size and
 SHA-256, decodes the prediction bytes, and compares complete ordered sessions, a unique canonical
 index, and finite scores. Prediction pickles are limited to the pandas/numpy globals needed for the
 prediction object; arbitrary reducers are not executed. `checked` names only predicates actually
-executed with comparable inputs, and aggregate candidate counts are recomputed from terminal and
-orphan members. Only inspector-created `valid` evidence carries recovery provenance; callers cannot
-assemble reusable facts through the public constructor. Recorder or state-completion existence alone, a legacy source, duplicate
+executed with comparable inputs. The inspector computes `n_candidates` directly from authoritative
+inventory cardinality; each inventory member belongs to at most one requested unit or valid orphan,
+and `n_unassigned_candidates` exposes members that cannot form a valid identity. Leaf/orphan display
+cardinalities require inspector provenance, and recovery accepts only an aggregate retaining that
+provenance; neither can be forged through public constructors. Only
+inspector-created `valid` evidence carries recovery provenance; callers cannot assemble reusable
+facts through the public constructor. Recorder or state-completion existence alone, a legacy source, duplicate
 candidates, identity mismatch, missing/corrupt artifacts, short coverage, non-comparable facts,
 orphans, or drift cannot become `valid`. `classify_rolling_recovery(requests, evidence_set)` emits
 only a proposal that preserves requested identity, order, and cardinality; only `valid` units enter

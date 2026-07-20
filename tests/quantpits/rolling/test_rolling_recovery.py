@@ -141,6 +141,11 @@ def test_no_valid_or_legacy_only_evidence_grants_no_reuse(tmp_path):
     assert proposal.status == "no_reusable_evidence"
     assert proposal.reusable_unit_keys == ()
     assert proposal.unresolved_unit_keys == tuple(item.unit_key for item in requests)
+    missing_requests, missing_evidence = evidence_for(tmp_path / "replay", ("missing", "missing"))
+    replayed = replace(missing_evidence)
+    assert replayed.n_candidates == 0
+    with pytest.raises(RollingEvidenceContractError):
+        classify_rolling_recovery(missing_requests, replayed)
 
 
 def test_drift_or_aggregate_ambiguity_blocks_all_reuse(tmp_path):

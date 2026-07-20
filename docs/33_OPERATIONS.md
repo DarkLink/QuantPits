@@ -127,10 +127,13 @@ regular artifact、匹配的 exact byte digest，以及
 阻断整次 recovery，单个 artifact path 漂移只阻断该 unit。
 prediction pickle 由受限 unpickler 解码；引用非必要 pandas/numpy global 或任意 reducer 的 payload 会成为
 `corrupt / prediction_decode_failed`，不会执行该 reducer。
-结果中的 `checked` 只登记实际执行且输入可比较的谓词；`n_candidates` 只从 terminal 与 orphan member 的观察
-cardinality 重算。`valid` leaf 还绑定 inspector 内部 provenance，public constructor 或字段重放不能获得 reuse
-能力。malformed backend metadata 会被脱敏并形成对应 requested unit 的 terminal 结果，不会中断其余 member 或
-公开本地路径形态。
+结果中的 `checked` 只登记实际执行且输入可比较的谓词；`n_candidates` 直接取 authoritative inventory 的观察
+cardinality，每个 member 最多归属一次，无法形成合法 target/window identity 的余量以
+`n_unassigned_candidates` 明示。leaf/orphan cardinality 只能由 inspector provenance 写入，public constructor 不可
+伪造，recovery 也只接受保留该 provenance 的 aggregate。`valid` leaf 同样绑定 inspector 内部 provenance，public constructor 或字段重放不能获得 reuse 能力。
+malformed backend metadata 或其他非 interrupt operational exception 会被脱敏并形成对应 requested unit 的 terminal
+结果，不会中断其余 member 或公开本地路径形态；target/window family 不一致的 member 不会成为 evidence 可接受、
+recovery 又拒绝的 orphan。
 
 `classify_rolling_recovery(requests, evidence_set)` 的结果仅是 `all_reusable`、`incomplete`、
 `no_reusable_evidence` 或 `blocked` proposal。它没有 `apply()`，不会训练、补预测、修改 State V2、发布 current

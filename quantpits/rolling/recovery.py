@@ -9,6 +9,7 @@ from quantpits.rolling.errors import RollingEvidenceContractError
 from quantpits.rolling.evidence import (
     RollingEvidenceSetInspection,
     RollingUnitEvidenceRequest,
+    _rebuild_evidence_set,
     _rebuild_result,
     _validate_requested_keys,
 )
@@ -120,14 +121,7 @@ def classify_rolling_recovery(requests, evidence_set):
     requested_keys = _validate_requested_keys(tuple(item.unit_key for item in rebuilt_requests))
     if len({item.run_identity.fingerprint for item in rebuilt_requests}) != 1:
         _contract("recovery requests must belong to one Rolling run identity")
-    if not isinstance(evidence_set, RollingEvidenceSetInspection):
-        _contract("evidence_set must be RollingEvidenceSetInspection")
-    evidence_set = RollingEvidenceSetInspection(
-        evidence_set.requested_unit_keys, evidence_set.unit_results,
-        evidence_set.orphan_observations, evidence_set.inventory_before_fingerprint,
-        evidence_set.inventory_after_fingerprint, evidence_set.status,
-        evidence_set.reason_code,
-    )
+    evidence_set = _rebuild_evidence_set(evidence_set)
     rebuilt_results = tuple(_rebuild_result(item) for item in evidence_set.unit_results)
     if evidence_set.requested_unit_keys != requested_keys or tuple(item.unit_key for item in rebuilt_results) != requested_keys:
         _contract("recovery request and evidence identities disagree")

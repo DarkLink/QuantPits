@@ -439,11 +439,12 @@ class RollingUnitEvidenceInspection:
     evidence_fingerprint: str | None = None
     warnings: tuple = ()
     blockers: tuple = ()
-    candidate_count: int = 0
+    candidate_count: int = field(init=False)
     _inspection_token: InitVar[Any] = None
+    _observed_candidate_count: InitVar[int] = 0
     _inspector_provenance: bool = field(init=False, repr=False, compare=False)
 
-    def __post_init__(self, _inspection_token: Any) -> None:
+    def __post_init__(self, _inspection_token: Any, _observed_candidate_count: int) -> None:
         if not isinstance(self.unit_key, tuple) or len(self.unit_key) != 2:
             _contract("unit_key must be a target/window tuple")
         RollingTargetIdentity.parse(self.unit_key[0])
@@ -455,7 +456,11 @@ class RollingUnitEvidenceInspection:
         if self.source_protocol not in SOURCE_PROTOCOLS:
             _contract("inspection source protocol is invalid")
         _digest(self.request_fingerprint, "request_fingerprint")
-        _strict_size(self.candidate_count, "candidate_count")
+        candidate_count = (
+            _strict_size(_observed_candidate_count, "candidate_count")
+            if _inspection_token is _INSPECTION_TOKEN else 0
+        )
+        object.__setattr__(self, "candidate_count", candidate_count)
         checked = _tuple(self.checked, "checked")
         if len(checked) != len(set(checked)) or any(not isinstance(item, str) or not item for item in checked):
             _contract("checked predicates must be unique non-empty strings")
@@ -567,18 +572,29 @@ class RollingOrphanObservation:
     unit_key: tuple
     reason_code: str = "rolling_evidence_orphan"
     source_summary: tuple = ()
-    candidate_count: int = 1
+    candidate_count: int = field(init=False)
+    _inspection_token: InitVar[Any] = None
+    _observed_candidate_count: InitVar[int] = 0
+    _inspector_provenance: bool = field(init=False, repr=False, compare=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _inspection_token: Any, _observed_candidate_count: int) -> None:
         if not isinstance(self.unit_key, tuple) or len(self.unit_key) != 2:
             _contract("orphan unit_key must be a pair")
-        RollingTargetIdentity.parse(self.unit_key[0])
-        parse_rolling_window_key(self.unit_key[1])
+        target = RollingTargetIdentity.parse(self.unit_key[0])
+        family, _, _, _ = parse_rolling_window_key(self.unit_key[1])
+        if target.family != family:
+            _contract("orphan target/window families disagree")
         if self.reason_code != "rolling_evidence_orphan":
             _contract("orphan reason_code is invalid")
-        if _strict_size(self.candidate_count, "orphan candidate_count") == 0:
+        candidate_count = (
+            _strict_size(_observed_candidate_count, "orphan candidate_count")
+            if _inspection_token is _INSPECTION_TOKEN else 0
+        )
+        if _inspection_token is _INSPECTION_TOKEN and candidate_count == 0:
             _contract("orphan candidate_count must be positive")
         _validate_source_summary(self.source_summary, "orphan source_summary")
+        object.__setattr__(self, "candidate_count", candidate_count)
+        object.__setattr__(self, "_inspector_provenance", _inspection_token is _INSPECTION_TOKEN)
 
     @property
     def capabilities(self) -> tuple[str, ...]:
@@ -594,8 +610,11 @@ class RollingEvidenceSetInspection:
     inventory_after_fingerprint: str
     status: str
     reason_code: str
+    _inspection_token: InitVar[Any] = None
+    _observed_candidate_count: InitVar[int] = 0
+    _inspector_provenance: bool = field(init=False, repr=False, compare=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _inspection_token: Any, _observed_candidate_count: int) -> None:
         requested = _validate_requested_keys(self.requested_unit_keys)
         results = _tuple(self.unit_results, "unit_results")
         rebuilt = tuple(_rebuild_result(item) for item in results)
@@ -611,9 +630,20 @@ class RollingEvidenceSetInspection:
         expected_status = _set_status(rebuilt, self.inventory_before_fingerprint, self.inventory_after_fingerprint)
         if self.status != expected_status or self.reason_code != SET_REASONS[expected_status]:
             _contract("evidence set status/reason does not match its members")
+        candidate_count = (
+            _strict_size(_observed_candidate_count, "observed candidate count")
+            if _inspection_token is _INSPECTION_TOKEN else 0
+        )
+        assigned_count = sum(item.candidate_count for item in rebuilt) + sum(
+            item.candidate_count for item in rebuilt_orphans
+        )
+        if candidate_count < assigned_count:
+            _contract("observed candidate count cannot be smaller than classified candidates")
         object.__setattr__(self, "requested_unit_keys", requested)
         object.__setattr__(self, "unit_results", rebuilt)
         object.__setattr__(self, "orphan_observations", rebuilt_orphans)
+        object.__setattr__(self, "_observed_candidate_count", candidate_count)
+        object.__setattr__(self, "_inspector_provenance", _inspection_token is _INSPECTION_TOKEN)
 
     @property
     def n_requested(self) -> int:
@@ -637,7 +667,11 @@ class RollingEvidenceSetInspection:
 
     @property
     def n_candidates(self) -> int:
-        return sum(item.candidate_count for item in self.unit_results) + sum(
+        return self._observed_candidate_count
+
+    @property
+    def n_unassigned_candidates(self) -> int:
+        return self.n_candidates - sum(item.candidate_count for item in self.unit_results) - sum(
             item.candidate_count for item in self.orphan_observations
         )
 
@@ -656,6 +690,7 @@ class RollingEvidenceSetInspection:
             "n_missing": self.n_missing,
             "n_orphan": self.n_orphan,
             "n_candidates": self.n_candidates,
+            "n_unassigned_candidates": self.n_unassigned_candidates,
             "fingerprint": self.fingerprint,
         }
 
@@ -669,6 +704,8 @@ class RollingEvidenceSetInspection:
             "unit_candidate_counts": [item.candidate_count for item in self.unit_results],
             "orphan_unit_keys": [list(item.unit_key) for item in self.orphan_observations],
             "orphan_candidate_counts": [item.candidate_count for item in self.orphan_observations],
+            "observed_candidate_count": self.n_candidates,
+            "unassigned_candidate_count": self.n_unassigned_candidates,
             "inventory_before": self.inventory_before_fingerprint,
             "inventory_after": self.inventory_after_fingerprint,
             "status": self.status,
@@ -701,8 +738,9 @@ def _rebuild_result(item: Any) -> RollingUnitEvidenceInspection:
         item.request_fingerprint,
         item.checked, item.source_summary, item.artifact_observations,
         item.prediction_coverage, item.evidence_fingerprint, item.warnings,
-        item.blockers, item.candidate_count,
+        item.blockers,
         _inspection_token=_INSPECTION_TOKEN if item._inspector_provenance else None,
+        _observed_candidate_count=item.candidate_count,
     )
 
 
@@ -710,7 +748,23 @@ def _rebuild_orphan(item: Any) -> RollingOrphanObservation:
     if not isinstance(item, RollingOrphanObservation):
         _contract("orphan_observations must contain typed members")
     return RollingOrphanObservation(
-        item.unit_key, item.reason_code, item.source_summary, item.candidate_count,
+        item.unit_key, item.reason_code, item.source_summary,
+        _inspection_token=_INSPECTION_TOKEN if item._inspector_provenance else None,
+        _observed_candidate_count=item.candidate_count,
+    )
+
+
+def _rebuild_evidence_set(item: Any) -> RollingEvidenceSetInspection:
+    if not isinstance(item, RollingEvidenceSetInspection):
+        _contract("evidence_set must be RollingEvidenceSetInspection")
+    if not item._inspector_provenance:
+        _contract("evidence set lacks immutable inspector provenance")
+    return RollingEvidenceSetInspection(
+        item.requested_unit_keys, item.unit_results, item.orphan_observations,
+        item.inventory_before_fingerprint, item.inventory_after_fingerprint,
+        item.status, item.reason_code,
+        _inspection_token=_INSPECTION_TOKEN,
+        _observed_candidate_count=item.n_candidates,
     )
 
 
@@ -785,8 +839,15 @@ def _candidate_inventory_fingerprint(candidates: tuple) -> str:
         if value is None or type(value) in (bool, int, float, str):
             return value
         return {"unsupported_candidate_value": True}
+    def candidate_value(candidate, key):
+        try:
+            return safe_value(candidate.get(key))
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
+            return {"unavailable_candidate_value": True}
     return fingerprint_value([
-        {key: safe_value(candidate.get(key)) for key in keys}
+        {key: candidate_value(candidate, key) for key in keys}
         for candidate in candidates
     ])
 
@@ -817,14 +878,6 @@ def _candidate_summary(candidate: Mapping[str, Any]) -> tuple:
             value = None
         summary.append((key, value))
     return tuple(summary)
-
-
-def _candidate_relevant(candidate: Mapping[str, Any], request: RollingUnitEvidenceRequest) -> bool:
-    return (
-        _candidate_unit(candidate) == request.unit_key
-        or candidate.get("recorder_id") == request.recorder_id
-        or candidate.get("source_manifest_fingerprint") == request.source_manifest_fingerprint
-    )
 
 
 def _identity_mismatch(candidate: Mapping[str, Any], request: RollingUnitEvidenceRequest, backend_identity: Mapping[str, Any]) -> bool:
@@ -1090,8 +1143,9 @@ def _unit_result(
         request.unit_key, classification, CLASSIFICATION_REASONS[classification],
         request.source_protocol, request.source_manifest_fingerprint,
         tuple(checked), summary, observations, coverage,
-        evidence_fingerprint, warnings, blockers, candidate_count,
+        evidence_fingerprint, warnings, blockers,
         _inspection_token=_INSPECTION_TOKEN,
+        _observed_candidate_count=candidate_count,
     )
 
 
@@ -1269,9 +1323,47 @@ def inspect_rolling_evidence(context, requests, backend):
         before, candidates = fingerprint_value({"inventory": "unavailable"}), ()
         identity_comparable = False
 
+    # Assign every inventory member at most once. Exact unit identity wins;
+    # recorder/source collisions bind a foreign or malformed member to the
+    # first matching requested unit so it cannot also appear as an orphan.
+    assignments = [[] for _ in requests]
+    unassigned_candidate_indices = []
+    requested_index = {request.unit_key: index for index, request in enumerate(requests)}
+    for candidate_index, candidate in enumerate(candidates):
+        comparison_failed = False
+        try:
+            unit = _candidate_unit(candidate)
+            owner_index = requested_index.get(unit)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
+            unit = None
+            owner_index = None
+            comparison_failed = True
+        if owner_index is None:
+            for request_index, request in enumerate(requests):
+                try:
+                    relevant = bool(
+                        candidate.get("recorder_id") == request.recorder_id
+                        or candidate.get("source_manifest_fingerprint") == request.source_manifest_fingerprint
+                    )
+                except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                    raise
+                except Exception:
+                    relevant = True
+                    comparison_failed = True
+                if relevant:
+                    owner_index = request_index
+                    break
+        if owner_index is None:
+            unassigned_candidate_indices.append(candidate_index)
+        else:
+            assignments[owner_index].append((candidate_index, candidate, comparison_failed))
+
     results = []
-    for request in requests:
-        matches = [item for item in candidates if _candidate_relevant(item, request)]
+    for request_index, request in enumerate(requests):
+        assigned = assignments[request_index]
+        matches = [item for _, item, _ in assigned]
         checked = []
         if identity_checked:
             checked.append("tracking_identity")
@@ -1296,6 +1388,12 @@ def inspect_rolling_evidence(context, requests, backend):
                 candidate_count=len(matches) if inventory_before_observed else 0,
             ))
             continue
+        if any(comparison_failed for _, _, comparison_failed in assigned):
+            results.append(_unit_result(
+                request, "not_comparable", checked=checked,
+                detail="candidate_metadata_unavailable", candidate_count=len(matches),
+            ))
+            continue
         if not matches:
             results.append(_unit_result(request, "missing", checked=checked))
         elif len(matches) > 1:
@@ -1307,7 +1405,9 @@ def inspect_rolling_evidence(context, requests, backend):
                 result = _inspect_candidate(
                     root, request, matches[0], backend_identity, checked,
                 )
-            except (RollingEvidenceContractError, RollingIdentityError, OSError, TypeError, ValueError):
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except Exception:
                 result = _unit_result(
                     request, "not_comparable", checked=checked,
                     detail="candidate_metadata_invalid", candidate_count=1,
@@ -1317,18 +1417,32 @@ def inspect_rolling_evidence(context, requests, backend):
     requested_keys = tuple(item.unit_key for item in requests)
     orphans = []
     orphan_candidates = {}
-    for candidate in candidates:
-        unit = _candidate_unit(candidate)
-        if unit is None or unit in requested_keys:
+    for candidate_index in unassigned_candidate_indices:
+        candidate = candidates[candidate_index]
+        try:
+            unit = _candidate_unit(candidate)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
+            unit = None
+        if unit is None:
             continue
-        orphan_candidates.setdefault(unit, []).append(candidate)
+        try:
+            orphan_candidates.setdefault(unit, []).append(candidate)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
+            continue
     for unit, grouped in orphan_candidates.items():
         try:
             orphan = RollingOrphanObservation(
                 unit, source_summary=_candidate_summary(grouped[0]),
-                candidate_count=len(grouped),
+                _inspection_token=_INSPECTION_TOKEN,
+                _observed_candidate_count=len(grouped),
             )
-        except (RollingEvidenceContractError, RollingIdentityError):
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
             continue
         orphans.append(orphan)
     inventory_after_observed = False
@@ -1405,4 +1519,6 @@ def inspect_rolling_evidence(context, requests, backend):
     return RollingEvidenceSetInspection(
         requested_keys, tuple(results), tuple(orphans), before, after,
         status, SET_REASONS[status],
+        _inspection_token=_INSPECTION_TOKEN,
+        _observed_candidate_count=len(candidates) if inventory_before_observed else 0,
     )
