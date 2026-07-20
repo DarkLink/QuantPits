@@ -88,6 +88,8 @@ quantpits/rolling/
 ├── identity.py           # pure canonical target/fold/window/run identities
 ├── state.py              # strict V2 serializer + readonly classifier/migration proposal
 ├── repository.py         # canonical lock + CAS + atomic State V2 persistence
+├── evidence.py           # immutable per-unit artifact/coverage inspection
+├── recovery.py           # proposal-only recovery classification
 ├── windows.py            # runtime ResolvedRollingRun + canonical identities
 └── legacy.py             # exact-scope legacy execution adapter + baseline recheck
 
@@ -181,6 +183,18 @@ repository 在 canonical sibling lock 内重新读取并分类同一 byte snapsh
 postimage reread 无法确认时只返回 `durability_uncertain`；compare-delete 只接受 exact `failed` V2，不能由公开参数放宽。
 当前 legacy `rolling_train.py`、`--clear-state`、resume
 和 state backup 行为保持不变，不会自动迁移任何 workspace。
+
+Immutable Rolling evidence 同样是独立的只读 domain API，而不是 CLI。调用方必须显式提供同一
+`RollingRunIdentity` 下有序、无重复的 target×window request，以及 original logical run 冻结的 source manifest。
+`inspect_rolling_evidence(context, requests, backend)` 对 metadata inventory 做前后快照，并由 inspector 自己以
+no-follow 方式读取 workspace 内 required artifact 的 exact bytes、校验 size/SHA-256、解码 prediction，并比较完整
+ordered session coverage、唯一 index 和 finite score。prediction pickle 只允许生成 pandas/numpy prediction object
+所需的受限 global 集，不执行任意 reducer。recorder 或 state completion 单独存在、legacy source、重复候选、
+identity mismatch、缺 artifact、corrupt、coverage short、不可比较、orphan 或观察漂移都不能成为 `valid`。
+`classify_rolling_recovery(requests, evidence_set)` 只生成保持 requested identity/order/cardinality 的 proposal；仅
+`valid` unit 可进入 reusable subset，proposal 没有 execute、state transition、publication、repair 或 `apply()` 能力。
+这两个 API 不读取 mutable current records 来重建 source，不创建 backend/cache/evidence，也尚未接入
+`rolling_train.py`。execution-time evidence writer、deterministic resume 和 publication 分属后续边界。
 
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一
 workspace identity，不依赖进程 `sys.argv` 让 legacy `env` 再次选择 workspace。真实执行顺序为

@@ -17,6 +17,8 @@ from quantpits.rolling.command import (
 )
 from quantpits.rolling.errors import (
     RollingCommandError,
+    RollingEvidenceContractError,
+    RollingEvidenceError,
     RollingStatePathError,
     RollingStatePersistenceError,
     RollingStateRepositoryError,
@@ -62,9 +64,25 @@ from quantpits.rolling.repository import (
     RollingStateRepository,
     RollingStateRepositoryView,
 )
+from quantpits.rolling.evidence import (
+    RollingArtifactExpectation,
+    RollingArtifactObservation,
+    RollingEvidenceBackend,
+    RollingEvidenceSetInspection,
+    RollingPredictionCoverage,
+    RollingUnitEvidenceInspection,
+    RollingUnitEvidenceRequest,
+    inspect_rolling_evidence,
+)
+from quantpits.rolling.recovery import (
+    RollingRecoveryProposal,
+    classify_rolling_recovery,
+)
 
 __all__ = [
     "RollingCommandError",
+    "RollingEvidenceError",
+    "RollingEvidenceContractError",
     "LegacyRollingStateInspection",
     "PreparedRollingRun",
     "RollingRunOptions",
@@ -92,6 +110,16 @@ __all__ = [
     "RollingStateRepositoryView",
     "RollingStateMutationReceipt",
     "RollingStateRepository",
+    "RollingArtifactExpectation",
+    "RollingArtifactObservation",
+    "RollingEvidenceBackend",
+    "RollingEvidenceSetInspection",
+    "RollingPredictionCoverage",
+    "RollingUnitEvidenceInspection",
+    "RollingUnitEvidenceRequest",
+    "RollingRecoveryProposal",
+    "inspect_rolling_evidence",
+    "classify_rolling_recovery",
     "options_from_namespace",
     "prepare_rolling_run",
     "prepared_plan_json",

@@ -101,10 +101,34 @@ fingerprint was actually compared; mismatch inspections expose no raw legacy pay
 recorder claims in state are not recovery reuse authority. The repository permits only
 pre-evidence `prepared`/`executing`/`failed` transitions and continues to reject
 `units_complete`/`completed`. Legacy migration produces only a deterministic, zero-write,
-proposal-only postimage audit with no CLI or `apply()` capability; immutable evidence remains a
-later boundary. Repository data/state/lock mappings cannot be redirected through a context or
+proposal-only postimage audit with no CLI or `apply()` capability. Immutable evidence now has a
+standalone read-only domain API, but public runtime does not consume it yet. Repository data/state/lock mappings cannot be redirected through a context or
 public field, create rejects a foreign workspace identity before temp/replace, and
 compare-and-delete accepts only an exact `failed` V2.
+
+### Immutable evidence and recovery proposals
+
+`inspect_rolling_evidence(context, requests, backend)` accepts only an explicit
+`WorkspaceContext` and original-run-bound source manifests. It does not infer a source from
+`latest_train_records.json`, the registry, a State receipt, or console output. Every requested
+target×window retains one terminal result; available recorders and orphans cannot shrink or expand
+the requested set.
+
+A unit is `valid` only after one unique identity-bound candidate, physically contained regular
+artifacts with no symlink components, exact byte digests, and complete prediction session/index/
+finite-score predicates have all been observed and compared. Other terminal classifications are
+`missing`, `duplicate`, `foreign`, `identity_mismatch`, `partial`, `corrupt`, `coverage_short`,
+`not_comparable`, `legacy_unverified`, or `drifted`; orphans remain in a separate audit list. A
+metadata inventory change blocks the complete recovery observation, while drift of one artifact's
+public path blocks only that unit.
+Prediction pickles are decoded by a restricted unpickler. A payload that references globals beyond
+the required pandas/numpy object graph, or an arbitrary reducer, becomes `corrupt /
+prediction_decode_failed`; the reducer is not executed.
+
+`classify_rolling_recovery(requests, evidence_set)` returns only an `all_reusable`, `incomplete`,
+`no_reusable_evidence`, or `blocked` proposal. It has no `apply()` method and does not train, fill a
+prediction gap, mutate State V2, publish a current record, or clean a recorder. Current operational
+commands do not claim to consume this proposal.
 
 ### Cross-Mode Isolation
 

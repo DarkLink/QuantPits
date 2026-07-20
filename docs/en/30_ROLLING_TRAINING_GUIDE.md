@@ -96,6 +96,8 @@ quantpits/rolling/
 ├── identity.py           # pure canonical target/fold/window/run identities
 ├── state.py              # strict V2 serializer + readonly classifier/migration proposal
 ├── repository.py         # canonical lock + CAS + atomic State V2 persistence
+├── evidence.py           # immutable per-unit artifact/coverage inspection
+├── recovery.py           # proposal-only recovery classification
 ├── windows.py            # runtime ResolvedRollingRun + canonical identities
 └── legacy.py             # exact-scope legacy adapter + baseline recheck
 
@@ -193,6 +195,22 @@ reported as committed; uncertain directory durability or postimage reread produc
 `durability_uncertain`. Compare-and-delete accepts only an exact `failed` V2 and has no public
 parameter that can relax this rule. Existing legacy `rolling_train.py`, `--clear-state`, resume, and backup
 behavior is unchanged and no workspace is migrated automatically.
+
+Immutable Rolling evidence is also a standalone, read-only domain API rather than a CLI. A caller
+must provide an ordered, duplicate-free target×window request set under one `RollingRunIdentity`,
+plus source manifests frozen by the original logical run. `inspect_rolling_evidence(context,
+requests, backend)` snapshots metadata inventory before and after observation. The inspector itself
+opens contained required artifacts with no-follow semantics, checks the exact byte size and
+SHA-256, decodes the prediction bytes, and compares complete ordered sessions, a unique canonical
+index, and finite scores. Prediction pickles are limited to the pandas/numpy globals needed for the
+prediction object; arbitrary reducers are not executed. Recorder or state-completion existence alone, a legacy source, duplicate
+candidates, identity mismatch, missing/corrupt artifacts, short coverage, non-comparable facts,
+orphans, or drift cannot become `valid`. `classify_rolling_recovery(requests, evidence_set)` emits
+only a proposal that preserves requested identity, order, and cardinality; only `valid` units enter
+its reusable subset, and it has no execute, state-transition, publication, repair, or `apply()`
+capability. Neither API reconstructs source from mutable current records, creates a backend/cache/
+evidence file, or connects to `rolling_train.py`. The execution-time evidence writer,
+deterministic resume, and publication remain later boundaries.
 
 `--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared
 context as the sole workspace identity; legacy `env` does not reselect it from process `sys.argv`.

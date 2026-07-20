@@ -85,6 +85,18 @@ class RollingStatePersistenceError(RollingStateRepositoryError):
     code = "rolling_state_write_failed"
 
 
+class RollingEvidenceError(RollingCommandError):
+    """Base failure for immutable Rolling evidence contracts."""
+
+    code = "rolling_evidence_error"
+
+
+class RollingEvidenceContractError(RollingEvidenceError):
+    """Reject an invalid request, observation envelope, or recovery input."""
+
+    code = "rolling_evidence_contract_invalid"
+
+
 class RollingResumeStateMissingError(RollingCommandError):
     code = "rolling_resume_state_missing"
 
