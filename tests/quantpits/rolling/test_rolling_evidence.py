@@ -1,3 +1,4 @@
+import builtins
 import hashlib
 import io
 import os
@@ -306,8 +307,11 @@ def test_missing_candidate_is_terminal_without_member_loss(tmp_path):
 def test_duplicate_candidates_fail_closed_without_selecting_first(tmp_path):
     context, request, candidate, backend = make_valid_case(tmp_path)
     backend.candidates = (candidate, dict(candidate))
-    unit = inspect_rolling_evidence(context, (request,), backend).unit_results[0]
+    evidence = inspect_rolling_evidence(context, (request,), backend)
+    unit = evidence.unit_results[0]
     assert unit.classification == "duplicate"
+    assert unit.candidate_count == 2
+    assert evidence.n_candidates == 2
     assert unit.capabilities == ("render",)
     assert not unit.artifact_observations
 
@@ -339,14 +343,27 @@ def test_source_recorder_or_unit_identity_mismatch_denies_capability(tmp_path):
         unit = inspect_rolling_evidence(context, (request,), backend).unit_results[0]
         assert unit.classification == "identity_mismatch"
         assert unit.capabilities == ("render",)
+    uri_shape = "file:" + "///" + "redacted/path"
+    windows_shape = "Z:" + "\\" + "redacted\\path"
+    for index, value in enumerate((True, 7, object(), uri_shape, windows_shape)):
+        context, request, candidate, backend = make_valid_case(tmp_path / ("malformed-%s" % index))
+        candidate["recorder_id"] = value
+        evidence = inspect_rolling_evidence(context, (request,), backend)
+        assert len(evidence.unit_results) == 1
+        assert evidence.unit_results[0].classification == "identity_mismatch"
+        rendered = repr(evidence.to_public_dict())
+        assert uri_shape not in rendered
+        assert windows_shape not in rendered
 
 
 def test_missing_required_artifact_is_partial(tmp_path):
-    context, request, _, backend = make_valid_case(tmp_path, supporting=True)
-    (context.root / "mlruns" / "exp-1" / "recorder-1" / "artifacts" / "model.pkl").unlink()
+    context, request, _, backend = make_valid_case(tmp_path)
+    (context.root / "mlruns" / "exp-1" / "recorder-1" / "artifacts" / "pred.pkl").unlink()
     unit = inspect_rolling_evidence(context, (request,), backend).unit_results[0]
     assert unit.classification == "partial"
     assert any(item.status == "missing" for item in unit.artifact_observations)
+    assert "artifact_node_kind" not in unit.checked
+    assert "artifact_byte_fingerprint" not in unit.checked
 
 
 @pytest.mark.parametrize("mode", ("digest", "size", "decode", "duplicate", "nonfinite", "malicious"))
@@ -373,9 +390,21 @@ def test_digest_size_decode_index_and_nonfinite_failures_are_corrupt(tmp_path, m
     assert unit.classification == "corrupt"
     assert unit.capabilities == ("render",)
     assert not marker.exists()
+    if mode in ("decode", "malicious"):
+        assert not {
+            "prediction_schema", "prediction_index_unique",
+            "prediction_scores_finite", "prediction_session_coverage",
+        }.intersection(unit.checked)
+    elif mode == "duplicate":
+        assert "prediction_index_unique" in unit.checked
+        assert "prediction_scores_finite" not in unit.checked
+        assert "prediction_session_coverage" not in unit.checked
+    elif mode == "nonfinite":
+        assert "prediction_scores_finite" in unit.checked
+        assert "prediction_session_coverage" not in unit.checked
 
 
-def test_artifact_symlink_or_special_node_never_becomes_valid(tmp_path):
+def test_artifact_symlink_or_special_node_never_becomes_valid(tmp_path, monkeypatch):
     context, request, _, backend = make_valid_case(tmp_path / "symlink")
     artifact = context.root / "mlruns" / "exp-1" / "recorder-1" / "artifacts" / "pred.pkl"
     original = artifact.read_bytes()
@@ -389,6 +418,35 @@ def test_artifact_symlink_or_special_node_never_becomes_valid(tmp_path):
     artifact2.unlink()
     artifact2.mkdir()
     assert inspect_rolling_evidence(context2, (request2,), backend2).unit_results[0].classification == "corrupt"
+    context3, request3, _, backend3 = make_valid_case(tmp_path / "ancestor-race")
+    artifact3 = context3.root / "mlruns" / "exp-1" / "recorder-1" / "artifacts" / "pred.pkl"
+    artifact_root3 = artifact3.parent
+    outside = tmp_path / "race-outside"
+    outside.mkdir()
+    outside_file = outside / "pred.pkl"
+    outside_file.write_bytes(artifact3.read_bytes())
+    outside_identity = (outside_file.stat().st_dev, outside_file.stat().st_ino)
+    real_open = os.open
+    real_read = os.read
+    raced = {"done": False, "outside_read": False}
+    def racing_open(path, flags, *args, **kwargs):
+        if path == "artifacts" and kwargs.get("dir_fd") is not None and not raced["done"]:
+            raced["done"] = True
+            displaced = artifact_root3.with_name("artifacts-displaced")
+            artifact_root3.rename(displaced)
+            artifact_root3.symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+    def observing_read(fd, size):
+        node = os.fstat(fd)
+        if (node.st_dev, node.st_ino) == outside_identity:
+            raced["outside_read"] = True
+        return real_read(fd, size)
+    monkeypatch.setattr(os, "open", racing_open)
+    monkeypatch.setattr(os, "read", observing_read)
+    raced_unit = inspect_rolling_evidence(context3, (request3,), backend3).unit_results[0]
+    assert raced["done"] is True
+    assert raced["outside_read"] is False
+    assert raced_unit.classification in ("foreign", "corrupt", "drifted")
 
 
 @pytest.mark.parametrize("sessions,detail", (
@@ -438,6 +496,7 @@ def test_legacy_recorder_remains_unverified_even_when_artifacts_exist(tmp_path):
     context, request, _, backend = make_valid_case(tmp_path, protocol="legacy_unverified")
     unit = inspect_rolling_evidence(context, (request,), backend).unit_results[0]
     assert unit.classification == "legacy_unverified"
+    assert "source_identity" not in unit.checked
     assert unit.capabilities == ("render",)
 
 
@@ -448,11 +507,13 @@ def test_orphan_candidate_is_reported_without_expanding_requested_results(tmp_pa
         window_key="rolling:2026-01-05:2026-01-06:123456789abc",
         recorder_id="orphan", source_manifest_fingerprint="f" * 64,
     )
-    backend.candidates = (candidate, orphan)
+    backend.candidates = (candidate, orphan, dict(orphan, recorder_id="orphan-duplicate"))
     evidence = inspect_rolling_evidence(context, (request,), backend)
     assert evidence.requested_unit_keys == (request.unit_key,)
     assert len(evidence.unit_results) == 1
     assert tuple(item.unit_key for item in evidence.orphan_observations) == ((orphan["target_key"], orphan["window_key"]),)
+    assert evidence.orphan_observations[0].candidate_count == 2
+    assert evidence.n_candidates == 3
 
 
 def test_inventory_or_public_path_drift_invalidates_the_observation(tmp_path, monkeypatch):
@@ -491,19 +552,17 @@ def test_inventory_or_public_path_drift_invalidates_the_observation(tmp_path, mo
     assert root_drift.unit_results[0].classification == "drifted"
     context2, request2, _, backend2 = make_valid_case(tmp_path / "path-drift")
     artifact = context2.root / "mlruns" / "exp-1" / "recorder-1" / "artifacts" / "pred.pkl"
-    real_lstat = os.lstat
+    real_open = os.open
     calls = {"artifact": 0}
-    def swapping_lstat(path, *args, **kwargs):
-        if Path(path) == artifact:
+    def swapping_open(path, flags, *args, **kwargs):
+        if path == "pred.pkl" and kwargs.get("dir_fd") is not None:
             calls["artifact"] += 1
-            # First secure read finishes at call three. Swap before the public
-            # recheck so the old descriptor cannot establish current authority.
-            if calls["artifact"] == 4:
+            if calls["artifact"] == 2:
                 displaced = artifact.with_suffix(".old")
                 artifact.rename(displaced)
                 artifact.write_bytes(displaced.read_bytes())
-        return real_lstat(path, *args, **kwargs)
-    monkeypatch.setattr(os, "lstat", swapping_lstat)
+        return real_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", swapping_open)
     path_drift = inspect_rolling_evidence(context2, (request2,), backend2)
     assert path_drift.unit_results[0].classification == "drifted"
     assert path_drift.status == "incomplete"
@@ -515,14 +574,18 @@ def test_zero_one_many_requested_units_have_exact_terminal_cardinality(tmp_path)
         inspect_rolling_evidence(context, (), backend)
     one = inspect_rolling_evidence(context, (request,), backend)
     assert one.n_requested == 1
+    assert one.n_candidates == 1
     second = replace(request, target_key="beta@rolling", run_identity=replace(request.run_identity, target_keys=(request.target_key, "beta@rolling")), recorder_id="recorder-2")
     first = replace(request, run_identity=second.run_identity)
     candidate1 = make_candidate(first, context.root / "mlruns" / "exp-1" / "recorder-1" / "artifacts")
+    candidate1["experiment_id"] = True
     backend.candidates = (candidate1,)
     many = inspect_rolling_evidence(context, (first, second), backend)
     assert many.requested_unit_keys == (first.unit_key, second.unit_key)
     assert len(many.unit_results) == 2
+    assert many.unit_results[0].classification == "identity_mismatch"
     assert many.unit_results[1].classification == "missing"
+    assert many.n_candidates == 1
 
 
 def test_aggregate_revalidates_foreign_duplicate_missing_and_reordered_members(tmp_path):
@@ -553,9 +616,13 @@ def test_counts_are_recomputed_from_terminal_members(tmp_path):
     assert evidence.n_requested == 1
     assert evidence.n_valid == 1
     assert evidence.n_blocked == 0
+    assert evidence.n_candidates == 1
+    assert evidence.to_public_dict()["n_candidates"] == 1
     assert not hasattr(evidence, "n_valid_input")
     with pytest.raises(TypeError):
         RollingEvidenceSetInspection(**dict(evidence.__dict__, n_valid=99))
+    with pytest.raises(TypeError):
+        RollingEvidenceSetInspection(**dict(evidence.__dict__, n_candidates=99))
 
 
 def test_fake_backend_self_probe_detects_missing_duplicate_foreign_corrupt_and_drift(tmp_path):
@@ -581,23 +648,99 @@ def test_fake_backend_self_probe_detects_missing_duplicate_foreign_corrupt_and_d
     assert backend.mutation_calls == short_backend.mutation_calls == []
 
 
-def test_inspection_is_zero_write_and_does_not_initialize_missing_backend(tmp_path):
+def test_inspection_is_zero_write_and_does_not_initialize_missing_backend(tmp_path, monkeypatch):
     context, request, _, backend = make_valid_case(tmp_path)
-    before = {path.relative_to(context.root).as_posix(): (path.is_dir(), path.read_bytes() if path.is_file() else None) for path in context.root.rglob("*")}
+    controlled_temp = tmp_path / "controlled-temp"
+    controlled_cache = tmp_path / "controlled-cache"
+    controlled_temp.mkdir()
+    controlled_cache.mkdir()
+    monkeypatch.setenv("TMPDIR", str(controlled_temp))
+    monkeypatch.setenv("TMP", str(controlled_temp))
+    monkeypatch.setenv("TEMP", str(controlled_temp))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(controlled_cache))
+    def snapshot_tree(root):
+        result = {}
+        for path in root.rglob("*"):
+            key = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                result[key] = ("symlink", os.readlink(path))
+            elif path.is_file():
+                result[key] = ("file", path.read_bytes())
+            else:
+                result[key] = ("directory", None)
+        return result
+    write_attempts = []
+    real_os_open = os.open
+    def observing_os_open(path, flags, *args, **kwargs):
+        write_mask = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+        if flags & write_mask:
+            write_attempts.append(("os.open", os.fspath(path), flags))
+        return real_os_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", observing_os_open)
+    real_builtin_open = builtins.open
+    real_io_open = io.open
+    def observing_stream_open(original, source, mode="r", *args, **kwargs):
+        if any(marker in mode for marker in ("w", "a", "x", "+")):
+            write_attempts.append(("stream.open", os.fspath(source), mode))
+        return original(source, mode, *args, **kwargs)
+    monkeypatch.setattr(
+        builtins, "open",
+        lambda source, mode="r", *args, **kwargs: observing_stream_open(
+            real_builtin_open, source, mode, *args, **kwargs
+        ),
+    )
+    monkeypatch.setattr(
+        io, "open",
+        lambda source, mode="r", *args, **kwargs: observing_stream_open(
+            real_io_open, source, mode, *args, **kwargs
+        ),
+    )
+    for name in ("mkdir", "makedirs", "rename", "replace", "unlink", "remove", "rmdir"):
+        original = getattr(os, name)
+        def observing_mutation(*args, _name=name, _original=original, **kwargs):
+            write_attempts.append((_name, repr(args), None))
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(os, name, observing_mutation)
+    before = snapshot_tree(tmp_path)
+    before_cwd = os.getcwd()
+    before_env = dict(os.environ)
     inspect_rolling_evidence(context, (request,), backend)
-    after = {path.relative_to(context.root).as_posix(): (path.is_dir(), path.read_bytes() if path.is_file() else None) for path in context.root.rglob("*")}
+    after = snapshot_tree(tmp_path)
     assert before == after
+    assert os.getcwd() == before_cwd
+    assert dict(os.environ) == before_env
+    assert write_attempts == []
     assert backend.mutation_calls == []
     missing = FakeEvidenceBackend({})
     result = inspect_rolling_evidence(context, (request,), missing)
     assert result.unit_results[0].classification == "not_comparable"
+    assert "tracking_identity" not in result.unit_results[0].checked
     assert missing.mutation_calls == []
+    class FailingIdentityBackend(FakeEvidenceBackend):
+        def tracking_identity(self):
+            raise RuntimeError("identity unavailable")
+    failed_identity = FailingIdentityBackend(backend.identity)
+    failed_result = inspect_rolling_evidence(context, (request,), failed_identity)
+    assert "tracking_identity" not in failed_result.unit_results[0].checked
+    class ForbiddenMutationBackend(FakeEvidenceBackend):
+        def inventory(self, requests):
+            self.write("forbidden-probe")
+    mutation_probe = ForbiddenMutationBackend(backend.identity)
+    inspect_rolling_evidence(context, (request,), mutation_probe)
+    assert mutation_probe.mutation_calls == [
+        ("write", ("forbidden-probe",)),
+        ("write", ("forbidden-probe",)),
+    ]
     class InterruptedBackend(FakeEvidenceBackend):
         def inventory(self, requests):
             raise KeyboardInterrupt()
     interrupted = InterruptedBackend(backend.identity)
     with pytest.raises(KeyboardInterrupt):
         inspect_rolling_evidence(context, (request,), interrupted)
+    probe = tmp_path / "observer-self-probe"
+    fd = os.open(probe, os.O_WRONLY | os.O_CREAT, 0o600)
+    os.close(fd)
+    assert any(item[0] == "os.open" for item in write_attempts)
 
 
 def test_import_does_not_load_legacy_env_qlib_or_mlflow_or_change_cwd():

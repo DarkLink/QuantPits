@@ -13,7 +13,7 @@ import math
 import os
 import pickle
 import stat
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.parse import unquote, urlparse
@@ -68,6 +68,7 @@ _BOUND_ACTIONS = {
     "cold_start", "merge", "resume", "daily", "retrain_models", "retrain_last",
 }
 _DIGEST_CHARS = frozenset("0123456789abcdef")
+_INSPECTION_TOKEN = object()
 _VALID_CHECKS = frozenset({
     "candidate_cardinality", "source_identity", "artifact_root_containment",
     "artifact_node_kind", "artifact_byte_fingerprint", "artifact_public_path_recheck",
@@ -117,7 +118,15 @@ def _identifier(value: Any, field: str) -> str:
 
 def _public_identifier(value: Any, field: str) -> str:
     value = _identifier(value, field)
-    if value.startswith(("/", "\\")) or any(ord(char) < 32 or ord(char) == 127 for char in value):
+    lowered = value.lower()
+    windows_absolute = len(value) >= 3 and value[0].isalpha() and value[1] == ":" and value[2] in ("/", "\\")
+    if (
+        value.startswith(("/", "\\"))
+        or lowered.startswith("file:")
+        or "://" in value
+        or windows_absolute
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
         _contract("%s is not a public canonical identifier" % field)
     return value
 
@@ -430,8 +439,11 @@ class RollingUnitEvidenceInspection:
     evidence_fingerprint: str | None = None
     warnings: tuple = ()
     blockers: tuple = ()
+    candidate_count: int = 0
+    _inspection_token: InitVar[Any] = None
+    _inspector_provenance: bool = field(init=False, repr=False, compare=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _inspection_token: Any) -> None:
         if not isinstance(self.unit_key, tuple) or len(self.unit_key) != 2:
             _contract("unit_key must be a target/window tuple")
         RollingTargetIdentity.parse(self.unit_key[0])
@@ -443,6 +455,7 @@ class RollingUnitEvidenceInspection:
         if self.source_protocol not in SOURCE_PROTOCOLS:
             _contract("inspection source protocol is invalid")
         _digest(self.request_fingerprint, "request_fingerprint")
+        _strict_size(self.candidate_count, "candidate_count")
         checked = _tuple(self.checked, "checked")
         if len(checked) != len(set(checked)) or any(not isinstance(item, str) or not item for item in checked):
             _contract("checked predicates must be unique non-empty strings")
@@ -467,6 +480,10 @@ class RollingUnitEvidenceInspection:
             for value in values:
                 _public_identifier(value, field)
         if self.classification == "valid":
+            if _inspection_token is not _INSPECTION_TOKEN:
+                _contract("valid evidence can only be created by the immutable inspector")
+            if self.candidate_count != 1:
+                _contract("valid evidence requires exactly one observed candidate")
             if self.source_protocol != "execution_bound_v1" or self.evidence_fingerprint is None:
                 _contract("valid evidence requires bound source and fingerprint")
             if self.prediction_coverage is None or not self.prediction_coverage.exact:
@@ -516,6 +533,7 @@ class RollingUnitEvidenceInspection:
             ):
                 _contract("coverage_short requires comparable incomplete coverage")
         object.__setattr__(self, "artifact_observations", rebuilt)
+        object.__setattr__(self, "_inspector_provenance", _inspection_token is _INSPECTION_TOKEN)
 
     @property
     def capabilities(self) -> tuple[str, ...]:
@@ -528,6 +546,7 @@ class RollingUnitEvidenceInspection:
             "reason_code": self.reason_code,
             "source_protocol": self.source_protocol,
             "request_fingerprint": self.request_fingerprint,
+            "candidate_count": self.candidate_count,
             "checked": list(self.checked),
             "source_summary": dict(self.source_summary),
             "artifact_observations": [item.to_public_dict() for item in self.artifact_observations],
@@ -548,6 +567,7 @@ class RollingOrphanObservation:
     unit_key: tuple
     reason_code: str = "rolling_evidence_orphan"
     source_summary: tuple = ()
+    candidate_count: int = 1
 
     def __post_init__(self) -> None:
         if not isinstance(self.unit_key, tuple) or len(self.unit_key) != 2:
@@ -556,6 +576,8 @@ class RollingOrphanObservation:
         parse_rolling_window_key(self.unit_key[1])
         if self.reason_code != "rolling_evidence_orphan":
             _contract("orphan reason_code is invalid")
+        if _strict_size(self.candidate_count, "orphan candidate_count") == 0:
+            _contract("orphan candidate_count must be positive")
         _validate_source_summary(self.source_summary, "orphan source_summary")
 
     @property
@@ -614,13 +636,39 @@ class RollingEvidenceSetInspection:
         return len(self.orphan_observations)
 
     @property
+    def n_candidates(self) -> int:
+        return sum(item.candidate_count for item in self.unit_results) + sum(
+            item.candidate_count for item in self.orphan_observations
+        )
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "requested_unit_keys": [list(item) for item in self.requested_unit_keys],
+            "unit_results": [item.to_public_dict() for item in self.unit_results],
+            "orphan_unit_keys": [list(item.unit_key) for item in self.orphan_observations],
+            "inventory_before_fingerprint": self.inventory_before_fingerprint,
+            "inventory_after_fingerprint": self.inventory_after_fingerprint,
+            "status": self.status,
+            "reason_code": self.reason_code,
+            "n_requested": self.n_requested,
+            "n_valid": self.n_valid,
+            "n_blocked": self.n_blocked,
+            "n_missing": self.n_missing,
+            "n_orphan": self.n_orphan,
+            "n_candidates": self.n_candidates,
+            "fingerprint": self.fingerprint,
+        }
+
+    @property
     def fingerprint(self) -> str:
         return fingerprint_value({
             "requested_unit_keys": [list(item) for item in self.requested_unit_keys],
             "unit_evidence": [item.evidence_fingerprint for item in self.unit_results],
             "unit_request_fingerprints": [item.request_fingerprint for item in self.unit_results],
             "unit_classifications": [item.classification for item in self.unit_results],
+            "unit_candidate_counts": [item.candidate_count for item in self.unit_results],
             "orphan_unit_keys": [list(item.unit_key) for item in self.orphan_observations],
+            "orphan_candidate_counts": [item.candidate_count for item in self.orphan_observations],
             "inventory_before": self.inventory_before_fingerprint,
             "inventory_after": self.inventory_after_fingerprint,
             "status": self.status,
@@ -646,19 +694,24 @@ def _validate_requested_keys(value: Any) -> tuple:
 def _rebuild_result(item: Any) -> RollingUnitEvidenceInspection:
     if not isinstance(item, RollingUnitEvidenceInspection):
         _contract("unit_results must contain typed inspections")
+    if item.classification == "valid" and not item._inspector_provenance:
+        _contract("valid evidence lacks immutable inspector provenance")
     return RollingUnitEvidenceInspection(
         item.unit_key, item.classification, item.reason_code, item.source_protocol,
         item.request_fingerprint,
         item.checked, item.source_summary, item.artifact_observations,
         item.prediction_coverage, item.evidence_fingerprint, item.warnings,
-        item.blockers,
+        item.blockers, item.candidate_count,
+        _inspection_token=_INSPECTION_TOKEN if item._inspector_provenance else None,
     )
 
 
 def _rebuild_orphan(item: Any) -> RollingOrphanObservation:
     if not isinstance(item, RollingOrphanObservation):
         _contract("orphan_observations must contain typed members")
-    return RollingOrphanObservation(item.unit_key, item.reason_code, item.source_summary)
+    return RollingOrphanObservation(
+        item.unit_key, item.reason_code, item.source_summary, item.candidate_count,
+    )
 
 
 def _set_status(results: tuple, before: str, after: str) -> str:
@@ -728,8 +781,12 @@ def _candidate_inventory_fingerprint(candidates: tuple) -> str:
         "source_publication_key", "source_operation", "source_manifest_fingerprint",
         "artifact_root_uri",
     )
+    def safe_value(value):
+        if value is None or type(value) in (bool, int, float, str):
+            return value
+        return {"unsupported_candidate_value": True}
     return fingerprint_value([
-        {key: candidate.get(key) for key in keys}
+        {key: safe_value(candidate.get(key)) for key in keys}
         for candidate in candidates
     ])
 
@@ -748,7 +805,18 @@ def _candidate_summary(candidate: Mapping[str, Any]) -> tuple:
         "target_key", "window_key", "source_protocol", "source_publication_key",
         "source_operation", "source_manifest_fingerprint",
     )
-    return tuple((key, candidate.get(key)) for key in allowed if isinstance(candidate.get(key), (str, bool, int)) or candidate.get(key) is None)
+    summary = []
+    for key in allowed:
+        value = candidate.get(key)
+        if isinstance(value, str):
+            try:
+                value = _public_identifier(value, "candidate summary")
+            except RollingEvidenceContractError:
+                value = None
+        elif value is not None:
+            value = None
+        summary.append((key, value))
+    return tuple(summary)
 
 
 def _candidate_relevant(candidate: Mapping[str, Any], request: RollingUnitEvidenceRequest) -> bool:
@@ -791,77 +859,138 @@ def _artifact_root(candidate: Mapping[str, Any], root: Path) -> tuple[Path | Non
     if not path.is_absolute():
         return None, "not_comparable"
     try:
+        relative = path.relative_to(root)
+        if any(part in ("", ".", "..") for part in relative.parts):
+            return None, "foreign"
         path.resolve().relative_to(root)
     except (OSError, ValueError):
         return None, "foreign"
     return path, None
 
 
-def _secure_read(root: Path, artifact_root: Path, logical_key: str) -> tuple[_FileSnapshot | None, str, str | None]:
+def _secure_read(
+    root: Path,
+    artifact_root: Path,
+    logical_key: str,
+) -> tuple[_FileSnapshot | None, str, str | None, tuple[str, ...]]:
     candidate = artifact_root.joinpath(*PurePosixPath(logical_key).parts)
     try:
         relative = candidate.relative_to(root)
     except ValueError:
-        return None, "foreign", "artifact_outside_workspace"
-    current = root
+        return None, "foreign", "artifact_outside_workspace", ()
+    if not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        return None, "foreign", "artifact_outside_workspace", ()
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    opened_fds = []
+    checked = []
+    def done(snapshot, status, detail, predicates):
+        for opened_fd in reversed(opened_fds):
+            try:
+                os.close(opened_fd)
+            except OSError:
+                pass
+        opened_fds.clear()
+        return snapshot, status, detail, predicates
     try:
         root_stat = os.lstat(root)
         if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
-            return None, "foreign", "workspace_root_noncanonical"
-        for part in relative.parts:
-            current = current / part
-            node = os.lstat(current)
-            if stat.S_ISLNK(node.st_mode):
+            return done(None, "foreign", "workspace_root_noncanonical", ())
+        root_fd = os.open(root, directory_flags)
+        opened_fds.append(root_fd)
+        opened_root = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(opened_root.st_mode)
+            or (opened_root.st_dev, opened_root.st_ino) != (root_stat.st_dev, root_stat.st_ino)
+        ):
+            return done(None, "drifted", "workspace_root_drift", ())
+        parent_fd = root_fd
+        for part in relative.parts[:-1]:
+            try:
+                next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            except OSError:
+                public_part = root.joinpath(*relative.parts[:len(opened_fds)])
                 try:
-                    current.resolve().relative_to(root)
-                except (OSError, ValueError):
-                    return None, "foreign", "artifact_symlink_escape"
-                return None, "corrupt", "artifact_symlink_component"
-        node = os.lstat(candidate)
-    except FileNotFoundError:
-        return None, "missing", "artifact_missing"
-    except OSError:
-        return None, "corrupt", "artifact_path_unreadable"
-    if not stat.S_ISREG(node.st_mode):
-        return None, "corrupt", "artifact_node_not_regular"
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(candidate, flags)
+                    part_node = os.lstat(public_part)
+                    if stat.S_ISLNK(part_node.st_mode):
+                        try:
+                            public_part.resolve().relative_to(root)
+                        except (OSError, ValueError):
+                            return done(None, "foreign", "artifact_symlink_escape", tuple(checked))
+                        return done(None, "corrupt", "artifact_symlink_component", tuple(checked))
+                except OSError:
+                    pass
+                raise
+            opened_fds.append(next_fd)
+            parent_fd = next_fd
+            if not stat.S_ISDIR(os.fstat(parent_fd).st_mode):
+                return done(None, "corrupt", "artifact_ancestor_not_directory", tuple(checked))
         try:
-            opened = os.fstat(fd)
-            chunks = []
-            while True:
-                chunk = os.read(fd, 1024 * 1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            completed = os.fstat(fd)
-        finally:
-            os.close(fd)
-        after = os.lstat(candidate)
+            fd = os.open(relative.parts[-1], file_flags, dir_fd=parent_fd)
+        except OSError:
+            try:
+                node = os.stat(relative.parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+                checked.append("artifact_node_kind")
+                if stat.S_ISLNK(node.st_mode):
+                    return done(None, "corrupt", "artifact_symlink_component", tuple(checked))
+                if not stat.S_ISREG(node.st_mode):
+                    return done(None, "corrupt", "artifact_node_not_regular", tuple(checked))
+            except FileNotFoundError:
+                return done(None, "missing", "artifact_missing", tuple(checked))
+            raise
+        opened_fds.append(fd)
+        opened = os.fstat(fd)
+        checked.append("artifact_node_kind")
+        if not stat.S_ISREG(opened.st_mode):
+            return done(None, "corrupt", "artifact_node_not_regular", tuple(checked))
     except FileNotFoundError:
-        return None, "drifted", "artifact_public_path_drift"
+        return done(None, "missing", "artifact_missing", tuple(checked))
     except OSError:
-        return None, "corrupt", "artifact_read_failed"
+        return done(None, "corrupt", "artifact_path_unreadable", tuple(checked))
+    try:
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        completed = os.fstat(fd)
+        checked.append("artifact_byte_fingerprint")
+    except OSError:
+        return done(None, "corrupt", "artifact_read_failed", tuple(checked))
+    finally:
+        for opened_fd in reversed(opened_fds):
+            try:
+                os.close(opened_fd)
+            except OSError:
+                pass
+        opened_fds.clear()
     stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-    if (
-        any(getattr(opened, field) != getattr(completed, field) for field in stable_fields)
-        or (opened.st_dev, opened.st_ino) != (node.st_dev, node.st_ino)
-        or (after.st_dev, after.st_ino) != (node.st_dev, node.st_ino)
-        or after.st_size != completed.st_size
-    ):
-        return None, "drifted", "artifact_public_path_drift"
+    if any(getattr(opened, field) != getattr(completed, field) for field in stable_fields):
+        return None, "drifted", "artifact_bytes_drift", tuple(checked)
     data = b"".join(chunks)
-    return _FileSnapshot(data, len(data), hashlib.sha256(data).hexdigest(), node.st_dev, node.st_ino), "valid", None
+    return (
+        _FileSnapshot(data, len(data), hashlib.sha256(data).hexdigest(), opened.st_dev, opened.st_ino),
+        "valid", None, tuple(checked),
+    )
 
 
-def _decode_prediction(data: bytes, expected: tuple) -> tuple[RollingPredictionCoverage | None, str | None, str | None]:
+def _decode_prediction(
+    data: bytes,
+    expected: tuple,
+) -> tuple[RollingPredictionCoverage | None, str | None, str | None, tuple[str, ...]]:
     try:
         import pandas as pd
 
         payload = _load_prediction_pickle(data)
     except Exception:
-        return None, "corrupt", "prediction_decode_failed"
+        return None, "corrupt", "prediction_decode_failed", ()
+    checked = ["prediction_schema"]
     if isinstance(payload, pd.Series):
         column = str(payload.name if payload.name is not None else "score")
         scores = payload
@@ -869,44 +998,46 @@ def _decode_prediction(data: bytes, expected: tuple) -> tuple[RollingPredictionC
         column = str(payload.columns[0])
         scores = payload.iloc[:, 0]
     else:
-        return None, "not_comparable", "prediction_schema_invalid"
+        return None, "not_comparable", "prediction_schema_invalid", tuple(checked)
     index = payload.index
     if len(payload) == 0 or not isinstance(index, pd.MultiIndex):
-        return None, "not_comparable", "prediction_schema_invalid"
+        return None, "not_comparable", "prediction_schema_invalid", tuple(checked)
     names = tuple(str(item).lower() if item is not None else "" for item in index.names)
     datetime_positions = [i for i, name in enumerate(names) if name in ("datetime", "date", "session")]
     instrument_positions = [i for i, name in enumerate(names) if name in ("instrument", "symbol", "code")]
     if len(datetime_positions) != 1 or len(instrument_positions) != 1:
-        return None, "not_comparable", "prediction_schema_invalid"
+        return None, "not_comparable", "prediction_schema_invalid", tuple(checked)
     dt_pos, instrument_pos = datetime_positions[0], instrument_positions[0]
     try:
         raw_datetimes = index.get_level_values(dt_pos)
         if any(isinstance(item, (bool, int, float)) for item in raw_datetimes):
-            return None, "corrupt", "prediction_schema_invalid"
+            return None, "corrupt", "prediction_schema_invalid", tuple(checked)
         datetimes = pd.to_datetime(raw_datetimes, errors="raise")
         if getattr(datetimes, "tz", None) is not None:
-            return None, "not_comparable", "prediction_schema_invalid"
+            return None, "not_comparable", "prediction_schema_invalid", tuple(checked)
         if any(item != item.normalize() for item in datetimes):
-            return None, "corrupt", "prediction_schema_invalid"
+            return None, "corrupt", "prediction_schema_invalid", tuple(checked)
         sessions = tuple(item.date().isoformat() for item in datetimes)
         instruments = tuple(str(item) for item in index.get_level_values(instrument_pos))
         if not pd.api.types.is_numeric_dtype(scores.dtype) or pd.api.types.is_bool_dtype(scores.dtype):
-            return None, "corrupt", "prediction_schema_invalid"
+            return None, "corrupt", "prediction_schema_invalid", tuple(checked)
         numeric = pd.to_numeric(scores, errors="raise")
     except Exception:
-        return None, "corrupt", "prediction_schema_invalid"
+        return None, "corrupt", "prediction_schema_invalid", tuple(checked)
     canonical_index = tuple(zip(sessions, instruments))
     if any(not instrument or instrument != instrument.strip() for instrument in instruments):
-        return None, "corrupt", "prediction_schema_invalid"
+        return None, "corrupt", "prediction_schema_invalid", tuple(checked)
+    checked.append("prediction_index_unique")
     if len(canonical_index) != len(set(canonical_index)):
-        return None, "corrupt", "prediction_index_duplicate"
+        return None, "corrupt", "prediction_index_duplicate", tuple(checked)
     if canonical_index != tuple(sorted(canonical_index)):
-        return None, "corrupt", "prediction_index_noncanonical"
+        return None, "corrupt", "prediction_index_noncanonical", tuple(checked)
+    checked.append("prediction_scores_finite")
     try:
         if any(not math.isfinite(float(value)) for value in numeric):
-            return None, "corrupt", "prediction_score_non_finite"
+            return None, "corrupt", "prediction_score_non_finite", tuple(checked)
     except (TypeError, ValueError):
-        return None, "corrupt", "prediction_schema_invalid"
+        return None, "corrupt", "prediction_schema_invalid", tuple(checked)
     observed = tuple(sorted(set(sessions)))
     try:
         coverage = RollingPredictionCoverage(
@@ -914,12 +1045,13 @@ def _decode_prediction(data: bytes, expected: tuple) -> tuple[RollingPredictionC
             len(canonical_index), column,
         )
     except RollingEvidenceContractError:
-        return None, "not_comparable", "prediction_schema_invalid"
+        return None, "not_comparable", "prediction_schema_invalid", tuple(checked)
+    checked.append("prediction_session_coverage")
     if observed == expected:
-        return coverage, None, None
+        return coverage, None, None, tuple(checked)
     expected_set, observed_set = set(expected), set(observed)
     if not observed_set.issubset(expected_set):
-        return coverage, "identity_mismatch", "prediction_out_of_window"
+        return coverage, "identity_mismatch", "prediction_out_of_window", tuple(checked)
     if observed and observed[-1] != expected[-1]:
         detail = "prediction_tail_missing"
     elif observed and observed[0] != expected[0]:
@@ -928,7 +1060,7 @@ def _decode_prediction(data: bytes, expected: tuple) -> tuple[RollingPredictionC
         detail = "prediction_internal_gap"
     else:
         detail = "prediction_session_subset"
-    return coverage, "coverage_short", detail
+    return coverage, "coverage_short", detail, tuple(checked)
 
 
 def _unit_result(
@@ -940,6 +1072,7 @@ def _unit_result(
     observations: tuple = (),
     coverage: RollingPredictionCoverage | None = None,
     detail: str | None = None,
+    candidate_count: int = 0,
 ) -> RollingUnitEvidenceInspection:
     evidence_fingerprint = None
     blockers = ()
@@ -957,7 +1090,8 @@ def _unit_result(
         request.unit_key, classification, CLASSIFICATION_REASONS[classification],
         request.source_protocol, request.source_manifest_fingerprint,
         tuple(checked), summary, observations, coverage,
-        evidence_fingerprint, warnings, blockers,
+        evidence_fingerprint, warnings, blockers, candidate_count,
+        _inspection_token=_INSPECTION_TOKEN,
     )
 
 
@@ -966,25 +1100,37 @@ def _inspect_candidate(
     request: RollingUnitEvidenceRequest,
     candidate: Mapping[str, Any],
     backend_identity: Mapping[str, Any],
+    initial_checked: Sequence[str],
 ) -> RollingUnitEvidenceInspection:
     summary = _candidate_summary(candidate)
-    checked = ["candidate_cardinality", "source_identity"]
+    checked = list(initial_checked)
     if request.source_protocol == "legacy_unverified":
-        return _unit_result(request, "legacy_unverified", checked=checked, summary=summary)
+        return _unit_result(
+            request, "legacy_unverified", checked=checked, summary=summary,
+            candidate_count=1,
+        )
+    checked.append("source_identity")
     if _identity_mismatch(candidate, request, backend_identity):
-        return _unit_result(request, "identity_mismatch", checked=checked, summary=summary)
+        return _unit_result(
+            request, "identity_mismatch", checked=checked, summary=summary,
+            candidate_count=1,
+        )
     artifact_root, issue = _artifact_root(candidate, root)
-    checked.append("artifact_root_containment")
     if issue:
-        return _unit_result(request, issue, checked=checked, summary=summary)
+        return _unit_result(
+            request, issue, checked=checked, summary=summary, candidate_count=1,
+        )
+    checked.append("artifact_root_containment")
     observations = []
     physical_snapshots = {}
     coverage = None
     classification = "valid"
     detail = None
     for expectation in request.artifacts:
-        snapshot, status, node_detail = _secure_read(root, artifact_root, expectation.logical_key)
-        checked.extend(("artifact_node_kind", "artifact_byte_fingerprint"))
+        snapshot, status, node_detail, read_checked = _secure_read(
+            root, artifact_root, expectation.logical_key,
+        )
+        checked.extend(read_checked)
         if status != "valid":
             artifact_status = "missing" if status == "missing" else status
             observations.append(RollingArtifactObservation(
@@ -1011,10 +1157,10 @@ def _inspect_candidate(
             if preferred != classification:
                 classification, detail = preferred, artifact_detail
         if expectation.role == "prediction" and artifact_status == "valid":
-            coverage, coverage_class, coverage_detail = _decode_prediction(
+            coverage, coverage_class, coverage_detail, prediction_checked = _decode_prediction(
                 snapshot.data, request.expected_prediction_sessions,
             )
-            checked.extend(("prediction_schema", "prediction_index_unique", "prediction_scores_finite", "prediction_session_coverage"))
+            checked.extend(prediction_checked)
             if coverage_class:
                 preferred = _prefer(classification, coverage_class)
                 if preferred != classification:
@@ -1024,7 +1170,9 @@ def _inspect_candidate(
     for expectation, observation in zip(request.artifacts, observations):
         if observation.status != "valid":
             continue
-        rechecked, status, recheck_detail = _secure_read(root, artifact_root, expectation.logical_key)
+        rechecked, status, recheck_detail, _ = _secure_read(
+            root, artifact_root, expectation.logical_key,
+        )
         checked.append("artifact_public_path_recheck")
         if (
             status != "valid" or rechecked.size_bytes != observation.size_bytes
@@ -1038,6 +1186,7 @@ def _inspect_candidate(
     return _unit_result(
         request, classification, checked=tuple(dict.fromkeys(checked)), summary=summary,
         observations=tuple(observations), coverage=coverage, detail=detail,
+        candidate_count=1,
     )
 
 
@@ -1078,26 +1227,42 @@ def inspect_rolling_evidence(context, requests, backend):
     requests = _validate_requests(context, requests)
     root = Path(context.root)
     root_before = _root_identity(root)
+    backend_identity_observed = False
     try:
         backend_identity = dict(_mapping(backend.tracking_identity(), "tracking identity"))
+        backend_identity_observed = True
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except Exception:
         backend_identity = {}
     expected_workspace = requests[0].run_identity.workspace_fingerprint
     backend_fp = backend_identity.get("backend_fingerprint")
+    workspace_fp = backend_identity.get("workspace_fingerprint")
+    identity_checked = backend_identity_observed and (
+        backend_identity.get("present") is False
+        or (
+            isinstance(workspace_fp, str)
+            and len(workspace_fp) == 64
+            and not any(char not in _DIGEST_CHARS for char in workspace_fp)
+            and isinstance(backend_fp, str)
+            and len(backend_fp) == 64
+            and not any(char not in _DIGEST_CHARS for char in backend_fp)
+            and type(backend_identity.get("present")) is bool
+            and type(backend_identity.get("contained")) is bool
+        )
+    )
     identity_comparable = (
-        backend_identity.get("workspace_fingerprint") == expected_workspace
-        and isinstance(backend_fp, str)
-        and len(backend_fp) == 64
-        and not any(char not in _DIGEST_CHARS for char in backend_fp)
+        identity_checked
+        and workspace_fp == expected_workspace
         and backend_identity.get("present") is True
         and backend_identity.get("contained") is True
         and not backend_identity.get("foreign", False)
         and root_before is not None
     )
+    inventory_before_observed = False
     try:
         before, candidates = _inventory_snapshot(backend, requests)
+        inventory_before_observed = True
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except Exception:
@@ -1106,6 +1271,12 @@ def inspect_rolling_evidence(context, requests, backend):
 
     results = []
     for request in requests:
+        matches = [item for item in candidates if _candidate_relevant(item, request)]
+        checked = []
+        if identity_checked:
+            checked.append("tracking_identity")
+        if inventory_before_observed:
+            checked.append("candidate_cardinality")
         if not identity_comparable:
             is_foreign = (
                 backend_identity.get("foreign", False)
@@ -1120,53 +1291,116 @@ def inspect_rolling_evidence(context, requests, backend):
                 else "missing" if backend_identity.get("present") is False
                 else "not_comparable"
             )
-            results.append(_unit_result(request, classification, checked=("tracking_identity",)))
+            results.append(_unit_result(
+                request, classification, checked=checked,
+                candidate_count=len(matches) if inventory_before_observed else 0,
+            ))
             continue
-        matches = [item for item in candidates if _candidate_relevant(item, request)]
         if not matches:
-            results.append(_unit_result(request, "missing", checked=("tracking_identity", "candidate_cardinality")))
+            results.append(_unit_result(request, "missing", checked=checked))
         elif len(matches) > 1:
-            results.append(_unit_result(request, "duplicate", checked=("tracking_identity", "candidate_cardinality")))
+            results.append(_unit_result(
+                request, "duplicate", checked=checked, candidate_count=len(matches),
+            ))
         else:
-            results.append(_inspect_candidate(root, request, matches[0], backend_identity))
+            try:
+                result = _inspect_candidate(
+                    root, request, matches[0], backend_identity, checked,
+                )
+            except (RollingEvidenceContractError, RollingIdentityError, OSError, TypeError, ValueError):
+                result = _unit_result(
+                    request, "not_comparable", checked=checked,
+                    detail="candidate_metadata_invalid", candidate_count=1,
+                )
+            results.append(result)
 
     requested_keys = tuple(item.unit_key for item in requests)
     orphans = []
-    seen_orphans = set()
+    orphan_candidates = {}
     for candidate in candidates:
         unit = _candidate_unit(candidate)
-        if unit is None or unit in requested_keys or unit in seen_orphans:
+        if unit is None or unit in requested_keys:
             continue
+        orphan_candidates.setdefault(unit, []).append(candidate)
+    for unit, grouped in orphan_candidates.items():
         try:
-            orphan = RollingOrphanObservation(unit, source_summary=_candidate_summary(candidate))
-        except RollingEvidenceContractError:
+            orphan = RollingOrphanObservation(
+                unit, source_summary=_candidate_summary(grouped[0]),
+                candidate_count=len(grouped),
+            )
+        except (RollingEvidenceContractError, RollingIdentityError):
             continue
         orphans.append(orphan)
-        seen_orphans.add(unit)
+    inventory_after_observed = False
     try:
         after, after_candidates = _inventory_snapshot(backend, requests)
+        inventory_after_observed = True
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except Exception:
         after, after_candidates = fingerprint_value({"inventory": "unavailable"}), ()
+    after_identity_observed = False
     try:
         after_identity = dict(_mapping(backend.tracking_identity(), "tracking identity after"))
+        after_identity_observed = True
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except Exception:
         after_identity = {}
-    if (
-        before != after
-        or _candidate_inventory_fingerprint(candidates) != _candidate_inventory_fingerprint(after_candidates)
-        or backend_identity != after_identity
-        or root_before != _root_identity(root)
-    ):
-        after = fingerprint_value({"token": after, "candidates": [dict(item) for item in after_candidates]})
+    after_backend_fp = after_identity.get("backend_fingerprint")
+    after_workspace_fp = after_identity.get("workspace_fingerprint")
+    after_identity_checked = after_identity_observed and (
+        after_identity.get("present") is False
+        or (
+            isinstance(after_workspace_fp, str)
+            and len(after_workspace_fp) == 64
+            and not any(char not in _DIGEST_CHARS for char in after_workspace_fp)
+            and isinstance(after_backend_fp, str)
+            and len(after_backend_fp) == 64
+            and not any(char not in _DIGEST_CHARS for char in after_backend_fp)
+            and type(after_identity.get("present")) is bool
+            and type(after_identity.get("contained")) is bool
+        )
+    )
+    root_after = _root_identity(root)
+    inventory_changed = (
+        inventory_before_observed and inventory_after_observed
+        and (
+            before != after
+            or _candidate_inventory_fingerprint(candidates) != _candidate_inventory_fingerprint(after_candidates)
+        )
+    )
+    availability_changed = (
+        inventory_before_observed != inventory_after_observed
+        or backend_identity_observed != after_identity_observed
+    )
+    identity_changed = (
+        backend_identity_observed and after_identity_observed
+        and backend_identity != after_identity
+    )
+    root_changed = root_before != root_after
+    if inventory_changed or availability_changed or identity_changed or root_changed:
+        after = fingerprint_value({
+            "token": after,
+            "candidate_fingerprint": _candidate_inventory_fingerprint(after_candidates),
+        })
+        drift_checked = []
+        if inventory_before_observed and inventory_after_observed:
+            drift_checked.append("inventory_before_after")
+        if identity_checked and after_identity_checked:
+            drift_checked.append("tracking_identity")
+        if root_before is not None and root_after is not None:
+            drift_checked.append("workspace_root_recheck")
+        drift_detail = "inventory_changed" if inventory_changed else "observation_unavailable" if availability_changed else "backend_identity_changed" if identity_changed else "workspace_root_changed"
         results = [
-            _unit_result(request, "drifted", checked=("inventory_before_after",), detail="inventory_changed")
-            for request in requests
+            _unit_result(
+                request, "drifted",
+                checked=tuple(dict.fromkeys(result.checked + tuple(drift_checked))),
+                detail=drift_detail,
+                candidate_count=result.candidate_count,
+            )
+            for request, result in zip(requests, results)
         ]
-        orphans = []
     status = _set_status(tuple(results), before, after)
     return RollingEvidenceSetInspection(
         requested_keys, tuple(results), tuple(orphans), before, after,

@@ -1,5 +1,6 @@
 import hashlib
 import io
+import os
 
 import pandas as pd
 
@@ -100,6 +101,26 @@ def semantic_invocation(tmp_path, *, drift=False):
 
 def test_requested_evidence_and_recovery_scope_are_identical_for_mixed_units(tmp_path):
     requests, evidence, proposal = semantic_invocation(tmp_path)
+    before_tree = {
+        path.relative_to(tmp_path).as_posix(): (
+            "symlink" if path.is_symlink() else "file" if path.is_file() else "directory",
+            os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None,
+        )
+        for path in tmp_path.rglob("*")
+    }
+    before_cwd = os.getcwd()
+    before_env = dict(os.environ)
+    proposal = classify_rolling_recovery(requests, evidence)
+    after_tree = {
+        path.relative_to(tmp_path).as_posix(): (
+            "symlink" if path.is_symlink() else "file" if path.is_file() else "directory",
+            os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None,
+        )
+        for path in tmp_path.rglob("*")
+    }
+    assert after_tree == before_tree
+    assert os.getcwd() == before_cwd
+    assert dict(os.environ) == before_env
     expected = tuple(item.unit_key for item in requests)
     assert evidence.requested_unit_keys == expected
     assert tuple(item.unit_key for item in evidence.unit_results) == expected

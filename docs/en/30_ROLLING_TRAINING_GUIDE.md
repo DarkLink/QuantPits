@@ -199,11 +199,15 @@ behavior is unchanged and no workspace is migrated automatically.
 Immutable Rolling evidence is also a standalone, read-only domain API rather than a CLI. A caller
 must provide an ordered, duplicate-free target×window request set under one `RollingRunIdentity`,
 plus source manifests frozen by the original logical run. `inspect_rolling_evidence(context,
-requests, backend)` snapshots metadata inventory before and after observation. The inspector itself
-opens contained required artifacts with no-follow semantics, checks the exact byte size and
+requests, backend)` snapshots metadata inventory before and after observation. Starting from a
+workspace-root directory fd, the inspector opens every ancestor and required artifact with
+component-by-component no-follow semantics, then checks the exact byte size and
 SHA-256, decodes the prediction bytes, and compares complete ordered sessions, a unique canonical
 index, and finite scores. Prediction pickles are limited to the pandas/numpy globals needed for the
-prediction object; arbitrary reducers are not executed. Recorder or state-completion existence alone, a legacy source, duplicate
+prediction object; arbitrary reducers are not executed. `checked` names only predicates actually
+executed with comparable inputs, and aggregate candidate counts are recomputed from terminal and
+orphan members. Only inspector-created `valid` evidence carries recovery provenance; callers cannot
+assemble reusable facts through the public constructor. Recorder or state-completion existence alone, a legacy source, duplicate
 candidates, identity mismatch, missing/corrupt artifacts, short coverage, non-comparable facts,
 orphans, or drift cannot become `valid`. `classify_rolling_recovery(requests, evidence_set)` emits
 only a proposal that preserves requested identity, order, and cardinality; only `valid` units enter

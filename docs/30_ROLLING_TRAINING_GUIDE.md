@@ -186,10 +186,13 @@ postimage reread 无法确认时只返回 `durability_uncertain`；compare-delet
 
 Immutable Rolling evidence 同样是独立的只读 domain API，而不是 CLI。调用方必须显式提供同一
 `RollingRunIdentity` 下有序、无重复的 target×window request，以及 original logical run 冻结的 source manifest。
-`inspect_rolling_evidence(context, requests, backend)` 对 metadata inventory 做前后快照，并由 inspector 自己以
-no-follow 方式读取 workspace 内 required artifact 的 exact bytes、校验 size/SHA-256、解码 prediction，并比较完整
+`inspect_rolling_evidence(context, requests, backend)` 对 metadata inventory 做前后快照，并由 inspector 从
+workspace root directory fd 开始逐级 no-follow 打开 ancestor 与 required artifact，读取 exact bytes、校验
+size/SHA-256、解码 prediction，并比较完整
 ordered session coverage、唯一 index 和 finite score。prediction pickle 只允许生成 pandas/numpy prediction object
-所需的受限 global 集，不执行任意 reducer。recorder 或 state completion 单独存在、legacy source、重复候选、
+所需的受限 global 集，不执行任意 reducer。`checked` 只列出实际执行且具有可比较输入的谓词；candidate 总数由
+terminal/orphan members 重算。只有 inspector 内部创建的 `valid` evidence 具有 recovery provenance，调用方不能通过
+public constructor 拼装可复用事实。recorder 或 state completion 单独存在、legacy source、重复候选、
 identity mismatch、缺 artifact、corrupt、coverage short、不可比较、orphan 或观察漂移都不能成为 `valid`。
 `classify_rolling_recovery(requests, evidence_set)` 只生成保持 requested identity/order/cardinality 的 proposal；仅
 `valid` unit 可进入 reusable subset，proposal 没有 execute、state transition、publication、repair 或 `apply()` 能力。

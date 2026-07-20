@@ -115,7 +115,8 @@ target×window retains one terminal result; available recorders and orphans cann
 the requested set.
 
 A unit is `valid` only after one unique identity-bound candidate, physically contained regular
-artifacts with no symlink components, exact byte digests, and complete prediction session/index/
+artifacts opened component by component from a workspace-root directory fd with no-follow semantics,
+exact byte digests, and complete prediction session/index/
 finite-score predicates have all been observed and compared. Other terminal classifications are
 `missing`, `duplicate`, `foreign`, `identity_mismatch`, `partial`, `corrupt`, `coverage_short`,
 `not_comparable`, `legacy_unverified`, or `drifted`; orphans remain in a separate audit list. A
@@ -124,6 +125,11 @@ public path blocks only that unit.
 Prediction pickles are decoded by a restricted unpickler. A payload that references globals beyond
 the required pandas/numpy object graph, or an arbitrary reducer, becomes `corrupt /
 prediction_decode_failed`; the reducer is not executed.
+`checked` lists only predicates actually executed with comparable inputs, while `n_candidates` is
+recomputed from terminal and orphan member cardinalities. A `valid` leaf also carries internal
+inspector provenance, so public construction or field replay cannot grant reuse. Malformed backend
+metadata is redacted into the corresponding requested unit's terminal result; it cannot abort later
+members or expose a local-path-shaped identifier.
 
 `classify_rolling_recovery(requests, evidence_set)` returns only an `all_reusable`, `incomplete`,
 `no_reusable_evidence`, or `blocked` proposal. It has no `apply()` method and does not train, fill a

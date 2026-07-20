@@ -119,13 +119,18 @@ payload。State 中的 completion/recorder claim 不提供 recovery reuse author
 manifest，不从 `latest_train_records.json`、registry、State receipt 或 console 猜测 source。每个 requested
 target×window 必须保留一个 terminal result；available recorder 与 orphan 不能缩小或扩大 requested set。
 
-只有唯一且 identity-bound 的 candidate、物理包含且无 symlink 的 regular artifact、匹配的 exact byte digest，以及
+只有唯一且 identity-bound 的 candidate、从 workspace root directory fd 开始逐级 dir-fd/no-follow 打开的物理包含
+regular artifact、匹配的 exact byte digest，以及
 完整 prediction session/index/finite-score predicate 全部实际通过时，unit 才是 `valid`。其余稳定分类为
 `missing`、`duplicate`、`foreign`、`identity_mismatch`、`partial`、`corrupt`、`coverage_short`、
 `not_comparable`、`legacy_unverified` 或 `drifted`；orphan 只进入单独 audit list。metadata inventory 前后变化会
 阻断整次 recovery，单个 artifact path 漂移只阻断该 unit。
 prediction pickle 由受限 unpickler 解码；引用非必要 pandas/numpy global 或任意 reducer 的 payload 会成为
 `corrupt / prediction_decode_failed`，不会执行该 reducer。
+结果中的 `checked` 只登记实际执行且输入可比较的谓词；`n_candidates` 只从 terminal 与 orphan member 的观察
+cardinality 重算。`valid` leaf 还绑定 inspector 内部 provenance，public constructor 或字段重放不能获得 reuse
+能力。malformed backend metadata 会被脱敏并形成对应 requested unit 的 terminal 结果，不会中断其余 member 或
+公开本地路径形态。
 
 `classify_rolling_recovery(requests, evidence_set)` 的结果仅是 `all_reusable`、`incomplete`、
 `no_reusable_evidence` 或 `blocked` proposal。它没有 `apply()`，不会训练、补预测、修改 State V2、发布 current
