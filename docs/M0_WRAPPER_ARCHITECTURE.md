@@ -186,6 +186,15 @@ import、class resolution、constructor/fit/predict signature 成功都只是 pr
 provenance、aggregate count 或 preflight capability。矩阵目前没有接入 static/CPCV/Rolling runner；positive row
 不是训练、恢复、publication 或模型质量成功证据。
 
+默认 inspector 已连接受控 generated-protocol adapter。adapter 在隔离临时目录中调用 exact actual wrapper、tiny
+dataset protocol、artifact reload 与 prediction coverage predicate；measurement envelope 同时绑定 model/wrapper、dataset
+module/class/protocol、action、execution family、processor、artifact 和 dependency profile。measurement DTO 不属于 public
+API，测试注入一律标记为 `harness_self_test_only`，即使字段全部通过也不能授予 positive authority。当前没有 exact
+adapter 的 row 会诚实返回 `not_comparable / protocol_adapter_not_available`；现有 actual adapter 仅覆盖两个 LSTM
+wrapper 的 `train/static` row，不能复用其测量结果为邻近 action/family 授权。
+controlled import 还会验证默认 constructor 可绑定、`fit(dataset, evals_result)` 与 `predict(dataset)` 参数，并拒绝
+workspace/backend activation；子进程的 process-control interrupt 会在父进程重新传播。
+
 ```python
 from quantpits.model_capabilities import ModelCapabilityInspector
 

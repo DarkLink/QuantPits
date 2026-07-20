@@ -1,7 +1,8 @@
 import json
 
 from quantpits.model_capabilities.inspector import ModelCapabilityInspector
-from quantpits.model_capabilities.probes import ImportObservation, ProtocolMeasurements
+from quantpits.model_capabilities.contracts import RawModelCapabilityDeclaration
+from quantpits.model_capabilities.probes import ImportObservation, _harness_protocol_measurements
 
 
 def _raw(module):
@@ -14,7 +15,7 @@ def _raw(module):
         "required_predicates": (
             "identity_canonical", "catalog_assigned", "dependency_available", "module_imported",
             "class_resolved", "constructor_signature", "fit_signature", "predict_signature",
-            "device_available",
+            "device_available", "protocol_adapter", "capability_identity_match", "action_protocol",
             "dataset_protocol", "processor_tail_safe", "artifact_roundtrip", "prediction_shape",
             "prediction_tail", "prediction_gap", "prediction_unique", "prediction_finite",
             "wrapper_identity_match", "environment_isolated",
@@ -32,13 +33,14 @@ def _import_observation(module, _class_name):
 
 
 def _protocol(_declaration):
-    return ProtocolMeasurements(
-        _declaration.model_module, _declaration.model_class,
-        "actual_wrapper_generated_protocol_probe",
+    declaration = (
+        _declaration if isinstance(_declaration, RawModelCapabilityDeclaration)
+        else RawModelCapabilityDeclaration.from_dict(_declaration)
+    )
+    return _harness_protocol_measurements(
+        declaration,
         ("2026-07-17", "2026-07-20"), ("2026-07-17", "2026-07-20"),
-        (0.1, 0.2), "point_in_time", ("2026-07-17", "2026-07-20"),
-        ("2026-07-17", "2026-07-20"), "ExampleModel", "ExampleModel",
-        "source_a", "source_a",
+        (0.1, 0.2),
     )
 
 
@@ -49,8 +51,8 @@ def test_available_capabilities_never_shrink_declared_rows():
     assert [item.identity.model_module for item in matrix.results] == [
         "public.models.available", "public.models.unavailable",
     ]
-    assert [item.status for item in matrix.results] == ["supported_verified", "conditional"]
-    assert matrix.status == "partially_supported"
+    assert [item.status for item in matrix.results] == ["not_comparable", "conditional"]
+    assert matrix.status == "none_supported"
     assert matrix.preflight_allowed is False
 
 

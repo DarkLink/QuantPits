@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from quantpits.model_capabilities.contracts import ModelCapabilityContractError
+from quantpits.model_capabilities.contracts import ModelCapabilityContractError, RawModelCapabilityDeclaration
 from quantpits.model_capabilities.inspector import ModelCapabilityInspector
-from quantpits.model_capabilities.probes import ImportObservation
+from quantpits.model_capabilities.probes import ControlledImportProbe, ImportObservation
 
 from .test_contracts import _protocol_ok, _raw
 
@@ -31,6 +31,27 @@ def test_import_and_constructor_success_do_not_imply_supported():
     assert result.status == "not_comparable"
     assert {"module_imported", "class_resolved", "fit_signature", "predict_signature"}.issubset(result.checked_predicates)
     assert result.preflight_allowed is False
+
+
+def test_protocol_measurement_is_bound_to_exact_action_family_and_profiles():
+    train = RawModelCapabilityDeclaration.from_dict(_raw(action="train", execution_family="static"))
+    measurement = _protocol_ok(train)
+    same_row = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: measurement,
+    ).inspect((train,)).results[0]
+    foreign_row = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: measurement,
+    ).inspect((_raw(action="resume", execution_family="rolling"),)).results[0]
+    assert same_row.status == "not_comparable"
+    assert same_row.reason == "wrapper_probe_not_authoritative"
+    assert same_row.preflight_allowed is False
+    assert foreign_row.status == "not_comparable"
+    assert foreign_row.reason == "capability_identity_mismatch"
+    facts = {item.name: item for item in foreign_row.predicates}
+    assert facts["action_identity"].outcome == "failed"
+    assert facts["action_protocol"].outcome == "failed"
+    assert facts["execution_family_identity"].outcome == "failed"
+    assert facts["capability_identity_match"].outcome == "failed"
 
 
 def test_optional_dependency_absence_is_conditional_not_dropped():
@@ -111,3 +132,12 @@ def test_process_control_interrupt_propagates_and_cleans_probe_resources(tmp_pat
     with pytest.raises(KeyboardInterrupt):
         ModelCapabilityInspector._with_probes(_import_ok, interrupting_probe).inspect((_raw(),))
     assert not marker.exists()
+
+    (tmp_path / "interrupt_module.py").write_text("raise KeyboardInterrupt()\n", encoding="utf-8")
+    (tmp_path / "exit_module.py").write_text("raise SystemExit(9)\n", encoding="utf-8")
+    controlled = ControlledImportProbe(timeout_seconds=5)
+    with pytest.raises(KeyboardInterrupt):
+        controlled.observe("interrupt_module", "Unused", (tmp_path,))
+    with pytest.raises(SystemExit):
+        controlled.observe("exit_module", "Unused", (tmp_path,))
+    assert not tuple(tmp_path.glob("__pycache__"))

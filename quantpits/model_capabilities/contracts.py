@@ -342,8 +342,18 @@ class ModelCapabilityResult:
             name in facts and facts[name].checked and facts[name].outcome == "passed"
             for name in self.required_predicates
         )
-        if self.status == "supported_verified" and (not self.did_probe or not all_required_passed):
-            _contract("supported_verified requires every required predicate to pass")
+        positive_authority = (
+            "protocol_adapter" in facts
+            and facts["protocol_adapter"].outcome == "passed"
+            and facts["protocol_adapter"].observation_kind == "actual_wrapper_generated_protocol_probe"
+            and "capability_identity_match" in facts
+            and facts["capability_identity_match"].outcome == "passed"
+            and facts["capability_identity_match"].observation_kind == "actual_wrapper_generated_protocol_probe"
+        )
+        if self.status == "supported_verified" and (
+            not self.did_probe or not all_required_passed or not positive_authority
+        ):
+            _contract("supported_verified requires exact inspector-controlled protocol authority")
         if self.status in ("unsupported", "conditional", "coverage_unsafe", "not_comparable", "probe_failed") and not self.did_probe:
             _contract("observed terminal classifications require did_probe")
         if self.status == "invalid_declaration" and self.did_probe:

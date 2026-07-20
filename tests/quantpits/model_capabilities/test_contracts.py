@@ -1,5 +1,6 @@
 import ast
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -15,13 +16,14 @@ from quantpits.model_capabilities.contracts import (
     _terminal_result,
 )
 from quantpits.model_capabilities.inspector import ModelCapabilityInspector
-from quantpits.model_capabilities.probes import ImportObservation, ProtocolMeasurements
+from quantpits.model_capabilities.probes import ImportObservation, _harness_protocol_measurements
+from quantpits.model_capabilities.catalog import AUTHORITATIVE_CATALOG
 
 
 REQUIRED = (
     "identity_canonical", "catalog_assigned", "dependency_available", "module_imported",
     "class_resolved", "constructor_signature", "fit_signature", "predict_signature",
-    "device_available", "dataset_protocol",
+    "device_available", "protocol_adapter", "capability_identity_match", "action_protocol", "dataset_protocol",
     "processor_tail_safe", "artifact_roundtrip", "prediction_shape", "prediction_tail",
     "prediction_gap", "prediction_unique", "prediction_finite", "wrapper_identity_match",
     "environment_isolated",
@@ -47,18 +49,21 @@ def _import_ok(_module, _class_name):
 
 
 def _protocol_ok(_declaration):
-    return ProtocolMeasurements(
-        _declaration.model_module, _declaration.model_class,
-        "actual_wrapper_generated_protocol_probe",
+    return _harness_protocol_measurements(
+        _declaration,
         ("2026-07-17", "2026-07-20"), ("2026-07-17", "2026-07-20"),
-        (0.1, 0.2), "point_in_time", ("2026-07-17", "2026-07-20"),
-        ("2026-07-17", "2026-07-20"), "ExampleModel", "ExampleModel",
-        "source_a", "source_a",
+        (0.1, 0.2),
     )
 
 
+@lru_cache(maxsize=1)
 def _supported_matrix():
-    return ModelCapabilityInspector._with_probes(_import_ok, _protocol_ok).inspect((_raw(),))
+    declaration = next(
+        item for item in AUTHORITATIVE_CATALOG
+        if item.model_module.endswith("custom.pytorch_lstm")
+        and item.action == "train" and item.execution_family == "static"
+    )
+    return ModelCapabilityInspector().inspect((declaration,))
 
 
 @pytest.mark.parametrize("field,value", [
@@ -90,6 +95,9 @@ def test_capability_identity_rejects_closest_invalid_representations(field, valu
 
 
 def test_public_replay_and_replace_cannot_manufacture_supported_authority():
+    import quantpits.model_capabilities as public_api
+
+    assert not hasattr(public_api, "ProtocolMeasurements")
     matrix = _supported_matrix()
     result = matrix.results[0]
     assert result.status == "supported_verified"
@@ -113,7 +121,12 @@ def test_public_replay_and_replace_cannot_manufacture_supported_authority():
 
 
 def test_aggregate_counts_derive_from_raw_inventory_and_terminal_rows():
-    matrix = ModelCapabilityInspector._with_probes(_import_ok, _protocol_ok).inspect((_raw(), {"required": True}))
+    declaration = next(
+        item for item in AUTHORITATIVE_CATALOG
+        if item.model_module.endswith("custom.pytorch_lstm")
+        and item.action == "train" and item.execution_family == "static"
+    )
+    matrix = ModelCapabilityInspector().inspect((declaration, {"required": True}))
     assert matrix.n_declarations == 2
     assert len(matrix.results) == 1
     assert matrix.n_unassigned_declarations == 1
@@ -170,4 +183,5 @@ def test_aggregate_rejects_foreign_member_and_inventory_fingerprint():
 def test_model_capability_modules_parse_as_python38():
     package = Path(__file__).resolve().parents[3] / "quantpits" / "model_capabilities"
     for path in sorted(package.glob("*.py")):
-        ast.parse(path.read_text(encoding="utf-8"), filename=str(path), feature_version=(3, 8))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path), feature_version=(3, 8))
+        assert isinstance(tree, ast.Module)

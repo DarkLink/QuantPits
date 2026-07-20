@@ -1,14 +1,18 @@
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from quantpits.model_capabilities.inspector import ModelCapabilityInspector
+from quantpits.model_capabilities.catalog import AUTHORITATIVE_CATALOG
+from quantpits.model_capabilities.contracts import ModelCapabilityIdentity, RawModelCapabilityDeclaration
 from quantpits.model_capabilities.probes import (
     ImportObservation,
-    ProtocolMeasurements,
     ControlledImportProbe,
+    ControlledProtocolProbe,
     ZeroWriteObserver,
+    _harness_protocol_measurements,
     classify_prediction_coverage,
     generated_protocol_fixture,
 )
@@ -21,19 +25,24 @@ def _import_ok(_module, _class_name):
 
 
 def _observation(index, scores, **overrides):
-    values = {
-        "model_module": "public.models.example", "model_class": "ExampleModel",
-        "measurement_source": "actual_wrapper_generated_protocol_probe",
-        "expected_index": ("2026-07-17", "2026-07-20", "2026-07-21"),
-        "observed_index": tuple(index), "scores": tuple(scores),
-        "dataset_protocol": "point_in_time",
-        "processor_input_index": ("2026-07-17", "2026-07-20", "2026-07-21"),
-        "processor_output_index": ("2026-07-17", "2026-07-20", "2026-07-21"),
-        "artifact_expected_type": "ExampleModel", "artifact_observed_type": "ExampleModel",
-        "artifact_expected_source": "source_a", "artifact_observed_source": "source_a",
+    identity_fields = {
+        "model_module", "model_class", "wrapper_kind", "dataset_module", "dataset_class",
+        "dataset_protocol", "action", "execution_family", "processor_profile",
+        "artifact_protocol", "dependency_profile",
     }
-    values.update(overrides)
-    return ProtocolMeasurements(**values)
+    raw = _raw()
+    measurement_overrides = {}
+    for key, value in overrides.items():
+        if key in identity_fields:
+            raw[key] = value
+        else:
+            measurement_overrides[key] = value
+    declaration = RawModelCapabilityDeclaration.from_dict(raw)
+    return _harness_protocol_measurements(
+        declaration,
+        ("2026-07-17", "2026-07-20", "2026-07-21"),
+        tuple(index), tuple(scores), **measurement_overrides
+    )
 
 
 def test_generated_protocol_fixtures_cover_canonical_dataset_profiles():
@@ -54,7 +63,6 @@ def test_generated_protocol_fixtures_cover_canonical_dataset_profiles():
 def test_harness_self_test_measurements_cannot_grant_actual_wrapper_support():
     measurement = _observation(
         ("2026-07-17", "2026-07-20", "2026-07-21"), (0.1, 0.2, 0.3),
-        measurement_source="harness_self_test_only",
     )
     result = ModelCapabilityInspector._with_probes(
         _import_ok, lambda _row: measurement,
@@ -128,13 +136,28 @@ def test_artifact_roundtrip_and_foreign_source_are_classified():
     foreign_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: foreign).inspect((_raw(),)).results[0]
     missing_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: missing).inspect((_raw(),)).results[0]
     wrapper_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: foreign_wrapper).inspect((_raw(),)).results[0]
-    assert exact_result.status == "supported_verified"
-    assert exact_result.preflight_allowed is True
+    assert exact_result.status == "not_comparable"
+    assert exact_result.reason == "wrapper_probe_not_authoritative"
+    assert exact_result.preflight_allowed is False
     assert foreign_result.status == "not_comparable"
     assert foreign_result.preflight_allowed is False
     assert missing_result.status == "not_comparable"
     assert wrapper_result.status == "not_comparable"
-    assert wrapper_result.reason == "wrapper_probe_not_authoritative"
+    assert wrapper_result.reason == "capability_identity_mismatch"
+
+    declaration = next(
+        item for item in AUTHORITATIVE_CATALOG
+        if item.model_module.endswith("custom.pytorch_lstm")
+        and item.action == "train" and item.execution_family == "static"
+    )
+    actual = ControlledProtocolProbe(timeout_seconds=30).observe(declaration)
+    assert actual.measurement_source == "actual_wrapper_generated_protocol_probe"
+    expected_type = declaration.model_module + "." + declaration.model_class
+    assert actual.artifact_expected_type == expected_type
+    assert actual.artifact_observed_type == expected_type
+    assert actual.artifact_expected_source == ModelCapabilityIdentity.from_declaration(declaration).fingerprint
+    assert actual.artifact_observed_source == actual.artifact_expected_source
+    assert replace(actual).measurement_source == "harness_self_test_only"
 
 
 def test_wrong_dataset_protocol_and_prediction_shape_fail_closed():
@@ -147,8 +170,8 @@ def test_wrong_dataset_protocol_and_prediction_shape_fail_closed():
     )
     protocol_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: wrong_protocol).inspect((_raw(),)).results[0]
     shape_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: wrong_shape).inspect((_raw(),)).results[0]
-    assert protocol_result.status == "unsupported"
-    assert protocol_result.reason == "wrong_dataset_protocol"
+    assert protocol_result.status == "not_comparable"
+    assert protocol_result.reason == "capability_identity_mismatch"
     assert shape_result.status == "not_comparable"
     assert shape_result.reason == "prediction_shape_not_comparable"
 
@@ -162,6 +185,53 @@ def test_controlled_import_probe_detects_missing_module_and_class():
     assert missing_class.imported is True
     assert missing_class.class_resolved is False
     assert missing_class.reason == "class_missing"
+
+
+def test_controlled_import_probe_detects_real_constructor_and_fit_signature_negatives():
+    runner = ControlledImportProbe(timeout_seconds=5)
+    required_constructor = runner.observe(
+        "quantpits.model_capabilities.probes", "_ConstructorRequiresArgument",
+    )
+    missing_evals = runner.observe(
+        "quantpits.model_capabilities.probes", "_FitWithoutEvalsResult",
+    )
+    assert required_constructor.imported is True
+    assert required_constructor.constructor_signature is False
+    assert required_constructor.fit_signature is True
+    assert missing_evals.imported is True
+    assert missing_evals.constructor_signature is True
+    assert missing_evals.fit_signature is False
+
+
+def test_actual_wrapper_generated_protocol_adapter_grants_only_exact_identity():
+    declaration = next(
+        item for item in AUTHORITATIVE_CATALOG
+        if item.model_module.endswith("custom.pytorch_lstm")
+        and item.action == "train" and item.execution_family == "static"
+    )
+    result = ModelCapabilityInspector().inspect((declaration,)).results[0]
+    assert result.status == "supported_verified"
+    assert result.preflight_allowed is True
+    facts = {item.name: item for item in result.predicates}
+    assert facts["protocol_adapter"].outcome == "passed"
+    assert facts["capability_identity_match"].outcome == "passed"
+    for name in (
+        "wrapper_identity_match", "wrapper_kind", "dataset_identity", "dataset_protocol",
+        "action_identity", "action_protocol", "execution_family_identity", "processor_profile_identity",
+        "artifact_protocol_identity", "dependency_profile_identity",
+    ):
+        assert facts[name].outcome == "passed"
+
+    for action, family in (("resume", "static"), ("train", "rolling")):
+        neighboring = next(
+            item for item in AUTHORITATIVE_CATALOG
+            if item.model_module == declaration.model_module
+            and item.action == action and item.execution_family == family
+        )
+        blocked = ModelCapabilityInspector().inspect((neighboring,)).results[0]
+        assert blocked.status == "not_comparable"
+        assert blocked.reason == "protocol_adapter_not_available"
+        assert blocked.preflight_allowed is False
 
 
 def test_probe_observer_detects_repository_cache_and_symlink_escape(tmp_path):
@@ -180,16 +250,54 @@ def test_probe_observer_detects_repository_cache_and_symlink_escape(tmp_path):
         with ZeroWriteObserver((protected,)):
             pass
 
+    lifecycle = tmp_path / "lifecycle"
+    lifecycle.mkdir()
+    declaration = RawModelCapabilityDeclaration.from_dict(_raw())
+    observation = _harness_protocol_measurements(
+        declaration,
+        ("2026-07-17", "2026-07-20", "2026-07-21"),
+        ("2026-07-17", "2026-07-20", "2026-07-21"),
+        (0.1, 0.2, 0.3),
+    )
 
-def test_catalog_probe_is_workspace_and_backend_independent(monkeypatch):
+    def writing_protocol(_row):
+        (lifecycle / "probe-write").write_text("detected", encoding="utf-8")
+        return observation
+
+    with pytest.raises(RuntimeError, match="protected root"):
+        ModelCapabilityInspector._with_probes(
+            _import_ok, writing_protocol, protected_roots=(lifecycle,),
+        ).inspect((_raw(),))
+
+
+def test_catalog_probe_is_workspace_and_backend_independent(monkeypatch, tmp_path):
     original_cwd = Path.cwd()
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", "sentinel_workspace_value")
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "sentinel_backend_value")
-    observation = _observation(
-        ("2026-07-17", "2026-07-20", "2026-07-21"), (0.1, 0.2, 0.3),
+    declaration = next(
+        item for item in AUTHORITATIVE_CATALOG
+        if item.model_module.endswith("custom.pytorch_lstm")
+        and item.action == "train" and item.execution_family == "static"
     )
-    matrix = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: observation).inspect((_raw(),))
+    matrix = ModelCapabilityInspector().inspect((declaration,))
     assert matrix.results[0].status == "supported_verified"
+    unavailable = ImportObservation(False, False, False, False, False, False, True, "dependency_missing")
+    catalog_matrix = ModelCapabilityInspector._with_probes(
+        lambda _module, _class: unavailable,
+    ).inspect_catalog()
+    assert catalog_matrix.n_declarations == len(AUTHORITATIVE_CATALOG)
     assert Path.cwd() == original_cwd
     assert os.environ["QLIB_WORKSPACE_DIR"] == "sentinel_workspace_value"
     assert os.environ["MLFLOW_TRACKING_URI"] == "sentinel_backend_value"
+
+    (tmp_path / "backend_hook.py").write_text(
+        "import qlib\nqlib.init()\nclass Model: pass\n", encoding="utf-8",
+    )
+    (tmp_path / "workspace_import.py").write_text(
+        "import quantpits.utils.env\nclass Model: pass\n", encoding="utf-8",
+    )
+    controlled = ControlledImportProbe(timeout_seconds=5)
+    hook = controlled.observe("backend_hook", "Model", (tmp_path,))
+    workspace = controlled.observe("workspace_import", "Model", (tmp_path,))
+    assert hook.reason == "forbidden_backend_access"
+    assert workspace.reason == "forbidden_backend_access"

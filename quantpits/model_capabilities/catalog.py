@@ -59,7 +59,7 @@ _PURGED_DATASET = {
 _REQUIRED_PREDICATES = (
     "identity_canonical", "catalog_assigned", "dependency_available", "module_imported",
     "class_resolved", "constructor_signature", "fit_signature", "predict_signature",
-    "device_available", "dataset_protocol",
+    "device_available", "protocol_adapter", "capability_identity_match", "action_protocol", "dataset_protocol",
     "processor_tail_safe", "artifact_roundtrip", "prediction_shape",
     "prediction_tail", "prediction_gap", "prediction_unique", "prediction_finite",
     "wrapper_identity_match", "environment_isolated",

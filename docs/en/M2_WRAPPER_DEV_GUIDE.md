@@ -241,6 +241,19 @@ A daily or multi-label profile without an explicit CPCV projection fails closed;
 it must not fall back to ordinary `PurgedDatasetH`. Passing an import or signature
 smoke check does not prove prediction coverage safety.
 
+For a row to receive `supported_verified`, a controlled adapter must also establish
+an actual-wrapper generated protocol for the exact canonical identity. That identity
+includes the dataset module/class, action/family, processor, artifact, and dependency
+profiles; matching only the wrapper module/class is insufficient. The adapter must
+actually check default-constructor binding, `fit(dataset, evals_result)`,
+`predict(dataset)`, the generated dataset/processor, artifact reload/source, and
+tail/gap/unique/finite coverage. Do not expose or manually construct protocol
+measurements. Test callbacks are negative harness self-tests only and can never create
+positive provenance. Keep a wrapper/profile without an exact adapter as
+`not_comparable`; never copy an observation from a neighboring row. The current actual
+adapter establishes these facts only for the `train/static` identities of the two LSTM
+wrappers.
+
 The owner can run the short contract commands on the final candidate:
 
 ```bash

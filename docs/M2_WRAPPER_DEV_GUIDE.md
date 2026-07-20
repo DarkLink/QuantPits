@@ -233,6 +233,14 @@ model profile。不要从 workspace 的 `model_registry.yaml` 自动发现声明
 daily/multi-label profile 没有显式 CPCV projection 时会 fail closed，不能回退成普通 `PurgedDatasetH`。import 或
 signature smoke 通过也不代表 prediction coverage 安全。
 
+如果希望 row 获得 `supported_verified`，还必须在受控 adapter 中为 exact canonical identity 建立 actual-wrapper
+generated protocol：完整 identity 包含 dataset module/class、action/family、processor、artifact 和 dependency profile，
+不能只匹配 wrapper module/class。adapter 必须实际验证默认 constructor、`fit(dataset, evals_result)`、
+`predict(dataset)`、generated dataset/processor、artifact reload/source 以及 tail/gap/unique/finite coverage。不要公开或
+手工构造 protocol measurement；测试 callback 只用于 harness negative self-test，永远不能制造 positive provenance。
+暂未实现 exact adapter 的 wrapper/profile 应保留 `not_comparable`，不能复制邻近 row 的 observation。当前 actual
+adapter 仅为两个 LSTM wrapper 的 `train/static` identity 建立了上述事实。
+
 owner 可在 final candidate 上运行短合同命令：
 
 ```bash
