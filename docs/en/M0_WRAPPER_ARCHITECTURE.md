@@ -175,3 +175,41 @@ strategy_config.yaml (topk: 22)
 
 Tree / linear models (LightGBM, CatBoost, Linear) use the sklearn API and do not
 go through the PyTorch wrapper system. They keep the original qlib module paths.
+
+---
+
+## Wrapper Capability Matrix
+
+`quantpits/model_capabilities/` provides a read-only, machine-readable matrix of
+wrapper × dataset × action × execution-family capabilities. The public catalog
+contains atomic rows for all 43 repository wrapper modules (24 under `custom/`,
+19 under `lh/`) plus one sanitized `LinearModel + DatasetH` passthrough declaration.
+Each model is expanded over `train`, `incremental`, `predict_only`, and `resume`,
+and over `static`, `cpcv`, `rolling`, and `cpcv_rolling`. The catalog never reads a
+workspace registry, workflow, recorder, or MLflow backend.
+
+Terminal statuses are fixed:
+
+| Status | Meaning | Allowed capability |
+|---|---|---|
+| `supported_verified` | Every required predicate for the exact row was inspected and passed | render/query + a future execution-preflight proposal |
+| `unsupported` | The exact dataset/action/family combination is incompatible | render only |
+| `conditional` | An optional dependency or device condition is unavailable | render; re-inspect after the condition changes |
+| `coverage_unsafe` | A prediction tail/gap/unique/finite or processor-tail predicate failed | render only |
+| `not_comparable` | Complete protocol/artifact facts were not established | render only |
+| `invalid_declaration` | The strict raw identity is invalid or duplicated | audit only |
+| `probe_failed` | The isolated row probe had an ordinary operational failure | render only |
+
+A successful import, class lookup, or constructor/fit/predict signature is only a
+predicate fact; none of them alone implies `supported_verified`. Serialized replay,
+public construction, and `dataclasses.replace()` cannot manufacture inspector
+provenance, aggregate counts, or preflight capability. The matrix is not yet wired
+into the static, CPCV, or Rolling runners, and a positive row is not evidence of
+training, recovery, publication, or model quality.
+
+```python
+from quantpits.model_capabilities import ModelCapabilityInspector
+
+matrix = ModelCapabilityInspector().inspect_catalog()
+payload = matrix.to_public_dict()
+```

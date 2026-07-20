@@ -68,6 +68,7 @@ LH_WRAPPERS = [
 ]
 
 STANDALONE_MODELS = [
+    ("quantpits.utils.model_wrappers.custom.pytorch_add",          "ADD"),
     ("quantpits.utils.model_wrappers.custom.pytorch_gats_plus",    "GATsPlus"),
     ("quantpits.utils.model_wrappers.custom.pytorch_lstm_ic_loss", "LSTMICModel"),
     ("quantpits.utils.model_wrappers.custom.pytorch_lstm_rank",    "LSTMRankModel"),

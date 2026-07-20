@@ -214,3 +214,31 @@ python quantpits/scripts/static_train.py \
 3. IR 提升时出现 `New best IR:` 日志
 4. 最终 `best IR: X @ epoch N` 正确
 5. 无 `AttributeError` 关于 inner module 缺失
+
+---
+
+## 能力 catalog 与短合同验证
+
+新增或删除 repository wrapper 时，必须同步更新 `quantpits/model_capabilities/catalog.py` 的 public、sanitized
+model profile。不要从 workspace 的 `model_registry.yaml` 自动发现声明；filesystem inventory 与 catalog 必须精确
+对账，`custom/pytorch_add.py::ADD` 等 custom-only wrapper 也不能遗漏。
+
+每条 catalog declaration 会按 exact dataset protocol、action 和 execution family 展开为 atomic row。需要明确选择：
+
+- `point_in_time`、`time_series`、`memory_time_series`、`daily_market_label` 或 `multi_label`；
+- inference processor 是否保留无标签 prediction tail；
+- CPCV 是否有显式 `PurgedDatasetH` / `PurgedTSDatasetH` / `PurgedMTSDatasetH` projection；
+- artifact type/source 是否可比较，以及 optional dependency / CPU / GPU 条件。
+
+daily/multi-label profile 没有显式 CPCV projection 时会 fail closed，不能回退成普通 `PurgedDatasetH`。import 或
+signature smoke 通过也不代表 prediction coverage 安全。
+
+owner 可在 final candidate 上运行短合同命令：
+
+```bash
+python3.12 -m pytest tests/quantpits/model_capabilities/ -q --tb=short --no-cov
+python3.12 -m pytest tests/quantpits/semantic/test_model_capability_conservation.py -q --tb=short --no-cov
+```
+
+这些 generated/tiny tests 不读取 workspace、不初始化 Qlib provider/MLflow，也不替代 Playground/发布前的真实
+训练验证。能力矩阵当前只提供 render/query 和后续 preflight proposal，不会自动修改 workspace config 或启动 runner。

@@ -158,4 +158,38 @@ strategy_config.yaml (topk: 22)
 ## 不适用
 
 树模型 / 线性模型（LightGBM、CatBoost、Linear）使用 sklearn API，不走 PyTorch wrapper 系统。
+
+---
+
+## Wrapper 能力矩阵
+
+`quantpits/model_capabilities/` 提供只读、machine-readable 的 wrapper × dataset × action × execution-family
+能力矩阵。public catalog 对 43 个 repository wrapper module（`custom/` 24 个、`lh/` 19 个）以及一个 sanitized
+`LinearModel + DatasetH` passthrough declaration 建立 atomic rows；每个模型按 `train`、`incremental`、
+`predict_only`、`resume` 与 `static`、`cpcv`、`rolling`、`cpcv_rolling` 展开。catalog 不读取 workspace registry、
+workflow、recorder 或 MLflow backend。
+
+terminal status 固定为：
+
+| Status | 含义 | 允许能力 |
+|---|---|---|
+| `supported_verified` | exact row 的全部 required predicates 都由 inspector 实际检查并通过 | render/query + 后续 execution preflight proposal |
+| `unsupported` | exact dataset/action/family 组合明确不兼容 | render only |
+| `conditional` | optional dependency 或 device 条件未满足 | render；条件变化后重新 inspect |
+| `coverage_unsafe` | prediction tail/gap/unique/finite 或 processor tail predicate 失败 | render only |
+| `not_comparable` | 未建立完整 protocol/artifact 可比较事实 | render only |
+| `invalid_declaration` | strict raw identity 或 duplicate declaration 非法 | audit only |
+| `probe_failed` | isolated row probe 发生普通 operational failure | render only |
+
+import、class resolution、constructor/fit/predict signature 成功都只是 predicate fact，不能单独形成
+`supported_verified`。serialized replay、public constructor 和 `dataclasses.replace()` 也不能制造 inspector
+provenance、aggregate count 或 preflight capability。矩阵目前没有接入 static/CPCV/Rolling runner；positive row
+不是训练、恢复、publication 或模型质量成功证据。
+
+```python
+from quantpits.model_capabilities import ModelCapabilityInspector
+
+matrix = ModelCapabilityInspector().inspect_catalog()
+payload = matrix.to_public_dict()
+```
 保持 qlib 原始 module_path。

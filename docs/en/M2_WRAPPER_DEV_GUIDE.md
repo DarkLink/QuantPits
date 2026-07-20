@@ -197,6 +197,7 @@ Models using this: `pytorch_general_nn.py`.
 
 After creating a wrapper:
 
+```bash
 # Import test
 python -c "from quantpits.utils.model_wrappers.custom.pytorch_xxx import XXXModel"
 
@@ -217,3 +218,37 @@ Key things to verify from the training log:
 3. `New best IR:` appears when IR improves
 4. `best IR: X @ epoch N` is correct at the end
 5. No `AttributeError` about missing inner module
+
+---
+
+## Capability Catalog and Short Contract Checks
+
+When adding or removing a repository wrapper, update the public, sanitized model
+profile in `quantpits/model_capabilities/catalog.py`. Do not discover declarations
+from a workspace `model_registry.yaml`. The filesystem inventory and catalog must
+match exactly, including custom-only wrappers such as
+`custom/pytorch_add.py::ADD`.
+
+Every catalog declaration is expanded into atomic rows for an exact dataset
+protocol, action, and execution family. Explicitly select:
+
+- `point_in_time`, `time_series`, `memory_time_series`, `daily_market_label`, or `multi_label`;
+- whether inference processors preserve the unlabeled prediction tail;
+- whether CPCV has an explicit `PurgedDatasetH`, `PurgedTSDatasetH`, or `PurgedMTSDatasetH` projection;
+- whether artifact type/source is comparable, plus optional dependency and CPU/GPU conditions.
+
+A daily or multi-label profile without an explicit CPCV projection fails closed;
+it must not fall back to ordinary `PurgedDatasetH`. Passing an import or signature
+smoke check does not prove prediction coverage safety.
+
+The owner can run the short contract commands on the final candidate:
+
+```bash
+python3.12 -m pytest tests/quantpits/model_capabilities/ -q --tb=short --no-cov
+python3.12 -m pytest tests/quantpits/semantic/test_model_capability_conservation.py -q --tb=short --no-cov
+```
+
+These generated/tiny tests do not read a workspace or initialize the Qlib provider
+or MLflow, and they do not replace real Playground/release training validation.
+The capability matrix currently provides render/query and a future preflight
+proposal only; it does not modify workspace configuration or start a runner.
