@@ -39,9 +39,14 @@ class ModelCapabilityInspector:
         protocol_probe: Optional[ProtocolProbe] = None,
         _adapter_authority: object = None,
         _protected_roots: Optional[Sequence[Path]] = None,
+        _repository_root: Optional[Path] = None,
     ) -> None:
-        if (import_probe is not None or protocol_probe is not None) and _adapter_authority is not _PROBE_ADAPTER_TOKEN:
-            raise TypeError("custom capability probes are inspector-internal adapters")
+        internal_override = (
+            import_probe is not None or protocol_probe is not None
+            or _protected_roots is not None or _repository_root is not None
+        )
+        if internal_override and _adapter_authority is not _PROBE_ADAPTER_TOKEN:
+            raise TypeError("custom probes and observer roots are inspector-internal adapters")
         controlled = ControlledImportProbe()
         self._import_probe = import_probe or controlled.observe
         if protocol_probe is None:
@@ -56,7 +61,13 @@ class ModelCapabilityInspector:
                 return observation.as_harness_only()
             self._protocol_probe = harness_only_probe
         self._environment_isolated = import_probe is None or _adapter_authority is _PROBE_ADAPTER_TOKEN
-        self._protected_roots = tuple(_protected_roots or (Path(__file__).resolve().parents[1],))
+        if _protected_roots is None:
+            repository_root = Path(_repository_root or Path(__file__).resolve().parents[2]).resolve()
+            self._protected_roots = (repository_root,)
+            self._protected_exclusions = (".git", "plan", "workspaces")
+        else:
+            self._protected_roots = tuple(_protected_roots)
+            self._protected_exclusions = ()
 
     @classmethod
     def _with_probes(
@@ -64,14 +75,15 @@ class ModelCapabilityInspector:
         import_probe: ImportProbe,
         protocol_probe: Optional[ProtocolProbe] = None,
         protected_roots: Optional[Sequence[Path]] = None,
+        repository_root: Optional[Path] = None,
     ) -> "ModelCapabilityInspector":
         return cls(
             import_probe, protocol_probe, _adapter_authority=_PROBE_ADAPTER_TOKEN,
-            _protected_roots=protected_roots,
+            _protected_roots=protected_roots, _repository_root=repository_root,
         )
 
     def inspect(self, raw_declarations: Sequence[Any]) -> ModelCapabilityMatrix:
-        with ZeroWriteObserver(self._protected_roots):
+        with ZeroWriteObserver(self._protected_roots, self._protected_exclusions):
             return self._inspect_observed(raw_declarations)
 
     def _inspect_observed(self, raw_declarations: Sequence[Any]) -> ModelCapabilityMatrix:
@@ -126,7 +138,7 @@ class ModelCapabilityInspector:
         return _capability_matrix(raw_fingerprints, results, unassigned)
 
     def inspect_catalog(self) -> ModelCapabilityMatrix:
-        with ZeroWriteObserver(self._protected_roots):
+        with ZeroWriteObserver(self._protected_roots, self._protected_exclusions):
             filesystem = repository_wrapper_inventory()
             declared = tuple(module for module, _class_name in declared_repository_models())
             drift = []
@@ -201,7 +213,7 @@ class ModelCapabilityInspector:
             observed_identity.model_module == expected_identity.model_module
             and observed_identity.model_class == expected_identity.model_class
         )
-        actual_authority = observation._actual_authority
+        actual_authority = observation.has_actual_authority
         processor_tail_safe = (
             observation.processor_input_index == observation.expected_index
             and observation.processor_output_index == observation.expected_index

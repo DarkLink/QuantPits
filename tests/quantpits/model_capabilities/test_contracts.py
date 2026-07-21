@@ -57,7 +57,7 @@ def _protocol_ok(_declaration):
 
 
 @lru_cache(maxsize=1)
-def _supported_matrix():
+def _blocked_matrix():
     declaration = next(
         item for item in AUTHORITATIVE_CATALOG
         if item.model_module.endswith("custom.pytorch_lstm")
@@ -98,10 +98,10 @@ def test_public_replay_and_replace_cannot_manufacture_supported_authority():
     import quantpits.model_capabilities as public_api
 
     assert not hasattr(public_api, "ProtocolMeasurements")
-    matrix = _supported_matrix()
+    matrix = _blocked_matrix()
     result = matrix.results[0]
-    assert result.status == "supported_verified"
-    assert result.preflight_allowed is True
+    assert result.status == "not_comparable"
+    assert result.preflight_allowed is False
 
     with pytest.raises(ModelCapabilityContractError):
         replace(result, status="supported_verified")
@@ -111,9 +111,17 @@ def test_public_replay_and_replace_cannot_manufacture_supported_authority():
         PredicateFact("prediction_tail", "passed", "audit_replay", True, True, "forged")
     with pytest.raises(TypeError):
         ModelCapabilityInspector(_import_ok, _protocol_ok)
+    with pytest.raises(TypeError):
+        ModelCapabilityInspector(_protected_roots=())
+    with pytest.raises(TypeError):
+        ModelCapabilityInspector(_repository_root=Path("."))
 
-    replay = result.from_dict(result.to_public_dict())
-    aggregate_replay = ModelCapabilityMatrix.from_dict(matrix.to_public_dict())
+    result_snapshot = result.to_public_dict()
+    result_snapshot["status"] = "supported_verified"
+    aggregate_snapshot = matrix.to_public_dict()
+    aggregate_snapshot["status"] = "all_required_supported"
+    replay = result.from_dict(result_snapshot)
+    aggregate_replay = ModelCapabilityMatrix.from_dict(aggregate_snapshot)
     assert replay.claimed_status == "supported_verified"
     assert replay.preflight_allowed is False
     assert aggregate_replay.claimed_status == "all_required_supported"
@@ -130,8 +138,8 @@ def test_aggregate_counts_derive_from_raw_inventory_and_terminal_rows():
     assert matrix.n_declarations == 2
     assert len(matrix.results) == 1
     assert matrix.n_unassigned_declarations == 1
-    assert matrix.n_supported == 1
-    assert matrix.n_blocked == 0
+    assert matrix.n_supported == 0
+    assert matrix.n_blocked == 1
     assert matrix.status == "inventory_invalid"
     rendered = matrix.to_public_dict()
     assert rendered["n_declarations"] == 2
@@ -140,7 +148,7 @@ def test_aggregate_counts_derive_from_raw_inventory_and_terminal_rows():
 
 
 def test_impossible_terminal_status_and_capability_combinations_are_rejected():
-    result = _supported_matrix().results[0]
+    result = _blocked_matrix().results[0]
     with pytest.raises(ModelCapabilityContractError):
         replace(result, did_probe=False)
     replay = result.from_dict(result.to_public_dict())
@@ -171,7 +179,7 @@ def test_impossible_terminal_status_and_capability_combinations_are_rejected():
 
 
 def test_aggregate_rejects_foreign_member_and_inventory_fingerprint():
-    first = _supported_matrix()
+    first = _blocked_matrix()
     foreign_raw = _raw(model_module="public.models.foreign")
     foreign = ModelCapabilityInspector._with_probes(_import_ok, _protocol_ok).inspect((foreign_raw,))
     with pytest.raises(ModelCapabilityContractError):

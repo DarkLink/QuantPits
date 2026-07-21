@@ -207,18 +207,21 @@ provenance, aggregate counts, or preflight capability. The matrix is not yet wir
 into the static, CPCV, or Rolling runners, and a positive row is not evidence of
 training, recovery, publication, or model quality.
 
-The default inspector is wired to a controlled generated-protocol adapter. In an
-isolated temporary directory, the adapter invokes the exact actual wrapper, a tiny
-dataset protocol, artifact reload, and prediction-coverage predicates. Its envelope
-binds the model/wrapper, dataset module/class/protocol, action, execution family,
-processor, artifact, and dependency profiles. The measurement DTO is not public API;
-test injection is always `harness_self_test_only` and cannot grant positive authority,
-even when every supplied value passes. A row with no exact adapter truthfully returns
-`not_comparable / protocol_adapter_not_available`. The current actual adapter covers
-only the `train/static` rows for the two LSTM wrappers and cannot authorize a
-neighboring action/family from that measurement. Controlled import also binds a default constructor, checks
-`fit(dataset, evals_result)` and `predict(dataset)`, denies workspace/backend
-activation, and re-propagates process-control interrupts from the child process.
+The default inspector is wired to a fail-closed protocol-adapter registry, but no row
+currently has a complete actual adapter. Generated fixtures, overridden dataset
+behavior, probe-written artifact sidecars, and action/profile values echoed from the
+requested identity are `harness_self_test_only`; they cannot grant positive authority.
+Every row that reaches the protocol stage truthfully returns
+`not_comparable / protocol_adapter_not_available` until
+the exact dataset/processor behavior, training hook, recorder source chain,
+action/family, and prediction coverage can all be independently observed. Controlled
+import still binds a default constructor, checks `fit(dataset, evals_result)` and
+`predict(dataset)`, and denies workspace/backend activation. The zero-write observer
+covers the public repository boundary by default, including `quantpits/`, `docs/`,
+`tests/`, and root output/cache, while excluding `.git/`, the ignored plan, and private
+`workspaces/`. It combines filesystem events with structural metadata and does not
+read or render output business content. `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` still propagate
+when a write is detected at the same time.
 
 ```python
 from quantpits.model_capabilities import ModelCapabilityInspector

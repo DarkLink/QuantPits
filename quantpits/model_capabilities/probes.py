@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
+import ctypes
 import json
 import math
 import os
@@ -10,14 +10,13 @@ import stat
 import subprocess
 import sys
 import tempfile
-from dataclasses import InitVar, dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .contracts import ModelCapabilityIdentity, RawModelCapabilityDeclaration
 
 
-_PROTOCOL_AUTHORITY = object()
 _IDENTITY_FIELDS = (
     "model_module", "model_class", "wrapper_kind", "dataset_module", "dataset_class",
     "dataset_protocol", "action", "execution_family", "processor_profile",
@@ -60,9 +59,8 @@ class ProtocolProbeFailure:
 class _ProtocolMeasurements:
     """Internal measurement envelope.
 
-    Public/test construction is deliberately harness-only.  Actual observation
-    provenance can only be attached by :class:`ControlledProtocolProbe` after a
-    strict subprocess envelope has been validated against the requested row.
+    All construction is deliberately harness-only. No current adapter can attach
+    actual observation provenance or grant a positive capability row.
     """
 
     model_module: str
@@ -86,10 +84,8 @@ class _ProtocolMeasurements:
     artifact_observed_type: str
     artifact_expected_source: str
     artifact_observed_source: str
-    _authority: InitVar[object] = None
-    _actual_authority: bool = field(init=False, repr=False, compare=False)
 
-    def __post_init__(self, _authority: object) -> None:
+    def __post_init__(self) -> None:
         identity = ModelCapabilityIdentity(**{
             field_name: getattr(self, field_name) for field_name in _IDENTITY_FIELDS
         })
@@ -114,13 +110,14 @@ class _ProtocolMeasurements:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value or value != value.strip():
                 raise ValueError("%s must be a non-empty trimmed string" % field_name)
-        object.__setattr__(self, "_actual_authority", _authority is _PROTOCOL_AUTHORITY)
 
     @property
     def measurement_source(self) -> str:
-        if self._actual_authority:
-            return "actual_wrapper_generated_protocol_probe"
         return "harness_self_test_only"
+
+    @property
+    def has_actual_authority(self) -> bool:
+        return False
 
     @property
     def identity(self) -> ModelCapabilityIdentity:
@@ -356,32 +353,13 @@ class ControlledImportProbe:
 
 
 class ControlledProtocolProbe:
-    """Run bounded actual-wrapper adapters against generated data.
-
-    The allowlist is intentionally narrow.  Rows without an exact adapter return
-    a typed failure and remain ``not_comparable`` rather than inheriting support
-    from a nearby action, family, dataset, or wrapper.
-    """
-
-    _MARKER = "QUANTPITS_PROTOCOL_RESULT="
+    """Fail closed until an exact protocol adapter observes every required fact."""
 
     @staticmethod
     def supports(declaration: RawModelCapabilityDeclaration) -> bool:
-        return (
-            declaration.model_module in (
-                "quantpits.utils.model_wrappers.custom.pytorch_lstm",
-                "quantpits.utils.model_wrappers.lh.pytorch_lstm",
-            )
-            and declaration.model_class == "LSTM"
-            and declaration.dataset_module == "qlib.data.dataset"
-            and declaration.dataset_class == "DatasetH"
-            and declaration.dataset_protocol == "point_in_time"
-            and declaration.action == "train"
-            and declaration.execution_family == "static"
-            and declaration.processor_profile == "standard_infer_no_label_drop"
-            and declaration.artifact_protocol == "qlib_recorder_model_v1"
-            and declaration.dependency_profile == "python_qlib_torch"
-        )
+        if not isinstance(declaration, RawModelCapabilityDeclaration):
+            raise TypeError("protocol support requires a canonical declaration")
+        return False
 
     def __init__(self, timeout_seconds: int = 15) -> None:
         if type(timeout_seconds) is not int or timeout_seconds <= 0:
@@ -391,151 +369,44 @@ class ControlledProtocolProbe:
     def observe(self, declaration: RawModelCapabilityDeclaration) -> Any:
         if not isinstance(declaration, RawModelCapabilityDeclaration):
             raise TypeError("protocol probe requires a canonical declaration")
-        if not self.supports(declaration):
-            return ProtocolProbeFailure("protocol_adapter_not_available")
-        identity = ModelCapabilityIdentity.from_declaration(declaration)
-        public_identity = identity.to_public_dict()
-        script = (
-            "import importlib,json,sys\n"
-            "import numpy as np\n"
-            "import pandas as pd\n"
-            "class ForbiddenBackendAccess(RuntimeError): pass\n"
-            "class DenyBackendFinder:\n"
-            " def find_spec(self,fullname,path=None,target=None):\n"
-            "  if fullname == 'quantpits.utils.env': raise ForbiddenBackendAccess(fullname)\n"
-            "  return None\n"
-            "sys.meta_path.insert(0,DenyBackendFinder())\n"
-            "def deny_backend(*args,**kwargs): raise ForbiddenBackendAccess('backend_hook_called')\n"
-            "import qlib\n"
-            "qlib.init=deny_backend\n"
-            "try:\n"
-            " import mlflow; mlflow.set_tracking_uri=deny_backend; mlflow.start_run=deny_backend; mlflow.set_registry_uri=deny_backend\n"
-            "except ImportError: pass\n"
-            "identity=%r\n"
-            "stage='import'; result={'identity':identity,'reason':'protocol_probe_failed'}\n"
-            "try:\n"
-            " DatasetH=getattr(importlib.import_module(identity['dataset_module']),identity['dataset_class'])\n"
-            " Model=getattr(importlib.import_module(identity['model_module']),identity['model_class'])\n"
-            " stage='fixture'; dates=pd.to_datetime(('2026-07-13','2026-07-14','2026-07-15','2026-07-16','2026-07-17','2026-07-20','2026-07-21','2026-07-22','2026-07-23','2026-07-24'))\n"
-            " index=pd.MultiIndex.from_arrays((dates,('SYNTH_A',)*len(dates)),names=('datetime','instrument'))\n"
-            " values=np.asarray(tuple((float(i),float(i %% 3)) for i in range(len(dates))),dtype='float32')\n"
-            " labels=np.asarray(tuple(float(i %% 2) for i in range(len(dates))),dtype='float32')\n"
-            " columns=pd.MultiIndex.from_tuples((('feature','f0'),('feature','f1'),('label','label')))\n"
-            " frame=pd.DataFrame(np.column_stack((values,labels)),index=index,columns=columns)\n"
-            " segments={'train':frame.iloc[:4],'valid':frame.iloc[4:6],'test':frame.iloc[6:]}\n"
-            " class TinyDataset(DatasetH):\n"
-            "  def __init__(self): pass\n"
-            "  def prepare(self,segments,col_set=None,data_key=None,**kwargs):\n"
-            "   def one(name):\n"
-            "    selected=segments_map[name]\n"
-            "    if col_set == 'feature': return selected['feature']\n"
-            "    if col_set == ['feature','label']: return selected\n"
-            "    return selected\n"
-            "   return tuple(one(name) for name in segments) if isinstance(segments,list) else one(segments)\n"
-            " segments_map=segments\n"
-            " dataset=TinyDataset()\n"
-            " stage='construct'; model=Model(d_feat=2,hidden_size=4,num_layers=1,dropout=0.0,n_epochs=1,batch_size=2,early_stop=1,metric='mse',loss='mse',GPU=-1,seed=0)\n"
-            " evals_result={}\n"
-            " stage='fit'; model.fit(dataset,evals_result=evals_result,save_path='generated-model.bin')\n"
-            " stage='artifact_save'; model.to_pickle('generated-artifact.pkl',dump_all=True)\n"
-            " with open('generated-artifact-source.json','w',encoding='utf-8') as handle: json.dump({'source':%r},handle,sort_keys=True)\n"
-            " stage='artifact_load'; observed_model=Model.load('generated-artifact.pkl')\n"
-            " with open('generated-artifact-source.json','r',encoding='utf-8') as handle: observed_source=json.load(handle)['source']\n"
-            " stage='processor'; processed=dataset.prepare('test',col_set='feature',data_key='infer')\n"
-            " processor_output=tuple(item.strftime('%%Y-%%m-%%d') for item in processed.index.get_level_values('datetime'))\n"
-            " stage='predict'; prediction=observed_model.predict(dataset)\n"
-            " expected=tuple(item.strftime('%%Y-%%m-%%d') for item in segments['test'].index.get_level_values('datetime'))\n"
-            " observed=tuple(item.strftime('%%Y-%%m-%%d') for item in prediction.index.get_level_values('datetime'))\n"
-            " actual_type=observed_model.__class__.__module__+'.'+observed_model.__class__.__name__\n"
-            " expected_type=identity['model_module']+'.'+identity['model_class']\n"
-            " action_protocol={'train':'generated_fit_then_reload_predict','incremental':'generated_refit_then_reload_predict','predict_only':'generated_artifact_reload_predict','resume':'generated_artifact_reload_retry_predict'}[identity['action']]\n"
-            " result.update({'reason':'observed','action_protocol':action_protocol,'expected_index':expected,'observed_index':observed,'scores':tuple(float(item) for item in prediction.values),'processor_input_index':expected,'processor_output_index':processor_output,'artifact_expected_type':expected_type,'artifact_observed_type':actual_type,'artifact_expected_source':%r,'artifact_observed_source':observed_source})\n"
-            "except ForbiddenBackendAccess:\n"
-            " result['reason']='forbidden_backend_access'\n"
-            "except KeyboardInterrupt:\n"
-            " print(%r+json.dumps({'process_control':'KeyboardInterrupt'},sort_keys=True)); sys.exit(130)\n"
-            "except SystemExit:\n"
-            " print(%r+json.dumps({'process_control':'SystemExit'},sort_keys=True)); sys.exit(131)\n"
-            "except GeneratorExit:\n"
-            " print(%r+json.dumps({'process_control':'GeneratorExit'},sort_keys=True)); sys.exit(132)\n"
-            "except Exception as exc:\n"
-            " result['reason']='actual_protocol_'+stage+'_'+exc.__class__.__name__\n"
-            "print(%r+json.dumps(result,sort_keys=True))\n"
-        ) % (
-            public_identity, identity.fingerprint, identity.fingerprint,
-            self._MARKER, self._MARKER, self._MARKER, self._MARKER,
-        )
-        with tempfile.TemporaryDirectory(prefix="quantpits-protocol-") as temp_dir:
-            try:
-                completed = subprocess.run(
-                    [sys.executable, "-c", script], cwd=temp_dir,
-                    env=ControlledImportProbe._environment(temp_dir),
-                    capture_output=True, text=True, timeout=self.timeout_seconds, check=False,
-                )
-            except subprocess.TimeoutExpired:
-                return ProtocolProbeFailure("protocol_probe_timeout")
-        marker_lines = [line for line in completed.stdout.splitlines() if line.startswith(self._MARKER)]
-        if len(marker_lines) == 1:
-            try:
-                payload = json.loads(marker_lines[0][len(self._MARKER):])
-            except json.JSONDecodeError:
-                payload = None
-            if isinstance(payload, Mapping) and payload.get("process_control") in (
-                "KeyboardInterrupt", "SystemExit", "GeneratorExit",
-            ):
-                if payload["process_control"] == "KeyboardInterrupt":
-                    raise KeyboardInterrupt()
-                if payload["process_control"] == "SystemExit":
-                    raise SystemExit("controlled protocol subprocess exited")
-                raise GeneratorExit()
-        if completed.returncode != 0 or len(marker_lines) != 1:
-            return ProtocolProbeFailure("invalid_protocol_probe_envelope")
-        try:
-            payload = json.loads(marker_lines[0][len(self._MARKER):])
-            if payload.get("reason") != "observed":
-                reason = payload.get("reason")
-                return ProtocolProbeFailure(reason if isinstance(reason, str) else "invalid_protocol_probe_reason")
-            if payload.get("identity") != public_identity:
-                return ProtocolProbeFailure("protocol_probe_identity_envelope_mismatch")
-            expected = {
-                "identity", "reason", "action_protocol", "expected_index", "observed_index", "scores",
-                "processor_input_index", "processor_output_index", "artifact_expected_type",
-                "artifact_observed_type", "artifact_expected_source", "artifact_observed_source",
-            }
-            if set(payload) != expected:
-                return ProtocolProbeFailure("invalid_protocol_probe_envelope")
-            values = dict(public_identity)
-            for field_name in expected - {"identity", "reason"}:
-                value = payload[field_name]
-                values[field_name] = tuple(value) if field_name in (
-                    "expected_index", "observed_index", "scores",
-                    "processor_input_index", "processor_output_index",
-                ) else value
-            return _ProtocolMeasurements(**values, _authority=_PROTOCOL_AUTHORITY)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return ProtocolProbeFailure("invalid_protocol_probe_envelope")
+        return ProtocolProbeFailure("protocol_adapter_not_available")
 
 
-def _file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(65536)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def snapshot_nodes(root: Path) -> Tuple[Tuple[str, str, Optional[str], int, Optional[str]], ...]:
-    """Snapshot node kind, symlink target and size without following symlinks."""
+def snapshot_nodes(
+    root: Path,
+    excluded_relative_paths: Sequence[str] = (),
+) -> Tuple[Tuple[str, str, Optional[str], int, Optional[str]], ...]:
+    """Snapshot public node metadata without reading file contents or following symlinks."""
     root = Path(root)
+    exclusions = tuple(sorted(set(excluded_relative_paths)))
+    for value in exclusions:
+        candidate = Path(value)
+        if (
+            not isinstance(value, str) or not value or value != value.strip()
+            or candidate.is_absolute() or value == "." or ".." in candidate.parts
+        ):
+            raise ValueError("observer exclusions must be safe relative paths")
+
+    def is_excluded(relative: str) -> bool:
+        return any(relative == item or relative.startswith(item + "/") for item in exclusions)
+
+    def descendants(directory: Path) -> Sequence[Path]:
+        found = []
+        for child in sorted(directory.iterdir(), key=lambda item: item.name):
+            relative = child.relative_to(root).as_posix()
+            if is_excluded(relative):
+                continue
+            found.append(child)
+            if child.is_dir() and not child.is_symlink():
+                found.extend(descendants(child))
+        return found
+
     observations = []
     if not root.exists() and not root.is_symlink():
         return tuple()
     paths = [root]
     if root.is_dir() and not root.is_symlink():
-        paths.extend(sorted(root.rglob("*")))
+        paths.extend(descendants(root))
     for path in paths:
         relative = "." if path == root else path.relative_to(root).as_posix()
         info = path.lstat()
@@ -546,30 +417,135 @@ def snapshot_nodes(root: Path) -> Tuple[Tuple[str, str, Optional[str], int, Opti
                 kind = "symlink"
             except ValueError:
                 kind = "symlink_escape"
-            observations.append((relative, kind, os.readlink(str(path)), info.st_size, None))
+            observations.append((relative, kind, os.readlink(str(path)), info.st_size, str(info.st_mtime_ns)))
         elif stat.S_ISDIR(info.st_mode):
-            observations.append((relative, "directory", None, info.st_size, None))
+            observations.append((relative, "directory", None, info.st_size, str(info.st_mtime_ns)))
         elif stat.S_ISREG(info.st_mode):
-            observations.append((relative, "file", None, info.st_size, _file_fingerprint(path)))
+            observations.append((relative, "file", None, info.st_size, str(info.st_mtime_ns)))
         else:
-            observations.append((relative, "special", None, info.st_size, None))
+            observations.append((relative, "special", None, info.st_size, str(info.st_mtime_ns)))
     return tuple(observations)
 
 
 class ZeroWriteObserver:
     """Compare explicit protected roots across a complete probe lifecycle."""
 
-    def __init__(self, protected_roots: Sequence[Path]) -> None:
+    def __init__(
+        self,
+        protected_roots: Sequence[Path],
+        excluded_relative_paths: Sequence[str] = (),
+    ) -> None:
         self._roots = tuple(Path(item) for item in protected_roots)
+        self._exclusions = tuple(excluded_relative_paths)
         self._before = None  # type: Optional[Tuple[Tuple[Tuple[str, str, Optional[str], int, Optional[str]], ...], ...]]
+        self._monitors = ()  # type: Tuple[_InotifyWriteMonitor, ...]
 
     def __enter__(self) -> "ZeroWriteObserver":
-        self._before = tuple(snapshot_nodes(root) for root in self._roots)
+        self._before = tuple(snapshot_nodes(root, self._exclusions) for root in self._roots)
         if any(node[1] == "symlink_escape" for root in self._before for node in root):
             raise RuntimeError("capability probe protected root contains an external symlink")
+        monitors = []
+        try:
+            for root, observations in zip(self._roots, self._before):
+                monitor = _InotifyWriteMonitor(root, observations)
+                monitor.start()
+                monitors.append(monitor)
+        except BaseException:
+            for monitor in monitors:
+                monitor.close()
+            raise
+        self._monitors = tuple(monitors)
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
-        after = tuple(snapshot_nodes(root) for root in self._roots)
-        if self._before != after:
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Optional[bool]:
+        after = None
+        event_write = False
+        observer_error = None  # type: Optional[BaseException]
+        try:
+            after = tuple(snapshot_nodes(root, self._exclusions) for root in self._roots)
+            event_write = any(monitor.has_write_event() for monitor in self._monitors)
+        except BaseException as error:
+            observer_error = error
+        finally:
+            for monitor in self._monitors:
+                try:
+                    monitor.close()
+                except BaseException as error:
+                    if observer_error is None:
+                        observer_error = error
+            self._monitors = ()
+        if exc_type is not None and issubclass(exc_type, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            return False
+        if observer_error is not None:
+            raise observer_error
+        if self._before != after or event_write:
             raise RuntimeError("capability probe wrote to a protected root")
+        return False
+
+
+class _InotifyWriteMonitor:
+    """Observe mutations without reading protected file contents."""
+
+    _MASK = (
+        0x00000002  # IN_MODIFY
+        | 0x00000004  # IN_ATTRIB
+        | 0x00000008  # IN_CLOSE_WRITE
+        | 0x00000040  # IN_MOVED_FROM
+        | 0x00000080  # IN_MOVED_TO
+        | 0x00000100  # IN_CREATE
+        | 0x00000200  # IN_DELETE
+        | 0x00000400  # IN_DELETE_SELF
+        | 0x00000800  # IN_MOVE_SELF
+    )
+
+    def __init__(
+        self,
+        root: Path,
+        observations: Sequence[Tuple[str, str, Optional[str], int, Optional[str]]],
+    ) -> None:
+        self._root = Path(root)
+        self._observations = tuple(observations)
+        self._fd = -1
+
+    def start(self) -> None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        try:
+            init = libc.inotify_init1
+            add_watch = libc.inotify_add_watch
+        except AttributeError as exc:
+            raise RuntimeError("zero-write observation requires inotify") from exc
+        init.argtypes = (ctypes.c_int,)
+        init.restype = ctypes.c_int
+        add_watch.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32)
+        add_watch.restype = ctypes.c_int
+        fd = init(os.O_NONBLOCK | os.O_CLOEXEC)
+        if fd < 0:
+            raise OSError(ctypes.get_errno(), "unable to initialize zero-write observer")
+        self._fd = fd
+        try:
+            for relative, kind, _target, _size, _stamp in self._observations:
+                if kind not in ("directory", "file"):
+                    continue
+                path = self._root if relative == "." else self._root / relative
+                if add_watch(fd, os.fsencode(str(path)), self._MASK) < 0:
+                    raise OSError(ctypes.get_errno(), "unable to protect repository node")
+        except BaseException:
+            self.close()
+            raise
+
+    def has_write_event(self) -> bool:
+        observed = False
+        while self._fd >= 0:
+            try:
+                data = os.read(self._fd, 65536)
+            except BlockingIOError:
+                break
+            if not data:
+                break
+            observed = True
+        return observed
+
+    def close(self) -> None:
+        if self._fd >= 0:
+            os.close(self._fd)
+            self._fd = -1

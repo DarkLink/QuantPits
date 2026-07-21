@@ -239,7 +239,8 @@ generated protocol：完整 identity 包含 dataset module/class、action/family
 `predict(dataset)`、generated dataset/processor、artifact reload/source 以及 tail/gap/unique/finite coverage。不要公开或
 手工构造 protocol measurement；测试 callback 只用于 harness negative self-test，永远不能制造 positive provenance。
 暂未实现 exact adapter 的 wrapper/profile 应保留 `not_comparable`，不能复制邻近 row 的 observation。当前 actual
-adapter 仅为两个 LSTM wrapper 的 `train/static` identity 建立了上述事实。
+adapter registry 没有任何 positive row；覆写 `DatasetH.prepare()`、自写 source sidecar 或回显 action/profile 都不足以
+建立上述事实。只有独立观察完整 dataset/processor、training hook 与 recorder source chain 后才能添加 positive adapter。
 
 owner 可在 final candidate 上运行短合同命令：
 

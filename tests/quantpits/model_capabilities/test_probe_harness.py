@@ -1,16 +1,14 @@
 import os
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from quantpits.model_capabilities.inspector import ModelCapabilityInspector
 from quantpits.model_capabilities.catalog import AUTHORITATIVE_CATALOG
-from quantpits.model_capabilities.contracts import ModelCapabilityIdentity, RawModelCapabilityDeclaration
+from quantpits.model_capabilities.contracts import RawModelCapabilityDeclaration
 from quantpits.model_capabilities.probes import (
     ImportObservation,
     ControlledImportProbe,
-    ControlledProtocolProbe,
     ZeroWriteObserver,
     _harness_protocol_measurements,
     classify_prediction_coverage,
@@ -145,21 +143,6 @@ def test_artifact_roundtrip_and_foreign_source_are_classified():
     assert wrapper_result.status == "not_comparable"
     assert wrapper_result.reason == "capability_identity_mismatch"
 
-    declaration = next(
-        item for item in AUTHORITATIVE_CATALOG
-        if item.model_module.endswith("custom.pytorch_lstm")
-        and item.action == "train" and item.execution_family == "static"
-    )
-    actual = ControlledProtocolProbe(timeout_seconds=30).observe(declaration)
-    assert actual.measurement_source == "actual_wrapper_generated_protocol_probe"
-    expected_type = declaration.model_module + "." + declaration.model_class
-    assert actual.artifact_expected_type == expected_type
-    assert actual.artifact_observed_type == expected_type
-    assert actual.artifact_expected_source == ModelCapabilityIdentity.from_declaration(declaration).fingerprint
-    assert actual.artifact_observed_source == actual.artifact_expected_source
-    assert replace(actual).measurement_source == "harness_self_test_only"
-
-
 def test_wrong_dataset_protocol_and_prediction_shape_fail_closed():
     wrong_protocol = _observation(
         ("2026-07-17", "2026-07-20", "2026-07-21"), (0.1, 0.2, 0.3),
@@ -203,35 +186,18 @@ def test_controlled_import_probe_detects_real_constructor_and_fit_signature_nega
     assert missing_evals.fit_signature is False
 
 
-def test_actual_wrapper_generated_protocol_adapter_grants_only_exact_identity():
-    declaration = next(
-        item for item in AUTHORITATIVE_CATALOG
-        if item.model_module.endswith("custom.pytorch_lstm")
-        and item.action == "train" and item.execution_family == "static"
-    )
-    result = ModelCapabilityInspector().inspect((declaration,)).results[0]
-    assert result.status == "supported_verified"
-    assert result.preflight_allowed is True
-    facts = {item.name: item for item in result.predicates}
-    assert facts["protocol_adapter"].outcome == "passed"
-    assert facts["capability_identity_match"].outcome == "passed"
-    for name in (
-        "wrapper_identity_match", "wrapper_kind", "dataset_identity", "dataset_protocol",
-        "action_identity", "action_protocol", "execution_family_identity", "processor_profile_identity",
-        "artifact_protocol_identity", "dependency_profile_identity",
-    ):
-        assert facts[name].outcome == "passed"
-
-    for action, family in (("resume", "static"), ("train", "rolling")):
-        neighboring = next(
-            item for item in AUTHORITATIVE_CATALOG
-            if item.model_module == declaration.model_module
-            and item.action == action and item.execution_family == family
-        )
-        blocked = ModelCapabilityInspector().inspect((neighboring,)).results[0]
-        assert blocked.status == "not_comparable"
-        assert blocked.reason == "protocol_adapter_not_available"
-        assert blocked.preflight_allowed is False
+def test_incomplete_actual_protocol_rows_remain_not_comparable():
+    matrix = ModelCapabilityInspector._with_probes(_import_ok).inspect(AUTHORITATIVE_CATALOG)
+    assert matrix.n_supported == 0
+    for result in matrix.results:
+        if (
+            result.identity.model_module.endswith("pytorch_lstm")
+            and result.identity.action == "train"
+            and result.identity.execution_family == "static"
+        ):
+            assert result.status == "not_comparable"
+            assert result.reason == "protocol_adapter_not_available"
+            assert result.preflight_allowed is False
 
 
 def test_probe_observer_detects_repository_cache_and_symlink_escape(tmp_path):
@@ -270,6 +236,46 @@ def test_probe_observer_detects_repository_cache_and_symlink_escape(tmp_path):
         ).inspect((_raw(),))
 
 
+def test_default_inspector_observer_covers_repository_public_boundary(tmp_path):
+    repository = tmp_path / "repository"
+    for relative in (".git", "plan", "workspaces", "quantpits", "docs", "tests", "output"):
+        (repository / relative).mkdir(parents=True)
+    declaration = RawModelCapabilityDeclaration.from_dict(_raw())
+    observation = _harness_protocol_measurements(
+        declaration, ("2026-07-21",), ("2026-07-21",), (0.1,),
+    )
+
+    for relative in ("root-cache.bin", "docs/cache.bin", "tests/cache.bin", "output/cache.bin"):
+        target = repository / relative
+
+        def writing_protocol(_row, path=target):
+            path.write_bytes(b"observed")
+            return observation
+
+        with pytest.raises(RuntimeError, match="protected root"):
+            ModelCapabilityInspector._with_probes(
+                _import_ok, writing_protocol, repository_root=repository,
+            ).inspect((_raw(),))
+        target.unlink()
+
+    inspector = ModelCapabilityInspector._with_probes(_import_ok, repository_root=repository)
+    assert inspector._protected_roots == (repository.resolve(),)
+    assert inspector._protected_exclusions == (".git", "plan", "workspaces")
+
+    for relative in (".git/ignored", "plan/ignored", "workspaces/private-ignored"):
+        target = repository / relative
+
+        def writing_excluded(_row, path=target):
+            path.write_bytes(b"excluded")
+            return observation
+
+        result = ModelCapabilityInspector._with_probes(
+            _import_ok, writing_excluded, repository_root=repository,
+        ).inspect((_raw(),)).results[0]
+        assert result.status == "not_comparable"
+        target.unlink()
+
+
 def test_catalog_probe_is_workspace_and_backend_independent(monkeypatch, tmp_path):
     original_cwd = Path.cwd()
     monkeypatch.setenv("QLIB_WORKSPACE_DIR", "sentinel_workspace_value")
@@ -280,7 +286,8 @@ def test_catalog_probe_is_workspace_and_backend_independent(monkeypatch, tmp_pat
         and item.action == "train" and item.execution_family == "static"
     )
     matrix = ModelCapabilityInspector().inspect((declaration,))
-    assert matrix.results[0].status == "supported_verified"
+    assert matrix.results[0].status == "not_comparable"
+    assert matrix.results[0].reason == "protocol_adapter_not_available"
     unavailable = ImportObservation(False, False, False, False, False, False, True, "dependency_missing")
     catalog_matrix = ModelCapabilityInspector._with_probes(
         lambda _module, _class: unavailable,

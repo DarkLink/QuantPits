@@ -133,11 +133,27 @@ def test_process_control_interrupt_propagates_and_cleans_probe_resources(tmp_pat
         ModelCapabilityInspector._with_probes(_import_ok, interrupting_probe).inspect((_raw(),))
     assert not marker.exists()
 
+    for control in (KeyboardInterrupt, SystemExit, GeneratorExit):
+        protected = tmp_path / control.__name__
+        protected.mkdir()
+
+        def writing_interrupt(_declaration, root=protected, exception_type=control):
+            (root / "write-detected").write_text("changed", encoding="utf-8")
+            raise exception_type()
+
+        with pytest.raises(control):
+            ModelCapabilityInspector._with_probes(
+                _import_ok, writing_interrupt, protected_roots=(protected,),
+            ).inspect((_raw(),))
+
     (tmp_path / "interrupt_module.py").write_text("raise KeyboardInterrupt()\n", encoding="utf-8")
     (tmp_path / "exit_module.py").write_text("raise SystemExit(9)\n", encoding="utf-8")
+    (tmp_path / "generator_module.py").write_text("raise GeneratorExit()\n", encoding="utf-8")
     controlled = ControlledImportProbe(timeout_seconds=5)
     with pytest.raises(KeyboardInterrupt):
         controlled.observe("interrupt_module", "Unused", (tmp_path,))
     with pytest.raises(SystemExit):
         controlled.observe("exit_module", "Unused", (tmp_path,))
+    with pytest.raises(GeneratorExit):
+        controlled.observe("generator_module", "Unused", (tmp_path,))
     assert not tuple(tmp_path.glob("__pycache__"))

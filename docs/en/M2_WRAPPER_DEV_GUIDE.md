@@ -251,8 +251,10 @@ tail/gap/unique/finite coverage. Do not expose or manually construct protocol
 measurements. Test callbacks are negative harness self-tests only and can never create
 positive provenance. Keep a wrapper/profile without an exact adapter as
 `not_comparable`; never copy an observation from a neighboring row. The current actual
-adapter establishes these facts only for the `train/static` identities of the two LSTM
-wrappers.
+adapter registry has no positive row. Overriding `DatasetH.prepare()`, writing a source
+sidecar inside the probe, or echoing an action/profile does not establish those facts;
+add a positive adapter only after independently observing the complete
+dataset/processor behavior, training hook, and recorder source chain.
 
 The owner can run the short contract commands on the final candidate:
 
