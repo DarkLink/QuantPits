@@ -23,8 +23,9 @@
 > Phase 27 transition boundary: Rolling/CPCV-rolling still use their legacy window/state
 > orchestration and are not yet backed by the static/CPCV execution service. All real mutating
 > commands now share the workspace training execution lease with static/CPCV, preventing concurrent
-> current-record replacement. `--show-state` and `--dry-run` do not acquire that lease. Full
-> service-owned execution/evidence/publication/closure parity remains explicitly deferred.
+> current-record replacement. `--show-state` and `--dry-run` do not acquire that lease. Phase 34
+> adds a standalone exact-unit execution/evidence kernel without switching the existing CLI to it;
+> publication, current-record replacement, and closure remain later boundaries.
 > `--dry-run` is a strict filesystem-only Prepared Plan: it renders configuration and input
 > fingerprints, the action, ordered targets, state classification, and expected effects without
 > initializing Qlib, resolving exact window/fold dates, or creating OperatorLog, state, manifest, or
@@ -98,7 +99,11 @@ quantpits/rolling/
 ├── repository.py         # canonical lock + CAS + atomic State V2 persistence
 ├── evidence.py           # immutable per-unit artifact/coverage inspection
 ├── recovery.py           # proposal-only recovery classification
-├── windows.py            # runtime ResolvedRollingRun + canonical identities
+├── windows.py            # runtime windows + exact business-session observation
+├── execution.py          # scope/preflight/result contracts + public domain API
+├── execution_backend.py  # exact-unit kernel / deterministic-resume truth owner
+├── unit_runner.py        # narrow LinearModel/DatasetH/Slide runner
+├── mlflow_execution_backend.py # local recorder manifest + evidence adapter
 └── legacy.py             # exact-scope legacy adapter + baseline recheck
 
 rolling/
@@ -187,13 +192,17 @@ immutable unit evidence or a publication receipt.
 The State V2 repository is a standalone domain API for later execution/evidence consumers, not a
 new CLI. It requires an exact baseline token; `WorkspaceContext.data_dir` must equal `root/data`,
 and family-specific state/lock paths are read-only derived mappings. It rereads and classifies the
-same byte snapshot under the canonical sibling lock, validates workspace identity and a
-pre-evidence transition, writes a same-directory temporary file, then performs file fsync, a
+same byte snapshot under the canonical sibling lock, validates workspace identity and the
+transition, writes a same-directory temporary file, then performs file fsync, a
 pre-replace CAS recheck, atomic replace, directory fsync, and an
 actual reread. Conflicts, invalid sources/transitions, write failures, and interruption are never
 reported as committed; uncertain directory durability or postimage reread produces only
 `durability_uncertain`. Compare-and-delete accepts only an exact `failed` V2 and has no public
-parameter that can relax this rule. Existing legacy `rolling_train.py`, `--clear-state`, resume, and backup
+parameter that can relax this rule. Plain `commit()` still rejects success and `units_complete`.
+The separate evidence-authorized entry rebuilds an inspector-owned
+`RollingEvidenceSetInspection`, checks every recorder/evidence identity, and can advance only as
+far as `units_complete`; `completed` still requires a later publication receipt. Existing legacy
+`rolling_train.py`, `--clear-state`, resume, and backup
 behavior is unchanged and no workspace is migrated automatically.
 
 Immutable Rolling evidence is also a standalone, read-only domain API rather than a CLI. A caller
@@ -216,9 +225,19 @@ candidates, identity mismatch, missing/corrupt artifacts, short coverage, non-co
 orphans, or drift cannot become `valid`. `classify_rolling_recovery(requests, evidence_set)` emits
 only a proposal that preserves requested identity, order, and cardinality; only `valid` units enter
 its reusable subset, and it has no execute, state-transition, publication, repair, or `apply()`
-capability. Neither API reconstructs source from mutable current records, creates a backend/cache/
-evidence file, or connects to `rolling_train.py`. The execution-time evidence writer,
-deterministic resume, and publication remain later boundaries.
+capability. Phase 34 first uses `bind_rolling_execution_run_identity()` to bind actually observed
+business sessions into the runtime fingerprint. Its `build_rolling_execution_scope()`, `preflight_rolling_execution()`,
+`execute_rolling_units()`, and `resume_rolling_units()` consume the exact capability row and this
+evidence. Every requested target×window retains one ordered terminal result; runner success becomes
+`executed_success` only after the manifest, Phase 32 reinspection, and State CAS all pass. Resume
+uses only the original attempt/recorder/evidence frozen in State V2 and never a mutable current
+record or "latest recorder". Ordinary unit failure preserves later units and process-control
+interruptions propagate. The mapper retains a canonical target whose capability is blocked instead of shrinking the
+requested set to an available subset; one blocked decision blocks the complete batch before the
+runner while preserving identity, order, and cardinality. A real Linear unit rebinds the exact
+workspace, Qlib provider, and tracking backend inside a controlled child process; the parent accepts
+only a typed path-free recorder/failure envelope and propagates process-control. This domain API is not connected to `rolling_train.py` and writes no
+combined/current/backtest/history/promotion output; publication remains a later boundary.
 
 `--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared
 context as the sole workspace identity; legacy `env` does not reselect it from process `sys.argv`.

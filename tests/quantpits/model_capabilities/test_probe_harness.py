@@ -188,7 +188,14 @@ def test_controlled_import_probe_detects_real_constructor_and_fit_signature_nega
 
 def test_incomplete_actual_protocol_rows_remain_not_comparable():
     matrix = ModelCapabilityInspector._with_probes(_import_ok).inspect(AUTHORITATIVE_CATALOG)
-    assert matrix.n_supported == 0
+    assert matrix.n_supported == 1
+    assert sum(
+        item.preflight_allowed
+        and item.identity.model_module == "qlib.contrib.model.linear"
+        and item.identity.action == "train"
+        and item.identity.execution_family == "rolling"
+        for item in matrix.results
+    ) == 1
     for result in matrix.results:
         if (
             result.identity.model_module.endswith("pytorch_lstm")
@@ -198,6 +205,34 @@ def test_incomplete_actual_protocol_rows_remain_not_comparable():
             assert result.status == "not_comparable"
             assert result.reason == "protocol_adapter_not_available"
             assert result.preflight_allowed is False
+
+
+def test_linear_rolling_adapter_executes_actual_fit_reload_predict():
+    exact = next(
+        item for item in AUTHORITATIVE_CATALOG
+        if item.model_module == "qlib.contrib.model.linear"
+        and item.model_class == "LinearModel"
+        and item.dataset_module == "qlib.data.dataset"
+        and item.dataset_class == "DatasetH"
+        and item.dataset_protocol == "point_in_time"
+        and item.action == "train"
+        and item.execution_family == "rolling"
+    )
+    adjacent = next(
+        item for item in AUTHORITATIVE_CATALOG
+        if item.model_module == exact.model_module
+        and item.model_class == exact.model_class
+        and item.dataset_protocol == exact.dataset_protocol
+        and item.action == "train"
+        and item.execution_family == "static"
+    )
+    matrix = ModelCapabilityInspector().inspect((exact, adjacent))
+    supported, blocked = matrix.results
+    assert supported.status == "supported_verified"
+    assert supported.preflight_allowed is True
+    assert {item.name: item.outcome for item in supported.predicates}["protocol_adapter"] == "passed"
+    assert blocked.status == "not_comparable"
+    assert blocked.preflight_allowed is False
 
 
 def test_probe_observer_detects_repository_cache_and_symlink_escape(tmp_path):

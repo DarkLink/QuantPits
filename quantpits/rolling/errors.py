@@ -119,3 +119,21 @@ class RollingWindowResolutionError(RollingCommandError):
 
 class RollingExecutionError(RollingCommandError):
     code = "rolling_execution_failed"
+
+
+class RollingExecutionContractError(RollingExecutionError):
+    """Raised when an exact-unit execution representation is invalid."""
+
+    code = "rolling_execution_contract_invalid"
+
+
+class RollingExecutionPreflightError(RollingExecutionError):
+    """Raised when immutable facts do not authorize execution."""
+
+    code = "rolling_execution_preflight_failed"
+
+
+class RollingExecutionBackendError(RollingExecutionError):
+    """Raised when the narrow recorder/evidence backend fails closed."""
+
+    code = "rolling_execution_backend_failed"

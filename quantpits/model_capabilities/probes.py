@@ -10,7 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import InitVar, dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -28,6 +28,20 @@ _ACTION_PROTOCOLS = {
     "predict_only": "generated_artifact_reload_predict",
     "resume": "generated_artifact_reload_retry_predict",
 }
+_LINEAR_ROLLING_IDENTITY = {
+    "model_module": "qlib.contrib.model.linear",
+    "model_class": "LinearModel",
+    "wrapper_kind": "external_passthrough",
+    "dataset_module": "qlib.data.dataset",
+    "dataset_class": "DatasetH",
+    "dataset_protocol": "point_in_time",
+    "action": "train",
+    "execution_family": "rolling",
+    "processor_profile": "standard_infer_no_label_drop",
+    "artifact_protocol": "qlib_recorder_model_v1",
+    "dependency_profile": "python_qlib",
+}
+_ACTUAL_MEASUREMENT_TOKEN = object()
 
 
 def _action_protocol(action: str) -> str:
@@ -59,8 +73,8 @@ class ProtocolProbeFailure:
 class _ProtocolMeasurements:
     """Internal measurement envelope.
 
-    All construction is deliberately harness-only. No current adapter can attach
-    actual observation provenance or grant a positive capability row.
+    Base-envelope construction is deliberately harness-only.  Only the private
+    actual subclass can attach inspector-routed observation authority.
     """
 
     model_module: str
@@ -126,7 +140,36 @@ class _ProtocolMeasurements:
         })
 
     def as_harness_only(self) -> "_ProtocolMeasurements":
-        return replace(self)
+        return _ProtocolMeasurements(**{
+            field_name: getattr(self, field_name)
+            for field_name in self.__dataclass_fields__
+        })
+
+
+@dataclass(frozen=True)
+class _ActualProtocolMeasurements(_ProtocolMeasurements):
+    """Inspector-routed observation from the exact generated Linear adapter."""
+
+    _authority: InitVar[Any] = None
+
+    def __post_init__(self, _authority: Any) -> None:
+        super().__post_init__()
+        if _authority is not _ACTUAL_MEASUREMENT_TOKEN:
+            raise TypeError("actual protocol measurements are inspector-owned")
+
+    @property
+    def measurement_source(self) -> str:
+        return "actual_wrapper_generated_protocol_probe"
+
+    @property
+    def has_actual_authority(self) -> bool:
+        return True
+
+    def as_harness_only(self) -> _ProtocolMeasurements:
+        return _ProtocolMeasurements(**{
+            field_name: getattr(self, field_name)
+            for field_name in _ProtocolMeasurements.__dataclass_fields__
+        })
 
 
 def _harness_protocol_measurements(
@@ -291,7 +334,8 @@ class ControlledImportProbe:
             " c=getattr(m,%r); result['class_resolved']=isinstance(c,type)\n"
             " try: inspect.signature(c).bind(); result['constructor_signature']=True\n"
             " except (TypeError,ValueError): result['constructor_signature']=False\n"
-            " result['fit_signature']=callable(getattr(c,'fit',None)) and accepts_named(c.fit,('dataset','evals_result'))\n"
+            " exact_linear=(%r == 'qlib.contrib.model.linear' and %r == 'LinearModel')\n"
+            " result['fit_signature']=callable(getattr(c,'fit',None)) and accepts_named(c.fit,('dataset','reweighter') if exact_linear else ('dataset','evals_result'))\n"
             " result['predict_signature']=callable(getattr(c,'predict',None)) and accepts_named(c.predict,('dataset',))\n"
             " t=sys.modules.get('torch'); result['gpu_available']=bool(t is not None and t.cuda.is_available())\n"
             " result['reason']='observed'\n"
@@ -310,7 +354,10 @@ class ControlledImportProbe:
             "except Exception:\n"
             " result['reason']='import_probe_exception'\n"
             "print(%r+json.dumps(result,sort_keys=True))\n"
-        ) % (module_name, class_name, self._MARKER, self._MARKER, self._MARKER, self._MARKER)
+        ) % (
+            module_name, class_name, module_name, class_name,
+            self._MARKER, self._MARKER, self._MARKER, self._MARKER,
+        )
         with tempfile.TemporaryDirectory(prefix="quantpits-capability-") as temp_dir:
             try:
                 completed = subprocess.run(
@@ -353,13 +400,13 @@ class ControlledImportProbe:
 
 
 class ControlledProtocolProbe:
-    """Fail closed until an exact protocol adapter observes every required fact."""
+    """Run the one bounded generated protocol adapter authorized by the catalog."""
 
     @staticmethod
     def supports(declaration: RawModelCapabilityDeclaration) -> bool:
         if not isinstance(declaration, RawModelCapabilityDeclaration):
             raise TypeError("protocol support requires a canonical declaration")
-        return False
+        return ModelCapabilityIdentity.from_declaration(declaration).to_public_dict() == _LINEAR_ROLLING_IDENTITY
 
     def __init__(self, timeout_seconds: int = 15) -> None:
         if type(timeout_seconds) is not int or timeout_seconds <= 0:
@@ -369,7 +416,134 @@ class ControlledProtocolProbe:
     def observe(self, declaration: RawModelCapabilityDeclaration) -> Any:
         if not isinstance(declaration, RawModelCapabilityDeclaration):
             raise TypeError("protocol probe requires a canonical declaration")
-        return ProtocolProbeFailure("protocol_adapter_not_available")
+        if not self.supports(declaration):
+            return ProtocolProbeFailure("protocol_adapter_not_available")
+        script = r'''
+import hashlib, json
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+import numpy as np
+import pandas as pd
+import qlib
+from qlib.contrib.model.linear import LinearModel
+from qlib.data.dataset import DatasetH
+from qlib.data.dataset.handler import DataHandler
+from qlib.data.dataset.loader import StaticDataLoader
+from qlib.workflow import R
+
+root = Path.cwd()
+qlib.init(
+    provider_uri=str(root / "qlib_data"),
+    exp_manager={
+        "class": "MLflowExpManager",
+        "module_path": "qlib.workflow.expm",
+        "kwargs": {
+            "uri": "sqlite:///" + str(root / "probe_mlflow.db"),
+            "default_exp_name": "Phase34CapabilityProbe",
+        },
+    },
+)
+
+dates = pd.to_datetime(("2026-07-17", "2026-07-20", "2026-07-21"))
+index = pd.MultiIndex.from_arrays(
+    (dates, ("SYNTH_A", "SYNTH_A", "SYNTH_A")),
+    names=("datetime", "instrument"),
+)
+columns = pd.MultiIndex.from_tuples(
+    (("feature", "feature_0"), ("feature", "feature_1"), ("label", "label"))
+)
+frame = pd.DataFrame(
+    np.asarray(((1.0, 0.0, 0.1), (2.0, 1.0, 0.2), (3.0, 1.0, 0.3))),
+    index=index, columns=columns,
+)
+handler = DataHandler(
+    instruments=None, start_time=dates[0], end_time=dates[-1],
+    data_loader=StaticDataLoader(frame),
+)
+dataset = DatasetH(
+    handler=handler,
+    segments={"train": (dates[0], dates[1]), "test": (dates[0], dates[-1])},
+)
+model = LinearModel(estimator="ridge", alpha=1e-6)
+prepared = dataset.prepare(
+    "test", col_set="feature", data_key=DataHandler.DK_I,
+)
+with R.start(experiment_name="Phase34CapabilityProbe"):
+    recorder = R.get_recorder()
+    model.fit(dataset=dataset)
+    recorder.save_objects(**{"model.pkl": model})
+    recorder_id = recorder.info["id"]
+    artifact_uri = recorder.get_artifact_uri()
+    parsed = urlparse(artifact_uri)
+    if parsed.scheme not in ("", "file"):
+        raise RuntimeError("non-local probe artifact backend")
+    artifact_path = Path(unquote(parsed.path if parsed.scheme else artifact_uri)) / "model.pkl"
+    artifact = artifact_path.read_bytes()
+    reloaded = recorder.load_object("model.pkl")
+    observed_artifact = artifact_path.read_bytes()
+prediction = reloaded.predict(dataset=dataset, segment="test")
+observed_dates = prediction.index.get_level_values("datetime")
+payload = {
+    "expected_index": [item.strftime("%Y-%m-%d") for item in dates],
+    "observed_index": [item.strftime("%Y-%m-%d") for item in observed_dates],
+    "scores": [float(item) for item in prediction.to_numpy()],
+    "processor_input_index": [item.strftime("%Y-%m-%d") for item in frame.index.get_level_values("datetime")],
+    "processor_output_index": [item.strftime("%Y-%m-%d") for item in prepared.index.get_level_values("datetime")],
+    "artifact_expected_type": "LinearModel",
+    "artifact_observed_type": type(reloaded).__name__,
+    "artifact_expected_source": hashlib.sha256(artifact).hexdigest(),
+    "artifact_observed_source": hashlib.sha256(observed_artifact).hexdigest(),
+    "recorder_id": recorder_id,
+}
+print("QUANTPITS_LINEAR_PROTOCOL=" + json.dumps(payload, sort_keys=True))
+'''
+        marker = "QUANTPITS_LINEAR_PROTOCOL="
+        with tempfile.TemporaryDirectory(prefix="quantpits-linear-protocol-") as temp_dir:
+            try:
+                completed = subprocess.run(
+                    [sys.executable, "-c", script], cwd=temp_dir,
+                    env=ControlledImportProbe._environment(temp_dir),
+                    capture_output=True, text=True, timeout=self.timeout_seconds,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return ProtocolProbeFailure("protocol_probe_timeout")
+        lines = [line for line in completed.stdout.splitlines() if line.startswith(marker)]
+        if completed.returncode != 0 or len(lines) != 1:
+            return ProtocolProbeFailure("protocol_probe_failed")
+        try:
+            payload = json.loads(lines[0][len(marker):])
+            required = {
+                "expected_index", "observed_index", "scores",
+                "processor_input_index", "processor_output_index",
+                "artifact_expected_type", "artifact_observed_type",
+                "artifact_expected_source", "artifact_observed_source",
+                "recorder_id",
+            }
+            if set(payload) != required:
+                raise ValueError("invalid fields")
+            if (
+                not isinstance(payload["recorder_id"], str)
+                or not payload["recorder_id"].strip()
+            ):
+                raise ValueError("invalid recorder identity")
+            values = dict(_LINEAR_ROLLING_IDENTITY)
+            values.update({
+                "action_protocol": _action_protocol(declaration.action),
+                "expected_index": tuple(payload["expected_index"]),
+                "observed_index": tuple(payload["observed_index"]),
+                "scores": tuple(payload["scores"]),
+                "processor_input_index": tuple(payload["processor_input_index"]),
+                "processor_output_index": tuple(payload["processor_output_index"]),
+                "artifact_expected_type": payload["artifact_expected_type"],
+                "artifact_observed_type": payload["artifact_observed_type"],
+                "artifact_expected_source": payload["artifact_expected_source"],
+                "artifact_observed_source": payload["artifact_observed_source"],
+                "_authority": _ACTUAL_MEASUREMENT_TOKEN,
+            })
+            return _ActualProtocolMeasurements(**values)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return ProtocolProbeFailure("invalid_protocol_probe_envelope")
 
 
 def snapshot_nodes(

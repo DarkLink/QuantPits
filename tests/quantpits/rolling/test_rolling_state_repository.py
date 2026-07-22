@@ -560,3 +560,38 @@ def test_repository_rejects_direct_commit_over_legacy_source_even_with_valid_pro
     receipt = repository.commit(_state(context), baseline)
     assert receipt.status == "invalid_source"
     assert repository.state_path.read_bytes() == before
+
+
+def test_evidence_authorized_success_and_units_complete_reject_impossible_combinations(tmp_path):
+    from quantpits.rolling import RollingExecutionKernel
+    from tests.quantpits.rolling.execution_support import (
+        FakeExecutionBackend,
+        FakeRunner,
+        linear_capability_result,
+        make_scope,
+    )
+
+    context = _context(tmp_path)
+    scope = make_scope(context, linear_capability_result())
+    repository = RollingStateRepository.for_workspace(context, "rolling")
+    backend = FakeExecutionBackend(context)
+    result = RollingExecutionKernel(repository, backend, FakeRunner()).execute(
+        scope, "attempt-1",
+    )
+    assert result.status == "success"
+    view = repository.inspect_readonly()
+    assert view.inspection.snapshot.phase == "units_complete"
+    assert repository.commit(view.inspection.snapshot, view.baseline).status == "invalid_transition"
+
+    evidence = backend.inspect(
+        scope, backend.requests_for_state(scope, view.inspection.snapshot),
+    )
+    unit = dataclasses.replace(
+        view.inspection.snapshot.units[0], evidence_id="f" * 64,
+    )
+    forged = dataclasses.replace(view.inspection.snapshot, units=(unit,))
+    receipt = repository.commit_evidence_authorized(
+        forged, view.baseline, evidence,
+    )
+    assert receipt.status == "invalid_transition"
+    assert repository.inspect_readonly().baseline == view.baseline

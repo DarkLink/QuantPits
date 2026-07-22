@@ -1,8 +1,4 @@
-"""Rolling command-domain boundaries.
-
-The execution implementation remains in :mod:`quantpits.scripts.rolling`
-during the Phase 28 compatibility migration.
-"""
+"""Rolling planning, evidence, state and exact-unit execution boundaries."""
 
 from quantpits.rolling.command import (
     LegacyRollingStateInspection,
@@ -19,6 +15,9 @@ from quantpits.rolling.errors import (
     RollingCommandError,
     RollingEvidenceContractError,
     RollingEvidenceError,
+    RollingExecutionBackendError,
+    RollingExecutionContractError,
+    RollingExecutionPreflightError,
     RollingStatePathError,
     RollingStatePersistenceError,
     RollingStateRepositoryError,
@@ -43,6 +42,9 @@ from quantpits.rolling.legacy import (
 from quantpits.rolling.windows import (
     ResolvedRollingRun,
     RollingWindowDescriptor,
+    RollingWindowExecutionDescriptor,
+    observe_rolling_business_sessions,
+    rolling_sessions_fingerprint,
     resolve_rolling_run,
 )
 from quantpits.rolling.state import (
@@ -78,11 +80,33 @@ from quantpits.rolling.recovery import (
     RollingRecoveryProposal,
     classify_rolling_recovery,
 )
+from quantpits.rolling.execution import (
+    EXECUTION_PROTOCOL_VERSION,
+    RollingExecutionBatchResult,
+    RollingExecutionPreflight,
+    RollingExecutionScope,
+    RollingExecutionTargetDescriptor,
+    RollingExecutionUnit,
+    RollingExecutionUnitResult,
+    RollingUnitRunnerObservation,
+    build_rolling_execution_scope,
+    bind_rolling_execution_run_identity,
+    execute_rolling_units,
+    map_workflow_capability,
+    preflight_rolling_execution,
+    resume_rolling_units,
+)
+from quantpits.rolling.execution_backend import RollingExecutionKernel
+from quantpits.rolling.unit_runner import LinearSlideUnitRunner
+from quantpits.rolling.mlflow_execution_backend import QlibMlflowExecutionBackend
 
 __all__ = [
     "RollingCommandError",
     "RollingEvidenceError",
     "RollingEvidenceContractError",
+    "RollingExecutionBackendError",
+    "RollingExecutionContractError",
+    "RollingExecutionPreflightError",
     "LegacyRollingStateInspection",
     "PreparedRollingRun",
     "RollingRunOptions",
@@ -92,6 +116,7 @@ __all__ = [
     "RollingWindowIdentity",
     "RollingRunIdentity",
     "RollingWindowDescriptor",
+    "RollingWindowExecutionDescriptor",
     "ResolvedRollingRun",
     "RollingExecutionOutcome",
     "LegacyRollingExecutionAdapter",
@@ -118,6 +143,17 @@ __all__ = [
     "RollingUnitEvidenceInspection",
     "RollingUnitEvidenceRequest",
     "RollingRecoveryProposal",
+    "EXECUTION_PROTOCOL_VERSION",
+    "RollingExecutionTargetDescriptor",
+    "RollingExecutionUnit",
+    "RollingExecutionScope",
+    "RollingExecutionPreflight",
+    "RollingUnitRunnerObservation",
+    "RollingExecutionUnitResult",
+    "RollingExecutionBatchResult",
+    "RollingExecutionKernel",
+    "LinearSlideUnitRunner",
+    "QlibMlflowExecutionBackend",
     "inspect_rolling_evidence",
     "classify_rolling_recovery",
     "options_from_namespace",
@@ -126,6 +162,14 @@ __all__ = [
     "render_prepared_plan",
     "resolve_workspace_context",
     "resolve_rolling_run",
+    "observe_rolling_business_sessions",
+    "rolling_sessions_fingerprint",
+    "map_workflow_capability",
+    "build_rolling_execution_scope",
+    "bind_rolling_execution_run_identity",
+    "preflight_rolling_execution",
+    "execute_rolling_units",
+    "resume_rolling_units",
     "recheck_prepared_inputs",
     "inspect_rolling_state",
     "inspect_rolling_state_bytes",

@@ -1,7 +1,9 @@
 """Runtime-only Rolling calendar resolution and stable window identities."""
 
 import copy
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import InitVar, dataclass, field
 
 from quantpits.rolling.errors import RollingIdentityError, RollingWindowResolutionError
 from quantpits.rolling.identity import (
@@ -10,6 +12,112 @@ from quantpits.rolling.identity import (
     RollingWindowIdentity,
 )
 from quantpits.utils.workspace import fingerprint_value
+
+
+_EXECUTION_WINDOW_TOKEN = object()
+
+
+def _canonical_sessions(values, test_start, test_end):
+    from quantpits.rolling.identity import normalize_iso_date
+
+    if isinstance(values, (str, bytes)):
+        raise RollingWindowResolutionError("business sessions must be an ordered sequence")
+    try:
+        sessions = tuple(normalize_iso_date(str(item)[:10], "business_session") for item in values)
+    except (TypeError, RollingIdentityError) as exc:
+        raise RollingWindowResolutionError("business sessions are invalid: %s" % exc)
+    if not sessions or sessions != tuple(sorted(set(sessions))):
+        raise RollingWindowResolutionError("business sessions must be non-empty, unique, and increasing")
+    if sessions[0] != test_start or sessions[-1] != test_end:
+        raise RollingWindowResolutionError("business sessions do not match window boundaries")
+    return sessions
+
+
+@dataclass(frozen=True)
+class RollingWindowExecutionDescriptor:
+    """One canonical window plus the calendar sessions actually observed for it."""
+
+    window: "RollingWindowDescriptor"
+    expected_sessions: tuple
+    _authority: InitVar[object] = None
+    _observer_authority: bool = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self, _authority):
+        if _authority is not _EXECUTION_WINDOW_TOKEN:
+            raise RollingWindowResolutionError(
+                "execution windows are calendar-observer-owned"
+            )
+        if not isinstance(self.window, RollingWindowDescriptor):
+            raise RollingWindowResolutionError("execution window requires a resolved descriptor")
+        object.__setattr__(self, "expected_sessions", _canonical_sessions(
+            self.expected_sessions, self.window.test_start, self.window.test_end,
+        ))
+        object.__setattr__(self, "_observer_authority", True)
+
+    @property
+    def identity(self):
+        return self.window.identity
+
+    @property
+    def window_key(self):
+        return self.window.window_key
+
+    @property
+    def sessions_fingerprint(self):
+        return fingerprint_value({
+            "window_key": self.window_key,
+            "expected_sessions": list(self.expected_sessions),
+        })
+
+    def to_public_dict(self):
+        payload = self.window.to_public_dict()
+        payload.update({
+            "expected_sessions": list(self.expected_sessions),
+            "sessions_fingerprint": self.sessions_fingerprint,
+        })
+        return payload
+
+
+def observe_rolling_business_sessions(windows, calendar_provider=None):
+    """Observe exact Qlib business sessions for an ordered resolved-window tuple.
+
+    ``calendar_provider`` is injectable for deterministic contract tests.  The
+    default imports Qlib only when this runtime function is called.
+    """
+
+    if not isinstance(windows, tuple):
+        raise RollingWindowResolutionError("windows must be an ordered tuple")
+    if calendar_provider is None:
+        from qlib.data import D
+
+        calendar_provider = lambda start, end: D.calendar(start_time=start, end_time=end, freq="day")
+    descriptors = []
+    for window in windows:
+        if not isinstance(window, RollingWindowDescriptor):
+            raise RollingWindowResolutionError("windows contain a foreign descriptor")
+        try:
+            observed = calendar_provider(window.test_start, window.test_end)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception as exc:
+            raise RollingWindowResolutionError(
+                "business calendar observation failed: %s" % exc.__class__.__name__
+            )
+        descriptors.append(RollingWindowExecutionDescriptor(
+            window, tuple(observed), _authority=_EXECUTION_WINDOW_TOKEN,
+        ))
+    return tuple(descriptors)
+
+
+def rolling_sessions_fingerprint(windows):
+    if not isinstance(windows, tuple) or any(
+        not isinstance(item, RollingWindowExecutionDescriptor) for item in windows
+    ):
+        raise RollingWindowResolutionError("session fingerprint requires execution descriptors")
+    return fingerprint_value([
+        {"window_key": item.window_key, "expected_sessions": list(item.expected_sessions)}
+        for item in windows
+    ])
 
 
 @dataclass(frozen=True)

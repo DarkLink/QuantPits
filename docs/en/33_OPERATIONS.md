@@ -98,11 +98,13 @@ integer `2`; floats `2.0`/`2e0` are unsupported. Zero-byte files, `{}`, duplicat
 non-canonical window/run identities, family/workspace/config identity mismatches, and external
 symlinks fail closed. A legacy config is reported as `checked` only when present in state and its
 fingerprint was actually compared; mismatch inspections expose no raw legacy payload. Completion or
-recorder claims in state are not recovery reuse authority. The repository permits only
-pre-evidence `prepared`/`executing`/`failed` transitions and continues to reject
-`units_complete`/`completed`. Legacy migration produces only a deterministic, zero-write,
+recorder claims without evidence reinspection are not recovery reuse authority. Plain repository
+`commit()` permits only pre-evidence transitions. The Phase 34 evidence-authorized entry rebuilds
+the exact `RollingEvidenceSetInspection`, permits only `executing → units_complete`, and continues
+to reject `completed`. Legacy migration produces only a deterministic, zero-write,
 proposal-only postimage audit with no CLI or `apply()` capability. Immutable evidence now has a
-standalone read-only domain API, but public runtime does not consume it yet. Repository data/state/lock mappings cannot be redirected through a context or
+standalone read-only domain API consumed by the exact-unit kernel, but not by the legacy CLI.
+Repository data/state/lock mappings cannot be redirected through a context or
 public field, create rejects a foreign workspace identity before temp/replace, and
 compare-and-delete accepts only an exact `failed` V2.
 
@@ -137,8 +139,14 @@ as an orphan by evidence and then rejected by recovery.
 
 `classify_rolling_recovery(requests, evidence_set)` returns only an `all_reusable`, `incomplete`,
 `no_reusable_evidence`, or `blocked` proposal. It has no `apply()` method and does not train, fill a
-prediction gap, mutate State V2, publish a current record, or clean a recorder. Current operational
-commands do not claim to consume this proposal.
+prediction gap, mutate State V2, publish a current record, or clean a recorder. The Phase 34 domain
+API first binds observed sessions with `bind_rolling_execution_run_identity()`, then exposes
+`build_rolling_execution_scope()`, `preflight_rolling_execution()`,
+`execute_rolling_units()`, and `resume_rolling_units()` for the exact
+LinearModel/DatasetH/Slide unit. Resume reads only the original source frozen in State V2 and its
+highest durable success phase is `units_complete`. These APIs write no current record, combined
+recorder, backtest, history, or promotion output; existing `rolling_train.py` commands remain on the
+legacy route.
 
 ### Cross-Mode Isolation
 

@@ -183,15 +183,18 @@ terminal status 固定为：
 
 import、class resolution、constructor/fit/predict signature 成功都只是 predicate fact，不能单独形成
 `supported_verified`。serialized replay、public constructor 和 `dataclasses.replace()` 也不能制造 inspector
-provenance、aggregate count 或 preflight capability。矩阵目前没有接入 static/CPCV/Rolling runner；positive row
-不是训练、恢复、publication 或模型质量成功证据。
+provenance、aggregate count 或 preflight capability。矩阵仍未接入 legacy static/CPCV/Rolling CLI；Phase 34
+exact-unit kernel 只查询所选 unit 的 exact row。positive row 不是训练、恢复、publication 或模型质量成功证据。
 
-默认 inspector 已连接 fail-closed protocol adapter registry，但当前没有 row 拥有完整的 actual adapter。generated
-fixture、覆写 dataset behavior、探针自写 artifact sidecar 或从请求 identity 回显 action/profile 都只能作为
-`harness_self_test_only`，不能授予 positive authority；所有进入 protocol stage 的 row 会诚实返回
-`not_comparable / protocol_adapter_not_available`，直到 exact dataset/processor、training hook、recorder source chain、
-action/family 和 prediction coverage 都能被独立观察。
-controlled import 还会验证默认 constructor 可绑定、`fit(dataset, evals_result)` 与 `predict(dataset)` 参数，并拒绝
+默认 inspector 已连接 fail-closed protocol adapter registry。唯一 actual positive 是
+`qlib.contrib.model.linear.LinearModel + qlib.data.dataset.DatasetH + point_in_time + train + rolling +
+qlib_recorder_model_v1 + python_qlib`。它在隔离临时目录内使用 generated fixture，实际完成 fit、model artifact
+roundtrip、reload、predict，并检查 processor input/output、artifact source/type 与 tail/gap/unique/finite；相邻
+action/family/dataset row 不会自动升级。其他 generated fixture、覆写 dataset behavior、探针自写 artifact sidecar
+或从请求 identity 回显 action/profile 都只能作为 `harness_self_test_only`，不能授予 positive authority，未实现
+exact adapter 的 row 仍返回 `not_comparable / protocol_adapter_not_available`。
+controlled import 还会验证默认 constructor 可绑定；内部 wrappers 检查 `fit(dataset, evals_result)`，上述 external
+Linear row 检查其真实 `fit(dataset, reweighter)`/dataset contract，并统一检查 `predict(dataset)`，同时拒绝
 workspace/backend activation。zero-write observer 默认覆盖仓库公共边界（包括 `quantpits/`、`docs/`、`tests/` 和
 root output/cache），但排除 `.git/`、ignored plan 和私有 `workspaces/`；observer 以文件事件加结构元数据工作，
 不读取或渲染 output 业务内容。即使同时检测到写入，子进程或 probe 的
@@ -203,4 +206,7 @@ from quantpits.model_capabilities import ModelCapabilityInspector
 matrix = ModelCapabilityInspector().inspect_catalog()
 payload = matrix.to_public_dict()
 ```
+
+完整 catalog 仍因其余 required rows 被阻断而 `preflight_allowed=false`；执行方只能 exact-query 所选 unit，不能用
+唯一 positive subset 缩小 requested set。
 保持 qlib 原始 module_path。

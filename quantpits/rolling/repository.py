@@ -22,6 +22,7 @@ from quantpits.rolling.state import (
     inspect_rolling_state_bytes,
     serialize_rolling_state_v2,
 )
+from quantpits.rolling.evidence import RollingEvidenceSetInspection, _rebuild_evidence_set
 from quantpits.utils.workspace import WorkspaceContext
 
 try:
@@ -77,6 +78,7 @@ _COMMITTED_PHASE_TRANSITIONS = frozenset((
     ("executing", "executing"),
     ("executing", "failed"),
     ("failed", "executing"),
+    ("executing", "units_complete"),
 ))
 
 
@@ -590,19 +592,52 @@ class RollingStateRepository:
             (unit.target_key, unit.window_key): unit for unit in snapshot.units
         }
 
-    def _validate_transition(self, previous, proposed):
+    @staticmethod
+    def _validate_evidence_authorization(proposed, evidence_set):
+        if not isinstance(evidence_set, RollingEvidenceSetInspection):
+            raise RollingStateTransitionError("evidence authorization must be inspector-owned")
+        try:
+            evidence_set = _rebuild_evidence_set(evidence_set)
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            raise RollingStateTransitionError("evidence authorization is not canonical")
+        success_units = tuple(unit for unit in proposed.units if unit.status == "success")
+        success_keys = tuple((unit.target_key, unit.window_key) for unit in success_units)
+        if evidence_set.requested_unit_keys != success_keys:
+            raise RollingStateTransitionError("evidence scope does not exactly match successful units")
+        if evidence_set.status != "all_valid" or evidence_set.n_valid != len(success_units):
+            raise RollingStateTransitionError("successful units require all-valid evidence")
+        for unit, evidence in zip(success_units, evidence_set.unit_results):
+            summary = dict(evidence.source_summary)
+            if (
+                evidence.classification != "valid"
+                or evidence.evidence_fingerprint != unit.evidence_id
+                or summary.get("recorder_id") != unit.record_id
+                or evidence.unit_key != (unit.target_key, unit.window_key)
+            ):
+                raise RollingStateTransitionError("unit success facts disagree with immutable evidence")
+        if proposed.phase == "units_complete" and len(success_units) != len(proposed.units):
+            raise RollingStateTransitionError("units_complete contains a non-success unit")
+        return evidence_set
+
+    def _validate_transition(self, previous, proposed, evidence_set=None):
         if not isinstance(proposed, RollingStateV2Snapshot):
             raise RollingStateTransitionError("proposed state is not State V2")
         if proposed.family != self.family:
             raise RollingStateTransitionError("proposed state family is foreign")
         if proposed.workspace_fingerprint != workspace_fingerprint(self.context.root):
             raise RollingStateTransitionError("proposed state workspace is foreign")
-        if proposed.phase in ("units_complete", "completed"):
+        if proposed.phase == "completed":
+            raise RollingStateTransitionError("publication completion is not writable")
+        if proposed.phase == "units_complete" and evidence_set is None:
             raise RollingStateTransitionError("completion requires immutable evidence")
-        if any(unit.status in ("success", "completed")
+        if evidence_set is None and any(unit.status in ("success", "completed")
                or unit.evidence_id is not None or unit.record_id is not None
                for unit in proposed.units):
             raise RollingStateTransitionError("evidence/completion claims are not writable")
+        if evidence_set is not None:
+            self._validate_evidence_authorization(proposed, evidence_set)
         if previous is None:
             if (proposed.phase != "prepared" or proposed.attempt_id is not None
                     or proposed.units):
@@ -626,8 +661,9 @@ class RollingStateRepository:
             )
         allowed = {
             "prepared": ("prepared", "executing", "failed"),
-            "executing": ("executing", "failed"),
+            "executing": ("executing", "failed", "units_complete"),
             "failed": ("failed", "executing"),
+            "units_complete": ("units_complete",),
         }
         if previous.phase not in allowed or proposed.phase not in allowed[previous.phase]:
             raise RollingStateTransitionError("Rolling state phase transition is invalid")
@@ -655,18 +691,24 @@ class RollingStateRepository:
             raise RollingStateTransitionError("existing unit identity was removed or reordered")
         unit_transitions = {
             "pending": ("pending", "running", "failed", "skipped"),
-            "running": ("running", "failed", "skipped"),
-            "failed": ("failed",),
+            "running": ("running", "success", "failed", "skipped"),
+            "failed": ("failed", "running"),
             "skipped": ("skipped",),
+            "blocked": ("blocked",),
+            "success": ("success",),
         }
         for identity, old in previous_units.items():
             new = proposed_units[identity]
             if new.status not in unit_transitions.get(old.status, ()):
                 raise RollingStateTransitionError("unit progress regressed")
-            if (old.record_id != new.record_id
-                    or old.evidence_id != new.evidence_id
-                    or old._extensions_json != new._extensions_json):
-                raise RollingStateTransitionError("unit facts changed outside status")
+            if old.status == "success":
+                if (old.record_id != new.record_id
+                        or old.evidence_id != new.evidence_id
+                        or old._extensions_json != new._extensions_json):
+                    raise RollingStateTransitionError("successful unit facts are immutable")
+            elif new.status != "success" and (
+                    old.record_id != new.record_id or old.evidence_id != new.evidence_id):
+                raise RollingStateTransitionError("unit evidence facts changed without success")
         for identity, unit in proposed_units.items():
             if (identity not in previous_units
                     and unit._extensions_json is not None):
@@ -708,7 +750,7 @@ class RollingStateRepository:
         except OSError:
             pass
 
-    def commit(self, proposed, expected, blocking=True):
+    def _commit(self, proposed, expected, blocking=True, evidence_set=None):
         payload = serialize_rolling_state_v2(proposed)
         operation = "create" if not expected.existed else "transition"
         temporary = None
@@ -741,7 +783,7 @@ class RollingStateRepository:
                         before_phase=before_phase,
                     )
                 try:
-                    self._validate_transition(previous, proposed)
+                    self._validate_transition(previous, proposed, evidence_set=evidence_set)
                 except RollingStateTransitionError:
                     return self._receipt(
                         operation, "invalid_transition", before=before,
@@ -818,6 +860,18 @@ class RollingStateRepository:
                 after_phase=None,
                 did_write=replaced,
             )
+
+    def commit(self, proposed, expected, blocking=True):
+        """Commit pre-evidence state only; completion authority is rejected."""
+
+        return self._commit(proposed, expected, blocking=blocking, evidence_set=None)
+
+    def commit_evidence_authorized(self, proposed, expected, evidence_set, blocking=True):
+        """Commit exact success facts after rebuilding inspector-owned evidence."""
+
+        return self._commit(
+            proposed, expected, blocking=blocking, evidence_set=evidence_set,
+        )
 
     def delete(self, expected, blocking=True):
         temporary = None

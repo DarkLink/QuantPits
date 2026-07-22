@@ -235,12 +235,14 @@ signature smoke 通过也不代表 prediction coverage 安全。
 
 如果希望 row 获得 `supported_verified`，还必须在受控 adapter 中为 exact canonical identity 建立 actual-wrapper
 generated protocol：完整 identity 包含 dataset module/class、action/family、processor、artifact 和 dependency profile，
-不能只匹配 wrapper module/class。adapter 必须实际验证默认 constructor、`fit(dataset, evals_result)`、
+不能只匹配 wrapper module/class。adapter 必须实际验证默认 constructor、该 exact class 的真实 fit contract
+（内部 wrappers 通常为 `fit(dataset, evals_result)`，external Linear 为 `fit(dataset, reweighter)`）、
 `predict(dataset)`、generated dataset/processor、artifact reload/source 以及 tail/gap/unique/finite coverage。不要公开或
 手工构造 protocol measurement；测试 callback 只用于 harness negative self-test，永远不能制造 positive provenance。
-暂未实现 exact adapter 的 wrapper/profile 应保留 `not_comparable`，不能复制邻近 row 的 observation。当前 actual
-adapter registry 没有任何 positive row；覆写 `DatasetH.prepare()`、自写 source sidecar 或回显 action/profile 都不足以
-建立上述事实。只有独立观察完整 dataset/processor、training hook 与 recorder source chain 后才能添加 positive adapter。
+暂未实现 exact adapter 的 wrapper/profile 应保留 `not_comparable`，不能复制邻近 row 的 observation。当前唯一
+positive row 是 `LinearModel/DatasetH/point_in_time/train/rolling` 的 external passthrough；它只授权 Phase 34 exact-unit
+query，不授权相邻 row 或完整 catalog。覆写 `DatasetH.prepare()`、自写 source sidecar 或回显 action/profile 都不足以
+建立上述事实。只有独立观察完整 dataset/processor、training hook 与 recorder source chain 后才能添加其他 positive adapter。
 
 owner 可在 final candidate 上运行短合同命令：
 
@@ -249,5 +251,6 @@ python3.12 -m pytest tests/quantpits/model_capabilities/ -q --tb=short --no-cov
 python3.12 -m pytest tests/quantpits/semantic/test_model_capability_conservation.py -q --tb=short --no-cov
 ```
 
-这些 generated/tiny tests 不读取 workspace、不初始化 Qlib provider/MLflow，也不替代 Playground/发布前的真实
-训练验证。能力矩阵当前只提供 render/query 和后续 preflight proposal，不会自动修改 workspace config 或启动 runner。
+这些 generated/tiny tests 不读取 workspace；exact Linear test 会在隔离临时目录内绑定临时 Qlib/MLflow backend，完成
+一次 bounded synthetic fit、recorder save/reload/predict，但不替代 Playground/发布前的真实训练验证。能力矩阵不会自动修改 workspace
+config 或启动 runner；只有 `build_rolling_execution_scope()` 建立的 exact scope 能进入显式 Phase 34 kernel。

@@ -107,10 +107,11 @@ replace/delete 和 truthful receipt，但尚未接入 CLI。因而 public mutati
 V2 版本必须是 JSON integer `2`，float `2.0`/`2e0` 也属于 unsupported schema。zero-byte、`{}`、duplicate
 JSON key、非规范 window/run identity、family/workspace/config identity mismatch 与外部 symlink 都 fail closed。
 legacy config 只有在 state 中存在且实际比较 fingerprint 时才显示为 `checked`，mismatch 不提供 raw legacy
-payload。State 中的 completion/recorder claim 不提供 recovery reuse authority；repository 只允许
-`prepared/executing/failed` 的 pre-evidence transition，`units_complete/completed` 继续拒绝。legacy migration
+payload。State 中未经 evidence 重验的 completion/recorder claim 不提供 recovery reuse authority；普通
+repository `commit()` 只允许 pre-evidence transition。Phase 34 的 evidence-authorized 入口会重建 exact
+`RollingEvidenceSetInspection`，只允许 `executing → units_complete`，并继续拒绝 `completed`。legacy migration
 仅生成 deterministic、zero-write、proposal-only postimage audit，没有 CLI 或 `apply()`，immutable evidence
-现已提供独立的只读 domain API，但尚未接入 public runtime。repository 的 data/state/lock 映射不能由 context 或公开字段改写，create 会在 temp/replace 前
+现已由独立 exact-unit kernel 消费，但尚未接入 legacy CLI。repository 的 data/state/lock 映射不能由 context 或公开字段改写，create 会在 temp/replace 前
 拒绝 foreign workspace identity，compare-delete 只接受 exact `failed` V2。
 
 ### Immutable evidence 与 recovery proposal
@@ -137,7 +138,12 @@ recovery 又拒绝的 orphan。
 
 `classify_rolling_recovery(requests, evidence_set)` 的结果仅是 `all_reusable`、`incomplete`、
 `no_reusable_evidence` 或 `blocked` proposal。它没有 `apply()`，不会训练、补预测、修改 State V2、发布 current
-record 或清理 recorder。当前运维命令输出也不宣称已消费该 proposal。
+record 或清理 recorder。Phase 34 domain API 先通过 `bind_rolling_execution_run_identity()` 绑定实际交易日，
+再通过 `build_rolling_execution_scope()`、
+`preflight_rolling_execution()`、`execute_rolling_units()`、`resume_rolling_units()` 执行 exact
+LinearModel/DatasetH/Slide unit；resume 只读取 State V2 冻结的 original source，成功 durable phase 为
+`units_complete`。这些 API 不写 current record、combined recorder、backtest、history 或 promotion，且现有
+`rolling_train.py` 运维命令仍走 legacy route。
 
 ### 状态结构
 

@@ -24,7 +24,9 @@ from quantpits.utils.workspace import fingerprint_value
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _V2_PHASES = ("prepared", "executing", "units_complete", "failed", "completed")
-_UNIT_STATUSES = ("pending", "running", "success", "failed", "skipped", "completed")
+_UNIT_STATUSES = (
+    "pending", "running", "success", "failed", "skipped", "blocked", "completed",
+)
 _V2_FIELDS = {
     "schema_version", "workspace_fingerprint", "run_id", "family", "action",
     "plan_fingerprint", "execution_fingerprint", "config_fingerprint",
@@ -502,6 +504,17 @@ def _parse_v2(payload):
                 ) if unit_extensions is not None else None
             ),
         ))
+    if phase == "prepared" and (attempt is not None or units):
+        raise ValueError("prepared state must be empty and attempt-independent")
+    if phase == "units_complete":
+        if attempt is None or len(units) != len(ordered_scope):
+            raise ValueError("units_complete requires a materialized attempt scope")
+        if tuple((item.target_key, item.window_key) for item in units) != tuple(ordered_scope):
+            raise ValueError("units_complete does not preserve the complete requested scope")
+        if any(item.status != "success" for item in units):
+            raise ValueError("units_complete requires every unit to be successful")
+        if any(item.record_id is None or not _is_digest(item.evidence_id) for item in units):
+            raise ValueError("units_complete requires exact record/evidence identities")
     return RollingStateV2Snapshot(
         workspace_fingerprint=payload["workspace_fingerprint"], run_id=run_id,
         family=family, action=action,
@@ -994,11 +1007,16 @@ def inspect_rolling_state_bytes(data, relative_path, workspace_root,
             relative, path_kind, fingerprint, snapshot, checked=checked,
             blockers=mismatch_blockers,
         )
-    completion_claim = (
-        snapshot.phase in ("units_complete", "completed")
-        or any(item.status in ("success", "completed") for item in snapshot.units)
+    unverified_completion_claim = (
+        snapshot.phase == "completed"
+        or any(item.status == "completed" for item in snapshot.units)
+        or any(
+            item.status == "success"
+            and (item.record_id is None or not _is_digest(item.evidence_id))
+            for item in snapshot.units
+        )
     )
-    if completion_claim:
+    if unverified_completion_claim:
         return _inspection(
             "unverified_completion", "rolling_state_v2",
             "rolling_state_completion_unverified", "blocked",

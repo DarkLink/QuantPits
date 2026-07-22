@@ -94,7 +94,7 @@ def test_capability_identity_rejects_closest_invalid_representations(field, valu
         RawModelCapabilityDeclaration.from_dict(missing)
 
 
-def test_public_replay_and_replace_cannot_manufacture_supported_authority():
+def test_execution_preflight_rejects_replay_replace_and_harness_positive():
     import quantpits.model_capabilities as public_api
 
     assert not hasattr(public_api, "ProtocolMeasurements")

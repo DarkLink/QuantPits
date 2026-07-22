@@ -203,20 +203,25 @@ Terminal statuses are fixed:
 A successful import, class lookup, or constructor/fit/predict signature is only a
 predicate fact; none of them alone implies `supported_verified`. Serialized replay,
 public construction, and `dataclasses.replace()` cannot manufacture inspector
-provenance, aggregate counts, or preflight capability. The matrix is not yet wired
-into the static, CPCV, or Rolling runners, and a positive row is not evidence of
+provenance, aggregate counts, or preflight capability. The matrix is not wired into
+the legacy static, CPCV, or Rolling CLI; the Phase 34 exact-unit kernel queries only
+the selected unit's exact row. A positive row is not evidence of
 training, recovery, publication, or model quality.
 
-The default inspector is wired to a fail-closed protocol-adapter registry, but no row
-currently has a complete actual adapter. Generated fixtures, overridden dataset
-behavior, probe-written artifact sidecars, and action/profile values echoed from the
-requested identity are `harness_self_test_only`; they cannot grant positive authority.
-Every row that reaches the protocol stage truthfully returns
-`not_comparable / protocol_adapter_not_available` until
-the exact dataset/processor behavior, training hook, recorder source chain,
-action/family, and prediction coverage can all be independently observed. Controlled
-import still binds a default constructor, checks `fit(dataset, evals_result)` and
-`predict(dataset)`, and denies workspace/backend activation. The zero-write observer
+The default inspector is wired to a fail-closed protocol-adapter registry. Its only
+actual positive combines `qlib.contrib.model.linear.LinearModel`,
+`qlib.data.dataset.DatasetH`, `point_in_time`, `train`, `rolling`,
+`qlib_recorder_model_v1`, and `python_qlib`. In an
+isolated temporary directory it uses a generated fixture and actually performs fit,
+model-artifact roundtrip, reload, and predict, then checks processor input/output,
+artifact source/type, and tail/gap/unique/finite coverage. Adjacent action, family, or
+dataset rows are not upgraded. Other generated fixtures, overridden dataset behavior,
+probe-written sidecars, or echoed action/profile values remain `harness_self_test_only`;
+rows without an exact adapter remain `not_comparable / protocol_adapter_not_available`.
+Controlled import binds a default constructor; internal wrappers check
+`fit(dataset, evals_result)`, while the external Linear row checks its real
+`fit(dataset, reweighter)`/dataset contract, and both check `predict(dataset)` while
+denying workspace/backend activation. The zero-write observer
 covers the public repository boundary by default, including `quantpits/`, `docs/`,
 `tests/`, and root output/cache, while excluding `.git/`, the ignored plan, and private
 `workspaces/`. It combines filesystem events with structural metadata and does not
@@ -229,3 +234,7 @@ from quantpits.model_capabilities import ModelCapabilityInspector
 matrix = ModelCapabilityInspector().inspect_catalog()
 payload = matrix.to_public_dict()
 ```
+
+The complete catalog still has `preflight_allowed=false` because other required rows
+remain blocked. An execution caller may exact-query the selected unit; it may not use
+the one positive subset to shrink the requested set.

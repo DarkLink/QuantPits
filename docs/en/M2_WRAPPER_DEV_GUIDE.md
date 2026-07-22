@@ -245,13 +245,17 @@ For a row to receive `supported_verified`, a controlled adapter must also establ
 an actual-wrapper generated protocol for the exact canonical identity. That identity
 includes the dataset module/class, action/family, processor, artifact, and dependency
 profiles; matching only the wrapper module/class is insufficient. The adapter must
-actually check default-constructor binding, `fit(dataset, evals_result)`,
+actually check default-constructor binding and the exact class's real fit contract
+(normally `fit(dataset, evals_result)` for internal wrappers and
+`fit(dataset, reweighter)` for external Linear),
 `predict(dataset)`, the generated dataset/processor, artifact reload/source, and
 tail/gap/unique/finite coverage. Do not expose or manually construct protocol
 measurements. Test callbacks are negative harness self-tests only and can never create
 positive provenance. Keep a wrapper/profile without an exact adapter as
-`not_comparable`; never copy an observation from a neighboring row. The current actual
-adapter registry has no positive row. Overriding `DatasetH.prepare()`, writing a source
+`not_comparable`; never copy an observation from a neighboring row. The only current
+positive row is the external-passthrough
+`LinearModel/DatasetH/point_in_time/train/rolling` row. It authorizes only a Phase 34
+exact-unit query, not adjacent rows or the complete catalog. Overriding `DatasetH.prepare()`, writing a source
 sidecar inside the probe, or echoing an action/profile does not establish those facts;
 add a positive adapter only after independently observing the complete
 dataset/processor behavior, training hook, and recorder source chain.
@@ -263,7 +267,9 @@ python3.12 -m pytest tests/quantpits/model_capabilities/ -q --tb=short --no-cov
 python3.12 -m pytest tests/quantpits/semantic/test_model_capability_conservation.py -q --tb=short --no-cov
 ```
 
-These generated/tiny tests do not read a workspace or initialize the Qlib provider
-or MLflow, and they do not replace real Playground/release training validation.
-The capability matrix currently provides render/query and a future preflight
-proposal only; it does not modify workspace configuration or start a runner.
+These generated/tiny tests do not read a workspace. The exact Linear test binds a
+temporary Qlib/MLflow backend inside an isolated temporary directory and performs one
+bounded synthetic fit plus recorder save/reload/predict, but it does not replace real Playground/release
+training validation. The capability matrix does not modify workspace configuration or
+start a runner; only an exact scope built by `build_rolling_execution_scope()` can
+enter the explicit Phase 34 kernel.
