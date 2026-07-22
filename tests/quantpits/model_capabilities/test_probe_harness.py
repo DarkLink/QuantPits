@@ -285,7 +285,7 @@ def test_catalog_probe_is_workspace_and_backend_independent(monkeypatch, tmp_pat
         if item.model_module.endswith("custom.pytorch_lstm")
         and item.action == "train" and item.execution_family == "static"
     )
-    matrix = ModelCapabilityInspector().inspect((declaration,))
+    matrix = ModelCapabilityInspector._with_probes(_import_ok).inspect((declaration,))
     assert matrix.results[0].status == "not_comparable"
     assert matrix.results[0].reason == "protocol_adapter_not_available"
     unavailable = ImportObservation(False, False, False, False, False, False, True, "dependency_missing")

@@ -63,7 +63,7 @@ def _blocked_matrix():
         if item.model_module.endswith("custom.pytorch_lstm")
         and item.action == "train" and item.execution_family == "static"
     )
-    return ModelCapabilityInspector().inspect((declaration,))
+    return ModelCapabilityInspector._with_probes(_import_ok).inspect((declaration,))
 
 
 @pytest.mark.parametrize("field,value", [
