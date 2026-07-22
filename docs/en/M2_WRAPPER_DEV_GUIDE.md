@@ -271,5 +271,6 @@ These generated/tiny tests do not read a workspace. The exact Linear test binds 
 temporary Qlib/MLflow backend inside an isolated temporary directory and performs one
 bounded synthetic fit plus recorder save/reload/predict, but it does not replace real Playground/release
 training validation. The capability matrix does not modify workspace configuration or
-start a runner; only an exact scope built by `build_rolling_execution_scope()` can
-enter the explicit Phase 34 kernel.
+start a runner. Only an exact scope built by `build_rolling_execution_scope()` from matching
+Prepared/Resolved authority, the Prepared target tuple, and an ordered resolved-window subset—and
+bound to the complete runtime/provider/backend identity—can enter the explicit Phase 34 kernel.

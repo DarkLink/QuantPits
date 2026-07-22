@@ -200,7 +200,8 @@ reported as committed; uncertain directory durability or postimage reread produc
 `durability_uncertain`. Compare-and-delete accepts only an exact `failed` V2 and has no public
 parameter that can relax this rule. Plain `commit()` still rejects success and `units_complete`.
 The separate evidence-authorized entry rebuilds an inspector-owned
-`RollingEvidenceSetInspection`, checks every recorder/evidence identity, and can advance only as
+`RollingEvidenceSetInspection`, jointly checks every original attempt, experiment, recorder,
+source protocol/operation, source manifest, artifact expectation, and evidence identity, and can advance only as
 far as `units_complete`; `completed` still requires a later publication receipt. Existing legacy
 `rolling_train.py`, `--clear-state`, resume, and backup
 behavior is unchanged and no workspace is migrated automatically.
@@ -225,11 +226,19 @@ candidates, identity mismatch, missing/corrupt artifacts, short coverage, non-co
 orphans, or drift cannot become `valid`. `classify_rolling_recovery(requests, evidence_set)` emits
 only a proposal that preserves requested identity, order, and cardinality; only `valid` units enter
 its reusable subset, and it has no execute, state-transition, publication, repair, or `apply()`
-capability. Phase 34 first uses `bind_rolling_execution_run_identity()` to bind actually observed
-business sessions into the runtime fingerprint. Its `build_rolling_execution_scope()`, `preflight_rolling_execution()`,
+capability. Phase 34's authoritative
+`build_rolling_execution_scope(prepared, resolved, selected_window_keys, targets, windows)` revalidates
+the Prepared target tuple, the matching Resolved Plan, and an explicit ordered subset of resolved
+windows; unknown, duplicate, and out-of-order selections are rejected. Internally,
+`bind_rolling_execution_run_identity(resolved, selected_window_keys, windows)` combines the original
+runtime parameters, observed business sessions, Qlib provider/region, and MLflow backend in the
+execution identity. `preflight_rolling_execution()`,
 `execute_rolling_units()`, and `resume_rolling_units()` consume the exact capability row and this
 evidence. Every requested target×window retains one ordered terminal result; runner success becomes
-`executed_success` only after the manifest, Phase 32 reinspection, and State CAS all pass. Resume
+`executed_success` only after the manifest, Phase 32 reinspection, and State CAS all pass. Manifest
+commit also proves the runner's unique newly created recorder, experiment, and provenance tags;
+State CAS jointly checks the attempt, experiment, source manifest/operation, and artifact expectations.
+Resume consumes the exact `classify_rolling_recovery()` proposal and
 uses only the original attempt/recorder/evidence frozen in State V2 and never a mutable current
 record or "latest recorder". Ordinary unit failure preserves later units and process-control
 interruptions propagate. The mapper retains a canonical target whose capability is blocked instead of shrinking the

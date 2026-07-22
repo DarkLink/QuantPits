@@ -253,4 +253,6 @@ python3.12 -m pytest tests/quantpits/semantic/test_model_capability_conservation
 
 这些 generated/tiny tests 不读取 workspace；exact Linear test 会在隔离临时目录内绑定临时 Qlib/MLflow backend，完成
 一次 bounded synthetic fit、recorder save/reload/predict，但不替代 Playground/发布前的真实训练验证。能力矩阵不会自动修改 workspace
-config 或启动 runner；只有 `build_rolling_execution_scope()` 建立的 exact scope 能进入显式 Phase 34 kernel。
+config 或启动 runner；只有由匹配的 Prepared/Resolved、Prepared target tuple 与 resolved-window 有序子集通过
+`build_rolling_execution_scope()` 建立，并绑定完整 runtime/provider/backend identity 的 exact scope，才能进入显式
+Phase 34 kernel。

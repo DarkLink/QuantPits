@@ -610,13 +610,45 @@ class RollingStateRepository:
             raise RollingStateTransitionError("successful units require all-valid evidence")
         for unit, evidence in zip(success_units, evidence_set.unit_results):
             summary = dict(evidence.source_summary)
+            extensions = unit.extensions
+            required_extensions = {
+                "attempt_id", "source_manifest_fingerprint", "source_protocol",
+                "source_publication_key", "experiment_name", "experiment_id",
+                "recorder_id", "source_operation", "artifacts",
+            }
+            observed_artifacts = [
+                {
+                    "logical_key": item.logical_key,
+                    "role": item.role,
+                    "size_bytes": item.size_bytes,
+                    "fingerprint": item.fingerprint,
+                }
+                for item in evidence.artifact_observations
+            ]
             if (
                 evidence.classification != "valid"
                 or evidence.evidence_fingerprint != unit.evidence_id
                 or summary.get("recorder_id") != unit.record_id
                 or evidence.unit_key != (unit.target_key, unit.window_key)
+                or not isinstance(extensions, dict)
+                or set(extensions) != required_extensions
+                or extensions.get("attempt_id") != summary.get("attempt_id")
+                or extensions.get("source_manifest_fingerprint")
+                != evidence.request_fingerprint
+                or extensions.get("source_manifest_fingerprint")
+                != summary.get("source_manifest_fingerprint")
+                or extensions.get("source_protocol") != summary.get("source_protocol")
+                or extensions.get("source_publication_key")
+                != summary.get("source_publication_key")
+                or extensions.get("experiment_name") != summary.get("experiment_name")
+                or extensions.get("experiment_id") != summary.get("experiment_id")
+                or extensions.get("recorder_id") != summary.get("recorder_id")
+                or extensions.get("source_operation") != summary.get("source_operation")
+                or extensions.get("artifacts") != observed_artifacts
             ):
-                raise RollingStateTransitionError("unit success facts disagree with immutable evidence")
+                raise RollingStateTransitionError(
+                    "unit success source selector disagrees with immutable evidence"
+                )
         if proposed.phase == "units_complete" and len(success_units) != len(proposed.units):
             raise RollingStateTransitionError("units_complete contains a non-success unit")
         return evidence_set

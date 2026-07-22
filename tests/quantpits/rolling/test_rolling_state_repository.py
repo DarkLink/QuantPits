@@ -3,6 +3,7 @@
 import dataclasses
 import fcntl
 import hashlib
+import json
 import multiprocessing
 import os
 from pathlib import Path
@@ -575,7 +576,7 @@ def test_evidence_authorized_success_and_units_complete_reject_impossible_combin
     scope = make_scope(context, linear_capability_result())
     repository = RollingStateRepository.for_workspace(context, "rolling")
     backend = FakeExecutionBackend(context)
-    result = RollingExecutionKernel(repository, backend, FakeRunner()).execute(
+    result = RollingExecutionKernel(repository, backend, FakeRunner(context)).execute(
         scope, "attempt-1",
     )
     assert result.status == "success"
@@ -595,3 +596,35 @@ def test_evidence_authorized_success_and_units_complete_reject_impossible_combin
     )
     assert receipt.status == "invalid_transition"
     assert repository.inspect_readonly().baseline == view.baseline
+
+    original = view.inspection.snapshot.units[0]
+    original_extensions = original.extensions
+    forged_extensions = []
+    missing_attempt = dict(original_extensions)
+    missing_attempt.pop("attempt_id")
+    forged_extensions.append(missing_attempt)
+    for field, value in (
+        ("attempt_id", "forged-attempt"),
+        ("experiment_id", "forged-experiment"),
+        ("source_manifest_fingerprint", "f" * 64),
+        ("source_operation", "daily"),
+        ("artifacts", []),
+    ):
+        changed = dict(original_extensions)
+        changed[field] = value
+        forged_extensions.append(changed)
+    for extensions in forged_extensions:
+        unit = dataclasses.replace(
+            original,
+            _extensions_json=json.dumps(
+                extensions, sort_keys=True, separators=(",", ":"),
+            ),
+        )
+        proposed = dataclasses.replace(
+            view.inspection.snapshot, units=(unit,),
+        )
+        denied = repository.commit_evidence_authorized(
+            proposed, view.baseline, evidence,
+        )
+        assert denied.status == "invalid_transition"
+        assert repository.inspect_readonly().baseline == view.baseline

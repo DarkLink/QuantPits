@@ -8,10 +8,15 @@ from pathlib import Path
 import pandas as pd
 
 from quantpits.rolling import (
+    PreparedRollingRun,
+    ResolvedRollingRun,
+    RollingAnchorPolicy,
     RollingArtifactExpectation,
     RollingExecutionTargetDescriptor,
     RollingRunIdentity,
     RollingTargetIdentity,
+    RollingTarget,
+    RollingRunOptions,
     RollingUnitEvidenceRequest,
     RollingUnitRunnerObservation,
     RollingWindowDescriptor,
@@ -23,6 +28,10 @@ from quantpits.rolling import (
     workspace_fingerprint,
 )
 from quantpits.utils.workspace import fingerprint_value
+from quantpits.runtime.command import CommandPlan, fingerprint_command_plan
+
+
+RUNTIME_PARAMS = {"market": "csi300", "benchmark": "SH000300"}
 
 
 @lru_cache(maxsize=1)
@@ -78,6 +87,7 @@ def prediction_bytes(sessions):
 
 def make_scope(context, capability_result, n_targets=1, n_windows=1):
     targets = []
+    prepared_targets = []
     for index in range(n_targets):
         target = RollingTargetIdentity("linear-%s" % index, "rolling")
         relative = "config/linear-%s.yaml" % index
@@ -100,6 +110,10 @@ def make_scope(context, capability_result, n_targets=1, n_windows=1):
         targets.append(map_workflow_capability(
             context, target.target_key, relative, linear_capability_matrix(),
         ))
+        prepared_targets.append(RollingTarget(
+            target, relative, targets[-1].workflow_fingerprint,
+            "test_fixture", {},
+        ))
     windows = []
     for index in range(n_windows):
         month = index + 1
@@ -118,30 +132,49 @@ def make_scope(context, capability_result, n_targets=1, n_windows=1):
             "test_start": identity.test_start, "test_end": identity.test_end,
         })
         windows.append(descriptor)
-    windows = list(observe_rolling_business_sessions(
-        tuple(windows), lambda start, end: (start, end),
-    ))
-    sessions_fp = fingerprint_value([
-        {"window_key": item.window_key, "expected_sessions": list(item.expected_sessions)}
-        for item in windows
-    ])
-    run = RollingRunIdentity(
-        workspace_fingerprint=workspace_fingerprint(context.root),
-        family="rolling", action="merge", plan_fingerprint="b" * 64,
-        config_fingerprint="c" * 64, anchor_date=windows[-1].identity.test_end,
-        target_keys=tuple(item.target_key for item in targets),
-        window_keys=tuple(item.window_key for item in windows),
-        runtime_params_fingerprint=sessions_fp,
+    resolved_windows = tuple(windows)
+    plan = CommandPlan(
+        "rolling_train", context.root.name, "test-fixture", mode="rolling:merge",
     )
-    return build_rolling_execution_scope(run, tuple(targets), tuple(windows))
+    plan_fingerprint = fingerprint_command_plan(plan, length=64)
+    prepared = PreparedRollingRun(
+        context, RollingRunOptions(action="merge"), (), {},
+        tuple(prepared_targets), None, RollingAnchorPolicy("test_fixture"),
+        plan, plan_fingerprint, {},
+    )
+    resolved_identity = RollingRunIdentity(
+        workspace_fingerprint=workspace_fingerprint(context.root),
+        family="rolling", action="merge", plan_fingerprint=plan_fingerprint,
+        config_fingerprint=fingerprint_value({}), anchor_date=windows[-1].identity.test_end,
+        target_keys=tuple(item.target_key for item in targets),
+        window_keys=tuple(item.window_key for item in resolved_windows),
+        runtime_params_fingerprint=fingerprint_value(RUNTIME_PARAMS),
+    )
+    resolved = ResolvedRollingRun(
+        prepared, resolved_identity.anchor_date, dict(RUNTIME_PARAMS),
+        resolved_windows, resolved_identity,
+    )
+    observed_windows = observe_rolling_business_sessions(
+        resolved_windows, lambda start, end: (start, end),
+    )
+    selected = tuple(item.window_key for item in observed_windows)
+    return build_rolling_execution_scope(
+        prepared, resolved, selected, tuple(targets), observed_windows,
+    )
 
 
 class FakeRunner:
-    def __init__(self, failures=(), controls=None, timeline=None):
+    def __init__(self, context, runtime_params=None, failures=(), controls=None, timeline=None):
+        self.context = context
+        self.runtime_params = dict(runtime_params or RUNTIME_PARAMS)
         self.failures = set(failures)
         self.controls = dict(controls or {})
         self.calls = []
         self.timeline = timeline
+
+    @property
+    def runtime_params_fingerprint(self):
+        return fingerprint_value(self.runtime_params)
 
     def execute(self, scope, unit, attempt_id):
         self.calls.append((unit.unit_key, attempt_id))
@@ -172,7 +205,7 @@ class FakeExecutionBackend:
 
     @property
     def backend_fingerprint(self):
-        return "e" * 64
+        return fingerprint_value({"tracking_uri": str(self.context.mlflow_uri)})
 
     @staticmethod
     def calendar_sessions(start, end):
@@ -185,7 +218,12 @@ class FakeExecutionBackend:
             "present": True, "contained": True, "foreign": False,
         }
 
-    def commit_execution_manifest(self, scope, unit, observation):
+    def capture_recorder_inventory(self, scope, unit, attempt_id):
+        return frozenset(self.candidates)
+
+    def commit_execution_manifest(self, scope, unit, observation, recorder_baseline):
+        if recorder_baseline != frozenset(self.candidates):
+            raise RuntimeError("fake recorder inventory baseline drifted")
         self.manifest_calls.append(unit.unit_key)
         if self.timeline is not None:
             self.timeline.append("manifest:%s" % unit.position)
@@ -245,6 +283,8 @@ class FakeExecutionBackend:
             "source_manifest_fingerprint": request.source_manifest_fingerprint,
             "artifact_root_uri": root.resolve().as_uri(),
         }
+        if tuple(key for key in self.candidates if key not in recorder_baseline) != (unit.unit_key,):
+            raise RuntimeError("fake runner did not create exactly one recorder")
         return request
 
     def _placeholder(self, scope, unit, state):

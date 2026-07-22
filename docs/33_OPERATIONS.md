@@ -109,7 +109,8 @@ JSON key、非规范 window/run identity、family/workspace/config identity mism
 legacy config 只有在 state 中存在且实际比较 fingerprint 时才显示为 `checked`，mismatch 不提供 raw legacy
 payload。State 中未经 evidence 重验的 completion/recorder claim 不提供 recovery reuse authority；普通
 repository `commit()` 只允许 pre-evidence transition。Phase 34 的 evidence-authorized 入口会重建 exact
-`RollingEvidenceSetInspection`，只允许 `executing → units_complete`，并继续拒绝 `completed`。legacy migration
+`RollingEvidenceSetInspection`，并核对完整 original source selector 后才允许 `executing → units_complete`，继续拒绝
+`completed`。legacy migration
 仅生成 deterministic、zero-write、proposal-only postimage audit，没有 CLI 或 `apply()`，immutable evidence
 现已由独立 exact-unit kernel 消费，但尚未接入 legacy CLI。repository 的 data/state/lock 映射不能由 context 或公开字段改写，create 会在 temp/replace 前
 拒绝 foreign workspace identity，compare-delete 只接受 exact `failed` V2。
@@ -138,10 +139,13 @@ recovery 又拒绝的 orphan。
 
 `classify_rolling_recovery(requests, evidence_set)` 的结果仅是 `all_reusable`、`incomplete`、
 `no_reusable_evidence` 或 `blocked` proposal。它没有 `apply()`，不会训练、补预测、修改 State V2、发布 current
-record 或清理 recorder。Phase 34 domain API 先通过 `bind_rolling_execution_run_identity()` 绑定实际交易日，
-再通过 `build_rolling_execution_scope()`、
+record 或清理 recorder。Phase 34 domain API 通过
+`build_rolling_execution_scope(prepared, resolved, selected_window_keys, targets, windows)` 重验 Prepared/Resolved
+以及 resolved windows 的有序子集，并把 runtime params、实际交易日、Qlib provider/region 和 MLflow backend
+共同绑定到 execution identity；随后通过
 `preflight_rolling_execution()`、`execute_rolling_units()`、`resume_rolling_units()` 执行 exact
-LinearModel/DatasetH/Slide unit；resume 只读取 State V2 冻结的 original source，成功 durable phase 为
+LinearModel/DatasetH/Slide unit。runner 返回后必须证明本次唯一新增 recorder、experiment 与 tags；resume 必须消费
+exact recovery proposal 且只读取 State V2 冻结的 original source，成功 durable phase 为
 `units_complete`。这些 API 不写 current record、combined recorder、backtest、history 或 promotion，且现有
 `rolling_train.py` 运维命令仍走 legacy route。
 

@@ -100,7 +100,8 @@ symlinks fail closed. A legacy config is reported as `checked` only when present
 fingerprint was actually compared; mismatch inspections expose no raw legacy payload. Completion or
 recorder claims without evidence reinspection are not recovery reuse authority. Plain repository
 `commit()` permits only pre-evidence transitions. The Phase 34 evidence-authorized entry rebuilds
-the exact `RollingEvidenceSetInspection`, permits only `executing → units_complete`, and continues
+the exact `RollingEvidenceSetInspection`, validates the complete original source selector, permits
+only `executing → units_complete`, and continues
 to reject `completed`. Legacy migration produces only a deterministic, zero-write,
 proposal-only postimage audit with no CLI or `apply()` capability. Immutable evidence now has a
 standalone read-only domain API consumed by the exact-unit kernel, but not by the legacy CLI.
@@ -140,10 +141,14 @@ as an orphan by evidence and then rejected by recovery.
 `classify_rolling_recovery(requests, evidence_set)` returns only an `all_reusable`, `incomplete`,
 `no_reusable_evidence`, or `blocked` proposal. It has no `apply()` method and does not train, fill a
 prediction gap, mutate State V2, publish a current record, or clean a recorder. The Phase 34 domain
-API first binds observed sessions with `bind_rolling_execution_run_identity()`, then exposes
-`build_rolling_execution_scope()`, `preflight_rolling_execution()`,
+API uses `build_rolling_execution_scope(prepared, resolved, selected_window_keys, targets, windows)`
+to revalidate Prepared/Resolved authority and an ordered subset of resolved windows, while binding
+runtime parameters, observed sessions, Qlib provider/region, and the MLflow backend into the
+execution identity. It then exposes `preflight_rolling_execution()`,
 `execute_rolling_units()`, and `resume_rolling_units()` for the exact
-LinearModel/DatasetH/Slide unit. Resume reads only the original source frozen in State V2 and its
+LinearModel/DatasetH/Slide unit. After the runner, the backend must prove the unique newly created
+recorder, experiment, and tags. Resume consumes the exact recovery proposal and reads only the
+original source frozen in State V2; its
 highest durable success phase is `units_complete`. These APIs write no current record, combined
 recorder, backtest, history, or promotion output; existing `rolling_train.py` commands remain on the
 legacy route.

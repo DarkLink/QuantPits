@@ -19,9 +19,16 @@ from quantpits.rolling.identity import (
     RollingRunIdentity,
     RollingTargetIdentity,
     parse_rolling_window_key,
+    workspace_fingerprint,
 )
-from quantpits.rolling.windows import RollingWindowExecutionDescriptor
+from quantpits.rolling.command import PreparedRollingRun
+from quantpits.rolling.windows import (
+    ResolvedRollingRun,
+    RollingWindowExecutionDescriptor,
+    rolling_sessions_fingerprint,
+)
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_value
+from quantpits.runtime.command import CommandPlan, fingerprint_command_plan
 
 
 EXECUTION_PROTOCOL_VERSION = "rolling_execution_v1"
@@ -34,6 +41,7 @@ _TARGET_TOKEN = object()
 _SCOPE_TOKEN = object()
 _RESULT_TOKEN = object()
 _BATCH_TOKEN = object()
+_RUNTIME_TOKEN = object()
 
 
 def _contract(message):
@@ -73,6 +81,50 @@ def _result_fingerprint(result):
     if not isinstance(result, ModelCapabilityResult):
         _contract("capability result must be an inspector terminal row")
     return fingerprint_value(result.to_public_dict())
+
+
+def _context_runtime_fingerprints(context):
+    if not isinstance(context, WorkspaceContext):
+        _contract("execution runtime binding requires WorkspaceContext")
+    return (
+        fingerprint_value({
+            "qlib_data_dir": str(Path(context.qlib_data_dir).resolve()),
+            "qlib_region": str(context.qlib_region),
+        }),
+        fingerprint_value({"tracking_uri": str(context.mlflow_uri)}),
+    )
+
+
+@dataclass(frozen=True)
+class RollingExecutionRuntimeBinding:
+    runtime_params_fingerprint: str
+    sessions_fingerprint: str
+    qlib_provider_fingerprint: str
+    mlflow_backend_fingerprint: str
+    fingerprint: str = field(init=False)
+    _authority: InitVar[object] = None
+    _builder_authority: bool = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self, _authority):
+        if _authority is not _RUNTIME_TOKEN:
+            _contract("execution runtime bindings are canonical-builder-owned")
+        for name in (
+            "runtime_params_fingerprint", "sessions_fingerprint",
+            "qlib_provider_fingerprint", "mlflow_backend_fingerprint",
+        ):
+            _digest(getattr(self, name), name)
+        object.__setattr__(self, "fingerprint", fingerprint_value(
+            self.to_fingerprint_dict(),
+        ))
+        object.__setattr__(self, "_builder_authority", True)
+
+    def to_fingerprint_dict(self):
+        return {
+            "runtime_params_fingerprint": self.runtime_params_fingerprint,
+            "sessions_fingerprint": self.sessions_fingerprint,
+            "qlib_provider_fingerprint": self.qlib_provider_fingerprint,
+            "mlflow_backend_fingerprint": self.mlflow_backend_fingerprint,
+        }
 
 
 @dataclass(frozen=True)
@@ -150,9 +202,12 @@ class RollingExecutionUnit:
 @dataclass(frozen=True)
 class RollingExecutionScope:
     run_identity: RollingRunIdentity
+    runtime_binding: RollingExecutionRuntimeBinding
     targets: tuple
     windows: tuple
     units: tuple
+    prepared: PreparedRollingRun = field(repr=False, compare=False)
+    resolved: ResolvedRollingRun = field(repr=False, compare=False)
     execution_protocol_version: str = EXECUTION_PROTOCOL_VERSION
     scope_fingerprint: str = field(init=False)
     _authority: InitVar[object] = None
@@ -163,6 +218,14 @@ class RollingExecutionScope:
             _contract("execution scopes are canonical-builder-owned")
         if not isinstance(self.run_identity, RollingRunIdentity):
             _contract("scope requires a canonical run identity")
+        if (
+            not isinstance(self.prepared, PreparedRollingRun)
+            or not isinstance(self.resolved, ResolvedRollingRun)
+            or self.resolved.prepared is not self.prepared
+        ):
+            _contract("scope lost Prepared/Resolved authority")
+        if not isinstance(self.runtime_binding, RollingExecutionRuntimeBinding):
+            _contract("scope requires a canonical runtime binding")
         if not isinstance(self.targets, tuple) or any(
             not isinstance(item, RollingExecutionTargetDescriptor) for item in self.targets
         ):
@@ -182,12 +245,10 @@ class RollingExecutionScope:
             _contract("scope units do not preserve target-major requested order")
         if tuple(item.position for item in self.units) != tuple(range(len(self.units))):
             _contract("scope unit positions are not canonical")
-        sessions_fingerprint = fingerprint_value([
-            {"window_key": item.window_key, "expected_sessions": list(item.expected_sessions)}
-            for item in self.windows
-        ])
-        if self.run_identity.runtime_params_fingerprint != sessions_fingerprint:
-            _contract("run runtime fingerprint is not bound to exact business sessions")
+        if rolling_sessions_fingerprint(self.windows) != self.runtime_binding.sessions_fingerprint:
+            _contract("scope sessions disagree with runtime binding")
+        if self.run_identity.runtime_params_fingerprint != self.runtime_binding.fingerprint:
+            _contract("run identity is not bound to the complete runtime identity")
         if self.execution_protocol_version != EXECUTION_PROTOCOL_VERSION:
             _contract("execution protocol version is unsupported")
         object.__setattr__(self, "scope_fingerprint", fingerprint_value(self.to_fingerprint_dict()))
@@ -200,6 +261,7 @@ class RollingExecutionScope:
     def to_fingerprint_dict(self):
         return {
             "run": self.run_identity.to_public_dict(),
+            "runtime_binding": self.runtime_binding.to_fingerprint_dict(),
             "targets": [item.to_public_dict() for item in self.targets],
             "windows": [item.to_public_dict() for item in self.windows],
             "unit_keys": [list(item.unit_key) for item in self.units],
@@ -377,11 +439,73 @@ class RollingExecutionBatchResult:
         return sum(item.did_execute for item in self.unit_results)
 
 
-def build_rolling_execution_scope(run_identity, targets, windows):
-    """Build the exact target-major requested set without filtering it."""
+def _ordered_window_selection(resolved, selected_window_keys):
+    if not isinstance(selected_window_keys, tuple):
+        _contract("selected_window_keys must be an ordered tuple")
+    resolved_keys = tuple(item.window_key for item in resolved.windows)
+    if len(selected_window_keys) != len(set(selected_window_keys)):
+        _contract("selected windows contain duplicates")
+    positions = []
+    for key in selected_window_keys:
+        try:
+            positions.append(resolved_keys.index(key))
+        except ValueError:
+            _contract("selected window is outside the ResolvedRollingRun")
+    if positions != sorted(positions):
+        _contract("selected windows do not preserve resolved order")
+    return selected_window_keys
 
+
+def build_rolling_execution_scope(
+    prepared, resolved, selected_window_keys, targets, windows,
+):
+    """Build authority from Prepared + Resolved + one ordered window selection."""
+
+    if not isinstance(prepared, PreparedRollingRun):
+        _contract("scope builder requires PreparedRollingRun")
+    if not isinstance(resolved, ResolvedRollingRun) or resolved.prepared is not prepared:
+        _contract("scope builder requires the matching ResolvedRollingRun")
+    if prepared.ctx != resolved.prepared.ctx:
+        _contract("prepared and resolved workspace contexts disagree")
+    base_identity = resolved.identity
+    resolved_window_keys = tuple(item.window_key for item in resolved.windows)
+    prepared_target_keys = tuple(item.target_key for item in prepared.targets)
+    if (
+        not isinstance(prepared.plan, CommandPlan)
+        or prepared.plan_fingerprint
+        != fingerprint_command_plan(prepared.plan, length=64)
+        or
+        base_identity.workspace_fingerprint != workspace_fingerprint(prepared.ctx.root)
+        or base_identity.plan_fingerprint != prepared.plan_fingerprint
+        or base_identity.config_fingerprint
+        != fingerprint_value(prepared.effective_config)
+        or base_identity.action != prepared.options.action
+        or base_identity.target_keys != prepared_target_keys
+        or base_identity.window_keys != resolved_window_keys
+        or base_identity.anchor_date != resolved.actual_anchor
+    ):
+        _contract("Prepared/Resolved logical identity failed canonical revalidation")
     if not isinstance(targets, tuple) or not isinstance(windows, tuple):
         _contract("targets and windows must be ordered tuples")
+    if tuple(item.target_key for item in targets) != prepared_target_keys:
+        _contract("mapped targets do not preserve the Prepared target tuple")
+    for source, mapped in zip(prepared.targets, targets):
+        if (
+            source.workflow_path != mapped.workflow_relative_path
+            or source.workflow_fingerprint != mapped.workflow_fingerprint
+        ):
+            _contract("mapped target source disagrees with PreparedRollingRun")
+    selected_window_keys = _ordered_window_selection(resolved, selected_window_keys)
+    if tuple(item.window_key for item in windows) != selected_window_keys:
+        _contract("observed windows do not exactly match the ordered selection")
+    resolved_by_key = {item.window_key: item for item in resolved.windows}
+    if tuple(item.window for item in windows) != tuple(
+        resolved_by_key[key] for key in selected_window_keys
+    ):
+        _contract("observed windows are foreign to the ResolvedRollingRun")
+    run_identity, runtime_binding = bind_rolling_execution_run_identity(
+        resolved, selected_window_keys, windows,
+    )
     units = tuple(
         RollingExecutionUnit(position, target, window)
         for position, (target, window) in enumerate(
@@ -389,43 +513,51 @@ def build_rolling_execution_scope(run_identity, targets, windows):
         )
     )
     return RollingExecutionScope(
-        run_identity, targets, windows, units, _authority=_SCOPE_TOKEN,
+        run_identity, runtime_binding, targets, windows, units, prepared, resolved,
+        _authority=_SCOPE_TOKEN,
     )
 
 
-def bind_rolling_execution_run_identity(base_identity, targets, windows):
-    """Rebind a resolved logical run to the sessions actually observed by Qlib."""
+def bind_rolling_execution_run_identity(resolved, selected_window_keys, windows):
+    """Bind resolved params, selected sessions and provider/backend identities."""
 
-    if not isinstance(base_identity, RollingRunIdentity):
-        _contract("execution identity binding requires RollingRunIdentity")
-    if not isinstance(targets, tuple) or any(
-        not isinstance(item, RollingExecutionTargetDescriptor) for item in targets
-    ):
-        _contract("execution identity binding requires mapped targets")
+    if not isinstance(resolved, ResolvedRollingRun):
+        _contract("execution identity binding requires ResolvedRollingRun")
+    base_identity = resolved.identity
+    selected_window_keys = _ordered_window_selection(resolved, selected_window_keys)
     if not isinstance(windows, tuple) or any(
         not isinstance(item, RollingWindowExecutionDescriptor) for item in windows
     ):
         _contract("execution identity binding requires observed windows")
-    target_keys = tuple(item.target_key for item in targets)
     window_keys = tuple(item.window_key for item in windows)
-    if target_keys != base_identity.target_keys or window_keys != base_identity.window_keys:
-        _contract("execution identity binding cannot change requested scope")
-    sessions_fingerprint = fingerprint_value([
-        {"window_key": item.window_key, "expected_sessions": list(item.expected_sessions)}
-        for item in windows
-    ])
-    return RollingRunIdentity(
+    if window_keys != selected_window_keys:
+        _contract("execution windows disagree with selected resolved windows")
+    runtime_params_fingerprint = fingerprint_value(dict(resolved.params))
+    if runtime_params_fingerprint != base_identity.runtime_params_fingerprint:
+        _contract("ResolvedRollingRun runtime params changed")
+    qlib_provider_fingerprint, mlflow_backend_fingerprint = (
+        _context_runtime_fingerprints(resolved.prepared.ctx)
+    )
+    runtime_binding = RollingExecutionRuntimeBinding(
+        runtime_params_fingerprint,
+        rolling_sessions_fingerprint(windows),
+        qlib_provider_fingerprint,
+        mlflow_backend_fingerprint,
+        _authority=_RUNTIME_TOKEN,
+    )
+    identity = RollingRunIdentity(
         workspace_fingerprint=base_identity.workspace_fingerprint,
         family=base_identity.family,
         action=base_identity.action,
         plan_fingerprint=base_identity.plan_fingerprint,
         config_fingerprint=base_identity.config_fingerprint,
         anchor_date=base_identity.anchor_date,
-        target_keys=target_keys,
+        target_keys=base_identity.target_keys,
         window_keys=window_keys,
-        runtime_params_fingerprint=sessions_fingerprint,
+        runtime_params_fingerprint=runtime_binding.fingerprint,
         attempt_id=base_identity.attempt_id,
     )
+    return identity, runtime_binding
 
 
 def preflight_rolling_execution(scope):

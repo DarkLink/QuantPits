@@ -6,7 +6,11 @@ from quantpits.rolling.identity import workspace_fingerprint
 from quantpits.rolling.unit_runner import _WORKER_MARKER, _worker_payload
 from quantpits.utils.workspace import WorkspaceContext
 
-from tests.quantpits.rolling.execution_support import linear_capability_result, make_scope
+from tests.quantpits.rolling.execution_support import (
+    RUNTIME_PARAMS,
+    linear_capability_result,
+    make_scope,
+)
 
 
 def test_unit_adapter_does_not_write_current_combined_backtest_history_or_promotion(monkeypatch, tmp_path):
@@ -125,7 +129,7 @@ def test_unit_adapter_does_not_write_current_combined_backtest_history_or_promot
         ),
     )
     runner = LinearSlideUnitRunner(
-        context, {"market": "synthetic", "benchmark": "synthetic"},
+        context, RUNTIME_PARAMS,
         "exact-unit-experiment",
     )
     observation = runner.execute(scope, unit, "attempt-1")

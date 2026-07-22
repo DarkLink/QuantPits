@@ -77,6 +77,7 @@ _VALID_CHECKS = frozenset({
 })
 _VALID_SUMMARY_KEYS = frozenset({
     "backend_fingerprint", "experiment_name", "experiment_id", "recorder_id",
+    "attempt_id",
     "target_key", "window_key", "source_protocol", "source_publication_key",
     "source_operation", "source_manifest_fingerprint",
 })
@@ -185,6 +186,7 @@ def _validate_source_summary(summary: tuple, field: str = "source_summary") -> t
         _contract("%s must contain key/value pairs" % field)
     allowed = {
         "backend_fingerprint", "experiment_name", "experiment_id", "recorder_id",
+        "attempt_id",
         "target_key", "window_key", "source_protocol", "source_publication_key",
         "source_operation", "source_manifest_fingerprint",
     }
@@ -863,6 +865,7 @@ def _candidate_unit(candidate: Mapping[str, Any]) -> tuple[str, str] | None:
 def _candidate_summary(candidate: Mapping[str, Any]) -> tuple:
     allowed = (
         "backend_fingerprint", "experiment_name", "experiment_id", "recorder_id",
+        "attempt_id",
         "target_key", "window_key", "source_protocol", "source_publication_key",
         "source_operation", "source_manifest_fingerprint",
     )

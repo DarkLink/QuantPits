@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -20,6 +21,26 @@ from quantpits.rolling.evidence import (
 from quantpits.rolling.execution import RollingExecutionScope, RollingUnitRunnerObservation
 from quantpits.rolling.identity import RollingRunIdentity, workspace_fingerprint
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_value
+
+
+_INVENTORY_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class _RecorderInventoryBaseline:
+    run_fingerprint: str
+    attempt_id: str
+    unit_key: tuple
+    recorders: tuple
+    _authority: InitVar[object] = None
+    _backend_authority: bool = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self, _authority):
+        if _authority is not _INVENTORY_TOKEN:
+            raise RollingExecutionContractError(
+                "recorder inventory baselines are backend-observer-owned"
+            )
+        object.__setattr__(self, "_backend_authority", True)
 
 
 def _local_artifact_root(uri, workspace_root):
@@ -247,12 +268,75 @@ class QlibMlflowExecutionBackend:
                 )))
         return tuple(found)
 
-    def commit_execution_manifest(self, scope, unit, observation):
+    @staticmethod
+    def _recorder_inventory():
+        from qlib.workflow import R
+
+        observed = []
+        for experiment_name, experiment in sorted(R.list_experiments().items()):
+            for recorder_id in sorted(R.list_recorders(
+                experiment_name=experiment_name,
+            )):
+                observed.append((str(experiment_name), str(experiment.id), str(recorder_id)))
+        return tuple(observed)
+
+    def capture_recorder_inventory(self, scope, unit, attempt_id):
+        return _RecorderInventoryBaseline(
+            scope.run_identity.fingerprint, attempt_id, unit.unit_key,
+            self._recorder_inventory(), _authority=_INVENTORY_TOKEN,
+        )
+
+    def commit_execution_manifest(self, scope, unit, observation, recorder_baseline):
         if not isinstance(scope, RollingExecutionScope):
             raise RollingExecutionContractError("manifest commit requires typed scope")
         if not isinstance(observation, RollingUnitRunnerObservation):
             raise RollingExecutionContractError("manifest commit requires typed observation")
+        if (
+            not isinstance(recorder_baseline, _RecorderInventoryBaseline)
+            or not recorder_baseline._backend_authority
+            or recorder_baseline.run_fingerprint != scope.run_identity.fingerprint
+            or recorder_baseline.attempt_id != observation.attempt_id
+            or recorder_baseline.unit_key != unit.unit_key
+        ):
+            raise RollingExecutionContractError(
+                "manifest commit requires the matching recorder inventory baseline"
+            )
+        after = self._recorder_inventory()
+        created = tuple(item for item in after if item not in set(recorder_baseline.recorders))
+        expected_created = (
+            observation.experiment_name,
+            str(observation.experiment_id),
+            observation.recorder_id,
+        )
+        if created != (expected_created,):
+            raise RollingExecutionBackendError(
+                "runner did not create exactly its one claimed recorder"
+            )
+        from qlib.workflow import R
+        experiment = R.get_exp(
+            experiment_name=observation.experiment_name, create=False,
+        )
+        if str(experiment.id) != str(observation.experiment_id):
+            raise RollingExecutionBackendError("runner experiment identity changed")
         recorder = self._recorder(observation.experiment_name, observation.recorder_id)
+        if str(recorder.info.get("id")) != observation.recorder_id:
+            raise RollingExecutionBackendError("runner recorder identity changed")
+        try:
+            tags = recorder.list_tags()
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception as exc:
+            raise RollingExecutionBackendError("runner recorder tags are unavailable") from exc
+        expected_tags = {
+            "execution_protocol": scope.execution_protocol_version,
+            "run_fingerprint": scope.run_identity.fingerprint,
+            "attempt_id": observation.attempt_id,
+            "target_key": unit.unit_key[0],
+            "window_key": unit.unit_key[1],
+            "source_operation": scope.run_identity.action,
+        }
+        if not all(str(tags.get(key)) == str(value) for key, value in expected_tags.items()):
+            raise RollingExecutionBackendError("runner recorder provenance tags disagree")
         artifact_root = _local_artifact_root(recorder.get_artifact_uri(), self.context.root)
         model = _artifact(artifact_root, "model.pkl", "supporting")
         prediction = _artifact(artifact_root, "pred.pkl", "prediction")
@@ -279,6 +363,8 @@ class QlibMlflowExecutionBackend:
             local = Path(temp_dir) / "execution_manifest.json"
             local.write_bytes(manifest_data)
             recorder.log_artifact(str(local))
+        if self._recorder_inventory() != after:
+            raise RollingExecutionBackendError("recorder inventory drifted during manifest commit")
         manifest = _artifact(artifact_root, "execution_manifest.json", "supporting")
         run = RollingRunIdentity(
             workspace_fingerprint=scope.run_identity.workspace_fingerprint,

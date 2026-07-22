@@ -1,5 +1,3 @@
-import dataclasses
-
 from quantpits.rolling import (
     RollingExecutionKernel,
     RollingStateRepository,
@@ -7,7 +5,7 @@ from quantpits.rolling import (
     map_workflow_capability,
     preflight_rolling_execution,
 )
-from quantpits.utils.workspace import WorkspaceContext, fingerprint_value
+from quantpits.utils.workspace import WorkspaceContext
 
 from tests.quantpits.rolling.execution_support import (
     FakeExecutionBackend,
@@ -29,11 +27,9 @@ def test_zero_one_many_units_preserve_identity_order_and_counts(tmp_path):
     context = _context(tmp_path)
     one = make_scope(context, linear_capability_result(), 1, 1)
     many = make_scope(context, linear_capability_result(), 2, 2)
-    zero_run = dataclasses.replace(
-        one.run_identity,
-        window_keys=(), runtime_params_fingerprint=fingerprint_value([]),
+    zero = build_rolling_execution_scope(
+        one.prepared, one.resolved, (), one.targets, (),
     )
-    zero = build_rolling_execution_scope(zero_run, one.targets, ())
     assert zero.requested_unit_keys == ()
     assert preflight_rolling_execution(zero).preflight_allowed is False
     assert one.requested_unit_keys == tuple(item.unit_key for item in one.units)
@@ -56,14 +52,16 @@ def test_missing_middle_capability_blocks_without_dropping_later_units(tmp_path)
     )
     targets = (available.targets[0], middle, available.targets[2])
     scope = build_rolling_execution_scope(
-        available.run_identity, targets, available.windows,
+        available.prepared, available.resolved,
+        tuple(item.window_key for item in available.windows),
+        targets, available.windows,
     )
     preflight = preflight_rolling_execution(scope)
     assert preflight.requested_unit_keys == scope.requested_unit_keys
     assert tuple(item[0] for item in preflight.decisions) == scope.requested_unit_keys
     assert tuple(item[1] for item in preflight.decisions) == (True, False, True)
     assert preflight.preflight_allowed is False
-    runner = FakeRunner()
+    runner = FakeRunner(context)
     batch = RollingExecutionKernel(
         RollingStateRepository.for_workspace(context, "rolling"),
         FakeExecutionBackend(context), runner,

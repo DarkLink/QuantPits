@@ -18,6 +18,7 @@ from quantpits.rolling import (
     RollingWindowDescriptor,
     RollingWindowExecutionDescriptor,
     RollingWindowIdentity,
+    build_rolling_execution_scope,
     map_workflow_capability,
     observe_rolling_business_sessions,
 )
@@ -70,10 +71,12 @@ def test_workflow_mapper_uses_module_class_dataset_action_and_family(tmp_path):
 def test_business_sessions_are_ordered_exact_and_bound_to_execution_fingerprint(tmp_path):
     context = _context(tmp_path)
     scope = make_scope(context, linear_capability_result())
-    assert scope.run_identity.runtime_params_fingerprint == fingerprint_value([
+    sessions_fingerprint = fingerprint_value([
         {"window_key": item.window_key, "expected_sessions": list(item.expected_sessions)}
         for item in scope.windows
     ])
+    assert scope.runtime_binding.sessions_fingerprint == sessions_fingerprint
+    assert scope.run_identity.runtime_params_fingerprint == scope.runtime_binding.fingerprint
     raw = scope.windows[0].window
     for observed in (
         (),
@@ -92,7 +95,8 @@ def test_scope_rebuild_revalidates_members_fingerprints_and_workspace(tmp_path):
         dataclasses.replace(scope)
     with pytest.raises(RollingExecutionContractError):
         RollingExecutionScope(
-            scope.run_identity, scope.targets, scope.windows, scope.units,
+            scope.run_identity, scope.runtime_binding, scope.targets, scope.windows,
+            scope.units, scope.prepared, scope.resolved,
         )
     with pytest.raises(Exception):
         dataclasses.replace(scope.windows[0])
@@ -102,7 +106,7 @@ def test_scope_rebuild_revalidates_members_fingerprints_and_workspace(tmp_path):
         )
     workflow = context.root / scope.targets[0].workflow_relative_path
     workflow.write_text(workflow.read_text() + "changed: true\n", encoding="utf-8")
-    runner = FakeRunner()
+    runner = FakeRunner(context)
     blocked = RollingExecutionKernel(
         RollingStateRepository.for_workspace(context, "rolling"),
         FakeExecutionBackend(context), runner,
@@ -113,6 +117,59 @@ def test_scope_rebuild_revalidates_members_fingerprints_and_workspace(tmp_path):
         map_workflow_capability(
             context, scope.targets[0].target_key,
             "../outside.yaml", linear_capability_matrix(),
+        )
+
+
+def test_scope_builder_requires_prepared_resolved_and_ordered_window_subset(tmp_path):
+    context = _context(tmp_path)
+    full = make_scope(context, linear_capability_result(), n_targets=2, n_windows=3)
+    selected_raw = (full.resolved.windows[0], full.resolved.windows[2])
+    selected = observe_rolling_business_sessions(
+        selected_raw, lambda start, end: (start, end),
+    )
+    keys = tuple(item.window_key for item in selected)
+    subset = build_rolling_execution_scope(
+        full.prepared, full.resolved, keys, full.targets, selected,
+    )
+    assert subset.run_identity.target_keys == tuple(
+        item.target_key for item in full.prepared.targets
+    )
+    assert subset.run_identity.window_keys == keys
+    for invalid in (
+        (keys[0], keys[0]),
+        tuple(reversed(keys)),
+        ("rolling:2026-01-01:2026-01-02:abcdef123456",),
+    ):
+        with pytest.raises(RollingExecutionContractError):
+            build_rolling_execution_scope(
+                full.prepared, full.resolved, invalid, full.targets, selected,
+            )
+    with pytest.raises(RollingExecutionContractError):
+        build_rolling_execution_scope(
+            full.prepared, full.resolved, keys,
+            full.targets[1:] + full.targets[:1], selected,
+        )
+
+
+def test_kernel_rejects_runner_runtime_or_provider_backend_drift(tmp_path):
+    context = _context(tmp_path)
+    scope = make_scope(context, linear_capability_result())
+    repository = RollingStateRepository.for_workspace(context, "rolling")
+    backend = FakeExecutionBackend(context)
+    runner = FakeRunner(context, runtime_params={"market": "other", "benchmark": "other"})
+    result = RollingExecutionKernel(repository, backend, runner).execute(
+        scope, "attempt-1",
+    )
+    assert result.status == "blocked"
+    assert runner.calls == []
+
+    foreign_context = WorkspaceContext.from_root(
+        context.root, mlflow_uri="sqlite:///%s" % (context.root / "other.db"),
+        qlib_data_dir=context.qlib_data_dir, qlib_region=context.qlib_region,
+    )
+    with pytest.raises(RollingExecutionContractError):
+        RollingExecutionKernel(
+            repository, FakeExecutionBackend(foreign_context), FakeRunner(context),
         )
 
 

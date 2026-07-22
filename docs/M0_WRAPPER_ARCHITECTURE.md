@@ -185,6 +185,8 @@ import、class resolution、constructor/fit/predict signature 成功都只是 pr
 `supported_verified`。serialized replay、public constructor 和 `dataclasses.replace()` 也不能制造 inspector
 provenance、aggregate count 或 preflight capability。矩阵仍未接入 legacy static/CPCV/Rolling CLI；Phase 34
 exact-unit kernel 只查询所选 unit 的 exact row。positive row 不是训练、恢复、publication 或模型质量成功证据。
+该 kernel 的 execution authority 还要求 Prepared/Resolved scope、完整 runtime/provider/backend identity、runner 前后
+唯一新增 recorder provenance、Phase 32 exact recovery proposal 与完整 source-selector State CAS 同时成立。
 
 默认 inspector 已连接 fail-closed protocol adapter registry。唯一 actual positive 是
 `qlib.contrib.model.linear.LinearModel + qlib.data.dataset.DatasetH + point_in_time + train + rolling +

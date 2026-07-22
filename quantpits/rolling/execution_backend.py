@@ -28,6 +28,8 @@ from quantpits.rolling.execution import (
 from quantpits.rolling.repository import RollingStateRepository
 from quantpits.rolling.state import RollingStateUnitClaim, RollingStateV2Snapshot
 from quantpits.rolling.identity import workspace_fingerprint
+from quantpits.rolling.recovery import classify_rolling_recovery
+from quantpits.utils.workspace import fingerprint_value
 from quantpits.rolling.windows import observe_rolling_business_sessions
 
 
@@ -79,6 +81,8 @@ def _source_extensions(request, attempt_id, extra=None):
     if request is not None:
         values.update({
             "source_manifest_fingerprint": request.source_manifest_fingerprint,
+            "source_protocol": request.source_protocol,
+            "source_publication_key": request.source_publication_key,
             "experiment_name": request.experiment_name,
             "experiment_id": request.experiment_id,
             "recorder_id": request.recorder_id,
@@ -134,14 +138,21 @@ def _invalidate_terminal_batch(scope, batch, reason_code):
 class RollingExecutionKernel:
     """Sole owner of Phase 34 terminal unit and batch outcomes."""
 
-    def __init__(self, repository, backend, runner):
+    def __init__(self, repository, backend, runner, fault_hook=None):
         if not isinstance(repository, RollingStateRepository):
             raise RollingExecutionContractError("kernel requires RollingStateRepository")
         for owner_name, owner in (("backend", backend), ("runner", runner)):
-            context = getattr(owner, "context", repository.context)
+            context = getattr(owner, "context", None)
+            if context is None:
+                raise RollingExecutionContractError(
+                    "%s must expose its exact workspace context" % owner_name
+                )
             if (
                 context.root != repository.context.root
                 or context.data_dir != repository.context.data_dir
+                or context.mlflow_uri != repository.context.mlflow_uri
+                or context.qlib_data_dir != repository.context.qlib_data_dir
+                or context.qlib_region != repository.context.qlib_region
             ):
                 raise RollingExecutionContractError(
                     "%s workspace context is foreign" % owner_name
@@ -149,6 +160,11 @@ class RollingExecutionKernel:
         self.repository = repository
         self.backend = backend
         self.runner = runner
+        self._fault_hook = fault_hook
+
+    def _fault(self, point):
+        if self._fault_hook is not None:
+            self._fault_hook(point)
 
     def _commit(self, state, baseline, evidence=None):
         receipt = (
@@ -215,6 +231,7 @@ class RollingExecutionKernel:
     def _run_with_lease(self, scope, attempt_id, operation):
         lease = None
         try:
+            self._fault("before_shared_lease")
             lease = self._lease()
             lease.acquire(
                 run_id="phase34-%s-%s" % (
@@ -222,6 +239,7 @@ class RollingExecutionKernel:
                 ),
             )
             lease_identity = self._verify_lease(lease)
+            self._fault("after_lease_before_baseline_recheck")
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             if lease is not None:
                 lease.release()
@@ -274,6 +292,26 @@ class RollingExecutionKernel:
                 "tracking backend is absent, foreign, or not physically contained"
             )
 
+    def _validate_runtime_identity(self, scope):
+        context = self.repository.context
+        provider_fingerprint = fingerprint_value({
+            "qlib_data_dir": str(Path(context.qlib_data_dir).resolve()),
+            "qlib_region": str(context.qlib_region),
+        })
+        backend_fingerprint = fingerprint_value({
+            "tracking_uri": str(context.mlflow_uri),
+        })
+        if (
+            scope.runtime_binding.qlib_provider_fingerprint != provider_fingerprint
+            or scope.runtime_binding.mlflow_backend_fingerprint != backend_fingerprint
+            or getattr(self.backend, "backend_fingerprint", None) != backend_fingerprint
+            or getattr(self.runner, "runtime_params_fingerprint", None)
+            != scope.runtime_binding.runtime_params_fingerprint
+        ):
+            raise RollingExecutionPreflightError(
+                "runner/provider/backend runtime identity changed"
+            )
+
     def _validate_scope_sources(self, scope):
         root = Path(self.repository.context.root).resolve(strict=True)
         for target in scope.targets:
@@ -320,7 +358,13 @@ class RollingExecutionKernel:
         if not requests:
             return None
         evidence = RollingExecutionKernel._evidence_for_requests(backend, scope, requests)
-        if evidence.status != "all_valid":
+        recovery = classify_rolling_recovery(requests, evidence)
+        if (
+            evidence.status != "all_valid"
+            or recovery.status != "all_reusable"
+            or recovery.reusable_unit_keys != keys
+            or recovery.evidence_set_fingerprint != evidence.fingerprint
+        ):
             raise RollingExecutionPreflightError("successful state members lost exact evidence")
         return evidence
 
@@ -332,6 +376,7 @@ class RollingExecutionKernel:
             return _blocked(scope, "rolling_execution_capability_blocked")
         try:
             self._validate_tracking_identity(scope)
+            self._validate_runtime_identity(scope)
             self._validate_scope_sources(scope)
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
@@ -342,6 +387,7 @@ class RollingExecutionKernel:
     def _execute_locked(self, scope, attempt_id):
         try:
             self._validate_tracking_identity(scope)
+            self._validate_runtime_identity(scope)
             self._validate_scope_sources(scope)
             view = self.repository.inspect_readonly()
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
@@ -356,8 +402,10 @@ class RollingExecutionKernel:
             )
         try:
             baseline = self._commit(_snapshot(scope, "prepared", None, ()), view.baseline)
+            self._fault("after_prepared_state_commit")
             claims = [_claim(unit, "pending") for unit in scope.units]
             baseline = self._commit(_snapshot(scope, "executing", attempt_id, claims), baseline)
+            self._fault("after_executing_state_commit")
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except Exception:
@@ -393,7 +441,12 @@ class RollingExecutionKernel:
             request = None
             try:
                 self._validate_tracking_identity(scope)
+                self._validate_runtime_identity(scope)
                 self._validate_scope_sources(scope)
+                recorder_baseline = self.backend.capture_recorder_inventory(
+                    scope, unit, attempt_id,
+                )
+                self._fault("before_runner")
                 did_execute = True
                 observation = self.runner.execute(scope, unit, attempt_id)
                 if not isinstance(observation, RollingUnitRunnerObservation):
@@ -402,7 +455,11 @@ class RollingExecutionKernel:
                     raise RollingExecutionContractError("runner observation identity mismatch")
                 if observation.candidate_status != "candidate_success":
                     raise RollingExecutionPreflightError(observation.failure_code)
-                request = self.backend.commit_execution_manifest(scope, unit, observation)
+                self._fault("after_recorder_before_manifest")
+                request = self.backend.commit_execution_manifest(
+                    scope, unit, observation, recorder_baseline,
+                )
+                self._fault("after_manifest_before_evidence_inventory")
                 if not isinstance(request, RollingUnitEvidenceRequest) or request.unit_key != unit.unit_key:
                     raise RollingExecutionContractError("backend returned a foreign evidence request")
                 requests_by_key[unit.unit_key] = request
@@ -417,10 +474,12 @@ class RollingExecutionKernel:
                 all_success_evidence = self._success_evidence(
                     self.backend, scope, requests_by_key, claims,
                 )
+                self._fault("after_valid_evidence_before_state_cas")
                 baseline = self._commit(
                     _snapshot(scope, "executing", attempt_id, claims), baseline,
                     all_success_evidence,
                 )
+                self._fault("after_success_cas_before_next_unit")
                 results.append(RollingExecutionUnitResult(
                     unit.unit_key, unit.position, "executed_success", True,
                     attempt_id, observation.recorder_id, result.evidence_fingerprint,
@@ -461,6 +520,7 @@ class RollingExecutionKernel:
                 ))
         if results and all(item.status == "executed_success" for item in results):
             try:
+                self._fault("after_final_unit_before_units_complete")
                 evidence = self._success_evidence(
                     self.backend, scope, requests_by_key, claims,
                 )
@@ -491,6 +551,7 @@ class RollingExecutionKernel:
             return _blocked(scope, "rolling_execution_capability_blocked")
         try:
             self._validate_tracking_identity(scope)
+            self._validate_runtime_identity(scope)
             self._validate_scope_sources(scope)
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
@@ -501,6 +562,7 @@ class RollingExecutionKernel:
     def _resume_locked(self, scope, attempt_id):
         try:
             self._validate_tracking_identity(scope)
+            self._validate_runtime_identity(scope)
             self._validate_scope_sources(scope)
             view = self.repository.inspect_readonly()
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
@@ -598,14 +660,33 @@ class RollingExecutionKernel:
                 scope, "rolling_execution_evidence_observation_blocked",
                 state.attempt_id,
             )
+        try:
+            recovery = classify_rolling_recovery(requests, evidence)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
+            return _blocked(
+                scope, "rolling_execution_recovery_proposal_blocked",
+                state.attempt_id,
+            )
+        if (
+            recovery.requested_unit_keys != scope.requested_unit_keys
+            or recovery.evidence_set_fingerprint != evidence.fingerprint
+            or recovery.status == "blocked"
+        ):
+            return _blocked(
+                scope, "rolling_execution_recovery_proposal_blocked",
+                state.attempt_id,
+            )
         results = [None] * len(scope.units)
         retry_units = []
         requests_by_key = {item.unit_key: item for item in requests}
         claims = list(state.units)
         reconciled_success = False
         for unit, claim, observed in zip(scope.units, state.units, evidence.unit_results):
+            proposal_reusable = unit.unit_key in recovery.reusable_unit_keys
             if claim.status == "success":
-                if observed.classification == "valid" and observed.evidence_fingerprint == claim.evidence_id:
+                if proposal_reusable and observed.evidence_fingerprint == claim.evidence_id:
                     results[unit.position] = RollingExecutionUnitResult(
                         unit.unit_key, unit.position, "reused_success", False,
                         state.attempt_id, claim.record_id, claim.evidence_id,
@@ -618,7 +699,7 @@ class RollingExecutionKernel:
                         attempt_id=state.attempt_id,
                         reason_code="rolling_execution_committed_evidence_invalid",
                     )
-            elif state.phase == "executing" and observed.classification == "valid":
+            elif state.phase == "executing" and proposal_reusable:
                 request = requests[unit.position]
                 recorder_id = dict(observed.source_summary)["recorder_id"]
                 claims[unit.position] = _claim(
@@ -722,7 +803,12 @@ class RollingExecutionKernel:
             did_execute = False
             try:
                 self._validate_tracking_identity(scope)
+                self._validate_runtime_identity(scope)
                 self._validate_scope_sources(scope)
+                recorder_baseline = self.backend.capture_recorder_inventory(
+                    scope, unit, attempt_id,
+                )
+                self._fault("before_runner")
                 did_execute = True
                 observation = self.runner.execute(scope, unit, attempt_id)
                 if not isinstance(observation, RollingUnitRunnerObservation):
@@ -731,7 +817,11 @@ class RollingExecutionKernel:
                     raise RollingExecutionContractError("retry observation identity mismatch")
                 if observation.candidate_status != "candidate_success":
                     raise RollingExecutionPreflightError(observation.failure_code)
-                request = self.backend.commit_execution_manifest(scope, unit, observation)
+                self._fault("after_recorder_before_manifest")
+                request = self.backend.commit_execution_manifest(
+                    scope, unit, observation, recorder_baseline,
+                )
+                self._fault("after_manifest_before_evidence_inventory")
                 one = self._evidence_for_requests(self.backend, scope, (request,))
                 observed = one.unit_results[0]
                 if observed.classification != "valid":
@@ -744,10 +834,12 @@ class RollingExecutionKernel:
                 success_evidence = self._success_evidence(
                     self.backend, scope, requests_by_key, claims,
                 )
+                self._fault("after_valid_evidence_before_state_cas")
                 baseline = self._commit(
                     _snapshot(scope, "executing", attempt_id, claims), baseline,
                     success_evidence,
                 )
+                self._fault("after_success_cas_before_next_unit")
                 results[unit.position] = RollingExecutionUnitResult(
                     unit.unit_key, unit.position, "executed_success", True,
                     attempt_id, observation.recorder_id, observed.evidence_fingerprint,
@@ -786,6 +878,7 @@ class RollingExecutionKernel:
                 )
         if all(item.status in ("executed_success", "reused_success") for item in results):
             try:
+                self._fault("after_final_unit_before_units_complete")
                 success_evidence = self._success_evidence(
                     self.backend, scope, requests_by_key, claims,
                 )

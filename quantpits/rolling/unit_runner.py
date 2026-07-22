@@ -21,6 +21,7 @@ from quantpits.rolling.execution import (
     RollingUnitRunnerObservation,
 )
 from quantpits.utils.workspace import WorkspaceContext
+from quantpits.utils.workspace import fingerprint_value
 from quantpits.rolling.identity import (
     RollingTargetIdentity,
     RollingWindowIdentity,
@@ -215,6 +216,10 @@ class LinearSlideUnitRunner:
         self.budget_guard = budget_guard
         self.timeout_seconds = timeout_seconds
 
+    @property
+    def runtime_params_fingerprint(self):
+        return fingerprint_value(self.runtime_params)
+
     def _workflow(self, unit):
         root = Path(self.context.root).resolve(strict=True)
         path = (root / unit.target.workflow_relative_path).absolute()
@@ -273,6 +278,10 @@ class LinearSlideUnitRunner:
             raise RollingExecutionContractError("runner unit is outside scope")
         if not isinstance(attempt_id, str) or not attempt_id.strip():
             raise RollingExecutionContractError("runner attempt_id is invalid")
+        if self.runtime_params_fingerprint != scope.runtime_binding.runtime_params_fingerprint:
+            raise RollingExecutionPreflightError(
+                "runner runtime params disagree with execution scope"
+            )
         self._validate_identity(unit)
         if self.budget_guard is not None:
             self.budget_guard(scope, unit)

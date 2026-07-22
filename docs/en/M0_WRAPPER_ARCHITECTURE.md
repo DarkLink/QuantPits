@@ -207,6 +207,9 @@ provenance, aggregate counts, or preflight capability. The matrix is not wired i
 the legacy static, CPCV, or Rolling CLI; the Phase 34 exact-unit kernel queries only
 the selected unit's exact row. A positive row is not evidence of
 training, recovery, publication, or model quality.
+Kernel execution authority additionally requires matching Prepared/Resolved scope, complete
+runtime/provider/backend identity, unique runner-created recorder provenance, the Phase 32 exact
+recovery proposal, and full source-selector State CAS authorization.
 
 The default inspector is wired to a fail-closed protocol-adapter registry. Its only
 actual positive combines `qlib.contrib.model.linear.LinearModel`,
