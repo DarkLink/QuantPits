@@ -39,6 +39,12 @@ def _assert_lease_released(repository, probe):
     lease.release()
 
 
+def _file_uri_path(uri):
+    prefix = "file://"
+    assert uri.startswith(prefix)
+    return Path(uri[len(prefix) :])
+
+
 def test_runner_success_without_exact_evidence_is_failed_not_success(tmp_path):
     _context, scope, repository, backend = _case(tmp_path)
 
@@ -47,7 +53,9 @@ def test_runner_success_without_exact_evidence_is_failed_not_success(tmp_path):
             request = super().commit_execution_manifest(
                 scope, unit, observation, recorder_baseline,
             )
-            root = Path(self.candidates[unit.unit_key]["artifact_root_uri"].removeprefix("file://"))
+            root = _file_uri_path(
+                self.candidates[unit.unit_key]["artifact_root_uri"],
+            )
             (root / "pred.pkl").write_bytes(b"corrupt-after-manifest")
             return request
 
@@ -344,7 +352,7 @@ def test_nonmissing_invalid_evidence_blocks_retry_and_preserves_scope(tmp_path):
     _context, scope, repository, backend = _case(tmp_path)
     RollingExecutionKernel(repository, backend, FakeRunner(backend.context)).execute(scope, "attempt-1")
     candidate = backend.candidates[scope.units[0].unit_key]
-    root = Path(candidate["artifact_root_uri"].removeprefix("file://"))
+    root = _file_uri_path(candidate["artifact_root_uri"])
     data = (root / "pred.pkl").read_bytes()
     (root / "pred.pkl").write_bytes(data + b"drift")
     runner = FakeRunner(backend.context)
