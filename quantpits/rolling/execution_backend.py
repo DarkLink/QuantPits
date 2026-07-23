@@ -721,7 +721,10 @@ class RollingExecutionKernel:
                 recorder_id = dict(observed.source_summary)["recorder_id"]
                 claims[unit.position] = _claim(
                     unit, "success", recorder_id, observed.evidence_fingerprint,
-                    _source_extensions(request, state.attempt_id),
+                    _source_extensions(
+                        request, state.attempt_id,
+                        prior_attempts=_prior_attempts(claim),
+                    ),
                 )
                 results[unit.position] = RollingExecutionUnitResult(
                     unit.unit_key, unit.position, "reused_success", False,

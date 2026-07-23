@@ -31,6 +31,14 @@ def _case(tmp_path, n_windows=1):
     return context, scope, repository, backend
 
 
+def _assert_lease_released(repository, probe):
+    from quantpits.training.lease import TrainingExecutionLease
+
+    lease = TrainingExecutionLease.for_workspace(repository.context)
+    lease.acquire(run_id=probe)
+    lease.release()
+
+
 def test_runner_success_without_exact_evidence_is_failed_not_success(tmp_path):
     _context, scope, repository, backend = _case(tmp_path)
 
@@ -255,6 +263,81 @@ def test_retry_success_preserves_every_prior_failure_attempt_in_order(tmp_path):
     ]
     assert terminal.record_id == third.unit_results[0].record_id
     assert terminal.evidence_id == third.unit_results[0].evidence_id
+
+
+def test_stale_retry_evidence_reconciles_without_losing_prior_audit_or_later_unit(
+        tmp_path):
+    _context, scope, repository, backend = _case(tmp_path, n_windows=2)
+    first = RollingExecutionKernel(
+        repository, backend, FakeRunner(backend.context, failures=(0,)),
+    ).execute(scope, "attempt-1")
+    assert tuple(item.status for item in first.unit_results) == (
+        "failed", "executed_success",
+    )
+    failed_state = repository.inspect_readonly().inspection.snapshot
+    first_audit = failed_state.units[0].extensions
+    later_record_id = failed_state.units[1].record_id
+    later_evidence_id = failed_state.units[1].evidence_id
+
+    class SimulatedProcessLoss(BaseException):
+        pass
+
+    def lose_process_after_valid_evidence(point):
+        if point == "after_valid_evidence_before_state_cas":
+            raise SimulatedProcessLoss()
+
+    retry_runner = FakeRunner(backend.context)
+    with pytest.raises(SimulatedProcessLoss):
+        RollingExecutionKernel(
+            repository, backend, retry_runner,
+            fault_hook=lose_process_after_valid_evidence,
+        ).resume(scope, "attempt-2")
+    stale = repository.inspect_readonly().inspection.snapshot
+    assert stale.phase == "executing"
+    assert tuple(item.status for item in stale.units) == ("running", "success")
+    assert stale.units[0].extensions == {
+        "attempt_id": "attempt-2",
+        "prior_attempts": [first_audit],
+    }
+    stale_prior_attempts = stale.units[0].extensions["prior_attempts"]
+    assert stale.units[1].record_id == later_record_id
+    assert stale.units[1].evidence_id == later_evidence_id
+    assert retry_runner.calls == [(scope.units[0].unit_key, "attempt-2")]
+    _assert_lease_released(repository, "post-stale-retry-process-loss-probe")
+
+    retry_request = backend.requests[scope.units[0].unit_key]
+    retry_evidence_id = backend.inspect(
+        scope, (retry_request,),
+    ).unit_results[0].evidence_fingerprint
+    resumed_runner = FakeRunner(backend.context)
+    resumed = RollingExecutionKernel(
+        repository, backend, resumed_runner,
+    ).resume(scope, "attempt-3")
+    assert resumed.status == "success"
+    assert resumed.n_reused_success == 2
+    assert resumed.n_runner_calls == 0
+    assert resumed.requested_unit_keys == scope.requested_unit_keys
+    assert tuple(
+        item.unit_key for item in resumed.unit_results
+    ) == scope.requested_unit_keys
+    assert resumed.unit_results[0].record_id == retry_request.recorder_id
+    assert resumed.unit_results[0].evidence_id == retry_evidence_id
+    assert resumed.unit_results[1].record_id == later_record_id
+    assert resumed.unit_results[1].evidence_id == later_evidence_id
+    assert resumed_runner.calls == []
+
+    terminal = repository.inspect_readonly().inspection.snapshot
+    assert terminal.phase == "units_complete"
+    assert tuple(
+        (item.target_key, item.window_key) for item in terminal.units
+    ) == scope.requested_unit_keys
+    assert tuple(item.status for item in terminal.units) == ("success", "success")
+    assert terminal.units[0].extensions["prior_attempts"] == stale_prior_attempts
+    assert terminal.units[0].record_id == retry_request.recorder_id
+    assert terminal.units[0].evidence_id == retry_evidence_id
+    assert terminal.units[1].record_id == later_record_id
+    assert terminal.units[1].evidence_id == later_evidence_id
+    _assert_lease_released(repository, "post-stale-retry-reconciliation-probe")
 
 
 def test_nonmissing_invalid_evidence_blocks_retry_and_preserves_scope(tmp_path):
