@@ -219,6 +219,9 @@ resume 实际消费 `classify_rolling_recovery()` 的 exact proposal，只复用
 mutable current record 或“最新 recorder”。普通 unit failure 不删除后续 unit，process-control interruption 继续透传。
 `failed → running` 会把上一 attempt 的 failure/interruption 与已有 source selector 原样追加到 canonical
 `prior_attempts`；repository 拒绝删除、篡改、重排或重复历史，最终 success 同时保留 prior audit 与 exact evidence selector。
+若崩溃留下 `executing` envelope 中已持久化的 `failed` claim，resume 会先原样保留该 failure audit 并把旧 envelope
+收敛为 `failed`，再启动新 attempt；旧 attempt 即使留下 valid recorder/evidence 也只作为 orphan，不会被重新解释为
+`reused_success`。
 mapper 会保留 capability blocked 的 canonical target，而不是用 available subset 缩小 requested set；任一 blocked
 decision 会让完整 batch 在 runner 前以同一 identity/order/cardinality 阻断。
 真实 Linear unit 在受控子进程内重新绑定 exact workspace、Qlib provider 与 tracking backend；父进程只接受不含本地路径的

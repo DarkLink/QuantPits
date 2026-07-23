@@ -147,7 +147,9 @@ record 或清理 recorder。Phase 34 domain API 通过
 LinearModel/DatasetH/Slide unit。runner 返回后必须证明本次唯一新增 recorder、experiment 与 tags；resume 必须消费
 exact recovery proposal 且只读取 State V2 冻结的 original source，成功 durable phase 为
 `units_complete`。retry 会以 append-only `prior_attempts` 保留旧 attempt 的 failure/interruption/source audit，
-最终 success 不会覆盖这条历史；删除、篡改、重排或重复 attempt 会被 State CAS 拒绝。这些 API 不写 current record、combined recorder、backtest、history 或 promotion，且现有
+最终 success 不会覆盖这条历史；删除、篡改、重排或重复 attempt 会被 State CAS 拒绝。若 crash 留下
+`executing + failed claim`，resume 会先保留该 durable failure 并收敛旧 envelope，再以新 attempt retry；旧 attempt
+留下的 valid recorder/evidence 属于 orphan，不会被提升为 success。这些 API 不写 current record、combined recorder、backtest、history 或 promotion，且现有
 `rolling_train.py` 运维命令仍走 legacy route。
 
 ### 状态结构

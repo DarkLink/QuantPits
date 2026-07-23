@@ -296,6 +296,142 @@ def test_runner_ordinary_failure_preserves_later_units_and_exact_postconditions(
     _assert_lease_released(repository, "post-runner-failure-probe")
 
 
+@pytest.mark.parametrize("failure_stage", ("before_manifest", "after_valid_evidence"))
+def test_durable_failed_claim_crash_retries_without_reusing_orphan_evidence(
+        tmp_path, failure_stage):
+    scope, repository, original_backend = _case(tmp_path, n_windows=2)
+
+    class OrphanAwareBackend(FakeExecutionBackend):
+        def _inventory_tokens(self):
+            return frozenset(
+                (key, item["recorder_id"]) for key, item in self.candidates.items()
+            )
+
+        def capture_recorder_inventory(self, scope, unit, attempt_id):
+            return self._inventory_tokens()
+
+        def commit_execution_manifest(
+                self, scope, unit, observation, recorder_baseline):
+            if recorder_baseline != self._inventory_tokens():
+                raise RuntimeError("fake recorder inventory baseline drifted")
+            existing = self.candidates.pop(unit.unit_key, None)
+            if existing is not None:
+                orphan_key = ("orphan-%s" % existing["recorder_id"], unit.unit_key)
+                self.candidates[orphan_key] = existing
+            shifted_baseline = frozenset(self.candidates)
+            return super().commit_execution_manifest(
+                scope, unit, observation, shifted_baseline,
+            )
+
+    backend = OrphanAwareBackend(original_backend.context)
+
+    class SimulatedProcessLoss(BaseException):
+        pass
+
+    def fault(point):
+        if (
+            failure_stage == "after_valid_evidence"
+            and point == "after_valid_evidence_before_state_cas"
+        ):
+            raise OSError("injected failure after valid evidence")
+        if point == "after_failed_claim_before_failed_envelope":
+            raise SimulatedProcessLoss()
+
+    first_runner = FakeRunner(
+        backend.context,
+        failures=(0,) if failure_stage == "before_manifest" else (),
+    )
+    with pytest.raises(SimulatedProcessLoss):
+        RollingExecutionKernel(
+            repository, backend, first_runner, fault_hook=fault,
+        ).execute(scope, "attempt-1")
+
+    stale = repository.inspect_readonly().inspection.snapshot
+    assert stale.phase == "executing"
+    assert tuple(item.status for item in stale.units) == ("failed", "pending")
+    assert tuple(
+        (item.target_key, item.window_key) for item in stale.units
+    ) == scope.requested_unit_keys
+    failed_audit = stale.units[0].extensions
+    assert failed_audit["attempt_id"] == "attempt-1"
+    assert failed_audit["failure_code"] in (
+        "RollingExecutionPreflightError", "OSError",
+    )
+    assert stale.units[0].record_id is None
+    assert stale.units[0].evidence_id is None
+    assert stale.units[1]._extensions_json is None
+    assert stale.units[1].extensions == {}
+    assert first_runner.calls == [(scope.units[0].unit_key, "attempt-1")]
+    _assert_lease_released(repository, "post-durable-failed-claim-crash")
+
+    old_request = backend.requests.get(scope.units[0].unit_key)
+    old_evidence_id = None
+    if failure_stage == "before_manifest":
+        assert old_request is None
+        assert backend.manifest_calls == []
+        assert backend.candidates == {}
+    else:
+        assert old_request is not None
+        assert failed_audit["attempt_id"] == old_request.run_identity.attempt_id
+        assert failed_audit["recorder_id"] == old_request.recorder_id
+        assert (
+            failed_audit["source_manifest_fingerprint"]
+            == old_request.source_manifest_fingerprint
+        )
+        assert failed_audit["artifacts"] == [
+            item.to_fingerprint_dict() for item in old_request.artifacts
+        ]
+        old_evidence_id = backend.inspect(
+            scope, (old_request,),
+        ).unit_results[0].evidence_fingerprint
+        assert backend.manifest_calls == [scope.units[0].unit_key]
+        assert len(backend.candidates) == 1
+
+    resumed_runner = FakeRunner(backend.context)
+    resumed = RollingExecutionKernel(
+        repository, backend, resumed_runner,
+    ).resume(scope, "attempt-2")
+    assert resumed.status == "success"
+    assert resumed.requested_unit_keys == scope.requested_unit_keys
+    assert tuple(
+        item.unit_key for item in resumed.unit_results
+    ) == scope.requested_unit_keys
+    assert tuple(item.status for item in resumed.unit_results) == (
+        "executed_success", "executed_success",
+    )
+    assert resumed.n_runner_calls == 2
+    assert resumed.n_executed_success == 2
+    assert resumed.n_reused_success == 0
+    assert resumed_runner.calls == [
+        (scope.units[0].unit_key, "attempt-2"),
+        (scope.units[1].unit_key, "attempt-2"),
+    ]
+
+    terminal = repository.inspect_readonly().inspection.snapshot
+    assert terminal.phase == "units_complete"
+    assert tuple(
+        (item.target_key, item.window_key) for item in terminal.units
+    ) == scope.requested_unit_keys
+    assert tuple(item.status for item in terminal.units) == ("success", "success")
+    assert terminal.units[0].extensions["prior_attempts"] == [failed_audit]
+    assert terminal.units[1].extensions["prior_attempts"] == [{
+        "attempt_id": "attempt-1",
+        "failure_code": "MissingEvidenceReconciliation",
+    }]
+    assert all(
+        item.record_id is not None and item.evidence_id is not None
+        for item in terminal.units
+    )
+    if old_request is not None:
+        assert terminal.units[0].record_id != old_request.recorder_id
+        assert terminal.units[0].evidence_id != old_evidence_id
+        assert any(
+            isinstance(key, tuple) and key[0].startswith("orphan-")
+            for key in backend.candidates
+        )
+    _assert_lease_released(repository, "post-durable-failed-claim-resume")
+
+
 @pytest.mark.parametrize((
     "point", "result_statuses", "runner_calls", "manifest_calls",
     "candidate_count", "state_phase", "state_statuses",

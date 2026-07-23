@@ -151,7 +151,10 @@ recorder, experiment, and tags. Resume consumes the exact recovery proposal and 
 original source frozen in State V2; its
 highest durable success phase is `units_complete`. Retry preserves prior attempt
 failure/interruption/source facts in append-only `prior_attempts`; final success retains that audit,
-and State CAS rejects deletion, mutation, reordering, or duplicate attempts. These APIs write no current record, combined
+and State CAS rejects deletion, mutation, reordering, or duplicate attempts. If a crash leaves an
+`executing` envelope with a durable `failed` claim, resume preserves that failure, converges the old
+envelope, and retries under a new attempt. Any valid recorder/evidence left by the old attempt is an
+orphan and cannot be promoted to success. These APIs write no current record, combined
 recorder, backtest, history, or promotion output; existing `rolling_train.py` commands remain on the
 legacy route.
 

@@ -243,7 +243,11 @@ uses only the original attempt/recorder/evidence frozen in State V2 and never a 
 record or "latest recorder". Ordinary unit failure preserves later units and process-control
 interruptions propagate. On `failed → running`, the prior attempt's failure/interruption and any source selector
 are appended unchanged to canonical `prior_attempts`; deletion, mutation, reordering, and duplicate
-attempts fail closed, and final success retains both this audit and its exact evidence selector. The mapper retains a canonical target whose capability is blocked instead of shrinking the
+attempts fail closed, and final success retains both this audit and its exact evidence selector.
+If a crash leaves a durable `failed` claim inside an `executing` envelope, resume preserves that
+failure audit, converges the old envelope to `failed`, and only then starts a new attempt. Even valid
+recorder/evidence left by the old attempt is an orphan and is never reinterpreted as
+`reused_success`. The mapper retains a canonical target whose capability is blocked instead of shrinking the
 requested set to an available subset; one blocked decision blocks the complete batch before the
 runner while preserving identity, order, and cardinality. A real Linear unit rebinds the exact
 workspace, Qlib provider, and tracking backend inside a controlled child process; the parent accepts

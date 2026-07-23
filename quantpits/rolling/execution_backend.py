@@ -528,6 +528,7 @@ class RollingExecutionKernel:
                     baseline = self._commit(
                         _snapshot(scope, "executing", attempt_id, claims), baseline, evidence,
                     )
+                    self._fault("after_failed_claim_before_failed_envelope")
                 except Exception:
                     state_uncertain = True
                 results.append(RollingExecutionUnitResult(
@@ -716,7 +717,11 @@ class RollingExecutionKernel:
                         attempt_id=state.attempt_id,
                         reason_code="rolling_execution_committed_evidence_invalid",
                     )
-            elif state.phase == "executing" and proposal_reusable:
+            elif (
+                state.phase == "executing"
+                and claim.status == "running"
+                and proposal_reusable
+            ):
                 request = requests[unit.position]
                 recorder_id = dict(observed.source_summary)["recorder_id"]
                 claims[unit.position] = _claim(
@@ -733,7 +738,16 @@ class RollingExecutionKernel:
                     _authority=_RESULT_TOKEN,
                 )
                 reconciled_success = True
-            elif observed.classification == "missing":
+            elif (
+                claim.status == "failed"
+                and (observed.classification == "missing" or proposal_reusable)
+            ):
+                retry_units.append(unit)
+                requests_by_key.pop(unit.unit_key, None)
+            elif (
+                claim.status in ("pending", "running")
+                and observed.classification == "missing"
+            ):
                 retry_units.append(unit)
                 requests_by_key.pop(unit.unit_key, None)
             else:
@@ -791,15 +805,17 @@ class RollingExecutionKernel:
             )
             if state.phase == "executing":
                 for unit in retry_units:
-                    prior = _prior_attempts(claims[unit.position])
-                    claims[unit.position] = _claim(
-                        unit, "failed",
-                        extensions=_source_extensions(
-                            None, state.attempt_id,
-                            {"failure_code": "MissingEvidenceReconciliation"},
-                            prior,
-                        ),
-                    )
+                    claim = claims[unit.position]
+                    if claim.status != "failed":
+                        prior = _prior_attempts(claim)
+                        claims[unit.position] = _claim(
+                            unit, "failed",
+                            extensions=_source_extensions(
+                                None, state.attempt_id,
+                                {"failure_code": "MissingEvidenceReconciliation"},
+                                prior,
+                            ),
+                        )
                 baseline = self._commit(
                     _snapshot(scope, "failed", state.attempt_id, claims), baseline,
                     success_evidence,
