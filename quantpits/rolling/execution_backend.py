@@ -76,7 +76,7 @@ def _claim(unit, status, record_id=None, evidence_id=None, extensions=None):
     )
 
 
-def _source_extensions(request, attempt_id, extra=None):
+def _source_extensions(request, attempt_id, extra=None, prior_attempts=()):
     values = {"attempt_id": attempt_id}
     if request is not None:
         values.update({
@@ -90,7 +90,24 @@ def _source_extensions(request, attempt_id, extra=None):
             "artifacts": [item.to_fingerprint_dict() for item in request.artifacts],
         })
     values.update(extra or {})
+    if prior_attempts:
+        values["prior_attempts"] = [dict(item) for item in prior_attempts]
     return values
+
+
+def _prior_attempts(claim):
+    extensions = claim.extensions or {}
+    return tuple(dict(item) for item in extensions.get("prior_attempts", ()))
+
+
+def _retry_extensions(claim, attempt_id):
+    """Move the exact terminal failure into an append-only retry audit."""
+
+    extensions = dict(claim.extensions or {})
+    prior = list(_prior_attempts(claim))
+    extensions.pop("prior_attempts", None)
+    prior.append(extensions)
+    return {"attempt_id": attempt_id, "prior_attempts": prior}
 
 
 def _batch(scope, results):
@@ -771,7 +788,15 @@ class RollingExecutionKernel:
             )
             if state.phase == "executing":
                 for unit in retry_units:
-                    claims[unit.position] = _claim(unit, "failed")
+                    prior = _prior_attempts(claims[unit.position])
+                    claims[unit.position] = _claim(
+                        unit, "failed",
+                        extensions=_source_extensions(
+                            None, state.attempt_id,
+                            {"failure_code": "MissingEvidenceReconciliation"},
+                            prior,
+                        ),
+                    )
                 baseline = self._commit(
                     _snapshot(scope, "failed", state.attempt_id, claims), baseline,
                     success_evidence,
@@ -786,7 +811,14 @@ class RollingExecutionKernel:
         if state.phase not in ("failed", "executing"):
             raise RollingExecutionPreflightError("state phase cannot start a retry attempt")
         for unit in retry_units:
-            claims[unit.position] = _claim(unit, "running")
+            previous_claim = claims[unit.position]
+            claims[unit.position] = _claim(
+                unit, "running",
+                extensions=(
+                    _retry_extensions(previous_claim, attempt_id)
+                    if previous_claim.status == "failed" else None
+                ),
+            )
         try:
             baseline = self._commit(
                 _snapshot(scope, "executing", attempt_id, claims), baseline,
@@ -829,7 +861,10 @@ class RollingExecutionKernel:
                 requests_by_key[unit.unit_key] = request
                 claims[unit.position] = _claim(
                     unit, "success", observation.recorder_id, observed.evidence_fingerprint,
-                    _source_extensions(request, attempt_id),
+                    _source_extensions(
+                        request, attempt_id,
+                        prior_attempts=_prior_attempts(claims[unit.position]),
+                    ),
                 )
                 success_evidence = self._success_evidence(
                     self.backend, scope, requests_by_key, claims,
@@ -850,6 +885,7 @@ class RollingExecutionKernel:
                 claims[unit.position] = _claim(
                     unit, "failed", extensions=_source_extensions(
                         request, attempt_id, {"interrupted_attempt_id": attempt_id},
+                        _prior_attempts(claims[unit.position]),
                     ),
                 )
                 try:
@@ -869,6 +905,7 @@ class RollingExecutionKernel:
                     unit, "failed", extensions=_source_extensions(
                         request, attempt_id,
                         {"failure_code": exc.__class__.__name__},
+                        _prior_attempts(claims[unit.position]),
                     ),
                 )
                 results[unit.position] = RollingExecutionUnitResult(

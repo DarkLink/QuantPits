@@ -217,6 +217,8 @@ requested target×window 必有一个有序 terminal result，runner success 只
 provenance tags；State CAS 会共同核对 attempt、experiment、source manifest/operation 与 artifact expectations。
 resume 实际消费 `classify_rolling_recovery()` 的 exact proposal，只复用 State V2 冻结的 original attempt/recorder/evidence；不读取
 mutable current record 或“最新 recorder”。普通 unit failure 不删除后续 unit，process-control interruption 继续透传。
+`failed → running` 会把上一 attempt 的 failure/interruption 与已有 source selector 原样追加到 canonical
+`prior_attempts`；repository 拒绝删除、篡改、重排或重复历史，最终 success 同时保留 prior audit 与 exact evidence selector。
 mapper 会保留 capability blocked 的 canonical target，而不是用 available subset 缩小 requested set；任一 blocked
 decision 会让完整 batch 在 runner 前以同一 identity/order/cardinality 阻断。
 真实 Linear unit 在受控子进程内重新绑定 exact workspace、Qlib provider 与 tracking backend；父进程只接受不含本地路径的

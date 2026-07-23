@@ -80,6 +80,12 @@ _COMMITTED_PHASE_TRANSITIONS = frozenset((
     ("failed", "executing"),
     ("executing", "units_complete"),
 ))
+_SOURCE_EXTENSION_FIELDS = frozenset((
+    "source_manifest_fingerprint", "source_protocol", "source_publication_key",
+    "experiment_name", "experiment_id", "recorder_id", "source_operation",
+    "artifacts",
+))
+_FAILURE_EXTENSION_FIELDS = frozenset(("failure_code", "interrupted_attempt_id"))
 
 
 def _is_digest(value):
@@ -88,6 +94,75 @@ def _is_digest(value):
         and len(value) == 64
         and all(char in _DIGEST_CHARS for char in value)
     )
+
+
+def _attempt_audit_parts(unit, envelope_attempt_id):
+    """Validate and split the canonical append-only per-unit attempt audit."""
+
+    extensions = unit.extensions
+    if unit._extensions_json is None:
+        if unit.status in ("failed", "success"):
+            raise RollingStateTransitionError(
+                "%s unit lacks canonical attempt audit" % unit.status
+            )
+        return (), None
+    if not isinstance(extensions, dict):
+        raise RollingStateTransitionError("unit attempt audit must be a mapping")
+    prior = extensions["prior_attempts"] if "prior_attempts" in extensions else []
+    if not isinstance(prior, list) or any(not isinstance(item, dict) for item in prior):
+        raise RollingStateTransitionError("prior attempt audit must be an ordered list")
+
+    def validate_terminal(item):
+        keys = frozenset(item)
+        if "prior_attempts" in keys or "attempt_id" not in keys:
+            raise RollingStateTransitionError("prior attempt audit shape is invalid")
+        attempt = item.get("attempt_id")
+        if not isinstance(attempt, str) or not attempt or attempt != attempt.strip():
+            raise RollingStateTransitionError("attempt audit identity is invalid")
+        terminal = keys & _FAILURE_EXTENSION_FIELDS
+        if len(terminal) != 1:
+            raise RollingStateTransitionError("attempt audit requires one terminal fact")
+        allowed = frozenset(("attempt_id",)) | terminal
+        source = keys & _SOURCE_EXTENSION_FIELDS
+        if source and source != _SOURCE_EXTENSION_FIELDS:
+            raise RollingStateTransitionError("attempt audit source selector is partial")
+        allowed |= source
+        if keys != allowed:
+            raise RollingStateTransitionError("attempt audit has unknown fields")
+        terminal_key = next(iter(terminal))
+        terminal_value = item[terminal_key]
+        if (not isinstance(terminal_value, str) or not terminal_value
+                or terminal_value != terminal_value.strip()):
+            raise RollingStateTransitionError("attempt audit terminal fact is invalid")
+        if terminal_key == "interrupted_attempt_id" and terminal_value != attempt:
+            raise RollingStateTransitionError("interruption audit identity disagrees")
+        return attempt
+
+    prior_attempts = tuple(validate_terminal(item) for item in prior)
+    if len(prior_attempts) != len(set(prior_attempts)):
+        raise RollingStateTransitionError("prior attempt audit contains a duplicate")
+    current = dict(extensions)
+    current.pop("prior_attempts", None)
+    attempt = current.get("attempt_id")
+    if attempt is not None and attempt in prior_attempts:
+        raise RollingStateTransitionError("current attempt duplicates prior audit")
+    if unit.status == "running":
+        if not prior or set(current) != {"attempt_id"}:
+            raise RollingStateTransitionError("retry running audit is not canonical")
+        if attempt != envelope_attempt_id:
+            raise RollingStateTransitionError("retry running attempt disagrees")
+    elif unit.status == "failed":
+        validate_terminal(current)
+        if attempt != envelope_attempt_id:
+            raise RollingStateTransitionError("failed unit attempt disagrees")
+    elif unit.status == "success":
+        expected = frozenset(("attempt_id",)) | _SOURCE_EXTENSION_FIELDS
+        if (frozenset(current) != expected or not isinstance(attempt, str)
+                or not attempt or attempt != attempt.strip()):
+            raise RollingStateTransitionError("success attempt/source audit is invalid")
+    else:
+        raise RollingStateTransitionError("nonterminal unit cannot carry attempt audit")
+    return tuple(dict(item) for item in prior), current
 
 
 @dataclass(frozen=True)
@@ -616,6 +691,7 @@ class RollingStateRepository:
                 "source_publication_key", "experiment_name", "experiment_id",
                 "recorder_id", "source_operation", "artifacts",
             }
+            _attempt_audit_parts(unit, proposed.attempt_id)
             observed_artifacts = [
                 {
                     "logical_key": item.logical_key,
@@ -631,7 +707,10 @@ class RollingStateRepository:
                 or summary.get("recorder_id") != unit.record_id
                 or evidence.unit_key != (unit.target_key, unit.window_key)
                 or not isinstance(extensions, dict)
-                or set(extensions) != required_extensions
+                or set(extensions) not in (
+                    required_extensions,
+                    required_extensions | {"prior_attempts"},
+                )
                 or extensions.get("attempt_id") != summary.get("attempt_id")
                 or extensions.get("source_manifest_fingerprint")
                 != evidence.request_fingerprint
@@ -731,6 +810,12 @@ class RollingStateRepository:
         }
         for identity, old in previous_units.items():
             new = proposed_units[identity]
+            old_prior, old_current = _attempt_audit_parts(
+                old, previous.attempt_id,
+            )
+            new_prior, new_current = _attempt_audit_parts(
+                new, proposed.attempt_id,
+            )
             if new.status not in unit_transitions.get(old.status, ()):
                 raise RollingStateTransitionError("unit progress regressed")
             if old.status == "success":
@@ -741,6 +826,24 @@ class RollingStateRepository:
             elif new.status != "success" and (
                     old.record_id != new.record_id or old.evidence_id != new.evidence_id):
                 raise RollingStateTransitionError("unit evidence facts changed without success")
+            if old.status == "failed" and new.status == "running":
+                expected_prior = old_prior + (old_current,)
+                if new_prior != expected_prior:
+                    raise RollingStateTransitionError(
+                        "retry did not append the exact prior failure audit"
+                    )
+            elif old.status == "running" and new.status in ("failed", "success"):
+                if new_prior != old_prior:
+                    raise RollingStateTransitionError(
+                        "attempt transition changed prior failure audit"
+                    )
+            elif old.status != "success" and new.status != "success":
+                if old._extensions_json != new._extensions_json and not (
+                        old.status in ("pending", "running")
+                        and new.status == "failed"):
+                    raise RollingStateTransitionError(
+                        "unit attempt audit changed outside a terminal transition"
+                    )
         for identity, unit in proposed_units.items():
             if (identity not in previous_units
                     and unit._extensions_json is not None):

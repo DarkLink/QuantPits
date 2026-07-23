@@ -149,7 +149,9 @@ execution identity. It then exposes `preflight_rolling_execution()`,
 LinearModel/DatasetH/Slide unit. After the runner, the backend must prove the unique newly created
 recorder, experiment, and tags. Resume consumes the exact recovery proposal and reads only the
 original source frozen in State V2; its
-highest durable success phase is `units_complete`. These APIs write no current record, combined
+highest durable success phase is `units_complete`. Retry preserves prior attempt
+failure/interruption/source facts in append-only `prior_attempts`; final success retains that audit,
+and State CAS rejects deletion, mutation, reordering, or duplicate attempts. These APIs write no current record, combined
 recorder, backtest, history, or promotion output; existing `rolling_train.py` commands remain on the
 legacy route.
 

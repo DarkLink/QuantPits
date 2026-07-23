@@ -64,6 +64,31 @@ def _commit_prepared(repository, context):
     return receipt
 
 
+def _unit_extensions(values):
+    return json.dumps(values, sort_keys=True, separators=(",", ":"))
+
+
+def _failure_claim(attempt_id, prior=(), failure_code="RuntimeError", source=None):
+    extensions = {"attempt_id": attempt_id, "failure_code": failure_code}
+    extensions.update(source or {})
+    if prior:
+        extensions["prior_attempts"] = list(prior)
+    return RollingStateUnitClaim(
+        "demo@rolling", WINDOW_A, "failed",
+        _extensions_json=_unit_extensions(extensions),
+    )
+
+
+def _retry_claim(attempt_id, prior):
+    return RollingStateUnitClaim(
+        "demo@rolling", WINDOW_A, "running",
+        _extensions_json=_unit_extensions({
+            "attempt_id": attempt_id,
+            "prior_attempts": list(prior),
+        }),
+    )
+
+
 def _competing_commit(root, expected, proposed, start, output):
     context = WorkspaceContext.from_root(root)
     repository = RollingStateRepository.for_workspace(context, "rolling")
@@ -343,19 +368,102 @@ def test_missing_create_and_pre_evidence_phase_transitions_are_monotonic(tmp_pat
     prepared = repository.inspect_readonly()
     assert prepared_receipt.after_baseline == prepared.baseline
 
-    executing_state = _state(context, phase="executing", attempt_id="attempt-1")
+    executing_state = _state(
+        context, phase="executing", attempt_id="attempt-1",
+        units=(RollingStateUnitClaim("demo@rolling", WINDOW_A, "running"),),
+    )
     executing = repository.commit(executing_state, prepared.baseline)
     assert executing.status == "committed"
-    failed_state = dataclasses.replace(executing_state, phase="failed")
+    failure = {"attempt_id": "attempt-1", "failure_code": "RuntimeError"}
+    failed_state = dataclasses.replace(
+        executing_state, phase="failed",
+        units=(_failure_claim("attempt-1"),),
+    )
     failed = repository.commit(failed_state, executing.after_baseline)
     assert failed.status == "committed"
     retry_state = dataclasses.replace(
         failed_state, phase="executing", attempt_id="attempt-2",
+        units=(_retry_claim("attempt-2", (failure,)),),
     )
     retry = repository.commit(retry_state, failed.after_baseline)
     assert retry.status == "committed"
     assert retry.before_phase == "failed"
     assert retry.after_phase == "executing"
+
+
+def test_retry_attempt_audit_is_canonical_append_only_and_fails_closed(tmp_path):
+    context = _context(tmp_path)
+    repository = RollingStateRepository.for_workspace(context, "rolling")
+    _commit_prepared(repository, context)
+    baseline = repository.inspect_readonly().baseline
+
+    running0 = _state(
+        context, phase="executing", attempt_id="attempt-0",
+        units=(RollingStateUnitClaim("demo@rolling", WINDOW_A, "running"),),
+    )
+    baseline = repository.commit(running0, baseline).after_baseline
+    source0 = {
+        "source_manifest_fingerprint": "a" * 64,
+        "source_protocol": "execution_bound_v1",
+        "source_publication_key": "demo@rolling",
+        "experiment_name": "exact-unit-experiment",
+        "experiment_id": "experiment-0",
+        "recorder_id": "recorder-0",
+        "source_operation": "merge",
+        "artifacts": [],
+    }
+    audit0 = dict(
+        source0, attempt_id="attempt-0", failure_code="RuntimeError",
+    )
+    failed0 = dataclasses.replace(
+        running0, phase="failed",
+        units=(_failure_claim("attempt-0", source=source0),),
+    )
+    baseline = repository.commit(failed0, baseline).after_baseline
+    running1 = dataclasses.replace(
+        failed0, phase="executing", attempt_id="attempt-1",
+        units=(_retry_claim("attempt-1", (audit0,)),),
+    )
+    baseline = repository.commit(running1, baseline).after_baseline
+    audit1 = {"attempt_id": "attempt-1", "failure_code": "OSError"}
+    failed1 = dataclasses.replace(
+        running1, phase="failed",
+        units=(_failure_claim("attempt-1", (audit0,), "OSError"),),
+    )
+    baseline = repository.commit(failed1, baseline).after_baseline
+
+    exact = (audit0, audit1)
+    canonical = dataclasses.replace(
+        failed1, phase="executing", attempt_id="attempt-2",
+        units=(_retry_claim("attempt-2", exact),),
+    )
+    for forged_prior in (
+        (audit1,),
+        (dict(audit0, failure_code="ValueError"), audit1),
+        (dict(audit0, recorder_id="forged-recorder"), audit1),
+        (audit1, audit0),
+        (audit0, audit1, audit1),
+    ):
+        forged = dataclasses.replace(
+            canonical, units=(_retry_claim("attempt-2", forged_prior),),
+        )
+        receipt = repository.commit(forged, baseline)
+        assert receipt.status == "invalid_transition"
+        assert repository.inspect_readonly().baseline == baseline
+
+    for malformed_prior in (None, False, {}, "attempt-0"):
+        malformed = RollingStateUnitClaim(
+            "demo@rolling", WINDOW_A, "running",
+            _extensions_json=_unit_extensions({
+                "attempt_id": "attempt-2",
+                "prior_attempts": malformed_prior,
+            }),
+        )
+        forged = dataclasses.replace(canonical, units=(malformed,))
+        assert repository.commit(forged, baseline).status == "invalid_transition"
+        assert repository.inspect_readonly().baseline == baseline
+
+    assert repository.commit(canonical, baseline).status == "committed"
 
 
 def test_transition_rejects_identity_attempt_phase_and_unit_regression(tmp_path):

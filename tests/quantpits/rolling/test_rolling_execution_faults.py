@@ -23,22 +23,49 @@ def _case(tmp_path, n_windows=1):
     )
 
 
+def _assert_lease_released(repository, probe):
+    from quantpits.training.lease import TrainingExecutionLease
+    lease = TrainingExecutionLease.for_workspace(repository.context)
+    lease.acquire(run_id=probe)
+    lease.release()
+
+
 @pytest.mark.parametrize("control", [KeyboardInterrupt(), SystemExit(), GeneratorExit()])
 def test_keyboard_systemexit_generatorexit_propagate_and_leave_reconcilable_state(tmp_path, control):
-    scope, repository, backend = _case(tmp_path)
+    scope, repository, backend = _case(tmp_path, n_windows=2)
+    runner = FakeRunner(backend.context, controls={0: control})
     with pytest.raises(control.__class__):
         RollingExecutionKernel(
-            repository, backend, FakeRunner(backend.context, controls={0: control}),
+            repository, backend, runner,
         ).execute(scope, "attempt-1")
     state = repository.inspect_readonly().inspection.snapshot
     assert state.phase == "failed"
-    assert state.units[0].status == "failed"
+    assert tuple(item.status for item in state.units) == ("failed", "pending")
+    assert runner.calls == [(scope.units[0].unit_key, "attempt-1")]
+    assert backend.manifest_calls == []
+    assert backend.candidates == {}
     assert state.units[0].record_id is None
     assert state.units[0].evidence_id is None
-    from quantpits.training.lease import TrainingExecutionLease
-    lease = TrainingExecutionLease.for_workspace(repository.context)
-    lease.acquire(run_id="post-interrupt-probe")
-    lease.release()
+    assert state.units[0].extensions == {
+        "attempt_id": "attempt-1",
+        "interrupted_attempt_id": "attempt-1",
+    }
+    assert state.units[1].record_id is None
+    assert state.units[1].evidence_id is None
+    _assert_lease_released(repository, "post-interrupt-probe")
+    resumed_runner = FakeRunner(backend.context)
+    resumed = RollingExecutionKernel(
+        repository, backend, resumed_runner,
+    ).resume(scope, "attempt-2")
+    assert resumed.status == "success"
+    assert [item[0] for item in resumed_runner.calls] == list(scope.requested_unit_keys)
+    terminal = repository.inspect_readonly().inspection.snapshot
+    assert terminal.phase == "units_complete"
+    assert terminal.units[0].extensions["prior_attempts"] == [{
+        "attempt_id": "attempt-1",
+        "interrupted_attempt_id": "attempt-1",
+    }]
+    assert "prior_attempts" not in terminal.units[1].extensions
 
 
 def test_each_runner_manifest_inspection_and_state_commit_fault_is_truthful(tmp_path):
@@ -145,7 +172,18 @@ def test_each_runner_manifest_inspection_and_state_commit_fault_is_truthful(tmp_
     assert [item[0] for item in manifest_runner.calls] == list(
         manifest_scope.requested_unit_keys,
     )
-    assert manifest_repository.inspect_readonly().inspection.snapshot.phase == "failed"
+    assert manifest_result.unit_results[0].record_id is None
+    assert manifest_result.unit_results[0].evidence_id is None
+    assert manifest_result.unit_results[1].record_id is not None
+    assert manifest_result.unit_results[1].evidence_id is not None
+    manifest_state = manifest_repository.inspect_readonly().inspection.snapshot
+    assert manifest_state.phase == "failed"
+    assert tuple(item.status for item in manifest_state.units) == ("failed", "success")
+    assert manifest_state.units[0].record_id is None
+    assert manifest_state.units[0].evidence_id is None
+    assert manifest_state.units[1].record_id == manifest_result.unit_results[1].record_id
+    assert manifest_state.units[1].evidence_id == manifest_result.unit_results[1].evidence_id
+    _assert_lease_released(manifest_repository, "post-manifest-fault-probe")
 
     success_root = tmp_path / "success-cas-case"
     success_root.mkdir()
@@ -173,6 +211,12 @@ def test_each_runner_manifest_inspection_and_state_commit_fault_is_truthful(tmp_
     durable = success_repository.inspect_readonly().inspection.snapshot
     assert durable.phase == "executing"
     assert tuple(item.status for item in durable.units) == ("success", "pending")
+    assert len(success_backend.candidates) == 1
+    assert durable.units[0].record_id is not None
+    assert durable.units[0].evidence_id is not None
+    assert durable.units[1].record_id is None
+    assert durable.units[1].evidence_id is None
+    _assert_lease_released(success_repository, "post-success-cas-fault-probe")
     recovered = RollingExecutionKernel(
         success_repository, success_backend, FakeRunner(success_backend.context),
     ).resume(success_scope, "attempt-2")
@@ -198,6 +242,10 @@ def test_each_runner_manifest_inspection_and_state_commit_fault_is_truthful(tmp_
     final_state = final_repository.inspect_readonly().inspection.snapshot
     assert final_state.phase == "executing"
     assert final_state.units[0].status == "success"
+    assert len(final_backend.candidates) == 1
+    assert final_state.units[0].record_id is not None
+    assert final_state.units[0].evidence_id is not None
+    _assert_lease_released(final_repository, "post-finalization-fault-probe")
 
     lease_root = tmp_path / "lease-postcondition-case"
     lease_root.mkdir()
@@ -219,26 +267,56 @@ def test_each_runner_manifest_inspection_and_state_commit_fault_is_truthful(tmp_
     assert lease_result.status == "failed"
     assert lease_result.unit_results[0].record_id is None
     assert lease_result.unit_results[0].evidence_id is None
-    from quantpits.training.lease import TrainingExecutionLease
-    lease = TrainingExecutionLease.for_workspace(lease_repository.context)
-    lease.acquire(run_id="post-fault-probe")
-    lease.release()
+    _assert_lease_released(lease_repository, "post-fault-probe")
 
 
-@pytest.mark.parametrize("point", (
-    "before_shared_lease",
-    "after_lease_before_baseline_recheck",
-    "after_prepared_state_commit",
-    "after_executing_state_commit",
-    "before_runner",
-    "after_recorder_before_manifest",
-    "after_manifest_before_evidence_inventory",
-    "after_valid_evidence_before_state_cas",
-    "after_success_cas_before_next_unit",
-    "after_final_unit_before_units_complete",
+def test_runner_ordinary_failure_preserves_later_units_and_exact_postconditions(tmp_path):
+    scope, repository, backend = _case(tmp_path, n_windows=3)
+    runner = FakeRunner(backend.context, failures=(0,))
+    result = RollingExecutionKernel(repository, backend, runner).execute(
+        scope, "attempt-1",
+    )
+    assert result.status == "failed"
+    assert tuple(item.unit_key for item in result.unit_results) == scope.requested_unit_keys
+    assert tuple(item.status for item in result.unit_results) == (
+        "failed", "executed_success", "executed_success",
+    )
+    assert [item[0] for item in runner.calls] == list(scope.requested_unit_keys)
+    assert backend.manifest_calls == list(scope.requested_unit_keys[1:])
+    assert len(backend.candidates) == 2
+    state = repository.inspect_readonly().inspection.snapshot
+    assert state.phase == "failed"
+    assert tuple(item.status for item in state.units) == ("failed", "success", "success")
+    assert state.units[0].record_id is None
+    assert state.units[0].evidence_id is None
+    assert all(
+        item.record_id is not None and item.evidence_id is not None
+        for item in state.units[1:]
+    )
+    _assert_lease_released(repository, "post-runner-failure-probe")
+
+
+@pytest.mark.parametrize((
+    "point", "result_statuses", "runner_calls", "manifest_calls",
+    "candidate_count", "state_phase", "state_statuses",
+    "durable_record_count", "durable_evidence_count",
+), (
+    ("before_shared_lease", ("blocked", "blocked"), 0, 0, 0, None, (), 0, 0),
+    ("after_lease_before_baseline_recheck", ("blocked", "blocked"), 0, 0, 0, None, (), 0, 0),
+    ("after_prepared_state_commit", ("blocked", "blocked"), 0, 0, 0, "prepared", (), 0, 0),
+    ("after_executing_state_commit", ("blocked", "blocked"), 0, 0, 0, "executing", ("pending", "pending"), 0, 0),
+    ("before_runner", ("failed", "failed"), 0, 0, 0, "failed", ("failed", "failed"), 0, 0),
+    ("after_recorder_before_manifest", ("failed", "failed"), 2, 0, 0, "failed", ("failed", "failed"), 0, 0),
+    ("after_manifest_before_evidence_inventory", ("failed", "failed"), 2, 2, 2, "failed", ("failed", "failed"), 0, 0),
+    ("after_valid_evidence_before_state_cas", ("failed", "failed"), 2, 2, 2, "failed", ("failed", "failed"), 0, 0),
+    ("after_success_cas_before_next_unit", ("failed", "blocked"), 1, 1, 1, "executing", ("success", "pending"), 1, 1),
+    ("after_final_unit_before_units_complete", ("failed", "failed"), 2, 2, 2, "executing", ("success", "success"), 2, 2),
 ))
-def test_frozen_kernel_fault_points_never_manufacture_success(tmp_path, point):
-    scope, repository, backend = _case(tmp_path)
+def test_frozen_kernel_fault_points_never_manufacture_success(
+        tmp_path, point, result_statuses, runner_calls, manifest_calls,
+        candidate_count, state_phase, state_statuses,
+        durable_record_count, durable_evidence_count):
+    scope, repository, backend = _case(tmp_path, n_windows=2)
     runner = FakeRunner(backend.context)
 
     def fault(observed):
@@ -249,22 +327,33 @@ def test_frozen_kernel_fault_points_never_manufacture_success(tmp_path, point):
         repository, backend, runner, fault_hook=fault,
     ).execute(scope, "attempt-1")
     assert result.status in ("blocked", "failed")
+    assert result.requested_unit_keys == scope.requested_unit_keys
+    assert tuple(item.unit_key for item in result.unit_results) == scope.requested_unit_keys
+    assert tuple(item.status for item in result.unit_results) == result_statuses
     assert result.n_executed_success == 0
+    assert len(runner.calls) == runner_calls
+    assert [item[0] for item in runner.calls] == list(
+        scope.requested_unit_keys[:runner_calls]
+    )
+    assert len(backend.manifest_calls) == manifest_calls
+    assert backend.manifest_calls == list(scope.requested_unit_keys[:manifest_calls])
+    assert len(backend.candidates) == candidate_count
     view = repository.inspect_readonly()
-    if view.inspection.classification == "valid_versioned":
+    if state_phase is None:
+        assert view.inspection.classification == "missing"
+    else:
+        assert view.inspection.classification == "valid_versioned"
         state = view.inspection.snapshot
-        assert state.phase in ("prepared", "executing", "failed")
-        if state.units:
-            assert all(item.record_id is None or item.status == "success" for item in state.units)
-    assert runner.calls == [] if point in (
-        "before_shared_lease", "after_lease_before_baseline_recheck",
-        "after_prepared_state_commit", "after_executing_state_commit",
-        "before_runner",
-    ) else runner.calls
-    from quantpits.training.lease import TrainingExecutionLease
-    lease = TrainingExecutionLease.for_workspace(repository.context)
-    lease.acquire(run_id="post-matrix-probe")
-    lease.release()
+        assert state.phase == state_phase
+        assert tuple(item.status for item in state.units) == state_statuses
+        assert sum(item.record_id is not None for item in state.units) == durable_record_count
+        assert sum(item.evidence_id is not None for item in state.units) == durable_evidence_count
+        assert all(
+            (item.record_id is not None) == (item.status == "success")
+            and (item.evidence_id is not None) == (item.status == "success")
+            for item in state.units
+        )
+    _assert_lease_released(repository, "post-matrix-probe")
 
 
 def test_artifact_read_inventory_drift_and_cas_conflict_fail_closed(tmp_path):
@@ -282,11 +371,19 @@ def test_artifact_read_inventory_drift_and_cas_conflict_fail_closed(tmp_path):
     assert tuple(item.status for item in read_result.unit_results) == (
         "failed", "failed",
     )
+    assert tuple(item.unit_key for item in read_result.unit_results) == scope.requested_unit_keys
     assert len(read_runner.calls) == 2
+    assert read_backend.manifest_calls == list(scope.requested_unit_keys)
+    assert len(read_backend.candidates) == 2
+    read_state = repository.inspect_readonly().inspection.snapshot
+    assert read_state.phase == "failed"
+    assert tuple(item.status for item in read_state.units) == ("failed", "failed")
+    assert all(item.record_id is None and item.evidence_id is None for item in read_state.units)
+    _assert_lease_released(repository, "post-artifact-read-fault-probe")
 
     drift_root = tmp_path / "inventory-drift"
     drift_root.mkdir()
-    drift_scope, drift_repository, drift_backend = _case(drift_root)
+    drift_scope, drift_repository, drift_backend = _case(drift_root, n_windows=2)
 
     class InventoryDriftBackend(FakeExecutionBackend):
         inventory_calls = 0
@@ -300,15 +397,28 @@ def test_artifact_read_inventory_drift_and_cas_conflict_fail_closed(tmp_path):
             return observed
 
     drifting = InventoryDriftBackend(drift_backend.context)
+    drift_runner = FakeRunner(drifting.context)
     drift_result = RollingExecutionKernel(
-        drift_repository, drifting, FakeRunner(drifting.context),
+        drift_repository, drifting, drift_runner,
     ).execute(drift_scope, "attempt-1")
     assert drift_result.status == "failed"
     assert drift_result.n_executed_success == 0
+    assert tuple(item.unit_key for item in drift_result.unit_results) == drift_scope.requested_unit_keys
+    assert tuple(item.status for item in drift_result.unit_results) == ("failed", "failed")
+    assert [item[0] for item in drift_runner.calls] == list(drift_scope.requested_unit_keys)
+    assert drifting.manifest_calls == list(drift_scope.requested_unit_keys)
+    assert len(drifting.candidates) == 2
+    drift_state = drift_repository.inspect_readonly().inspection.snapshot
+    assert drift_state.phase == "failed"
+    assert tuple(item.status for item in drift_state.units) == ("failed", "failed")
+    assert all(item.record_id is None and item.evidence_id is None for item in drift_state.units)
+    _assert_lease_released(drift_repository, "post-inventory-drift-probe")
 
     conflict_root = tmp_path / "cas-conflict"
     conflict_root.mkdir()
-    conflict_scope, _conflict_repository, conflict_backend = _case(conflict_root)
+    conflict_scope, _conflict_repository, conflict_backend = _case(
+        conflict_root, n_windows=2,
+    )
 
     class EvidenceCasConflictRepository(RollingStateRepository):
         def commit_evidence_authorized(
@@ -322,16 +432,27 @@ def test_artifact_read_inventory_drift_and_cas_conflict_fail_closed(tmp_path):
     conflict_repository = EvidenceCasConflictRepository.for_workspace(
         conflict_backend.context, "rolling",
     )
+    conflict_runner = FakeRunner(conflict_backend.context)
     conflict_result = RollingExecutionKernel(
-        conflict_repository, conflict_backend, FakeRunner(conflict_backend.context),
+        conflict_repository, conflict_backend, conflict_runner,
     ).execute(conflict_scope, "attempt-1")
     assert conflict_result.status == "failed"
     assert conflict_result.n_executed_success == 0
+    assert tuple(item.unit_key for item in conflict_result.unit_results) == conflict_scope.requested_unit_keys
+    assert tuple(item.status for item in conflict_result.unit_results) == ("failed", "failed")
+    assert [item[0] for item in conflict_runner.calls] == list(
+        conflict_scope.requested_unit_keys
+    )
+    assert conflict_backend.manifest_calls == list(conflict_scope.requested_unit_keys)
     conflict_state = conflict_repository.inspect_readonly().inspection.snapshot
     assert conflict_state.phase == "failed"
-    assert conflict_state.units[0].status == "failed"
-    assert conflict_state.units[0].record_id is None
-    assert conflict_state.units[0].evidence_id is None
+    assert tuple(item.status for item in conflict_state.units) == ("failed", "failed")
+    assert all(
+        item.record_id is None and item.evidence_id is None
+        for item in conflict_state.units
+    )
+    assert len(conflict_backend.candidates) == 2
+    _assert_lease_released(conflict_repository, "post-cas-conflict-probe")
 
 
 def test_state_recorder_manifest_and_temp_symlink_escape_fail_before_execution(tmp_path):

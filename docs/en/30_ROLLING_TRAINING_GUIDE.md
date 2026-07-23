@@ -241,7 +241,9 @@ State CAS jointly checks the attempt, experiment, source manifest/operation, and
 Resume consumes the exact `classify_rolling_recovery()` proposal and
 uses only the original attempt/recorder/evidence frozen in State V2 and never a mutable current
 record or "latest recorder". Ordinary unit failure preserves later units and process-control
-interruptions propagate. The mapper retains a canonical target whose capability is blocked instead of shrinking the
+interruptions propagate. On `failed → running`, the prior attempt's failure/interruption and any source selector
+are appended unchanged to canonical `prior_attempts`; deletion, mutation, reordering, and duplicate
+attempts fail closed, and final success retains both this audit and its exact evidence selector. The mapper retains a canonical target whose capability is blocked instead of shrinking the
 requested set to an available subset; one blocked decision blocks the complete batch before the
 runner while preserving identity, order, and cardinality. A real Linear unit rebinds the exact
 workspace, Qlib provider, and tracking backend inside a controlled child process; the parent accepts

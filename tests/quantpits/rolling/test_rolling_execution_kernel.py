@@ -223,6 +223,40 @@ def test_resume_retries_only_missing_evidence_units_with_new_attempt(tmp_path):
     assert second_runner.calls == [(scope.units[1].unit_key, "attempt-2")]
 
 
+def test_retry_success_preserves_every_prior_failure_attempt_in_order(tmp_path):
+    _context, scope, repository, backend = _case(tmp_path)
+    first = RollingExecutionKernel(
+        repository, backend, FakeRunner(backend.context, failures=(0,)),
+    ).execute(scope, "attempt-1")
+    assert first.status == "failed"
+    first_audit = repository.inspect_readonly().inspection.snapshot.units[0].extensions
+    assert first_audit["attempt_id"] == "attempt-1"
+    assert first_audit["failure_code"] == "RollingExecutionPreflightError"
+    assert "prior_attempts" not in first_audit
+
+    second = RollingExecutionKernel(
+        repository, backend, FakeRunner(backend.context, failures=(0,)),
+    ).resume(scope, "attempt-2")
+    assert second.status == "failed"
+    second_audit = repository.inspect_readonly().inspection.snapshot.units[0].extensions
+    assert second_audit["attempt_id"] == "attempt-2"
+    assert second_audit["prior_attempts"] == [first_audit]
+
+    third = RollingExecutionKernel(
+        repository, backend, FakeRunner(backend.context),
+    ).resume(scope, "attempt-3")
+    assert third.status == "success"
+    terminal = repository.inspect_readonly().inspection.snapshot.units[0]
+    assert terminal.status == "success"
+    assert terminal.extensions["attempt_id"] == "attempt-3"
+    assert terminal.extensions["prior_attempts"] == [
+        first_audit,
+        {key: value for key, value in second_audit.items() if key != "prior_attempts"},
+    ]
+    assert terminal.record_id == third.unit_results[0].record_id
+    assert terminal.evidence_id == third.unit_results[0].evidence_id
+
+
 def test_nonmissing_invalid_evidence_blocks_retry_and_preserves_scope(tmp_path):
     _context, scope, repository, backend = _case(tmp_path)
     RollingExecutionKernel(repository, backend, FakeRunner(backend.context)).execute(scope, "attempt-1")
