@@ -15,7 +15,10 @@ import struct
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Mapping, Optional, Protocol
 
-from quantpits.rolling.errors import RollingAggregateContractError
+from quantpits.rolling.errors import (
+    RollingAggregateContractError,
+    RollingAggregateLockUnavailableError,
+)
 from quantpits.rolling.evidence import (
     RollingEvidenceSetInspection,
     RollingUnitEvidenceRequest,
@@ -53,6 +56,14 @@ _SOURCE_SET_TOKEN = object()
 _CANDIDATE_TOKEN = object()
 _TARGET_TOKEN = object()
 _BATCH_TOKEN = object()
+
+
+class _TerminalCandidateBlocked(Exception):
+    """A comparable terminal candidate fact denies reuse capability."""
+
+
+class _TerminalObservationIndeterminate(Exception):
+    """Terminal facts cannot be compared after candidate work."""
 _DIGEST_CHARS = frozenset("0123456789abcdef")
 
 
@@ -825,8 +836,6 @@ class RollingAggregateTargetResult:
             _contract("materialized_success requires did_write=true")
         if self.status == "reused_success" and self.did_write is not False:
             _contract("reused_success requires did_write=false")
-        if self.status == "indeterminate" and self.did_write is not None:
-            _contract("indeterminate requires did_write=null")
         if self.status == "blocked" and self.did_write is not False:
             _contract("blocked result must be known no-write")
         if self.status == "failed" and self.did_write not in (True, False):
@@ -1085,7 +1094,7 @@ class RollingAggregateCandidateKernel:
                         ))
                     else:
                         results.append(self._result(
-                            target, unit_keys, "indeterminate", None,
+                            target, unit_keys, "indeterminate", False,
                         ))
                         stop_new_writes = True
                     continue
@@ -1107,19 +1116,28 @@ class RollingAggregateCandidateKernel:
                     aggregate_scope, target, candidate_key, observation, expected,
                 )
                 if inspected.classification != "valid":
-                    results.append(self._result(target, unit_keys, "indeterminate", None))
+                    results.append(self._result(
+                        target, unit_keys, "indeterminate", True,
+                    ))
                     stop_new_writes = True
                     continue
                 if not self._postconditions_stable(
                     aggregate_scope, current_view, sources,
                     protected_before, backend_before,
                 ):
-                    results.append(self._result(target, unit_keys, "indeterminate", None))
+                    results.append(self._result(
+                        target, unit_keys, "indeterminate", True,
+                    ))
                     stop_new_writes = True
                     continue
                 results.append(self._result(
                     target, unit_keys, "materialized_success", True, inspected,
                 ))
+            except RollingAggregateLockUnavailableError:
+                results.append(self._result(
+                    target, unit_keys, "blocked", False,
+                ))
+                continue
             except _CONTROL:
                 raise
             except Exception:
@@ -1203,7 +1221,9 @@ class RollingAggregateCandidateKernel:
                         or observed.to_public_dict()
                         != candidate.to_public_dict()
                     ):
-                        raise ValueError("terminal candidate drifted")
+                        raise _TerminalCandidateBlocked(
+                            "terminal candidate drifted"
+                        )
                     rebuilt.append(self._result(
                         result.target_key, result.requested_unit_keys,
                         result.status, result.did_write, observed,
@@ -1214,29 +1234,39 @@ class RollingAggregateCandidateKernel:
                 aggregate_scope, current_view, sources,
                 protected_before, backend_before,
             ):
-                raise ValueError("aggregate postconditions drifted")
+                raise _TerminalObservationIndeterminate(
+                    "aggregate postconditions drifted"
+                )
             observe_candidates()
             if not self._postconditions_stable(
                 aggregate_scope, current_view, sources,
                 protected_before, backend_before,
             ):
-                raise ValueError("aggregate postconditions drifted")
+                raise _TerminalObservationIndeterminate(
+                    "aggregate postconditions drifted"
+                )
             return observe_candidates()
 
         try:
             return self.candidate_backend.with_candidate_lock(
                 aggregate_scope, recheck,
-                create_if_missing=any(
-                    item.status == "materialized_success"
-                    for item in results
-                ),
+                create_if_missing=False,
             )
         except _CONTROL:
             raise
+        except (
+            RollingAggregateLockUnavailableError,
+            _TerminalCandidateBlocked,
+        ):
+            return tuple(self._result(
+                item.target_key, item.requested_unit_keys,
+                "indeterminate" if item.did_write is True else "blocked",
+                item.did_write,
+            ) for item in results), ()
         except Exception:
             return tuple(self._result(
                 item.target_key, item.requested_unit_keys,
-                "indeterminate", None,
+                "indeterminate", item.did_write,
             ) for item in results), ()
 
     def _postconditions_stable(
@@ -1303,6 +1333,10 @@ class RollingAggregateCandidateKernel:
         if inventory is None:
             inventory = self.candidate_backend.inventory(scope)
         if not self._valid_inventory(inventory):
+            if require_exact_terminal:
+                raise _TerminalObservationIndeterminate(
+                    "terminal candidate inventory is not comparable"
+                )
             _contract("terminal candidate inventory is not comparable")
         requested = set(scope.candidate_keys)
         requested_owned = orphan_owned = unassigned = 0
@@ -1341,7 +1375,7 @@ class RollingAggregateCandidateKernel:
                     or rows[0].get("run_status") != "FINISHED"
                     or rows[0].get("lifecycle_stage") != "active"
                 ):
-                    _contract(
+                    raise _TerminalCandidateBlocked(
                         "terminal candidate inventory is not exact"
                     )
         return (
@@ -1369,7 +1403,7 @@ class RollingAggregateCandidateKernel:
                 if status == "success":
                     results = tuple(self._result(
                         item.target_key, item.requested_unit_keys,
-                        "indeterminate", None,
+                        "indeterminate", item.did_write,
                     ) for item in results)
                     status = "indeterminate"
         return RollingAggregateBatchResult(

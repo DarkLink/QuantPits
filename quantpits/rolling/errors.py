@@ -155,3 +155,9 @@ class RollingAggregateBackendError(RollingAggregateError):
     """Fail closed at the immutable candidate backend boundary."""
 
     code = "rolling_aggregate_backend_failed"
+
+
+class RollingAggregateLockUnavailableError(RollingAggregateBackendError):
+    """Report a terminal candidate lock that cannot be acquired read-only."""
+
+    code = "rolling_aggregate_lock_unavailable"

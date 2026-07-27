@@ -136,7 +136,35 @@ def test_terminal_duplicate_denies_publication_input(tmp_path):
         aggregate, repository, source, backend,
     )
     assert result.status == "indeterminate"
+    assert result.target_results[0].did_write is True
     assert result.inventory_counts == ()
+    assert result.target_results[0].candidate is None
+    assert "publication_input" not in result.capabilities
+
+
+def test_reused_terminal_duplicate_is_blocked_without_write(tmp_path):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    backend = FakeCandidateBackend(context)
+    first = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert first.status == "success"
+
+    def inject_duplicate(
+        _scope, callback, create_if_missing=False,
+    ):
+        candidate = backend.candidates[aggregate.candidate_keys[0]]
+        backend.candidates["terminal-duplicate"] = dict(candidate)
+        return callback()
+
+    backend.with_candidate_lock = inject_duplicate
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "blocked"
+    assert result.target_results[0].did_write is False
     assert result.target_results[0].candidate is None
     assert "publication_input" not in result.capabilities
 
@@ -168,6 +196,22 @@ def test_candidate_is_rechecked_after_final_source_state_recheck(
     )
     assert len(calls) == 4
     assert result.status == "indeterminate"
+    assert result.target_results[0].did_write is True
+    assert "publication_input" not in result.capabilities
+
+
+def test_terminal_uncertainty_preserves_materialized_write_truth(tmp_path):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    backend = FakeCandidateBackend(context)
+    backend.fault_point = "under_terminal_candidate_lock"
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "indeterminate"
+    assert result.target_results[0].did_write is True
+    assert result.target_results[0].candidate is None
     assert "publication_input" not in result.capabilities
 
 

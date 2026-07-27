@@ -129,3 +129,4 @@ def test_backend_or_workspace_drift_denies_candidate_success(
         aggregate, repository, source, backend,
     )
     assert result.status == "indeterminate"
+    assert result.target_results[0].did_write is True

@@ -256,6 +256,9 @@ workspace identity 必须精确一致。candidate experiment artifact location �
 `publication_input` 前会在 candidate lock 内重新检查 source/State/current/backend，并要求每个 target
 在 terminal inventory 中恰好存在一个 active、`FINISHED`、exact candidate；duplicate 或竞态漂移均 fail closed。
 首次创建 candidate experiment namespace 本身也计为 durable write。
+无创建的 terminal lock 重获路径不会补建缺失的 lock parent/node；lock unavailable 在已知零写入时返回
+`blocked / did_write=false`。若 candidate 已物化后最终重检变为不可比较，结果保持
+`indeterminate`，同时保留已观察到的 `did_write=true`，不会把已知 durable write 降级为未知。
 修正后的语义使用 `rolling_aggregate_candidate_v2`；v1 candidate identity 不会被当作 v2 复用。
 
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一

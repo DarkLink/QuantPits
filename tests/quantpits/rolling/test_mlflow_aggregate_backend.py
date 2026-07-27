@@ -222,12 +222,34 @@ def test_reuse_requires_terminal_candidate_lock(tmp_path):
         result = materialize_rolling_aggregate_candidates(
             aggregate, repository, source, backend,
         )
-    assert result.status == "indeterminate"
+    assert result.status == "blocked"
+    assert result.target_results[0].did_write is False
     assert result.target_results[0].candidate is None
     assert "publication_input" not in result.capabilities
 
 
-def test_reuse_never_recreates_a_missing_terminal_lock(tmp_path):
+def test_create_lock_busy_is_blocked_without_candidate_write(tmp_path):
+    (
+        context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path)
+    import fcntl
+    lock_path = (
+        context.data_dir / "locks"
+        / "rolling_aggregate_candidate.lock"
+    )
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = materialize_rolling_aggregate_candidates(
+            aggregate, repository, source, backend,
+        )
+    assert result.status == "blocked"
+    assert result.target_results[0].did_write is False
+    assert backend.inventory(aggregate)["raw_count"] == 0
+    assert "publication_input" not in result.capabilities
+
+
+def test_reuse_never_recreates_a_missing_terminal_lock_parent(tmp_path):
     (
         context, repository, source, aggregate, backend,
         prediction, manifest,
@@ -237,15 +259,44 @@ def test_reuse_never_recreates_a_missing_terminal_lock(tmp_path):
         aggregate.candidate_keys[0], prediction, manifest,
     )
     assert created["classification"] == "valid"
+    lock_dir = context.data_dir / "locks"
+    for child in lock_dir.iterdir():
+        child.unlink()
+    lock_dir.rmdir()
+    assert not lock_dir.exists()
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "blocked"
+    assert result.target_results[0].did_write is False
+    assert not lock_dir.exists()
+    assert "publication_input" not in result.capabilities
+
+
+def test_materialized_terminal_recheck_never_recreates_deleted_lock(
+    tmp_path,
+):
+    (
+        context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path)
+    original_create = backend.create_candidate
     lock_path = (
         context.data_dir / "locks"
         / "rolling_aggregate_candidate.lock"
     )
-    lock_path.unlink()
+
+    def create_then_delete_lock(*args, **kwargs):
+        observation = original_create(*args, **kwargs)
+        lock_path.unlink()
+        return observation
+
+    backend.create_candidate = create_then_delete_lock
     result = materialize_rolling_aggregate_candidates(
         aggregate, repository, source, backend,
     )
     assert result.status == "indeterminate"
+    assert result.target_results[0].did_write is True
     assert not lock_path.exists()
     assert "publication_input" not in result.capabilities
 

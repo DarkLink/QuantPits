@@ -24,6 +24,7 @@ from quantpits.rolling.aggregate import (
 from quantpits.rolling.errors import (
     RollingAggregateBackendError,
     RollingAggregateContractError,
+    RollingAggregateLockUnavailableError,
 )
 from quantpits.rolling.identity import workspace_fingerprint
 from quantpits.rolling.mlflow_execution_backend import (
@@ -251,15 +252,20 @@ class QlibMlflowAggregateBackend:
             "workspace data parent",
         )
         lock_dir = self.context.data_dir / "locks"
-        _ensure_child_directory(
-            self.context.data_dir, "locks", data_identity,
-        )
+        if create_if_missing:
+            _ensure_child_directory(
+                self.context.data_dir, "locks", data_identity,
+            )
+        elif not lock_dir.exists():
+            raise RollingAggregateLockUnavailableError(
+                "terminal candidate lock parent is missing"
+            )
         lock_parent_identity = _contained_directory_identity(
             lock_dir, self.context.root, "aggregate lock parent",
         )
         lock_path = lock_dir / "rolling_aggregate_candidate.lock"
         if not lock_path.exists() and not create_if_missing:
-            raise RollingAggregateBackendError(
+            raise RollingAggregateLockUnavailableError(
                 "terminal candidate lock is missing"
             )
         if lock_path.is_symlink():
@@ -291,7 +297,7 @@ class QlibMlflowAggregateBackend:
                     handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
                 )
             except OSError as exc:
-                raise RollingAggregateBackendError(
+                raise RollingAggregateLockUnavailableError(
                     "aggregate candidate lock is busy"
                 ) from exc
             def assert_lock_boundary():
@@ -810,7 +816,7 @@ class QlibMlflowAggregateBackend:
                     lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
                 )
             except OSError as exc:
-                raise RollingAggregateBackendError(
+                raise RollingAggregateLockUnavailableError(
                     "aggregate candidate lock is busy"
                 ) from exc
             if self.inspect_candidate(
