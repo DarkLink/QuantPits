@@ -20,7 +20,7 @@ body:
     attributes:
       label: System & Workspace Configuration
       description: Please provide details about your OS and workspace configuration (e.g., how run_env.sh variables are set).
-      placeholder: e.g. Ubuntu 22.04, QUANT_WORKSPACE=workspaces/CSI300_Base
+      placeholder: e.g. Ubuntu 22.04, QUANT_WORKSPACE=workspaces/Demo_Workspace
     validations:
       required: true
   - type: textarea
