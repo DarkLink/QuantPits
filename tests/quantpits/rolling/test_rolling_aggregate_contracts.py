@@ -103,3 +103,20 @@ def test_aggregate_results_reject_impossible_cross_field_combinations():
             "rolling_aggregate_target_indeterminate",
         )
         assert result.did_write is observed_write
+
+    for status, observed_write in (
+        ("indeterminate", 0),
+        ("indeterminate", 1),
+        ("failed", 0),
+        ("failed", 1),
+    ):
+        with pytest.raises(RollingAggregateContractError):
+            RollingAggregateTargetResult(
+                "demo_linear@rolling",
+                ((
+                    "demo_linear@rolling",
+                    "rolling:2026-01-01:2026-01-02:" + "a" * 64,
+                ),),
+                status, observed_write, None,
+                "rolling_aggregate_target_%s" % status,
+            )

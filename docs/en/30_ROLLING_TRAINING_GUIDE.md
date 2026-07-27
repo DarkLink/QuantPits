@@ -286,8 +286,12 @@ granting `publication_input`, the kernel rechecks source/State/current/backend u
 lock and requires exactly one active, `FINISHED`, exact candidate per target in terminal inventory.
 Duplicates and race drift fail closed. The candidate experiment namespace itself counts as a durable
 write when first created.
-The no-create terminal-lock reacquisition path never creates a missing lock parent or node. Lock unavailability with
-a known zero-write history returns `blocked / did_write=false`. If terminal reinspection becomes
+The no-create terminal-lock reacquisition path also omits create semantics from the actual
+`openat()`, so deletion between its precheck and open cannot recreate a missing lock parent or
+node. An existing lock that cannot be opened as the canonical regular file is likewise
+unavailable. Lock unavailability with a known zero-write history returns
+`blocked / did_write=false`. `did_write` accepts only an exact boolean or null, not integer
+`0`/`1`. If terminal reinspection becomes
 incomparable after candidate materialization, the result remains `indeterminate` while preserving
 the observed `did_write=true` fact instead of degrading a known durable write to unknown.
 These corrected semantics use `rolling_aggregate_candidate_v2`; v1 candidate identities are not

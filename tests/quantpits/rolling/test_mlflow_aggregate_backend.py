@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import quantpits.rolling.mlflow_aggregate_backend as aggregate_backend_module
 from quantpits.rolling import (
     QlibMlflowAggregateBackend,
     materialize_rolling_aggregate_candidates,
@@ -298,6 +299,79 @@ def test_materialized_terminal_recheck_never_recreates_deleted_lock(
     assert result.status == "indeterminate"
     assert result.target_results[0].did_write is True
     assert not lock_path.exists()
+    assert "publication_input" not in result.capabilities
+
+
+def test_reuse_lock_deleted_between_precheck_and_open_is_not_recreated(
+    tmp_path, monkeypatch,
+):
+    (
+        context, repository, source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    created = backend.create_candidate(
+        aggregate, aggregate.target_keys[0],
+        aggregate.candidate_keys[0], prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    lock_path = (
+        context.data_dir / "locks"
+        / "rolling_aggregate_candidate.lock"
+    )
+    original_open = aggregate_backend_module._open_regular_child
+    observed = {"removed": False}
+
+    def delete_before_open(
+        parent, name, parent_identity, create_if_missing,
+    ):
+        if not create_if_missing:
+            assert lock_path.exists()
+            lock_path.unlink()
+            observed["removed"] = True
+        return original_open(
+            parent, name, parent_identity,
+            create_if_missing=create_if_missing,
+        )
+
+    monkeypatch.setattr(
+        aggregate_backend_module, "_open_regular_child",
+        delete_before_open,
+    )
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert observed["removed"] is True
+    assert result.status == "blocked"
+    assert result.target_results[0].did_write is False
+    assert not lock_path.exists()
+    assert "publication_input" not in result.capabilities
+
+
+def test_reuse_unopenable_terminal_lock_node_is_blocked_without_write(
+    tmp_path,
+):
+    (
+        context, repository, source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    created = backend.create_candidate(
+        aggregate, aggregate.target_keys[0],
+        aggregate.candidate_keys[0], prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    lock_path = (
+        context.data_dir / "locks"
+        / "rolling_aggregate_candidate.lock"
+    )
+    lock_path.unlink()
+    lock_path.mkdir()
+
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "blocked"
+    assert result.target_results[0].did_write is False
+    assert lock_path.is_dir()
     assert "publication_input" not in result.capabilities
 
 

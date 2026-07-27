@@ -242,7 +242,10 @@ workspace. Repository, source scope, and candidate backend must bind the same ca
 and the candidate experiment artifact location must be
 `data/rolling_aggregate_candidates_<family>/`. Terminal inventory must contain exactly one active,
 `FINISHED`, exact candidate per target, checked under the candidate lock. A duplicate or drifted
-candidate cannot receive `publication_input`.
+candidate cannot receive `publication_input`. The terminal-reuse open itself never creates the
+lock. If the lock disappears after precheck or is not the canonical regular file, a known
+zero-write result is `blocked / did_write=false`; manually recreating the lock does not turn that
+invocation into success.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|

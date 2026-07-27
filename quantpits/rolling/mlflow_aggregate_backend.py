@@ -121,7 +121,13 @@ def _ensure_child_directory(parent, name, parent_identity):
         os.close(parent_fd)
 
 
-def _open_regular_child(parent, name, parent_identity):
+def _open_regular_child(
+    parent, name, parent_identity, create_if_missing,
+):
+    if type(create_if_missing) is not bool:
+        raise RollingAggregateContractError(
+            "create_if_missing must be an exact boolean"
+        )
     parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     parent_flags |= getattr(os, "O_NOFOLLOW", 0)
     parent_fd = os.open(str(parent), parent_flags)
@@ -131,7 +137,9 @@ def _open_regular_child(parent, name, parent_identity):
             raise RollingAggregateBackendError(
                 "file parent identity drifted before open"
             )
-        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+        flags = os.O_RDWR | os.O_APPEND
+        if create_if_missing:
+            flags |= os.O_CREAT
         flags |= getattr(os, "O_NOFOLLOW", 0)
         file_fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
     finally:
@@ -269,26 +277,47 @@ class QlibMlflowAggregateBackend:
                 "terminal candidate lock is missing"
             )
         if lock_path.is_symlink():
-            raise RollingAggregateBackendError(
-                "aggregate lock path must not be a symlink"
-            )
+            error = "aggregate lock path must not be a symlink"
+            if not create_if_missing:
+                raise RollingAggregateLockUnavailableError(error)
+            raise RollingAggregateBackendError(error)
         try:
             import fcntl
         except ImportError as exc:
             raise RollingAggregateBackendError(
                 "aggregate lock platform is unsupported"
             ) from exc
-        with _open_regular_child(
-            lock_dir, lock_path.name, lock_parent_identity,
-        ) as handle:
-            opened = os.fstat(handle.fileno())
-            public = os.lstat(str(lock_path))
+        try:
+            handle = _open_regular_child(
+                lock_dir, lock_path.name, lock_parent_identity,
+                create_if_missing=create_if_missing,
+            )
+        except OSError as exc:
+            if not create_if_missing:
+                raise RollingAggregateLockUnavailableError(
+                    "terminal candidate lock cannot be opened"
+                ) from exc
+            raise
+        with handle:
+            try:
+                opened = os.fstat(handle.fileno())
+                public = os.lstat(str(lock_path))
+            except OSError as exc:
+                if not create_if_missing:
+                    raise RollingAggregateLockUnavailableError(
+                        "terminal candidate lock cannot be observed"
+                    ) from exc
+                raise
             identity = (opened.st_dev, opened.st_ino)
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or not stat.S_ISREG(public.st_mode)
                 or (public.st_dev, public.st_ino) != identity
             ):
+                if not create_if_missing:
+                    raise RollingAggregateLockUnavailableError(
+                        "terminal candidate lock node is not canonical"
+                    )
                 raise RollingAggregateBackendError(
                     "aggregate lock node identity is not canonical"
                 )
@@ -758,6 +787,7 @@ class QlibMlflowAggregateBackend:
             ) from exc
         with _open_regular_child(
             lock_dir, lock_path.name, lock_parent_identity,
+            create_if_missing=True,
         ) as lock_handle:
             lock_open_meta = os.fstat(lock_handle.fileno())
             lock_public_meta = os.lstat(str(lock_path))
@@ -919,11 +949,12 @@ class QlibMlflowAggregateBackend:
                     manifest_bytes = _json_bytes(payload)
                     with _open_regular_child(
                         temporary, "pred.pkl", staging_identity,
+                        create_if_missing=True,
                     ) as staging_pred:
                         staging_pred.write(prediction_bytes)
                     with _open_regular_child(
                         temporary, "aggregate_manifest.json",
-                        staging_identity,
+                        staging_identity, create_if_missing=True,
                     ) as staging_manifest:
                         staging_manifest.write(manifest_bytes)
                     self._staging_write_bytes += (

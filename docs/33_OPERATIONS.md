@@ -292,7 +292,9 @@ partial、duplicate 或 provenance 不一致的 run 仅供审计。所有 candid
 绑定同一个 canonical workspace；candidate experiment artifact location 只能是
 `data/rolling_aggregate_candidates_<family>/`。最终 terminal inventory 中每个 target 必须恰有一个
 active、`FINISHED` exact candidate，检查在 candidate lock 内完成；duplicate 或漂移不得获得
-`publication_input`。
+`publication_input`。terminal reuse 的实际打开操作不会创建 lock；预检后 lock 被删除或 lock
+不是 canonical regular file 时，已知零写入结果为 `blocked / did_write=false`，不得手工补建后
+把该次结果解释为成功。
 
 | 症状 | 原因 | 解决 |
 |------|------|------|

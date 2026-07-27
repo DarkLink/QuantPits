@@ -822,7 +822,10 @@ class RollingAggregateTargetResult:
             _contract("target result unit identity is invalid")
         if self.status not in TARGET_STATUSES or self.reason_code != "rolling_aggregate_target_%s" % self.status:
             _contract("target status and reason disagree")
-        if self.did_write not in (True, False, None):
+        if (
+            self.did_write is not None
+            and type(self.did_write) is not bool
+        ):
             _contract("did_write must be a strict tri-state")
         success = self.status in ("materialized_success", "reused_success")
         if success:
@@ -838,7 +841,7 @@ class RollingAggregateTargetResult:
             _contract("reused_success requires did_write=false")
         if self.status == "blocked" and self.did_write is not False:
             _contract("blocked result must be known no-write")
-        if self.status == "failed" and self.did_write not in (True, False):
+        if self.status == "failed" and type(self.did_write) is not bool:
             _contract("failed result must have an observed write classification")
         object.__setattr__(self, "_kernel_authority", success and _authority is _TARGET_TOKEN)
 
