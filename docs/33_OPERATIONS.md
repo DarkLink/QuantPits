@@ -288,7 +288,11 @@ Phase 35 aggregate candidate 尚未接入生产 Rolling CLI。运维中不要把
 故障复核时，只有 MLflow run 仍为 active、终态为 `FINISHED`，且完整 source-derived manifest
 contract 与重新观察的 sources 一致，candidate 才可复用。failed、killed、运行中、已删除、
 partial、duplicate 或 provenance 不一致的 run 仅供审计。所有 candidate staging 与 namespace
-写入都必须物理包含于所选的一次性 workspace。
+写入都必须物理包含于所选的一次性 workspace。repository、source scope 与 candidate backend 必须
+绑定同一个 canonical workspace；candidate experiment artifact location 只能是
+`data/rolling_aggregate_candidates_<family>/`。最终 terminal inventory 中每个 target 必须恰有一个
+active、`FINISHED` exact candidate，检查在 candidate lock 内完成；duplicate 或漂移不得获得
+`publication_input`。
 
 | 症状 | 原因 | 解决 |
 |------|------|------|

@@ -238,7 +238,11 @@ For incident review, a candidate is reusable only when its MLflow run is active 
 `FINISHED` and its complete source-derived manifest contract still matches reobserved sources.
 Failed, killed, running, deleted, partial, duplicate, or provenance-mismatched runs are audit-only.
 All candidate staging and namespace writes must remain physically inside the selected disposable
-workspace.
+workspace. Repository, source scope, and candidate backend must bind the same canonical workspace,
+and the candidate experiment artifact location must be
+`data/rolling_aggregate_candidates_<family>/`. Terminal inventory must contain exactly one active,
+`FINISHED`, exact candidate per target, checked under the candidate lock. A duplicate or drifted
+candidate cannot receive `publication_input`.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|

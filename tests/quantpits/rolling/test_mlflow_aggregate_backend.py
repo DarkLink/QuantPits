@@ -22,7 +22,7 @@ from tests.quantpits.rolling.aggregate_support import (
 
 def _real_backend_case(tmp_path, fault_hook=None):
     context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
-    fixture = FakeCandidateBackend()
+    fixture = FakeCandidateBackend(context)
     fixture_result = materialize_rolling_aggregate_candidates(
         aggregate, repository, source, fixture,
     )
@@ -177,3 +177,91 @@ def test_real_backend_rejects_foreign_data_parent_before_lock_write(tmp_path):
             aggregate.candidate_keys[0], prediction, manifest,
         )
     assert not (outside / "locks").exists()
+
+
+def test_existing_candidate_experiment_requires_exact_frozen_artifact_root(
+    tmp_path,
+):
+    (
+        context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path)
+    from mlflow.tracking import MlflowClient
+    forbidden = context.output_dir / "forbidden-candidate-root"
+    forbidden.mkdir(parents=True)
+    MlflowClient(tracking_uri=str(context.mlflow_uri)).create_experiment(
+        "Rolling_Aggregate_Candidates",
+        artifact_location=forbidden.as_uri(),
+    )
+    before = tuple(forbidden.rglob("*"))
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "blocked"
+    assert tuple(forbidden.rglob("*")) == before == ()
+    assert "publication_input" not in result.capabilities
+
+
+def test_reuse_requires_terminal_candidate_lock(tmp_path):
+    (
+        context, repository, source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    created = backend.create_candidate(
+        aggregate, aggregate.target_keys[0],
+        aggregate.candidate_keys[0], prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    import fcntl
+    lock_path = (
+        context.data_dir / "locks"
+        / "rolling_aggregate_candidate.lock"
+    )
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = materialize_rolling_aggregate_candidates(
+            aggregate, repository, source, backend,
+        )
+    assert result.status == "indeterminate"
+    assert result.target_results[0].candidate is None
+    assert "publication_input" not in result.capabilities
+
+
+def test_reuse_never_recreates_a_missing_terminal_lock(tmp_path):
+    (
+        context, repository, source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    created = backend.create_candidate(
+        aggregate, aggregate.target_keys[0],
+        aggregate.candidate_keys[0], prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    lock_path = (
+        context.data_dir / "locks"
+        / "rolling_aggregate_candidate.lock"
+    )
+    lock_path.unlink()
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "indeterminate"
+    assert not lock_path.exists()
+    assert "publication_input" not in result.capabilities
+
+
+def test_candidate_backend_tracking_drift_blocks_before_write(tmp_path):
+    (
+        _context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path)
+
+    def drifted():
+        raise RollingAggregateBackendError("injected tracking drift")
+
+    backend._assert_tracking = drifted
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "blocked"
+    assert "publication_input" not in result.capabilities

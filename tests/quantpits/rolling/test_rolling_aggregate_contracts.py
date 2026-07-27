@@ -4,6 +4,7 @@ import pytest
 
 from quantpits.rolling import (
     RollingAggregateContractError,
+    RollingAggregateSourceFailure,
     RollingAggregateSourceUnit,
     build_rolling_aggregate_scope,
     inspect_rolling_aggregate_sources,
@@ -29,10 +30,14 @@ def test_source_join_revalidates_every_state_claim_field(tmp_path):
         aggregate.state_repository_view.inspection.snapshot,
     )
     foreign = replace(requests[0], recorder_id="foreign-recorder")
-    with pytest.raises(RollingAggregateContractError):
-        inspect_rolling_aggregate_sources(
-            context, aggregate, (foreign,) + requests[1:], source,
-        )
+    observed = inspect_rolling_aggregate_sources(
+        context, aggregate, (foreign,) + requests[1:], source,
+    )
+    assert observed.status == "observation_drifted"
+    assert all(
+        item.classification == "observation_drifted"
+        for item in observed.unit_results
+    )
 
 
 @pytest.mark.parametrize("n_targets,n_windows", [(1, 1), (1, 2), (2, 1), (2, 2)])
@@ -69,6 +74,11 @@ def test_aggregate_rejects_forged_or_replayed_source_authority(tmp_path):
             item.evidence_fingerprint, item.recorder_id, item.sessions,
             item.canonical_rows, item.canonical_values,
             item.content_fingerprint,
+        )
+    with pytest.raises(RollingAggregateContractError):
+        RollingAggregateSourceFailure(
+            item.unit_key, "observation_drifted",
+            "rolling_aggregate_source_observation_drifted",
         )
 
 

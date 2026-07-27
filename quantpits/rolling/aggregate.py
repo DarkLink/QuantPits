@@ -23,7 +23,7 @@ from quantpits.rolling.evidence import (
     _rebuild_evidence_set,
 )
 from quantpits.rolling.execution import RollingExecutionScope
-from quantpits.rolling.identity import RollingTargetIdentity
+from quantpits.rolling.identity import RollingTargetIdentity, workspace_fingerprint
 from quantpits.rolling.repository import (
     RollingStateRepository,
     RollingStateRepositoryView,
@@ -302,11 +302,26 @@ class RollingAggregateSourceSetInspection:
             _contract("aggregate source sets are inspector-owned")
         requested = _strict_tuple(self.requested_unit_keys, "requested_unit_keys")
         results = _strict_tuple(self.unit_results, "unit_results")
-        if any(not isinstance(item, RollingAggregateSourceUnit) for item in results):
+        if any(not isinstance(
+            item, (RollingAggregateSourceUnit, RollingAggregateSourceFailure),
+        ) for item in results):
             _contract("aggregate source set contains a foreign member")
         if tuple(item.unit_key for item in results) != requested:
             _contract("aggregate source set changed requested identity")
-        expected = "all_valid" if results and len(results) == len(requested) else "incomplete"
+        expected = (
+            "all_valid"
+            if results and all(
+                isinstance(item, RollingAggregateSourceUnit)
+                for item in results
+            )
+            else "observation_drifted"
+            if any(
+                isinstance(item, RollingAggregateSourceFailure)
+                and item.classification == "observation_drifted"
+                for item in results
+            )
+            else "incomplete"
+        )
         if self.status != expected or self.reason_code != "rolling_aggregate_source_set_%s" % expected:
             _contract("aggregate source status disagrees with members")
         _digest(self.evidence_set_fingerprint, "evidence_set_fingerprint")
@@ -326,6 +341,44 @@ class RollingAggregateSourceSetInspection:
         }
 
 
+@dataclass(frozen=True)
+class RollingAggregateSourceFailure:
+    unit_key: tuple
+    classification: str
+    reason_code: str
+    _authority: InitVar[Any] = None
+    _inspector_authority: bool = field(
+        init=False, repr=False, compare=False,
+    )
+
+    def __post_init__(self, _authority: Any) -> None:
+        if _authority is not _SOURCE_SET_TOKEN:
+            _contract("aggregate source failures are inspector-owned")
+        if not isinstance(self.unit_key, tuple) or len(self.unit_key) != 2:
+            _contract("source failure key must be a target/window pair")
+        if self.classification not in (
+            "incomplete", "observation_drifted",
+        ):
+            _contract("aggregate source failure classification is invalid")
+        if self.reason_code != (
+            "rolling_aggregate_source_%s" % self.classification
+        ):
+            _contract("aggregate source failure reason disagrees")
+        object.__setattr__(self, "_inspector_authority", True)
+
+    @property
+    def capabilities(self) -> tuple:
+        return ("render",)
+
+    def to_public_dict(self) -> dict:
+        return {
+            "unit_key": list(self.unit_key),
+            "classification": self.classification,
+            "reason_code": self.reason_code,
+            "capabilities": list(self.capabilities),
+        }
+
+
 def _canonical_frame(data: bytes, expected_sessions: tuple) -> tuple:
     try:
         import pandas as pd
@@ -339,8 +392,8 @@ def _canonical_frame(data: bytes, expected_sessions: tuple) -> tuple:
     if not isinstance(payload, pd.DataFrame) or len(payload.columns) != 1 or payload.empty:
         _contract("prediction must be a non-empty one-column frame")
     index = payload.index
-    if not isinstance(index, pd.MultiIndex):
-        _contract("prediction index must be a MultiIndex")
+    if not isinstance(index, pd.MultiIndex) or index.nlevels != 2:
+        _contract("prediction index must be an exact two-level MultiIndex")
     names = tuple("" if item is None else str(item).lower() for item in index.names)
     date_positions = [i for i, name in enumerate(names) if name in ("datetime", "date", "session")]
     instrument_positions = [i for i, name in enumerate(names) if name in ("instrument", "symbol", "code")]
@@ -349,7 +402,9 @@ def _canonical_frame(data: bytes, expected_sessions: tuple) -> tuple:
     dates = pd.to_datetime(index.get_level_values(date_positions[0]), errors="raise")
     if getattr(dates, "tz", None) is not None or any(item != item.normalize() for item in dates):
         _contract("prediction sessions must be timezone-naive midnight dates")
-    instruments = tuple(str(item) for item in index.get_level_values(instrument_positions[0]))
+    instruments = tuple(index.get_level_values(instrument_positions[0]))
+    if any(type(item) is not str for item in instruments):
+        _contract("prediction instruments must already be strings")
     if any(not item or item != item.strip() for item in instruments):
         _contract("prediction instruments are invalid")
     scores = payload.iloc[:, 0]
@@ -441,13 +496,24 @@ class RollingAggregateCandidateBackend(Protocol):
     def create_candidate(self, aggregate_scope: RollingAggregateScope, target_key: str, candidate_key: str, prediction_bytes: bytes, manifest: Mapping[str, Any]) -> Mapping[str, Any]: ...
     def protected_snapshot(self, aggregate_scope: RollingAggregateScope) -> str: ...
     def backend_identity(self, aggregate_scope: RollingAggregateScope) -> str: ...
+    def workspace_identity(self, aggregate_scope: RollingAggregateScope) -> str: ...
+    def with_candidate_lock(self, aggregate_scope: RollingAggregateScope, callback, create_if_missing: bool = False): ...
 
 
 def _validate_source_state_join(aggregate_scope, requests, evidence):
+    _validate_source_request_state_join(aggregate_scope, requests)
     snapshot = aggregate_scope.state_repository_view.inspection.snapshot
-    for unit, claim, request, observed in zip(
-        aggregate_scope.execution_scope.units, snapshot.units,
-        requests, evidence.unit_results,
+    for claim, observed in zip(
+        snapshot.units, evidence.unit_results,
+    ):
+        if claim.evidence_id != observed.evidence_fingerprint:
+            _contract("source request/evidence does not exactly join State")
+
+
+def _validate_source_request_state_join(aggregate_scope, requests):
+    snapshot = aggregate_scope.state_repository_view.inspection.snapshot
+    for unit, claim, request in zip(
+        aggregate_scope.execution_scope.units, snapshot.units, requests,
     ):
         extensions = claim.extensions
         expected_artifacts = [
@@ -456,7 +522,6 @@ def _validate_source_state_join(aggregate_scope, requests, evidence):
         if (
             claim.status != "success"
             or claim.record_id != request.recorder_id
-            or claim.evidence_id != observed.evidence_fingerprint
             or not isinstance(extensions, dict)
             or extensions.get("attempt_id")
             != request.run_identity.attempt_id
@@ -465,10 +530,12 @@ def _validate_source_state_join(aggregate_scope, requests, evidence):
             or extensions.get("source_protocol") != request.source_protocol
             or extensions.get("source_publication_key")
             != request.source_publication_key
-            or extensions.get("experiment_name") != request.experiment_name
+            or extensions.get("experiment_name")
+            != request.experiment_name
             or extensions.get("experiment_id") != request.experiment_id
             or extensions.get("recorder_id") != request.recorder_id
-            or extensions.get("source_operation") != request.source_operation
+            or extensions.get("source_operation")
+            != request.source_operation
             or extensions.get("artifacts") != expected_artifacts
             or request.unit_key != unit.unit_key
             or request.run_identity.workspace_fingerprint
@@ -488,7 +555,7 @@ def _validate_source_state_join(aggregate_scope, requests, evidence):
             or request.run_identity.runtime_params_fingerprint
             != aggregate_scope.execution_scope.run_identity.runtime_params_fingerprint
         ):
-            _contract("source request/evidence does not exactly join State")
+            _contract("source request does not exactly join State")
 
 
 def inspect_rolling_aggregate_sources(
@@ -505,49 +572,134 @@ def inspect_rolling_aggregate_sources(
         or tuple(item.unit_key for item in requests) != aggregate_scope.requested_unit_keys
     ):
         _contract("source requests changed requested identity/order/cardinality")
-    evidence = _rebuild_evidence_set(
-        source_backend.inspect(aggregate_scope.execution_scope, requests)
-    )
-    if (
-        evidence.status != "all_valid"
-        or evidence.requested_unit_keys != aggregate_scope.requested_unit_keys
-    ):
-        _contract("source evidence is incomplete or drifted")
-    _validate_source_state_join(aggregate_scope, requests, evidence)
+    def failed_set(classification, evidence_fingerprint):
+        results = tuple(RollingAggregateSourceFailure(
+            request.unit_key, classification,
+            "rolling_aggregate_source_%s" % classification,
+            _authority=_SOURCE_SET_TOKEN,
+        ) for request in requests)
+        return RollingAggregateSourceSetInspection(
+            aggregate_scope.requested_unit_keys, results, classification,
+            "rolling_aggregate_source_set_%s" % classification,
+            evidence_fingerprint, _authority=_SOURCE_SET_TOKEN,
+        )
+
+    try:
+        evidence = _rebuild_evidence_set(
+            source_backend.inspect(
+                aggregate_scope.execution_scope, requests,
+            )
+        )
+    except _CONTROL:
+        raise
+    except Exception as exc:
+        return failed_set(
+            "observation_drifted",
+            fingerprint_value({
+                "scope": aggregate_scope.scope_fingerprint,
+                "failure": exc.__class__.__name__,
+            }),
+        )
+    if evidence.requested_unit_keys != aggregate_scope.requested_unit_keys:
+        return failed_set("observation_drifted", evidence.fingerprint)
+    try:
+        _validate_source_request_state_join(
+            aggregate_scope, requests,
+        )
+    except _CONTROL:
+        raise
+    except Exception:
+        return failed_set("observation_drifted", evidence.fingerprint)
+    if evidence.status != "all_valid":
+        classification = (
+            "observation_drifted"
+            if evidence.status == "observation_drifted"
+            else "incomplete"
+        )
+        return failed_set(classification, evidence.fingerprint)
+    try:
+        _validate_source_state_join(aggregate_scope, requests, evidence)
+    except _CONTROL:
+        raise
+    except Exception:
+        return failed_set("observation_drifted", evidence.fingerprint)
     results = []
     physical_ids = set()
     prior_sessions = {}
     for request, observed in zip(requests, evidence.unit_results):
-        if (
-            observed.classification != "valid"
-            or observed.request_fingerprint != request.source_manifest_fingerprint
-            or observed.source_protocol != "execution_bound_v1"
-            or not observed._inspector_provenance
-        ):
-            _contract("source evidence lacks inspector authority")
-        recorder_id = dict(observed.source_summary)["recorder_id"]
-        if recorder_id in physical_ids:
-            _contract("one physical recorder cannot represent two requested units")
-        physical_ids.add(recorder_id)
-        raw = source_backend.prediction_bytes(request)
-        if not isinstance(raw, bytes):
-            _contract("source backend returned non-byte prediction data")
-        rows, values = _canonical_frame(raw, request.expected_prediction_sessions)
-        sessions = tuple(sorted(set(row[0] for row in rows)))
-        target_sessions = prior_sessions.setdefault(request.unit_key[0], set())
-        if target_sessions.intersection(sessions):
-            _contract("requested windows overlap")
-        if target_sessions and min(sessions) <= max(target_sessions):
-            _contract("requested window sessions are out of order")
-        target_sessions.update(sessions)
-        results.append(RollingAggregateSourceUnit(
-            request.unit_key, request.source_manifest_fingerprint,
-            observed.evidence_fingerprint, recorder_id, sessions, rows, values,
-            _content_fingerprint(rows, values), _authority=_SOURCE_TOKEN,
-        ))
+        try:
+            if (
+                observed.classification != "valid"
+                or observed.request_fingerprint
+                != request.source_manifest_fingerprint
+                or observed.source_protocol != "execution_bound_v1"
+                or not observed._inspector_provenance
+            ):
+                raise RollingAggregateContractError(
+                    "source evidence lacks inspector authority"
+                )
+            recorder_id = dict(observed.source_summary)["recorder_id"]
+            if recorder_id in physical_ids:
+                raise RollingAggregateContractError(
+                    "one physical recorder cannot represent two requested units"
+                )
+            raw = source_backend.prediction_bytes(request)
+            if not isinstance(raw, bytes):
+                raise RollingAggregateContractError(
+                    "source backend returned non-byte prediction data"
+                )
+            rows, values = _canonical_frame(
+                raw, request.expected_prediction_sessions,
+            )
+            sessions = tuple(sorted(set(row[0] for row in rows)))
+            target_sessions = prior_sessions.setdefault(
+                request.unit_key[0], set(),
+            )
+            if target_sessions.intersection(sessions):
+                raise RollingAggregateContractError(
+                    "requested windows overlap"
+                )
+            if target_sessions and min(sessions) <= max(target_sessions):
+                raise RollingAggregateContractError(
+                    "requested window sessions are out of order"
+                )
+            physical_ids.add(recorder_id)
+            target_sessions.update(sessions)
+            results.append(RollingAggregateSourceUnit(
+                request.unit_key, request.source_manifest_fingerprint,
+                observed.evidence_fingerprint, recorder_id, sessions,
+                rows, values, _content_fingerprint(rows, values),
+                _authority=_SOURCE_TOKEN,
+            ))
+        except _CONTROL:
+            raise
+        except RollingAggregateContractError:
+            results.append(RollingAggregateSourceFailure(
+                request.unit_key, "incomplete",
+                "rolling_aggregate_source_incomplete",
+                _authority=_SOURCE_SET_TOKEN,
+            ))
+        except Exception:
+            results.append(RollingAggregateSourceFailure(
+                request.unit_key, "observation_drifted",
+                "rolling_aggregate_source_observation_drifted",
+                _authority=_SOURCE_SET_TOKEN,
+            ))
+    status = (
+        "all_valid"
+        if all(isinstance(item, RollingAggregateSourceUnit)
+               for item in results)
+        else "observation_drifted"
+        if any(
+            isinstance(item, RollingAggregateSourceFailure)
+            and item.classification == "observation_drifted"
+            for item in results
+        )
+        else "incomplete"
+    )
     return RollingAggregateSourceSetInspection(
-        aggregate_scope.requested_unit_keys, tuple(results), "all_valid",
-        "rolling_aggregate_source_set_all_valid", evidence.fingerprint,
+        aggregate_scope.requested_unit_keys, tuple(results), status,
+        "rolling_aggregate_source_set_%s" % status, evidence.fingerprint,
         _authority=_SOURCE_SET_TOKEN,
     )
 
@@ -561,6 +713,7 @@ class RollingAggregateCandidateInspection:
     manifest_fingerprint: Optional[str] = None
     content_fingerprint: Optional[str] = None
     row_count: Optional[int] = None
+    manifest_contract_fingerprint: Optional[str] = None
     _authority: InitVar[Any] = None
     _inspector_authority: bool = field(init=False, repr=False, compare=False)
 
@@ -572,13 +725,21 @@ class RollingAggregateCandidateInspection:
         valid = self.classification == "valid"
         if valid and _authority is not _CANDIDATE_TOKEN:
             _contract("valid candidate inspections are inspector-owned")
-        facts = (self.recorder_id, self.manifest_fingerprint, self.content_fingerprint, self.row_count)
+        facts = (
+            self.recorder_id, self.manifest_fingerprint,
+            self.content_fingerprint, self.row_count,
+            self.manifest_contract_fingerprint,
+        )
         if valid:
             if any(item is None for item in facts) or type(self.row_count) is not int or self.row_count <= 0:
                 _contract("valid candidate lacks exact observed facts")
             _text(self.recorder_id, "recorder_id")
             _digest(self.manifest_fingerprint, "manifest_fingerprint")
             _digest(self.content_fingerprint, "content_fingerprint")
+            _digest(
+                self.manifest_contract_fingerprint,
+                "manifest_contract_fingerprint",
+            )
         elif any(item is not None for item in facts):
             _contract("invalid candidate cannot grant candidate facts")
         object.__setattr__(self, "_inspector_authority", valid)
@@ -597,6 +758,8 @@ class RollingAggregateCandidateInspection:
             "manifest_fingerprint": self.manifest_fingerprint,
             "content_fingerprint": self.content_fingerprint,
             "row_count": self.row_count,
+            "manifest_contract_fingerprint":
+                self.manifest_contract_fingerprint,
             "capabilities": list(self.capabilities),
         }
 
@@ -625,6 +788,7 @@ def _candidate_from_observation(scope, target_key, candidate_key, observation, e
         target_key, candidate_key, "valid", observation.get("recorder_id"),
         observation.get("manifest_fingerprint"),
         observation.get("content_fingerprint"), observation.get("row_count"),
+        observation.get("manifest_contract_fingerprint"),
         _authority=_CANDIDATE_TOKEN,
     )
 
@@ -786,6 +950,18 @@ class RollingAggregateCandidateKernel:
         if current_view != aggregate_scope.state_repository_view:
             return self._blocked_batch(aggregate_scope)
         try:
+            expected_workspace = (
+                aggregate_scope.execution_scope.run_identity
+                .workspace_fingerprint
+            )
+            if (
+                workspace_fingerprint(self.repository.context.root)
+                != expected_workspace
+                or self.candidate_backend.workspace_identity(
+                    aggregate_scope,
+                ) != expected_workspace
+            ):
+                return self._blocked_batch(aggregate_scope)
             protected_before = self.candidate_backend.protected_snapshot(
                 aggregate_scope,
             )
@@ -807,6 +983,8 @@ class RollingAggregateCandidateKernel:
                 self.repository.context, aggregate_scope, requests,
                 self.source_backend,
             )
+            if sources.status != "all_valid":
+                return self._blocked_batch(aggregate_scope)
         except _CONTROL:
             raise
         except Exception:
@@ -972,7 +1150,94 @@ class RollingAggregateCandidateKernel:
                         target, unit_keys, "indeterminate", None,
                     ))
                     stop_new_writes = True
-        return self._batch(aggregate_scope, tuple(results), observe_inventory=True)
+        results = tuple(results)
+        if all(item.status.endswith("_success") for item in results):
+            results, terminal_counts = self._terminal_success_recheck(
+                aggregate_scope, results, current_view, sources,
+                protected_before, backend_before,
+            )
+            return self._batch(
+                aggregate_scope, results, observe_inventory=False,
+                terminal_counts=terminal_counts,
+            )
+        return self._batch(
+            aggregate_scope, results, observe_inventory=True,
+        )
+
+    def _terminal_success_recheck(
+        self, aggregate_scope, results, current_view, sources,
+        protected_before, backend_before,
+    ):
+        def recheck():
+            def observe_candidates():
+                inventory = self.candidate_backend.inventory(
+                    aggregate_scope,
+                )
+                counts = self._inventory_counts(
+                    aggregate_scope, inventory=inventory,
+                    require_exact_terminal=True,
+                )
+                rebuilt = []
+                for result in results:
+                    candidate = result.candidate
+                    observation = (
+                        self.candidate_backend.inspect_candidate(
+                            aggregate_scope, result.target_key,
+                            candidate.candidate_key,
+                            candidate.manifest_contract_fingerprint,
+                        )
+                    )
+                    expected = {
+                        "content_fingerprint":
+                            candidate.content_fingerprint,
+                        "row_count": candidate.row_count,
+                        "manifest_contract_fingerprint":
+                            candidate.manifest_contract_fingerprint,
+                    }
+                    observed = _candidate_from_observation(
+                        aggregate_scope, result.target_key,
+                        candidate.candidate_key, observation, expected,
+                    )
+                    if (
+                        observed.classification != "valid"
+                        or observed.to_public_dict()
+                        != candidate.to_public_dict()
+                    ):
+                        raise ValueError("terminal candidate drifted")
+                    rebuilt.append(self._result(
+                        result.target_key, result.requested_unit_keys,
+                        result.status, result.did_write, observed,
+                    ))
+                return tuple(rebuilt), counts
+
+            if not self._postconditions_stable(
+                aggregate_scope, current_view, sources,
+                protected_before, backend_before,
+            ):
+                raise ValueError("aggregate postconditions drifted")
+            observe_candidates()
+            if not self._postconditions_stable(
+                aggregate_scope, current_view, sources,
+                protected_before, backend_before,
+            ):
+                raise ValueError("aggregate postconditions drifted")
+            return observe_candidates()
+
+        try:
+            return self.candidate_backend.with_candidate_lock(
+                aggregate_scope, recheck,
+                create_if_missing=any(
+                    item.status == "materialized_success"
+                    for item in results
+                ),
+            )
+        except _CONTROL:
+            raise
+        except Exception:
+            return tuple(self._result(
+                item.target_key, item.requested_unit_keys,
+                "indeterminate", None,
+            ) for item in results), ()
 
     def _postconditions_stable(
         self, aggregate_scope, current_view, sources,
@@ -1032,12 +1297,16 @@ class RollingAggregateCandidateKernel:
             ) for target in scope.target_keys
         ), observe_inventory=False)
 
-    def _inventory_counts(self, scope):
-        inventory = self.candidate_backend.inventory(scope)
+    def _inventory_counts(
+        self, scope, inventory=None, require_exact_terminal=False,
+    ):
+        if inventory is None:
+            inventory = self.candidate_backend.inventory(scope)
         if not self._valid_inventory(inventory):
             _contract("terminal candidate inventory is not comparable")
         requested = set(scope.candidate_keys)
         requested_owned = orphan_owned = unassigned = 0
+        requested_rows = {key: [] for key in scope.candidate_keys}
         for item in inventory["candidates"]:
             if not isinstance(item, Mapping):
                 unassigned += 1
@@ -1045,6 +1314,7 @@ class RollingAggregateCandidateKernel:
             candidate_key = item.get("candidate_key")
             if candidate_key in requested:
                 requested_owned += 1
+                requested_rows[candidate_key].append(item)
                 continue
             try:
                 _digest(candidate_key, "inventory candidate_key")
@@ -1057,19 +1327,39 @@ class RollingAggregateCandidateKernel:
                 orphan_owned += 1
             except RollingAggregateContractError:
                 unassigned += 1
+        if require_exact_terminal:
+            for position, candidate_key in enumerate(scope.candidate_keys):
+                rows = requested_rows[candidate_key]
+                if (
+                    len(rows) != 1
+                    or rows[0].get("target_key")
+                    != scope.target_keys[position]
+                    or rows[0].get("scope_fingerprint")
+                    != scope.scope_fingerprint
+                    or rows[0].get("aggregate_attempt_id")
+                    != scope.aggregate_attempt_id
+                    or rows[0].get("run_status") != "FINISHED"
+                    or rows[0].get("lifecycle_stage") != "active"
+                ):
+                    _contract(
+                        "terminal candidate inventory is not exact"
+                    )
         return (
             inventory["raw_count"], requested_owned,
             orphan_owned, unassigned,
         )
 
-    def _batch(self, scope, results, observe_inventory):
+    def _batch(
+        self, scope, results, observe_inventory,
+        terminal_counts=(),
+    ):
         status = (
             "indeterminate" if any(item.status == "indeterminate" for item in results)
             else "failed" if any(item.status == "failed" for item in results)
             else "blocked" if any(item.status == "blocked" for item in results)
             else "success"
         )
-        counts = ()
+        counts = terminal_counts
         if observe_inventory:
             try:
                 counts = self._inventory_counts(scope)

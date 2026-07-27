@@ -232,13 +232,17 @@ Phase 35 在上述 exact `units_complete` 边界之后新增 non-current aggrega
 `build_rolling_aggregate_scope()`、`inspect_rolling_aggregate_sources()` 和
 `materialize_rolling_aggregate_candidates()`。它按 target-major 顺序重新观察每个 original
 execution-bound source，要求 requested target/window、business session、canonical
-`(datetime, instrument)` 行和 finite float64 score 全部守恒。窗口重叠、重复行、foreign source、
+`(datetime, instrument)` 行和 finite float64 score 全部守恒。prediction index 必须恰好为两层，
+instrument 原始值必须已经是字符串；额外 partition level 或隐式字符串转换都会阻断。窗口重叠、重复行、foreign source、
 缺失或 partial artifact、非有限数值、State/backend/root 漂移都会 fail closed；不会采用 legacy
 `keep='last'` 语义。成功结果只生成 append-only 的 `Rolling_Aggregate_Candidates` 或
 `CPCV_Rolling_Aggregate_Candidates` recorder，并提供 proposal-only `publication_input` capability。
 它不修改 State、`latest_train_records.json`、current/default、history、backtest、promotion 或订单。
 现有 `rolling_train.py` 仍走 legacy aggregation 路径，不能把 legacy combined recorder 当成
 Phase 35 verified candidate。
+source-set observer 会保留完整 requested unit identity：内容/覆盖不完整返回 `incomplete`，
+观察或 State join 不可比较返回 `observation_drifted`；两者都只有 render 能力，不会抛弃后续 unit
+或获得 aggregate/publication capability。
 
 candidate 复用比“recorder 或 artifact 存在”更严格：MLflow run 必须仍为 active 且终态为
 `FINISHED`，重新检查还必须与 source-derived manifest contract 完全一致，包括有序 unit key、
@@ -246,7 +250,12 @@ source request/evidence/recorder identity、逐 unit sessions 与 row count、so
 fingerprint，以及独立重算的 candidate index/value/content fingerprint。`FAILED`、`KILLED`、
 运行中、已删除、partial、duplicate 或 provenance 不一致的 run 只保留审计意义，不授予
 candidate/publication capability。candidate staging、lock、experiment metadata 与 artifacts
-必须物理包含于所选 workspace；首次创建 candidate experiment namespace 本身也计为 durable write。
+必须物理包含于同一个 canonical workspace；repository、execution/source scope 与 candidate backend
+workspace identity 必须精确一致。candidate experiment artifact location 必须精确等于
+`data/rolling_aggregate_candidates_<family>/`，仅“位于 workspace 内”不足以授权写入。最终授予
+`publication_input` 前会在 candidate lock 内重新检查 source/State/current/backend，并要求每个 target
+在 terminal inventory 中恰好存在一个 active、`FINISHED`、exact candidate；duplicate 或竞态漂移均 fail closed。
+首次创建 candidate experiment namespace 本身也计为 durable write。
 修正后的语义使用 `rolling_aggregate_candidate_v2`；v1 candidate identity 不会被当作 v2 复用。
 
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一
@@ -293,6 +302,8 @@ python -m quantpits.tools.verify_rolling_aggregate_candidate \
 该命令默认只验证冻结 scenario、selector、容量、路径与 protected snapshot，不训练、不联网且不写
 candidate。真实 `--execute` 只允许 release owner 在一次性 validation workspace 上授权；production
 workspace 始终只读。
+当前修正 gate protocol 为 `rolling_aggregate_candidate_gate_v2`；真实执行授权字符串为
+`authorize-rolling-aggregate-candidate-gate-v2`。旧 v1 gate evidence 不能关闭新的修正候选。
 
 > `--training-method` 可覆盖 `rolling_config.yaml` 中的设置，无需改配置文件即可切换模式对比效果。
 

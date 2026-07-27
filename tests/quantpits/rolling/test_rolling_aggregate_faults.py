@@ -10,8 +10,8 @@ from tests.quantpits.rolling.aggregate_support import (
 
 @pytest.mark.parametrize("control", [KeyboardInterrupt(), SystemExit(), GeneratorExit()])
 def test_process_control_interrupts_propagate_without_forged_batch(tmp_path, control):
-    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
-    backend = FakeCandidateBackend()
+    context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    backend = FakeCandidateBackend(context)
     backend.controls[0] = control
     with pytest.raises(control.__class__):
         materialize_rolling_aggregate_candidates(
@@ -34,7 +34,7 @@ def test_candidate_fault_matrix_matches_frozen_timeline(
     context, _scope, repository, source, aggregate = aggregate_case(
         tmp_path, n_targets=2,
     )
-    backend = FakeCandidateBackend()
+    backend = FakeCandidateBackend(context)
     fired = []
 
     def fail_once(observed):
@@ -96,8 +96,8 @@ def test_candidate_fault_matrix_matches_frozen_timeline(
 def test_backend_or_workspace_drift_denies_candidate_success(
     tmp_path, drift_kind,
 ):
-    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
-    backend = FakeCandidateBackend()
+    context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    backend = FakeCandidateBackend(context)
     if drift_kind == "repository":
         original = repository.inspect_readonly
         calls = [0]

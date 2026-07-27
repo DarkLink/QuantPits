@@ -258,7 +258,9 @@ Phase 35 adds a non-current aggregate candidate boundary after exact `units_comp
 `build_rolling_aggregate_scope()`, `inspect_rolling_aggregate_sources()`, and
 `materialize_rolling_aggregate_candidates()`. It re-observes every original execution-bound source
 in target-major order and conserves the requested targets/windows, business sessions, canonical
-`(datetime, instrument)` rows, and finite float64 scores. Overlapping windows, duplicate rows,
+`(datetime, instrument)` rows, and finite float64 scores. The prediction index must have exactly two
+levels and instrument values must already be strings; an extra partition level or implicit string
+coercion is rejected. Overlapping windows, duplicate rows,
 foreign sources, missing or partial artifacts, non-finite values, and State/backend/root drift all
 fail closed; legacy `keep='last'` behavior is never used. A successful result creates only an
 append-only recorder in `Rolling_Aggregate_Candidates` or
@@ -266,6 +268,9 @@ append-only recorder in `Rolling_Aggregate_Candidates` or
 does not change State, `latest_train_records.json`, current/default, history, backtests, promotion,
 or orders. Existing `rolling_train.py` commands remain on the legacy aggregation route, so a legacy
 combined recorder is not a Phase 35 verified candidate.
+The source-set observer preserves the complete requested-unit identity. Content or coverage defects
+return `incomplete`; incomparable observation or State joins return `observation_drifted`. Both are
+render-only and neither drops later units nor grants aggregate/publication capability.
 
 Candidate reuse is stricter than recorder or artifact existence. The MLflow run must still be
 active and terminal `FINISHED`, and reinspection must match the source-derived manifest contract:
@@ -273,8 +278,14 @@ ordered unit keys, source request/evidence/recorder identities, per-unit session
 source content fingerprints, and independently recomputed candidate index/value/content
 fingerprints. `FAILED`, `KILLED`, running, deleted, partial, duplicate, or provenance-mismatched
 runs remain audit records but grant no candidate or publication capability. Candidate staging,
-locks, experiment metadata, and artifacts are physically contained by the selected workspace; the
-candidate experiment namespace itself counts as a durable write when first created.
+locks, experiment metadata, and artifacts must remain inside the same canonical workspace.
+Repository, execution/source scope, and candidate-backend workspace identities must join exactly.
+The candidate experiment artifact location must equal
+`data/rolling_aggregate_candidates_<family>/`; mere workspace containment is insufficient. Before
+granting `publication_input`, the kernel rechecks source/State/current/backend under the candidate
+lock and requires exactly one active, `FINISHED`, exact candidate per target in terminal inventory.
+Duplicates and race drift fail closed. The candidate experiment namespace itself counts as a durable
+write when first created.
 These corrected semantics use `rolling_aggregate_candidate_v2`; v1 candidate identities are not
 reused as v2 candidates.
 
@@ -331,6 +342,9 @@ By default it only validates the frozen scenario, selector, capacity, paths, and
 it performs no training, networking, or candidate write. The real `--execute` route requires release
 owner authorization and a disposable validation workspace. The production workspace remains
 read-only.
+The corrected gate protocol is `rolling_aggregate_candidate_gate_v2`, with execution authorization
+`authorize-rolling-aggregate-candidate-gate-v2`. Historical v1 gate evidence cannot close the
+correction candidate.
 
 > `--training-method` overrides `rolling_config.yaml` — switch modes without editing files.
 

@@ -10,8 +10,10 @@ from quantpits.tools.verify_rolling_aggregate_candidate import (
     EXECUTE_AUTHORIZATION,
     frozen_scenario,
     cleanup_gate_workspace,
+    execute_gate,
     _assert_workspace_write_allowlist,
     _assert_gate_budgets,
+    _assert_snapshot_unchanged,
     preflight_evidence,
     scenario_from_mapping,
     validate_binding,
@@ -119,6 +121,17 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
     assert _assert_workspace_write_allowlist(
         before, candidate_after,
     ) == (2, 4)
+    declared_lock = (
+        ("data", "directory", None, None),
+        ("data/locks", "directory", None, None),
+        (
+            "data/locks/rolling_aggregate_candidate.lock",
+            "file", 0, __import__("hashlib").sha256(b"").hexdigest(),
+        ),
+    )
+    assert _assert_workspace_write_allowlist(
+        before, declared_lock,
+    ) == (3, 0)
     unexpected = disposable / "latest_train_records.json"
     unexpected.write_text("{}", encoding="utf-8")
     after = ((
@@ -131,6 +144,11 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
         _assert_gate_budgets(301, 0)
     with pytest.raises(AggregateGateError):
         _assert_gate_budgets(0, 513 * 1024 ** 2)
+    with pytest.raises(AggregateGateError):
+        _assert_snapshot_unchanged(
+            (("protected",),), (("drifted",),),
+            "protected workspace",
+        )
     scenario = frozen_scenario()
     marker = disposable / "data" / "aggregate_gate_scenario.json"
     marker.parent.mkdir()
@@ -152,3 +170,86 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
     payload["unknown"] = "forged"
     with pytest.raises(AggregateGateError):
         scenario_from_mapping(payload)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("new_candidate_recorders", 1),
+        ("runner_calls", 1),
+        ("training_calls", 1),
+        ("write_bytes", 1),
+        ("changed_path_count", 1),
+        ("candidate_fingerprint", "f" * 64),
+        ("candidate_row_count", 3),
+    ],
+)
+def test_gate_rejects_every_nonzero_or_drifted_second_process_fact(
+    tmp_path, monkeypatch, field, value,
+):
+    import json
+    from types import SimpleNamespace
+    import quantpits.tools.verify_rolling_aggregate_candidate as gate_module
+
+    primary = {
+        "status": "materialized_success",
+        "candidate_fingerprint": "a" * 64,
+        "candidate_row_count": 4,
+        "new_candidate_recorders": 1,
+        "training_calls": 0,
+        "runner_calls": 2,
+        "write_bytes": 4,
+        "changed_path_count": 2,
+    }
+    reuse = {
+        "status": "reused_success",
+        "candidate_fingerprint": "a" * 64,
+        "candidate_row_count": 4,
+        "new_candidate_recorders": 0,
+        "training_calls": 0,
+        "runner_calls": 0,
+        "write_bytes": 0,
+        "changed_path_count": 0,
+    }
+    reuse[field] = value
+    monkeypatch.setattr(
+        gate_module, "_run_real_gate",
+        lambda _binding, reuse_only=False: primary,
+    )
+    monkeypatch.setattr(
+        gate_module.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "status": "gate_passed", "result": reuse,
+            }),
+        ),
+    )
+    workspace, protected = _roots(tmp_path)
+    binding = {
+        "workspace": workspace,
+        "protected_workspace": protected,
+        "scenario_fingerprint": frozen_scenario().fingerprint,
+        "commit": "1" * 40,
+        "tree": "2" * 40,
+    }
+    with pytest.raises(AggregateGateError):
+        execute_gate(binding)
+
+
+def test_cleanup_failure_cannot_mutate_preserved_gate_outcome(
+    tmp_path,
+):
+    workspace, protected = _roots(tmp_path)
+    outcome = {
+        "status": "gate_passed",
+        "reason_code": "rolling_aggregate_gate_passed",
+        "cleanup": "preserved",
+    }
+    frozen = dict(outcome)
+    with pytest.raises(AggregateGateError):
+        cleanup_gate_workspace(
+            workspace, protected, "0" * 64,
+            CLEANUP_AUTHORIZATION,
+        )
+    assert outcome == frozen

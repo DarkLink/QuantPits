@@ -21,7 +21,8 @@ from tests.quantpits.rolling.execution_support import (
 
 
 class FakeCandidateBackend:
-    def __init__(self):
+    def __init__(self, context):
+        self.context = context
         self.candidates = {}
         self.calls = []
         self.controls = {}
@@ -49,9 +50,19 @@ class FakeCandidateBackend:
 
     def backend_identity(self, aggregate_scope):
         return fingerprint_value({
-            "workspace": aggregate_scope.execution_scope.run_identity.workspace_fingerprint,
+            "workspace": self.workspace_identity(aggregate_scope),
             "backend": "fake-candidate",
         })
+
+    def workspace_identity(self, aggregate_scope):
+        from quantpits.rolling.identity import workspace_fingerprint
+        return workspace_fingerprint(self.context.root)
+
+    def with_candidate_lock(
+        self, aggregate_scope, callback, create_if_missing=False,
+    ):
+        self._fault("under_terminal_candidate_lock")
+        return callback()
 
     def inspect_candidate(
         self, aggregate_scope, target_key, candidate_key,
@@ -106,6 +117,8 @@ class FakeCandidateBackend:
             "row_count": manifest["row_count"],
             "manifest_contract_fingerprint":
                 _candidate_manifest_contract_fingerprint(manifest),
+            "run_status": "FINISHED",
+            "lifecycle_stage": "active",
             "prediction_bytes": prediction_bytes,
             "manifest": dict(manifest),
         }

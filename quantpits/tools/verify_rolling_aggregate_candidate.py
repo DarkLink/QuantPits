@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 
-GATE_PROTOCOL = "rolling_aggregate_candidate_gate_v1"
-EXECUTE_AUTHORIZATION = "authorize-rolling-aggregate-candidate-gate-v1"
+GATE_PROTOCOL = "rolling_aggregate_candidate_gate_v2"
+EXECUTE_AUTHORIZATION = "authorize-rolling-aggregate-candidate-gate-v2"
 CLEANUP_AUTHORIZATION = "authorize-rolling-aggregate-gate-cleanup-v1"
 WALL_SECONDS = 300
 MIN_FREE_BYTES = 2 * 1024 ** 3
@@ -472,6 +472,11 @@ def _assert_gate_budgets(elapsed_seconds, write_bytes):
         raise AggregateGateError("gate write-byte budget exceeded")
 
 
+def _assert_snapshot_unchanged(before, after, field):
+    if before != after:
+        raise AggregateGateError("%s drifted" % field)
+
+
 def _assert_workspace_write_allowlist(before, after):
     before_map = {item[0]: item[1:] for item in before}
     after_map = {item[0]: item[1:] for item in after}
@@ -625,10 +630,16 @@ def _run_real_gate(binding, reuse_only=False):
     candidate = result.target_results[0].candidate
     if candidate.row_count != 4:
         raise AggregateGateError("candidate row cardinality is unexpected")
-    if snapshot_tree(binding["protected_workspace"]) != protected_before:
-        raise AggregateGateError("protected workspace drifted")
-    if _snapshot_tracked_repository(repository_root) != repository_before:
-        raise AggregateGateError("tracked repository drifted")
+    _assert_snapshot_unchanged(
+        protected_before,
+        snapshot_tree(binding["protected_workspace"]),
+        "protected workspace",
+    )
+    _assert_snapshot_unchanged(
+        repository_before,
+        _snapshot_tracked_repository(repository_root),
+        "tracked repository",
+    )
     elapsed = time.monotonic() - started
     workspace_after = snapshot_tree(workspace)
     changed_file_count, durable_write_bytes = _assert_workspace_write_allowlist(
@@ -679,6 +690,14 @@ def execute_gate(binding):
         reuse.get("status") != "gate_passed"
         or reuse.get("result", {}).get("status") != "reused_success"
         or reuse.get("result", {}).get("new_candidate_recorders") != 0
+        or reuse.get("result", {}).get("runner_calls") != 0
+        or reuse.get("result", {}).get("training_calls") != 0
+        or reuse.get("result", {}).get("write_bytes") != 0
+        or reuse.get("result", {}).get("changed_path_count") != 0
+        or reuse.get("result", {}).get("candidate_fingerprint")
+        != primary.get("candidate_fingerprint")
+        or reuse.get("result", {}).get("candidate_row_count")
+        != primary.get("candidate_row_count")
     ):
         raise AggregateGateError("separate-process reuse evidence failed")
     return {

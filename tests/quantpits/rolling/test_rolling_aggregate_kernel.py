@@ -13,8 +13,8 @@ def test_candidate_partition_values_equal_exact_sources(tmp_path):
     import io
     import pandas as pd
 
-    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
-    backend = FakeCandidateBackend()
+    context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    backend = FakeCandidateBackend(context)
     result = materialize_rolling_aggregate_candidates(
         aggregate, repository, source, backend,
     )
@@ -47,8 +47,8 @@ def test_candidate_partition_values_equal_exact_sources(tmp_path):
 
 
 def test_candidate_inventory_partition_is_disjoint_and_count_conserving(tmp_path):
-    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
-    backend = FakeCandidateBackend()
+    context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    backend = FakeCandidateBackend(context)
     backend.candidates["historical"] = {
         "candidate_key": "c" * 64,
         "target_key": aggregate.target_keys[0],
@@ -71,8 +71,8 @@ def test_candidate_inventory_partition_is_disjoint_and_count_conserving(tmp_path
 
 
 def test_candidate_reuse_requires_one_exact_reobserved_candidate(tmp_path):
-    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
-    backend = FakeCandidateBackend()
+    context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    backend = FakeCandidateBackend(context)
     first = materialize_rolling_aggregate_candidates(
         aggregate, repository, source, backend,
     )
@@ -84,9 +84,96 @@ def test_candidate_reuse_requires_one_exact_reobserved_candidate(tmp_path):
     assert len(backend.calls) == 1
 
 
+def test_foreign_candidate_backend_workspace_is_blocked_before_write(
+    tmp_path,
+):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path / "source",
+    )
+    foreign_context, *_unused = aggregate_case(tmp_path / "candidate")
+    backend = FakeCandidateBackend(foreign_context)
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "blocked"
+    assert backend.calls == []
+    assert backend.candidates == {}
+    assert "publication_input" not in result.capabilities
+    assert context.root != foreign_context.root
+
+
+def test_stale_or_noncanonical_state_blocks_before_candidate_write(
+    tmp_path,
+):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    backend = FakeCandidateBackend(context)
+    repository.state_path.write_text("{}", encoding="utf-8")
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "blocked"
+    assert backend.calls == []
+    assert "publication_input" not in result.capabilities
+
+
+def test_terminal_duplicate_denies_publication_input(tmp_path):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    backend = FakeCandidateBackend(context)
+
+    def inject_duplicate(
+        _scope, callback, create_if_missing=False,
+    ):
+        candidate = backend.candidates[aggregate.candidate_keys[0]]
+        backend.candidates["terminal-duplicate"] = dict(candidate)
+        return callback()
+
+    backend.with_candidate_lock = inject_duplicate
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert result.status == "indeterminate"
+    assert result.inventory_counts == ()
+    assert result.target_results[0].candidate is None
+    assert "publication_input" not in result.capabilities
+
+
+def test_candidate_is_rechecked_after_final_source_state_recheck(
+    tmp_path,
+):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    backend = FakeCandidateBackend(context)
+    original_inventory = backend.inventory
+    calls = []
+
+    def race_on_final_inventory(scope):
+        calls.append(len(calls) + 1)
+        if len(calls) == 4:
+            candidate = backend.candidates[
+                aggregate.candidate_keys[0]
+            ]
+            backend.candidates["late-terminal-duplicate"] = dict(
+                candidate,
+            )
+        return original_inventory(scope)
+
+    backend.inventory = race_on_final_inventory
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert len(calls) == 4
+    assert result.status == "indeterminate"
+    assert "publication_input" not in result.capabilities
+
+
 def test_candidate_manifest_and_artifact_are_independently_reobserved(tmp_path):
-    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
-    backend = FakeCandidateBackend()
+    context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    backend = FakeCandidateBackend(context)
     first = materialize_rolling_aggregate_candidates(
         aggregate, repository, source, backend,
     )
@@ -106,8 +193,8 @@ def test_candidate_reuse_rejects_self_consistent_source_provenance_rewrite(
         _candidate_manifest_contract_fingerprint,
     )
 
-    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
-    backend = FakeCandidateBackend()
+    context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    backend = FakeCandidateBackend(context)
     first = materialize_rolling_aggregate_candidates(
         aggregate, repository, source, backend,
     )
@@ -135,7 +222,7 @@ def test_candidate_materialization_never_changes_publication_or_state(tmp_path):
         )
     }
     materialize_rolling_aggregate_candidates(
-        aggregate, repository, source, FakeCandidateBackend(),
+        aggregate, repository, source, FakeCandidateBackend(context),
     )
     assert protected == {
         path: path.read_bytes() if path.exists() else None
@@ -144,10 +231,10 @@ def test_candidate_materialization_never_changes_publication_or_state(tmp_path):
 
 
 def test_ordinary_target_failure_preserves_later_identity_and_execution(tmp_path):
-    _context, _scope, repository, source, aggregate = aggregate_case(
+    context, _scope, repository, source, aggregate = aggregate_case(
         tmp_path, n_targets=2,
     )
-    backend = FakeCandidateBackend()
+    backend = FakeCandidateBackend(context)
     backend.controls[0] = RuntimeError("injected")
     result = materialize_rolling_aggregate_candidates(
         aggregate, repository, source, backend,
@@ -161,9 +248,9 @@ def test_aggregate_result_renderings_share_one_invocation_truth(tmp_path):
     import json
     from quantpits.rolling import render_rolling_aggregate_result
 
-    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
     result = materialize_rolling_aggregate_candidates(
-        aggregate, repository, source, FakeCandidateBackend(),
+        aggregate, repository, source, FakeCandidateBackend(context),
     )
     payload = json.loads(rolling_aggregate_result_json(result))
     assert payload["fingerprint"] == result.fingerprint

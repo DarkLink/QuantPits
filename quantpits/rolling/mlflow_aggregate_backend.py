@@ -25,6 +25,7 @@ from quantpits.rolling.errors import (
     RollingAggregateBackendError,
     RollingAggregateContractError,
 )
+from quantpits.rolling.identity import workspace_fingerprint
 from quantpits.rolling.mlflow_execution_backend import (
     _local_artifact_root,
     _tracking_uri_identity,
@@ -198,11 +199,137 @@ class QlibMlflowAggregateBackend:
     def backend_identity(self, aggregate_scope):
         self._assert_tracking()
         return fingerprint_value({
-            "workspace_fingerprint":
-                aggregate_scope.execution_scope.run_identity.workspace_fingerprint,
+            "workspace_fingerprint": self.workspace_identity(
+                aggregate_scope,
+            ),
             "backend_fingerprint": self.backend_fingerprint,
             "tracking_uri": str(self.context.mlflow_uri),
         })
+
+    def workspace_identity(self, aggregate_scope):
+        return workspace_fingerprint(self.context.root)
+
+    def _candidate_experiment_root(self, aggregate_scope, artifact_uri):
+        root = _prospective_contained_path(
+            artifact_uri, self.context.root,
+            "candidate experiment artifact root",
+        )
+        expected = (
+            self.context.data_dir
+            / ("rolling_aggregate_candidates_%s"
+               % aggregate_scope.family)
+        ).absolute()
+        if root.absolute() != expected:
+            raise RollingAggregateBackendError(
+                "candidate experiment artifact root is not canonical"
+            )
+        return root
+
+    def with_candidate_lock(
+        self, aggregate_scope, callback, create_if_missing=False,
+    ):
+        if not callable(callback):
+            raise RollingAggregateContractError(
+                "candidate lock requires a callback"
+            )
+        if type(create_if_missing) is not bool:
+            raise RollingAggregateContractError(
+                "create_if_missing must be an exact boolean"
+            )
+        if self.workspace_identity(aggregate_scope) != (
+            aggregate_scope.execution_scope.run_identity
+            .workspace_fingerprint
+        ):
+            raise RollingAggregateBackendError(
+                "candidate backend workspace is foreign"
+            )
+        root_identity = _contained_directory_identity(
+            self.context.root, self.context.root, "workspace root",
+        )
+        data_identity = _contained_directory_identity(
+            self.context.data_dir, self.context.root,
+            "workspace data parent",
+        )
+        lock_dir = self.context.data_dir / "locks"
+        _ensure_child_directory(
+            self.context.data_dir, "locks", data_identity,
+        )
+        lock_parent_identity = _contained_directory_identity(
+            lock_dir, self.context.root, "aggregate lock parent",
+        )
+        lock_path = lock_dir / "rolling_aggregate_candidate.lock"
+        if not lock_path.exists() and not create_if_missing:
+            raise RollingAggregateBackendError(
+                "terminal candidate lock is missing"
+            )
+        if lock_path.is_symlink():
+            raise RollingAggregateBackendError(
+                "aggregate lock path must not be a symlink"
+            )
+        try:
+            import fcntl
+        except ImportError as exc:
+            raise RollingAggregateBackendError(
+                "aggregate lock platform is unsupported"
+            ) from exc
+        with _open_regular_child(
+            lock_dir, lock_path.name, lock_parent_identity,
+        ) as handle:
+            opened = os.fstat(handle.fileno())
+            public = os.lstat(str(lock_path))
+            identity = (opened.st_dev, opened.st_ino)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not stat.S_ISREG(public.st_mode)
+                or (public.st_dev, public.st_ino) != identity
+            ):
+                raise RollingAggregateBackendError(
+                    "aggregate lock node identity is not canonical"
+                )
+            try:
+                fcntl.flock(
+                    handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+            except OSError as exc:
+                raise RollingAggregateBackendError(
+                    "aggregate candidate lock is busy"
+                ) from exc
+            def assert_lock_boundary():
+                self._assert_tracking()
+                if _contained_directory_identity(
+                    self.context.root, self.context.root,
+                    "workspace root",
+                ) != root_identity or _contained_directory_identity(
+                    self.context.data_dir, self.context.root,
+                    "workspace data parent",
+                ) != data_identity or _contained_directory_identity(
+                    lock_dir, self.context.root,
+                    "aggregate lock parent",
+                ) != lock_parent_identity:
+                    raise RollingAggregateBackendError(
+                        "candidate lock boundary drifted"
+                    )
+                open_node = os.fstat(handle.fileno())
+                public_node = os.lstat(str(lock_path))
+                if (
+                    open_node.st_dev, open_node.st_ino,
+                ) != identity or (
+                    public_node.st_dev, public_node.st_ino,
+                ) != identity:
+                    raise RollingAggregateBackendError(
+                        "candidate lock node drifted"
+                    )
+
+            assert_lock_boundary()
+            result = callback()
+            assert_lock_boundary()
+            if _contained_directory_identity(
+                self.context.root, self.context.root, "workspace root",
+            ) != root_identity:
+                raise RollingAggregateBackendError(
+                    "candidate workspace drifted after terminal inspection"
+                )
+            return result
 
     def protected_snapshot(self, aggregate_scope):
         """Hash publication/state/config facts without exposing their content."""
@@ -297,9 +424,12 @@ class QlibMlflowAggregateBackend:
         from mlflow.tracking import MlflowClient
         client = MlflowClient(tracking_uri=str(self.context.mlflow_uri))
         try:
-            experiment_present = (
-                client.get_experiment_by_name(experiment_name) is not None
-            )
+            experiment = client.get_experiment_by_name(experiment_name)
+            experiment_present = experiment is not None
+            if experiment is not None:
+                self._candidate_experiment_root(
+                    aggregate_scope, experiment.artifact_location,
+                )
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except Exception as exc:
@@ -345,6 +475,15 @@ class QlibMlflowAggregateBackend:
             )
         self._assert_tracking()
         experiment_name = CANDIDATE_EXPERIMENTS[aggregate_scope.family]
+        from mlflow.tracking import MlflowClient
+        experiment = MlflowClient(
+            tracking_uri=str(self.context.mlflow_uri),
+        ).get_experiment_by_name(experiment_name)
+        experiment_root = None
+        if experiment is not None:
+            experiment_root = self._candidate_experiment_root(
+                aggregate_scope, experiment.artifact_location,
+            )
         matches = []
         for recorder_id, recorder in sorted(
             self._recorders(experiment_name).items()
@@ -379,6 +518,9 @@ class QlibMlflowAggregateBackend:
         try:
             root = _local_artifact_root(
                 recorder.get_artifact_uri(), self.context.root,
+            )
+            root.resolve(strict=True).relative_to(
+                experiment_root.resolve(strict=True)
             )
             artifact_files = tuple(sorted(
                 path.relative_to(root).as_posix()
@@ -695,9 +837,8 @@ class QlibMlflowAggregateBackend:
                 )
                 created_experiment = client.get_experiment(experiment_id)
                 experiment_artifact_uri = created_experiment.artifact_location
-                experiment_root = _prospective_contained_path(
-                    experiment_artifact_uri, self.context.root,
-                    "candidate experiment artifact root",
+                experiment_root = self._candidate_experiment_root(
+                    aggregate_scope, experiment_artifact_uri,
                 )
                 self._fault("after_candidate_experiment_namespace")
                 assert_base_identities()
@@ -710,9 +851,8 @@ class QlibMlflowAggregateBackend:
                     )
             else:
                 experiment_artifact_uri = experiment.artifact_location
-                experiment_root = _prospective_contained_path(
-                    experiment_artifact_uri, self.context.root,
-                    "candidate experiment artifact root",
+                experiment_root = self._candidate_experiment_root(
+                    aggregate_scope, experiment_artifact_uri,
                 )
                 experiment_id = str(experiment.experiment_id)
             experiment_parent_identity = _contained_directory_identity(
@@ -824,6 +964,9 @@ class QlibMlflowAggregateBackend:
             recorder = self._recorder(experiment_name, recorder_id)
             candidate_artifact_root = _local_artifact_root(
                 recorder.get_artifact_uri(), self.context.root,
+            )
+            candidate_artifact_root.resolve(strict=True).relative_to(
+                experiment_root.resolve(strict=True)
             )
             _contained_directory_identity(
                 candidate_artifact_root, self.context.root,
