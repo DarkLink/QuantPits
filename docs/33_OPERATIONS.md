@@ -280,6 +280,11 @@ pos    0.0
 
 ## 6. 故障排查
 
+Phase 35 aggregate candidate 尚未接入生产 Rolling CLI。运维中不要把
+`Rolling_Aggregate_Candidates` / `CPCV_Rolling_Aggregate_Candidates` 当作 current，也不要手工写入
+`latest_train_records.json`。可复用 gate 命令默认仅 preflight；带 `--execute` 的真实 adapter gate
+只能由 release owner 在一次性 `Demo_Workspace` validation 环境授权，且不包含训练。
+
 | 症状 | 原因 | 解决 |
 |------|------|------|
 | `purge_steps >= smallest CV group size` | 窗口时间范围太短 | 增大 `train_years` 或减小 `n_groups` |

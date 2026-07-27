@@ -137,3 +137,21 @@ class RollingExecutionBackendError(RollingExecutionError):
     """Raised when the narrow recorder/evidence backend fails closed."""
 
     code = "rolling_execution_backend_failed"
+
+
+class RollingAggregateError(RollingCommandError):
+    """Base failure for exact, non-current aggregate candidates."""
+
+    code = "rolling_aggregate_failed"
+
+
+class RollingAggregateContractError(RollingAggregateError):
+    """Reject an invalid aggregate representation or authority join."""
+
+    code = "rolling_aggregate_contract_invalid"
+
+
+class RollingAggregateBackendError(RollingAggregateError):
+    """Fail closed at the immutable candidate backend boundary."""
+
+    code = "rolling_aggregate_backend_failed"

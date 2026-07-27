@@ -228,6 +228,18 @@ decision 会让完整 batch 在 runner 前以同一 identity/order/cardinality �
 typed recorder identity/failure 回执，并原样传播 process-control。
 该 domain API 尚未接入 `rolling_train.py`，也不写 combined/current/backtest/history/promotion；publication 仍是后续边界。
 
+Phase 35 在上述 exact `units_complete` 边界之后新增 non-current aggregate candidate API：
+`build_rolling_aggregate_scope()`、`inspect_rolling_aggregate_sources()` 和
+`materialize_rolling_aggregate_candidates()`。它按 target-major 顺序重新观察每个 original
+execution-bound source，要求 requested target/window、business session、canonical
+`(datetime, instrument)` 行和 finite float64 score 全部守恒。窗口重叠、重复行、foreign source、
+缺失或 partial artifact、非有限数值、State/backend/root 漂移都会 fail closed；不会采用 legacy
+`keep='last'` 语义。成功结果只生成 append-only 的 `Rolling_Aggregate_Candidates` 或
+`CPCV_Rolling_Aggregate_Candidates` recorder，并提供 proposal-only `publication_input` capability。
+它不修改 State、`latest_train_records.json`、current/default、history、backtest、promotion 或订单。
+现有 `rolling_train.py` 仍走 legacy aggregation 路径，不能把 legacy combined recorder 当成
+Phase 35 verified candidate。
+
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一
 workspace identity，不依赖进程 `sys.argv` 让 legacy `env` 再次选择 workspace。真实执行顺序为
 explicit-context safeguard → shared lease → input baseline recheck → workspace activation → Qlib init →
@@ -259,6 +271,19 @@ Phase 28 的全量 Python 测试与 workspace gate 由项目 owner 控制和执�
 OperatorLog 与 MLflow 路径做前后快照；计划命令不得触发 safeguard、lease 或 backend 初始化。生产
 workspace 保持只读。真实 adapter/bootstrap smoke 是 owner 验收项，只能在 owner 明确授权的可丢弃
 validation workspace 执行；不得将私有 workspace identity、绝对路径或运行数据写入提交内容。
+
+Phase 35 的 acceptance preflight 使用：
+
+```bash
+python -m quantpits.tools.verify_rolling_aggregate_candidate \
+  --workspace /path/to/Demo_Workspace_validation \
+  --protected-workspace /path/to/Demo_Workspace_readonly \
+  --commit <40-char-commit> --tree <40-char-tree>
+```
+
+该命令默认只验证冻结 scenario、selector、容量、路径与 protected snapshot，不训练、不联网且不写
+candidate。真实 `--execute` 只允许 release owner 在一次性 validation workspace 上授权；production
+workspace 始终只读。
 
 > `--training-method` 可覆盖 `rolling_config.yaml` 中的设置，无需改配置文件即可切换模式对比效果。
 

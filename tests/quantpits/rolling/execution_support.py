@@ -325,3 +325,8 @@ class FakeExecutionBackend:
         if self.timeline is not None:
             self.timeline.append("inspect:%s" % len(requests))
         return inspect_rolling_evidence(self.context, requests, self)
+
+    def prediction_bytes(self, request):
+        candidate = self.candidates[request.unit_key]
+        root = Path(candidate["artifact_root_uri"][len("file://"):])
+        return (root / "pred.pkl").read_bytes()

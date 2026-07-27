@@ -16,6 +16,7 @@ from quantpits.rolling.errors import (
 from quantpits.rolling.evidence import (
     RollingArtifactExpectation,
     RollingUnitEvidenceRequest,
+    _secure_read,
     inspect_rolling_evidence,
 )
 from quantpits.rolling.execution import RollingExecutionScope, RollingUnitRunnerObservation
@@ -476,3 +477,37 @@ class QlibMlflowExecutionBackend:
 
     def inspect(self, scope, requests):
         return inspect_rolling_evidence(self.context, requests, self)
+
+    def prediction_bytes(self, request):
+        """Read the exact frozen source prediction through its public recorder."""
+
+        if not isinstance(request, RollingUnitEvidenceRequest):
+            raise RollingExecutionContractError(
+                "prediction read requires RollingUnitEvidenceRequest"
+            )
+        recorder = self._recorder(request.experiment_name, request.recorder_id)
+        root = _local_artifact_root(
+            recorder.get_artifact_uri(), self.context.root,
+        )
+        expectation = next(
+            (item for item in request.artifacts if item.role == "prediction"),
+            None,
+        )
+        if expectation is None:
+            raise RollingExecutionBackendError(
+                "source request has no prediction artifact"
+            )
+        snapshot, classification, _detail, _checked = _secure_read(
+            self.context.root.resolve(strict=True), root,
+            expectation.logical_key,
+        )
+        if (
+            classification != "valid"
+            or snapshot is None
+            or snapshot.size_bytes != expectation.size_bytes
+            or snapshot.fingerprint != expectation.fingerprint
+        ):
+            raise RollingExecutionBackendError(
+                "source prediction bytes changed"
+            )
+        return snapshot.data

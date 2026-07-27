@@ -228,6 +228,12 @@ pos    0.0
 
 ## 6. Troubleshooting
 
+The Phase 35 aggregate candidate boundary is not wired to the production Rolling CLI. Do not treat
+`Rolling_Aggregate_Candidates` / `CPCV_Rolling_Aggregate_Candidates` as current or manually place
+them in `latest_train_records.json`. The reusable gate command is preflight-only by default; a real
+`--execute` adapter gate requires release-owner authorization in a disposable `Demo_Workspace`
+validation environment and performs no training.
+
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `purge_steps >= smallest CV group size` | Window too short | Increase `train_years` or reduce `n_groups` |

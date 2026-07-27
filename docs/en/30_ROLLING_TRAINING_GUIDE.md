@@ -254,6 +254,19 @@ workspace, Qlib provider, and tracking backend inside a controlled child process
 only a typed path-free recorder/failure envelope and propagates process-control. This domain API is not connected to `rolling_train.py` and writes no
 combined/current/backtest/history/promotion output; publication remains a later boundary.
 
+Phase 35 adds a non-current aggregate candidate boundary after exact `units_complete`:
+`build_rolling_aggregate_scope()`, `inspect_rolling_aggregate_sources()`, and
+`materialize_rolling_aggregate_candidates()`. It re-observes every original execution-bound source
+in target-major order and conserves the requested targets/windows, business sessions, canonical
+`(datetime, instrument)` rows, and finite float64 scores. Overlapping windows, duplicate rows,
+foreign sources, missing or partial artifacts, non-finite values, and State/backend/root drift all
+fail closed; legacy `keep='last'` behavior is never used. A successful result creates only an
+append-only recorder in `Rolling_Aggregate_Candidates` or
+`CPCV_Rolling_Aggregate_Candidates` and grants a proposal-only `publication_input` capability. It
+does not change State, `latest_train_records.json`, current/default, history, backtests, promotion,
+or orders. Existing `rolling_train.py` commands remain on the legacy aggregation route, so a legacy
+combined recorder is not a Phase 35 verified candidate.
+
 `--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared
 context as the sole workspace identity; legacy `env` does not reselect it from process `sys.argv`.
 Real execution is ordered as explicit-context safeguard → shared lease → input baseline recheck → workspace
@@ -293,6 +306,20 @@ paths. Plan commands must not trigger safeguard, lease acquisition, or backend i
 production workspace remains read-only. A real adapter/bootstrap smoke is an owner acceptance gate
 and may run only with explicit authorization in a disposable validation workspace. Committed code
 and documentation must not contain private workspace identities, absolute paths, or runtime data.
+
+Use the Phase 35 acceptance preflight as follows:
+
+```bash
+python -m quantpits.tools.verify_rolling_aggregate_candidate \
+  --workspace /path/to/Demo_Workspace_validation \
+  --protected-workspace /path/to/Demo_Workspace_readonly \
+  --commit <40-char-commit> --tree <40-char-tree>
+```
+
+By default it only validates the frozen scenario, selector, capacity, paths, and protected snapshot;
+it performs no training, networking, or candidate write. The real `--execute` route requires release
+owner authorization and a disposable validation workspace. The production workspace remains
+read-only.
 
 > `--training-method` overrides `rolling_config.yaml` — switch modes without editing files.
 

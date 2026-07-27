@@ -38,10 +38,33 @@ before = os.getcwd()
 import quantpits.scripts.rolling_train as rolling_train
 import quantpits.rolling.identity
 import quantpits.rolling.state
+import quantpits.rolling.aggregate
+import quantpits.rolling.mlflow_aggregate_backend
 assert os.getcwd() == before
 assert 'quantpits.utils.env' not in sys.modules
 assert callable(rolling_train.build_parser)
 assert callable(rolling_train.resolve_target_models)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=str(tmp_path),
+        env=_clean_subprocess_env(), capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_rolling_aggregate_import_is_pure(tmp_path):
+    code = """
+import os
+import sys
+before_cwd = os.getcwd()
+before_env = dict(os.environ)
+import quantpits.rolling.aggregate
+import quantpits.rolling.mlflow_aggregate_backend
+import quantpits.tools.verify_rolling_aggregate_candidate
+assert os.getcwd() == before_cwd
+assert dict(os.environ) == before_env
+assert 'qlib' not in sys.modules
+assert 'mlflow' not in sys.modules
 """
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=str(tmp_path),
