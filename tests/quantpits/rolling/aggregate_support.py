@@ -7,6 +7,9 @@ from quantpits.rolling import (
     RollingStateRepository,
     build_rolling_aggregate_scope,
 )
+from quantpits.rolling.aggregate import (
+    _candidate_manifest_contract_fingerprint,
+)
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_value
 
 from tests.quantpits.rolling.execution_support import (
@@ -23,6 +26,7 @@ class FakeCandidateBackend:
         self.calls = []
         self.controls = {}
         self.fault_point = None
+        self.experiment_present = False
 
     def _fault(self, point):
         if self.fault_point == point:
@@ -34,6 +38,7 @@ class FakeCandidateBackend:
             "raw_count": len(rows),
             "fingerprint": fingerprint_value(rows),
             "candidates": rows,
+            "experiment_present": self.experiment_present,
         }
 
     def protected_snapshot(self, aggregate_scope):
@@ -48,12 +53,22 @@ class FakeCandidateBackend:
             "backend": "fake-candidate",
         })
 
-    def inspect_candidate(self, aggregate_scope, target_key, candidate_key):
-        return dict(
+    def inspect_candidate(
+        self, aggregate_scope, target_key, candidate_key,
+        expected_manifest_contract_fingerprint,
+    ):
+        observation = dict(
             self.candidates.get(
                 candidate_key, {"classification": "missing"},
             )
         )
+        if (
+            observation.get("classification") == "valid"
+            and observation.get("manifest_contract_fingerprint")
+            != expected_manifest_contract_fingerprint
+        ):
+            return {"classification": "identity_mismatch"}
+        return observation
 
     def create_candidate(
         self, aggregate_scope, target_key, candidate_key,
@@ -64,6 +79,8 @@ class FakeCandidateBackend:
         if position in self.controls:
             raise self.controls[position]
         self._fault("before_candidate_namespace")
+        self.experiment_present = True
+        self._fault("after_candidate_experiment_namespace")
         partial = {
             "classification": "partial",
             "candidate_key": candidate_key,
@@ -87,6 +104,8 @@ class FakeCandidateBackend:
             "manifest_fingerprint": fingerprint_value(manifest),
             "content_fingerprint": manifest["content_fingerprint"],
             "row_count": manifest["row_count"],
+            "manifest_contract_fingerprint":
+                _candidate_manifest_contract_fingerprint(manifest),
             "prediction_bytes": prediction_bytes,
             "manifest": dict(manifest),
         }

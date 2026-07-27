@@ -32,7 +32,7 @@ from quantpits.rolling.state import RollingStateV2Snapshot
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_value
 
 
-AGGREGATE_PROTOCOL_VERSION = "rolling_aggregate_candidate_v1"
+AGGREGATE_PROTOCOL_VERSION = "rolling_aggregate_candidate_v2"
 CANDIDATE_EXPERIMENTS = {
     "rolling": "Rolling_Aggregate_Candidates",
     "cpcv_rolling": "CPCV_Rolling_Aggregate_Candidates",
@@ -383,6 +383,53 @@ def _content_fingerprint(rows: tuple, values: tuple) -> str:
     return digest.hexdigest()
 
 
+def _index_fingerprint(rows: tuple) -> str:
+    digest = hashlib.sha256()
+    for session, instrument in rows:
+        digest.update(session.encode("utf-8") + b"\0")
+        digest.update(instrument.encode("utf-8") + b"\0")
+    return digest.hexdigest()
+
+
+def _value_fingerprint(values: tuple) -> str:
+    digest = hashlib.sha256()
+    for value in values:
+        digest.update(struct.pack(">d", 0.0 if value == 0.0 else value))
+    return digest.hexdigest()
+
+
+CANDIDATE_MANIFEST_CORE_FIELDS = frozenset({
+    "schema_version",
+    "protocol",
+    "scope_fingerprint",
+    "aggregate_attempt_id",
+    "target_key",
+    "candidate_key",
+    "member_unit_keys",
+    "source_set_fingerprint",
+    "source_request_fingerprints",
+    "source_evidence_fingerprints",
+    "source_recorder_ids",
+    "source_sessions",
+    "source_row_counts",
+    "source_content_fingerprints",
+    "expected_sessions",
+    "row_count",
+    "candidate_index_fingerprint",
+    "candidate_value_fingerprint",
+    "content_fingerprint",
+    "checked_predicates",
+})
+
+
+def _candidate_manifest_contract_fingerprint(manifest: Mapping[str, Any]) -> str:
+    if not isinstance(manifest, Mapping):
+        _contract("candidate manifest contract must be a mapping")
+    if frozenset(manifest) != CANDIDATE_MANIFEST_CORE_FIELDS:
+        _contract("candidate manifest core fields are not exact")
+    return fingerprint_value(dict(manifest))
+
+
 class RollingAggregateSourceBackend(Protocol):
     def inspect(self, scope: RollingExecutionScope, requests: tuple) -> RollingEvidenceSetInspection: ...
     def prediction_bytes(self, request: RollingUnitEvidenceRequest) -> bytes: ...
@@ -390,7 +437,7 @@ class RollingAggregateSourceBackend(Protocol):
 
 class RollingAggregateCandidateBackend(Protocol):
     def inventory(self, aggregate_scope: RollingAggregateScope) -> Mapping[str, Any]: ...
-    def inspect_candidate(self, aggregate_scope: RollingAggregateScope, target_key: str, candidate_key: str) -> Mapping[str, Any]: ...
+    def inspect_candidate(self, aggregate_scope: RollingAggregateScope, target_key: str, candidate_key: str, expected_manifest_contract_fingerprint: str) -> Mapping[str, Any]: ...
     def create_candidate(self, aggregate_scope: RollingAggregateScope, target_key: str, candidate_key: str, prediction_bytes: bytes, manifest: Mapping[str, Any]) -> Mapping[str, Any]: ...
     def protected_snapshot(self, aggregate_scope: RollingAggregateScope) -> str: ...
     def backend_identity(self, aggregate_scope: RollingAggregateScope) -> str: ...
@@ -570,6 +617,8 @@ def _candidate_from_observation(scope, target_key, candidate_key, observation, e
         or observation.get("aggregate_attempt_id") != scope.aggregate_attempt_id
         or observation.get("content_fingerprint") != expected["content_fingerprint"]
         or observation.get("row_count") != expected["row_count"]
+        or observation.get("manifest_contract_fingerprint")
+        != expected["manifest_contract_fingerprint"]
     ):
         return RollingAggregateCandidateInspection(target_key, candidate_key, "identity_mismatch")
     return RollingAggregateCandidateInspection(
@@ -785,9 +834,55 @@ class RollingAggregateCandidateKernel:
             if rows != tuple(sorted(set(rows))):
                 results.append(self._result(target, unit_keys, "blocked", False))
                 continue
-            expected = {
-                "content_fingerprint": _content_fingerprint(rows, values),
+            expected_sessions = tuple(
+                session for item in units for session in item.sessions
+            )
+            manifest = {
+                "schema_version": 2,
+                "protocol": AGGREGATE_PROTOCOL_VERSION,
+                "scope_fingerprint": aggregate_scope.scope_fingerprint,
+                "aggregate_attempt_id": aggregate_scope.aggregate_attempt_id,
+                "target_key": target,
+                "candidate_key": candidate_key,
+                "member_unit_keys": [list(item.unit_key) for item in units],
+                "source_set_fingerprint": sources.fingerprint,
+                "source_request_fingerprints": [
+                    item.request_fingerprint for item in units
+                ],
+                "source_evidence_fingerprints": [
+                    item.evidence_fingerprint for item in units
+                ],
+                "source_recorder_ids": [item.recorder_id for item in units],
+                "source_sessions": [
+                    list(item.sessions) for item in units
+                ],
+                "source_row_counts": [
+                    len(item.canonical_rows) for item in units
+                ],
+                "source_content_fingerprints": [
+                    item.content_fingerprint for item in units
+                ],
+                "expected_sessions": list(expected_sessions),
                 "row_count": len(rows),
+                "candidate_index_fingerprint": _index_fingerprint(rows),
+                "candidate_value_fingerprint": _value_fingerprint(values),
+                "content_fingerprint": _content_fingerprint(rows, values),
+                "checked_predicates": [
+                    "source_identity_order_cardinality",
+                    "source_state_join",
+                    "source_terminal_evidence",
+                    "source_session_exactness",
+                    "source_non_overlap",
+                    "candidate_index_exactness",
+                    "candidate_value_exactness",
+                    "candidate_content_exactness",
+                ],
+            }
+            expected = {
+                "content_fingerprint": manifest["content_fingerprint"],
+                "row_count": len(rows),
+                "manifest_contract_fingerprint":
+                    _candidate_manifest_contract_fingerprint(manifest),
             }
             before_target_inventory = inventory
             if stop_new_writes:
@@ -796,6 +891,7 @@ class RollingAggregateCandidateKernel:
             try:
                 existing = self.candidate_backend.inspect_candidate(
                     aggregate_scope, target, candidate_key,
+                    expected["manifest_contract_fingerprint"],
                 )
                 inspected = _candidate_from_observation(
                     aggregate_scope, target, candidate_key, existing, expected,
@@ -825,21 +921,6 @@ class RollingAggregateCandidateKernel:
                     results.append(self._result(target, unit_keys, "blocked", False))
                     stop_new_writes = True
                     continue
-                manifest = {
-                    "schema_version": 1,
-                    "protocol": AGGREGATE_PROTOCOL_VERSION,
-                    "scope_fingerprint": aggregate_scope.scope_fingerprint,
-                    "aggregate_attempt_id": aggregate_scope.aggregate_attempt_id,
-                    "target_key": target,
-                    "candidate_key": candidate_key,
-                    "member_unit_keys": [list(item.unit_key) for item in units],
-                    "source_recorder_ids": [item.recorder_id for item in units],
-                    "source_evidence_fingerprints": [item.evidence_fingerprint for item in units],
-                    "source_content_fingerprints": [item.content_fingerprint for item in units],
-                    "expected_sessions": [session for item in units for session in item.sessions],
-                    "row_count": len(rows),
-                    "content_fingerprint": expected["content_fingerprint"],
-                }
                 observation = self.candidate_backend.create_candidate(
                     aggregate_scope, target, candidate_key,
                     _prediction_bytes(rows, values), manifest,
@@ -876,8 +957,13 @@ class RollingAggregateCandidateKernel:
                     )
                     if delta not in (0, 1):
                         raise ValueError("inventory delta is not comparable")
+                    experiment_created = (
+                        not before_target_inventory["experiment_present"]
+                        and after_error["experiment_present"]
+                    )
                     results.append(self._result(
-                        target, unit_keys, "failed", bool(delta),
+                        target, unit_keys, "failed",
+                        bool(delta) or experiment_created,
                     ))
                 except _CONTROL:
                     raise
@@ -926,6 +1012,7 @@ class RollingAggregateCandidateKernel:
             and inventory["raw_count"] == len(inventory["candidates"])
             and isinstance(inventory.get("fingerprint"), str)
             and len(inventory["fingerprint"]) == 64
+            and type(inventory.get("experiment_present")) is bool
         )
 
     @staticmethod

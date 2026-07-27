@@ -240,6 +240,15 @@ execution-bound source，要求 requested target/window、business session、can
 现有 `rolling_train.py` 仍走 legacy aggregation 路径，不能把 legacy combined recorder 当成
 Phase 35 verified candidate。
 
+candidate 复用比“recorder 或 artifact 存在”更严格：MLflow run 必须仍为 active 且终态为
+`FINISHED`，重新检查还必须与 source-derived manifest contract 完全一致，包括有序 unit key、
+source request/evidence/recorder identity、逐 unit sessions 与 row count、source content
+fingerprint，以及独立重算的 candidate index/value/content fingerprint。`FAILED`、`KILLED`、
+运行中、已删除、partial、duplicate 或 provenance 不一致的 run 只保留审计意义，不授予
+candidate/publication capability。candidate staging、lock、experiment metadata 与 artifacts
+必须物理包含于所选 workspace；首次创建 candidate experiment namespace 本身也计为 durable write。
+修正后的语义使用 `rolling_aggregate_candidate_v2`；v1 candidate identity 不会被当作 v2 复用。
+
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一
 workspace identity，不依赖进程 `sys.argv` 让 legacy `env` 再次选择 workspace。真实执行顺序为
 explicit-context safeguard → shared lease → input baseline recheck → workspace activation → Qlib init →

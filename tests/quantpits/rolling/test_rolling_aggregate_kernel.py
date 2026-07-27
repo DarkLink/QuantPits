@@ -10,6 +10,9 @@ from tests.quantpits.rolling.aggregate_support import (
 
 
 def test_candidate_partition_values_equal_exact_sources(tmp_path):
+    import io
+    import pandas as pd
+
     _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
     backend = FakeCandidateBackend()
     result = materialize_rolling_aggregate_candidates(
@@ -17,6 +20,30 @@ def test_candidate_partition_values_equal_exact_sources(tmp_path):
     )
     assert result.status == "success"
     assert result.target_results[0].candidate.content_fingerprint
+    candidate = backend.candidates[aggregate.candidate_keys[0]]
+    requests = source.requests_for_state(
+        aggregate.execution_scope,
+        aggregate.state_repository_view.inspection.snapshot,
+    )
+    expected = pd.concat([
+        pd.read_pickle(io.BytesIO(source.prediction_bytes(request)))
+        for request in requests
+    ])
+    actual = pd.read_pickle(io.BytesIO(candidate["prediction_bytes"]))
+    pd.testing.assert_frame_equal(actual, expected)
+    manifest = candidate["manifest"]
+    assert manifest["source_row_counts"] == [2, 2]
+    assert manifest["row_count"] == len(actual) == 4
+    assert manifest["expected_sessions"] == [
+        session
+        for sessions in manifest["source_sessions"]
+        for session in sessions
+    ]
+    assert manifest["checked_predicates"][-3:] == [
+        "candidate_index_exactness",
+        "candidate_value_exactness",
+        "candidate_content_exactness",
+    ]
 
 
 def test_candidate_inventory_partition_is_disjoint_and_count_conserving(tmp_path):
@@ -70,6 +97,32 @@ def test_candidate_manifest_and_artifact_are_independently_reobserved(tmp_path):
     )
     assert first.status == "success"
     assert second.status == "blocked"
+
+
+def test_candidate_reuse_rejects_self_consistent_source_provenance_rewrite(
+    tmp_path,
+):
+    from quantpits.rolling.aggregate import (
+        _candidate_manifest_contract_fingerprint,
+    )
+
+    _context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    backend = FakeCandidateBackend()
+    first = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    candidate = backend.candidates[aggregate.candidate_keys[0]]
+    candidate["manifest"]["source_recorder_ids"][0] = "foreign-recorder"
+    candidate["manifest_contract_fingerprint"] = (
+        _candidate_manifest_contract_fingerprint(candidate["manifest"])
+    )
+    second = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert first.status == "success"
+    assert second.status == "blocked"
+    assert second.target_results[0].candidate is None
+    assert "publication_input" not in second.capabilities
 
 
 def test_candidate_materialization_never_changes_publication_or_state(tmp_path):

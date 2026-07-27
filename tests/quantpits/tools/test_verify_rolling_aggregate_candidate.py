@@ -109,6 +109,16 @@ def test_gate_scenario_rejects_unknown_and_non_strict_fields():
 def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
     disposable, protected = _roots(tmp_path)
     before = ()
+    candidate_after = (
+        ("data/rolling_aggregate_candidates_rolling", "directory", None, None),
+        (
+            "data/rolling_aggregate_candidates_rolling/run/artifacts/pred.pkl",
+            "file", 4, __import__("hashlib").sha256(b"pred").hexdigest(),
+        ),
+    )
+    assert _assert_workspace_write_allowlist(
+        before, candidate_after,
+    ) == (2, 4)
     unexpected = disposable / "latest_train_records.json"
     unexpected.write_text("{}", encoding="utf-8")
     after = ((

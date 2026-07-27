@@ -8,11 +8,18 @@ import os
 import stat
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from quantpits.rolling.aggregate import (
     AGGREGATE_PROTOCOL_VERSION,
+    CANDIDATE_MANIFEST_CORE_FIELDS,
     CANDIDATE_EXPERIMENTS,
     RollingAggregateScope,
+    _canonical_frame,
+    _candidate_manifest_contract_fingerprint,
+    _content_fingerprint,
+    _index_fingerprint,
+    _value_fingerprint,
 )
 from quantpits.rolling.errors import (
     RollingAggregateBackendError,
@@ -47,6 +54,89 @@ def _strict_json_object(data):
     return payload
 
 
+def _contained_directory_identity(path, workspace_root, field):
+    try:
+        root = workspace_root.resolve(strict=True)
+        root_meta = os.lstat(str(workspace_root))
+        node_meta = os.lstat(str(path))
+        physical = path.resolve(strict=True)
+        physical.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise RollingAggregateBackendError(
+            "%s is physically foreign or unavailable" % field
+        ) from exc
+    if (
+        stat.S_ISLNK(root_meta.st_mode)
+        or not stat.S_ISDIR(root_meta.st_mode)
+        or stat.S_ISLNK(node_meta.st_mode)
+        or not stat.S_ISDIR(node_meta.st_mode)
+    ):
+        raise RollingAggregateBackendError(
+            "%s is not a real directory" % field
+        )
+    return (node_meta.st_dev, node_meta.st_ino)
+
+
+def _prospective_contained_path(uri, workspace_root, field):
+    parsed = urlparse(str(uri))
+    if parsed.scheme not in ("", "file") or parsed.netloc not in ("", None):
+        raise RollingAggregateBackendError(
+            "%s is not a local path" % field
+        )
+    raw = unquote(parsed.path if parsed.scheme else str(uri))
+    path = Path(raw).expanduser().absolute()
+    if path.is_symlink():
+        raise RollingAggregateBackendError("%s is a symlink" % field)
+    try:
+        parent = path.parent.resolve(strict=True)
+        parent.relative_to(workspace_root.resolve(strict=True))
+        if path.exists():
+            path.resolve(strict=True).relative_to(
+                workspace_root.resolve(strict=True)
+            )
+    except (OSError, ValueError) as exc:
+        raise RollingAggregateBackendError(
+            "%s is physically foreign" % field
+        ) from exc
+    return path
+
+
+def _ensure_child_directory(parent, name, parent_identity):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    parent_fd = os.open(str(parent), flags)
+    try:
+        meta = os.fstat(parent_fd)
+        if (meta.st_dev, meta.st_ino) != parent_identity:
+            raise RollingAggregateBackendError(
+                "directory parent identity drifted before mkdir"
+            )
+        try:
+            os.mkdir(name, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+    finally:
+        os.close(parent_fd)
+
+
+def _open_regular_child(parent, name, parent_identity):
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_flags |= getattr(os, "O_NOFOLLOW", 0)
+    parent_fd = os.open(str(parent), parent_flags)
+    try:
+        parent_meta = os.fstat(parent_fd)
+        if (parent_meta.st_dev, parent_meta.st_ino) != parent_identity:
+            raise RollingAggregateBackendError(
+                "file parent identity drifted before open"
+            )
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        file_fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+    return os.fdopen(file_fd, "a+b")
+
+
 class _MlflowRecorderView:
     def __init__(self, run):
         self._run = run
@@ -57,6 +147,12 @@ class _MlflowRecorderView:
 
     def get_artifact_uri(self):
         return str(self._run.info.artifact_uri)
+
+    def get_status(self):
+        return str(self._run.info.status)
+
+    def get_lifecycle_stage(self):
+        return str(getattr(self._run.info, "lifecycle_stage", "active"))
 
 
 class QlibMlflowAggregateBackend:
@@ -69,10 +165,15 @@ class QlibMlflowAggregateBackend:
             )
         self.context = context
         self._fault_hook = fault_hook
+        self._staging_write_bytes = 0
 
     def _fault(self, point):
         if self._fault_hook is not None:
             self._fault_hook(point)
+
+    @property
+    def staging_write_bytes(self):
+        return self._staging_write_bytes
 
     @property
     def backend_fingerprint(self):
@@ -149,11 +250,23 @@ class QlibMlflowAggregateBackend:
             experiment = client.get_experiment_by_name(experiment_name)
             if experiment is None:
                 return {}
-            runs = client.search_runs(
-                [str(experiment.experiment_id)],
-                run_view_type=ViewType.ALL,
-                max_results=50000,
-            )
+            runs = []
+            page_token = None
+            while True:
+                page = client.search_runs(
+                    [str(experiment.experiment_id)],
+                    run_view_type=ViewType.ALL,
+                    max_results=1000,
+                    page_token=page_token,
+                )
+                runs.extend(page)
+                page_token = getattr(page, "token", None)
+                if not page_token:
+                    break
+                if len(runs) >= 50000:
+                    raise RollingAggregateBackendError(
+                        "candidate recorder inventory exceeds its bound"
+                    )
             return {
                 str(run.info.run_id): _MlflowRecorderView(run)
                 for run in runs
@@ -181,6 +294,18 @@ class QlibMlflowAggregateBackend:
             )
         self._assert_tracking()
         experiment_name = CANDIDATE_EXPERIMENTS[aggregate_scope.family]
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient(tracking_uri=str(self.context.mlflow_uri))
+        try:
+            experiment_present = (
+                client.get_experiment_by_name(experiment_name) is not None
+            )
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception as exc:
+            raise RollingAggregateBackendError(
+                "candidate experiment inventory is unavailable"
+            ) from exc
         rows = []
         for recorder_id, recorder in sorted(
             self._recorders(experiment_name).items()
@@ -197,16 +322,27 @@ class QlibMlflowAggregateBackend:
                 "scope_fingerprint": tags.get("scope_fingerprint"),
                 "aggregate_attempt_id": tags.get("aggregate_attempt_id"),
                 "target_key": tags.get("target_key"),
+                "run_status": recorder.get_status(),
+                "lifecycle_stage": recorder.get_lifecycle_stage(),
             })
         return {
             "raw_count": len(rows),
             "fingerprint": fingerprint_value(rows),
             "candidates": tuple(rows),
+            "experiment_present": experiment_present,
         }
 
     def inspect_candidate(
         self, aggregate_scope, target_key, candidate_key,
+        expected_manifest_contract_fingerprint,
     ):
+        if (
+            not isinstance(expected_manifest_contract_fingerprint, str)
+            or len(expected_manifest_contract_fingerprint) != 64
+        ):
+            raise RollingAggregateContractError(
+                "candidate inspection requires the reobserved manifest contract"
+            )
         self._assert_tracking()
         experiment_name = CANDIDATE_EXPERIMENTS[aggregate_scope.family]
         matches = []
@@ -218,7 +354,7 @@ class QlibMlflowAggregateBackend:
             except (KeyboardInterrupt, SystemExit, GeneratorExit):
                 raise
             except Exception:
-                continue
+                return {"classification": "not_comparable"}
             if tags.get("candidate_key") == candidate_key:
                 matches.append((str(recorder_id), recorder, tags))
         if not matches:
@@ -226,6 +362,11 @@ class QlibMlflowAggregateBackend:
         if len(matches) != 1:
             return {"classification": "duplicate"}
         recorder_id, recorder, tags = matches[0]
+        if (
+            recorder.get_lifecycle_stage() != "active"
+            or recorder.get_status() != "FINISHED"
+        ):
+            return {"classification": "partial"}
         expected_tags = {
             "aggregate_protocol": AGGREGATE_PROTOCOL_VERSION,
             "scope_fingerprint": aggregate_scope.scope_fingerprint,
@@ -266,20 +407,33 @@ class QlibMlflowAggregateBackend:
         claimed = manifest.get("manifest_content_fingerprint")
         core = dict(manifest)
         core.pop("manifest_content_fingerprint", None)
-        exact_fields = {
-            "schema_version", "protocol", "scope_fingerprint",
-            "aggregate_attempt_id", "target_key", "candidate_key",
-            "member_unit_keys", "source_recorder_ids",
-            "source_evidence_fingerprints",
-            "source_content_fingerprints", "expected_sessions",
-            "row_count", "content_fingerprint", "candidate_experiment",
-            "candidate_recorder_id", "candidate_pred_size",
-            "candidate_pred_sha256", "manifest_content_fingerprint",
+        metadata_fields = {
+            "candidate_experiment", "candidate_recorder_id",
+            "candidate_pred_size", "candidate_pred_sha256",
+            "manifest_content_fingerprint",
         }
+        exact_fields = CANDIDATE_MANIFEST_CORE_FIELDS | metadata_fields
+        checked_predicates = [
+            "source_identity_order_cardinality",
+            "source_state_join",
+            "source_terminal_evidence",
+            "source_session_exactness",
+            "source_non_overlap",
+            "candidate_index_exactness",
+            "candidate_value_exactness",
+            "candidate_content_exactness",
+        ]
+        list_fields = (
+            "member_unit_keys", "source_request_fingerprints",
+            "source_evidence_fingerprints", "source_recorder_ids",
+            "source_sessions", "source_row_counts",
+            "source_content_fingerprints", "expected_sessions",
+            "checked_predicates",
+        )
         if (
             set(manifest) != exact_fields
             or type(manifest.get("schema_version")) is not int
-            or manifest.get("schema_version") != 1
+            or manifest.get("schema_version") != 2
             or manifest.get("protocol") != AGGREGATE_PROTOCOL_VERSION
             or manifest.get("scope_fingerprint")
             != aggregate_scope.scope_fingerprint
@@ -290,22 +444,44 @@ class QlibMlflowAggregateBackend:
             or manifest.get("candidate_experiment") != experiment_name
             or type(manifest.get("row_count")) is not int
             or manifest.get("row_count") <= 0
-            or not isinstance(manifest.get("member_unit_keys"), list)
-            or not isinstance(manifest.get("source_recorder_ids"), list)
-            or not isinstance(
-                manifest.get("source_evidence_fingerprints"), list,
+            or any(not isinstance(manifest.get(field), list)
+                   for field in list_fields)
+            or manifest.get("checked_predicates") != checked_predicates
+        ):
+            return {"classification": "identity_mismatch"}
+        member_count = len(manifest["member_unit_keys"])
+        if (
+            member_count <= 0
+            or any(
+                len(manifest[field]) != member_count
+                for field in (
+                    "source_request_fingerprints",
+                    "source_evidence_fingerprints",
+                    "source_recorder_ids",
+                    "source_sessions",
+                    "source_row_counts",
+                    "source_content_fingerprints",
+                )
             )
-            or not isinstance(
-                manifest.get("source_content_fingerprints"), list,
+            or any(
+                not isinstance(item, list) or len(item) != 2
+                for item in manifest["member_unit_keys"]
             )
-            or not isinstance(manifest.get("expected_sessions"), list)
+            or any(
+                not isinstance(item, list) or not item
+                for item in manifest["source_sessions"]
+            )
+            or any(
+                type(item) is not int or item <= 0
+                for item in manifest["source_row_counts"]
+            )
+            or sum(manifest["source_row_counts"]) != manifest["row_count"]
+            or [session
+                for sessions in manifest["source_sessions"]
+                for session in sessions] != manifest["expected_sessions"]
         ):
             return {"classification": "identity_mismatch"}
         try:
-            from quantpits.rolling.aggregate import (
-                _canonical_frame,
-                _content_fingerprint,
-            )
             rows, values = _canonical_frame(
                 pred, tuple(manifest["expected_sessions"]),
             )
@@ -320,10 +496,28 @@ class QlibMlflowAggregateBackend:
             != hashlib.sha256(pred).hexdigest()
             or manifest.get("candidate_recorder_id") != recorder_id
             or len(rows) != manifest.get("row_count")
+            or _index_fingerprint(rows)
+            != manifest.get("candidate_index_fingerprint")
+            or _value_fingerprint(values)
+            != manifest.get("candidate_value_fingerprint")
             or _content_fingerprint(rows, values)
             != manifest.get("content_fingerprint")
         ):
             return {"classification": "corrupt"}
+        try:
+            manifest_contract_fingerprint = (
+                _candidate_manifest_contract_fingerprint({
+                    key: manifest[key]
+                    for key in CANDIDATE_MANIFEST_CORE_FIELDS
+                })
+            )
+        except RollingAggregateContractError:
+            return {"classification": "identity_mismatch"}
+        if (
+            manifest_contract_fingerprint
+            != expected_manifest_contract_fingerprint
+        ):
+            return {"classification": "identity_mismatch"}
         return {
             "classification": "valid",
             "candidate_key": candidate_key,
@@ -334,6 +528,8 @@ class QlibMlflowAggregateBackend:
             "manifest_fingerprint": hashlib.sha256(manifest_raw).hexdigest(),
             "content_fingerprint": manifest.get("content_fingerprint"),
             "row_count": manifest.get("row_count"),
+            "manifest_contract_fingerprint":
+                manifest_contract_fingerprint,
         }
 
     def create_candidate(
@@ -344,31 +540,63 @@ class QlibMlflowAggregateBackend:
             raise RollingAggregateContractError(
                 "candidate write requires bytes and a manifest mapping"
             )
+        expected_manifest_contract_fingerprint = (
+            _candidate_manifest_contract_fingerprint(manifest)
+        )
+        if (
+            manifest.get("schema_version") != 2
+            or manifest.get("protocol") != AGGREGATE_PROTOCOL_VERSION
+            or manifest.get("scope_fingerprint")
+            != aggregate_scope.scope_fingerprint
+            or manifest.get("aggregate_attempt_id")
+            != aggregate_scope.aggregate_attempt_id
+            or manifest.get("target_key") != target_key
+            or manifest.get("candidate_key") != candidate_key
+            or not isinstance(manifest.get("expected_sessions"), list)
+        ):
+            raise RollingAggregateContractError(
+                "candidate manifest identity is invalid"
+            )
+        rows, values = _canonical_frame(
+            prediction_bytes, tuple(manifest["expected_sessions"]),
+        )
+        if (
+            len(rows) != manifest.get("row_count")
+            or _index_fingerprint(rows)
+            != manifest.get("candidate_index_fingerprint")
+            or _value_fingerprint(values)
+            != manifest.get("candidate_value_fingerprint")
+            or _content_fingerprint(rows, values)
+            != manifest.get("content_fingerprint")
+        ):
+            raise RollingAggregateContractError(
+                "candidate manifest and prediction bytes disagree"
+            )
         self._assert_tracking()
         before = self.inventory(aggregate_scope)
         existing = self.inspect_candidate(
             aggregate_scope, target_key, candidate_key,
+            expected_manifest_contract_fingerprint,
         )
         if existing.get("classification") != "missing":
             return existing
+        root_identity = _contained_directory_identity(
+            self.context.root, self.context.root, "workspace root",
+        )
+        data_identity = _contained_directory_identity(
+            self.context.data_dir, self.context.root, "workspace data parent",
+        )
+        mlruns_identity = _contained_directory_identity(
+            self.context.mlruns_dir, self.context.root,
+            "candidate artifact store parent",
+        )
         lock_dir = self.context.data_dir / "locks"
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        root = self.context.root.resolve(strict=True)
-        try:
-            lock_dir.resolve(strict=True).relative_to(root)
-            lock_meta = os.lstat(str(lock_dir))
-        except (OSError, ValueError) as exc:
-            raise RollingAggregateBackendError(
-                "aggregate lock parent is physically foreign"
-            ) from exc
-        if (
-            stat.S_ISLNK(lock_meta.st_mode)
-            or not stat.S_ISDIR(lock_meta.st_mode)
-        ):
-            raise RollingAggregateBackendError(
-                "aggregate lock parent is not a real directory"
-            )
-        lock_parent_identity = (lock_meta.st_dev, lock_meta.st_ino)
+        _ensure_child_directory(
+            self.context.data_dir, "locks", data_identity,
+        )
+        lock_parent_identity = _contained_directory_identity(
+            lock_dir, self.context.root, "aggregate lock parent",
+        )
         lock_path = lock_dir / "rolling_aggregate_candidate.lock"
         if lock_path.is_symlink():
             raise RollingAggregateBackendError(
@@ -380,7 +608,61 @@ class QlibMlflowAggregateBackend:
             raise RollingAggregateBackendError(
                 "aggregate lock platform is unsupported"
             ) from exc
-        with lock_path.open("a+b") as lock_handle:
+        with _open_regular_child(
+            lock_dir, lock_path.name, lock_parent_identity,
+        ) as lock_handle:
+            lock_open_meta = os.fstat(lock_handle.fileno())
+            lock_public_meta = os.lstat(str(lock_path))
+            lock_identity = (lock_open_meta.st_dev, lock_open_meta.st_ino)
+            if (
+                not stat.S_ISREG(lock_open_meta.st_mode)
+                or not stat.S_ISREG(lock_public_meta.st_mode)
+                or (lock_public_meta.st_dev, lock_public_meta.st_ino)
+                != lock_identity
+            ):
+                raise RollingAggregateBackendError(
+                    "aggregate lock node identity is not canonical"
+                )
+
+            def assert_base_identities():
+                self._assert_tracking()
+                if _contained_directory_identity(
+                    self.context.root, self.context.root, "workspace root",
+                ) != root_identity:
+                    raise RollingAggregateBackendError(
+                        "workspace root identity drifted"
+                    )
+                if _contained_directory_identity(
+                    self.context.data_dir, self.context.root,
+                    "workspace data parent",
+                ) != data_identity:
+                    raise RollingAggregateBackendError(
+                        "workspace data parent identity drifted"
+                    )
+                if _contained_directory_identity(
+                    lock_dir, self.context.root, "aggregate lock parent",
+                ) != lock_parent_identity:
+                    raise RollingAggregateBackendError(
+                        "aggregate lock parent identity drifted"
+                    )
+                if _contained_directory_identity(
+                    self.context.mlruns_dir, self.context.root,
+                    "candidate artifact store parent",
+                ) != mlruns_identity:
+                    raise RollingAggregateBackendError(
+                        "candidate artifact store parent identity drifted"
+                    )
+                public_lock = os.lstat(str(lock_path))
+                open_lock = os.fstat(lock_handle.fileno())
+                if (
+                    public_lock.st_dev, public_lock.st_ino,
+                ) != lock_identity or (
+                    open_lock.st_dev, open_lock.st_ino,
+                ) != lock_identity:
+                    raise RollingAggregateBackendError(
+                        "aggregate lock node identity drifted"
+                    )
+
             try:
                 fcntl.flock(
                     lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
@@ -391,29 +673,52 @@ class QlibMlflowAggregateBackend:
                 ) from exc
             if self.inspect_candidate(
                 aggregate_scope, target_key, candidate_key,
+                expected_manifest_contract_fingerprint,
             ).get("classification") != "missing":
                 raise RollingAggregateBackendError(
                     "candidate identity appeared after lock acquisition"
                 )
             self._fault("before_candidate_namespace")
+            assert_base_identities()
             experiment_name = CANDIDATE_EXPERIMENTS[aggregate_scope.family]
             from mlflow.tracking import MlflowClient
             client = MlflowClient(tracking_uri=str(self.context.mlflow_uri))
             experiment = client.get_experiment_by_name(experiment_name)
             if experiment is None:
+                artifact_location = (
+                    self.context.data_dir
+                    / ("rolling_aggregate_candidates_%s"
+                       % aggregate_scope.family)
+                ).as_uri()
                 experiment_id = client.create_experiment(
-                    experiment_name,
+                    experiment_name, artifact_location=artifact_location,
                 )
                 created_experiment = client.get_experiment(experiment_id)
-                _local_artifact_root(
-                    created_experiment.artifact_location,
-                    self.context.root,
+                experiment_artifact_uri = created_experiment.artifact_location
+                experiment_root = _prospective_contained_path(
+                    experiment_artifact_uri, self.context.root,
+                    "candidate experiment artifact root",
                 )
+                self._fault("after_candidate_experiment_namespace")
+                assert_base_identities()
+                if _contained_directory_identity(
+                    self.context.mlruns_dir, self.context.root,
+                    "candidate artifact store parent",
+                ) != mlruns_identity:
+                    raise RollingAggregateBackendError(
+                        "candidate artifact store parent identity drifted"
+                    )
             else:
-                _local_artifact_root(
-                    experiment.artifact_location, self.context.root,
+                experiment_artifact_uri = experiment.artifact_location
+                experiment_root = _prospective_contained_path(
+                    experiment_artifact_uri, self.context.root,
+                    "candidate experiment artifact root",
                 )
                 experiment_id = str(experiment.experiment_id)
+            experiment_parent_identity = _contained_directory_identity(
+                experiment_root.parent, self.context.root,
+                "candidate experiment artifact parent",
+            )
             run = client.create_run(
                 experiment_id,
                 tags={
@@ -427,8 +732,23 @@ class QlibMlflowAggregateBackend:
                 },
             )
             recorder_id = str(run.info.run_id)
-            self._fault("after_candidate_namespace")
-            self._fault("after_candidate_tags")
+            try:
+                self._fault("after_candidate_namespace")
+                assert_base_identities()
+                self._fault("after_candidate_tags")
+                assert_base_identities()
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                try:
+                    client.set_terminated(recorder_id, status="KILLED")
+                except Exception:
+                    pass
+                raise
+            except Exception:
+                try:
+                    client.set_terminated(recorder_id, status="FAILED")
+                except Exception:
+                    pass
+                raise
             try:
                 payload = dict(manifest)
                 payload.update({
@@ -442,22 +762,52 @@ class QlibMlflowAggregateBackend:
                     payload
                 )
                 with tempfile.TemporaryDirectory(
-                    prefix="quantpits-aggregate-"
+                    prefix=".quantpits-aggregate-",
+                    dir=str(self.context.data_dir),
                 ) as temp_dir:
                     temporary = Path(temp_dir)
-                    (temporary / "pred.pkl").write_bytes(prediction_bytes)
-                    (temporary / "aggregate_manifest.json").write_bytes(
-                        _json_bytes(payload)
+                    staging_identity = _contained_directory_identity(
+                        temporary, self.context.root,
+                        "candidate staging directory",
                     )
+                    manifest_bytes = _json_bytes(payload)
+                    with _open_regular_child(
+                        temporary, "pred.pkl", staging_identity,
+                    ) as staging_pred:
+                        staging_pred.write(prediction_bytes)
+                    with _open_regular_child(
+                        temporary, "aggregate_manifest.json",
+                        staging_identity,
+                    ) as staging_manifest:
+                        staging_manifest.write(manifest_bytes)
+                    self._staging_write_bytes += (
+                        len(prediction_bytes) + len(manifest_bytes)
+                    )
+                    if _contained_directory_identity(
+                        temporary, self.context.root,
+                        "candidate staging directory",
+                    ) != staging_identity:
+                        raise RollingAggregateBackendError(
+                            "candidate staging directory identity drifted"
+                        )
                     client.log_artifact(
                         recorder_id, str(temporary / "pred.pkl"),
                     )
                     self._fault("after_candidate_prediction")
+                    assert_base_identities()
+                    if _contained_directory_identity(
+                        temporary, self.context.root,
+                        "candidate staging directory",
+                    ) != staging_identity:
+                        raise RollingAggregateBackendError(
+                            "candidate staging directory identity drifted"
+                        )
                     client.log_artifact(
                         recorder_id,
                         str(temporary / "aggregate_manifest.json"),
                     )
                     self._fault("after_candidate_manifest")
+                    assert_base_identities()
                 client.set_terminated(recorder_id, status="FINISHED")
             except (KeyboardInterrupt, SystemExit, GeneratorExit):
                 try:
@@ -472,9 +822,36 @@ class QlibMlflowAggregateBackend:
                     pass
                 raise
             recorder = self._recorder(experiment_name, recorder_id)
-            _local_artifact_root(
+            candidate_artifact_root = _local_artifact_root(
                 recorder.get_artifact_uri(), self.context.root,
             )
+            _contained_directory_identity(
+                candidate_artifact_root, self.context.root,
+                "candidate artifact root",
+            )
+            if _contained_directory_identity(
+                self.context.root, self.context.root, "workspace root",
+            ) != root_identity:
+                raise RollingAggregateBackendError(
+                    "workspace root identity drifted"
+                )
+            if _contained_directory_identity(
+                self.context.data_dir, self.context.root,
+                "workspace data parent",
+            ) != data_identity:
+                raise RollingAggregateBackendError(
+                    "workspace data parent identity drifted"
+                )
+            _local_artifact_root(
+                experiment_artifact_uri, self.context.root,
+            )
+            if _contained_directory_identity(
+                experiment_root.parent, self.context.root,
+                "candidate experiment artifact parent",
+            ) != experiment_parent_identity:
+                raise RollingAggregateBackendError(
+                    "candidate experiment artifact parent identity drifted"
+                )
             completed_lock_meta = os.lstat(str(lock_dir))
             if (
                 completed_lock_meta.st_dev,
@@ -483,6 +860,14 @@ class QlibMlflowAggregateBackend:
                 raise RollingAggregateBackendError(
                     "aggregate lock parent identity drifted"
                 )
+            completed_lock_node = os.lstat(str(lock_path))
+            if (
+                completed_lock_node.st_dev,
+                completed_lock_node.st_ino,
+            ) != lock_identity:
+                raise RollingAggregateBackendError(
+                    "aggregate lock node identity drifted"
+                )
             after = self.inventory(aggregate_scope)
             if after["raw_count"] != before["raw_count"] + 1:
                 raise RollingAggregateBackendError(
@@ -490,6 +875,7 @@ class QlibMlflowAggregateBackend:
                 )
         observed = self.inspect_candidate(
             aggregate_scope, target_key, candidate_key,
+            expected_manifest_contract_fingerprint,
         )
         self._fault("after_candidate_reinspection")
         return observed

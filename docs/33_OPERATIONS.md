@@ -285,6 +285,11 @@ Phase 35 aggregate candidate 尚未接入生产 Rolling CLI。运维中不要把
 `latest_train_records.json`。可复用 gate 命令默认仅 preflight；带 `--execute` 的真实 adapter gate
 只能由 release owner 在一次性 `Demo_Workspace` validation 环境授权，且不包含训练。
 
+故障复核时，只有 MLflow run 仍为 active、终态为 `FINISHED`，且完整 source-derived manifest
+contract 与重新观察的 sources 一致，candidate 才可复用。failed、killed、运行中、已删除、
+partial、duplicate 或 provenance 不一致的 run 仅供审计。所有 candidate staging 与 namespace
+写入都必须物理包含于所选的一次性 workspace。
+
 | 症状 | 原因 | 解决 |
 |------|------|------|
 | `purge_steps >= smallest CV group size` | 窗口时间范围太短 | 增大 `train_years` 或减小 `n_groups` |

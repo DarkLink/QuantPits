@@ -267,6 +267,17 @@ does not change State, `latest_train_records.json`, current/default, history, ba
 or orders. Existing `rolling_train.py` commands remain on the legacy aggregation route, so a legacy
 combined recorder is not a Phase 35 verified candidate.
 
+Candidate reuse is stricter than recorder or artifact existence. The MLflow run must still be
+active and terminal `FINISHED`, and reinspection must match the source-derived manifest contract:
+ordered unit keys, source request/evidence/recorder identities, per-unit sessions and row counts,
+source content fingerprints, and independently recomputed candidate index/value/content
+fingerprints. `FAILED`, `KILLED`, running, deleted, partial, duplicate, or provenance-mismatched
+runs remain audit records but grant no candidate or publication capability. Candidate staging,
+locks, experiment metadata, and artifacts are physically contained by the selected workspace; the
+candidate experiment namespace itself counts as a durable write when first created.
+These corrected semantics use `rolling_aggregate_candidate_v2`; v1 candidate identities are not
+reused as v2 candidates.
+
 `--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared
 context as the sole workspace identity; legacy `env` does not reselect it from process `sys.argv`.
 Real execution is ordered as explicit-context safeguard → shared lease → input baseline recheck → workspace

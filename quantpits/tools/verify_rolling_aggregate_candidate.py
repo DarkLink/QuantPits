@@ -489,12 +489,17 @@ def _assert_workspace_write_allowlist(before, after):
         "data/locks/rolling_aggregate_candidate.lock",
         "data/locks/training_execution.lock",
         "data/aggregate_gate_scenario.json",
+        "data/rolling_aggregate_candidates_rolling",
         "mlruns",
         "mlruns/.aggregate-gate",
         "output",
         "qlib_data",
     }
-    allowed_prefixes = ("mlruns/", "qlib_data/")
+    allowed_prefixes = (
+        "data/rolling_aggregate_candidates_rolling/",
+        "mlruns/",
+        "qlib_data/",
+    )
     unexpected = tuple(sorted(
         path for path in changed
         if path not in allowed_exact
@@ -626,8 +631,11 @@ def _run_real_gate(binding, reuse_only=False):
         raise AggregateGateError("tracked repository drifted")
     elapsed = time.monotonic() - started
     workspace_after = snapshot_tree(workspace)
-    changed_file_count, write_bytes = _assert_workspace_write_allowlist(
+    changed_file_count, durable_write_bytes = _assert_workspace_write_allowlist(
         workspace_before, workspace_after,
+    )
+    write_bytes = (
+        durable_write_bytes + candidate_backend.staging_write_bytes
     )
     _assert_gate_budgets(elapsed, write_bytes)
     total_bytes = _workspace_bytes(workspace_after)

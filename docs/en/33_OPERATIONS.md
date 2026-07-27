@@ -234,6 +234,12 @@ them in `latest_train_records.json`. The reusable gate command is preflight-only
 `--execute` adapter gate requires release-owner authorization in a disposable `Demo_Workspace`
 validation environment and performs no training.
 
+For incident review, a candidate is reusable only when its MLflow run is active and terminal
+`FINISHED` and its complete source-derived manifest contract still matches reobserved sources.
+Failed, killed, running, deleted, partial, duplicate, or provenance-mismatched runs are audit-only.
+All candidate staging and namespace writes must remain physically inside the selected disposable
+workspace.
+
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `purge_steps >= smallest CV group size` | Window too short | Increase `train_years` or reduce `n_groups` |
