@@ -149,13 +149,14 @@ def scenario_from_mapping(payload):
     )
 
 
-def _real_directory(path, field):
+def _real_directory(path, field, allow_linked_entry=False):
     path = Path(path).expanduser().absolute()
-    if not path.exists() or path.is_symlink() or not path.is_dir():
+    if not path.exists() or not path.is_dir():
         raise AggregateGateError("%s must be a real existing directory" % field)
-    if path.resolve(strict=True) != path:
+    resolved = path.resolve(strict=True)
+    if not allow_linked_entry and (path.is_symlink() or resolved != path):
         raise AggregateGateError("%s contains a symlink" % field)
-    return path
+    return resolved
 
 
 def snapshot_tree(root):
@@ -184,7 +185,7 @@ def validate_binding(
         raise AggregateGateError("binding requires a validated scenario")
     workspace = _real_directory(workspace, "disposable workspace")
     protected = _real_directory(
-        protected_workspace, "protected workspace",
+        protected_workspace, "protected workspace", allow_linked_entry=True,
     )
     if workspace == protected:
         raise AggregateGateError("disposable and protected workspaces differ")
@@ -691,7 +692,7 @@ def cleanup_gate_workspace(
         raise AggregateGateError("cleanup authorization is missing or invalid")
     workspace = _real_directory(workspace, "cleanup workspace")
     protected = _real_directory(
-        protected_workspace, "protected workspace",
+        protected_workspace, "protected workspace", allow_linked_entry=True,
     )
     repository = Path(__file__).resolve().parents[2]
     if workspace in (protected, repository) or workspace == workspace.parent:

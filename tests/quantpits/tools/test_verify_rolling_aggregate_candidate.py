@@ -75,6 +75,18 @@ def test_verify_rolling_aggregate_gate_core_negative_matrix(
         execute=True, authorization=EXECUTE_AUTHORIZATION,
     )
     assert authorized["execute"] is True
+    protected_link = tmp_path / "Protected_Workspace_Link"
+    protected_link.symlink_to(protected, target_is_directory=True)
+    linked = validate_binding(
+        scenario, disposable, protected_link, commit, tree,
+    )
+    assert linked["protected_workspace"] == protected.resolve()
+    disposable_link = tmp_path / "Disposable_Workspace_Link"
+    disposable_link.symlink_to(disposable, target_is_directory=True)
+    with pytest.raises(AggregateGateError):
+        validate_binding(
+            scenario, disposable_link, protected, commit, tree,
+        )
     from types import SimpleNamespace
     import quantpits.tools.verify_rolling_aggregate_candidate as gate_module
     monkeypatch.setattr(
