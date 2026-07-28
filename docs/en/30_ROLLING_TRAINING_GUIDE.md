@@ -259,8 +259,11 @@ Phase 35 adds a non-current aggregate candidate boundary after exact `units_comp
 `materialize_rolling_aggregate_candidates()`. It re-observes every original execution-bound source
 in target-major order and conserves the requested targets/windows, business sessions, canonical
 `(datetime, instrument)` rows, and finite float64 scores. The prediction index must have exactly two
-levels and instrument values must already be strings; an extra partition level or implicit string
-coercion is rejected. Overlapping windows, duplicate rows,
+levels and instrument values must already be control-character-free strings; an extra partition
+level, implicit string coercion, NUL, newline, or another control character is rejected. The
+aggregate inspector independently compares backend-returned prediction bytes with the exact
+size/SHA-256 of the sole prediction artifact frozen in the Phase 32 request, so a backend cannot
+self-authorize substituted bytes. Overlapping windows, duplicate rows,
 foreign sources, missing or partial artifacts, non-finite values, and State/backend/root drift all
 fail closed; legacy `keep='last'` behavior is never used. A successful result creates only an
 append-only recorder in `Rolling_Aggregate_Candidates` or
@@ -281,7 +284,10 @@ runs remain audit records but grant no candidate or publication capability. Cand
 locks, experiment metadata, and artifacts must remain inside the same canonical workspace.
 Repository, execution/source scope, and candidate-backend workspace identities must join exactly.
 The candidate experiment artifact location must equal
-`data/rolling_aggregate_candidates_<family>/`; mere workspace containment is insufficient. Before
+`data/rolling_aggregate_candidates_<family>/`; mere workspace containment is insufficient.
+The candidate artifact root is inventoried through no-follow direct children and may contain only
+the two regular files `pred.pkl` and `aggregate_manifest.json`; an extra directory, symlink
+(including an escaping symlink), or special node blocks reuse. Before
 granting `publication_input`, the kernel rechecks source/State/current/backend under the candidate
 lock and requires exactly one active, `FINISHED`, exact candidate per target in terminal inventory.
 Duplicates and race drift fail closed. The candidate experiment namespace itself counts as a durable
@@ -351,8 +357,20 @@ it performs no training, networking, or candidate write. The real `--execute` ro
 owner authorization and a disposable validation workspace. The production workspace remains
 read-only.
 The corrected gate protocol is `rolling_aggregate_candidate_gate_v2`, with execution authorization
-`authorize-rolling-aggregate-candidate-gate-v2`. Historical v1 gate evidence cannot close the
-correction candidate.
+`authorize-rolling-aggregate-candidate-gate-v2`. The execute lane uses Linux inotify to recursively
+observe lifecycle mutations, dynamically adding newly created directories and including
+write-then-delete, in the disposable workspace, protected workspace, and tracked-repository
+boundary. Physical write bytes come from `/proc/self/io`;
+network access is denied and training/GPU calls are profiled. Primary materialization and
+separate-process reuse share one 300-second total budget, and reuse must remain zero
+writer/recorder/path/write-byte. Historical v1 gate evidence cannot close the correction candidate.
+The deterministic source fixture does not invoke the model-capability protocol probe or
+`LinearModel.fit`. A fixed runner creates prediction artifacts, after which the real Phase 32
+evidence inspector and State-repository CAS establish the `units_complete` fixture. Qlib automatic
+repository-code logging is disabled for this isolated fixture, and temp/cache/file-lock paths are
+bound to the disposable workspace. Automatically recorded argv/user values are fixed to generic
+Gate identities, so preserved validation artifacts do not contain the protected path or local
+account name.
 
 > `--training-method` overrides `rolling_config.yaml` — switch modes without editing files.
 

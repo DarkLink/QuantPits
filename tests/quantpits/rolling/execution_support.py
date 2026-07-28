@@ -195,13 +195,14 @@ class FakeRunner:
 
 
 class FakeExecutionBackend:
-    def __init__(self, context, timeline=None):
+    def __init__(self, context, timeline=None, prediction_transform=None):
         self.context = context
         self.requests = {}
         self.candidates = {}
         self.manifest_calls = []
         self.current_lookup_calls = 0
         self.timeline = timeline
+        self.prediction_transform = prediction_transform
 
     @property
     def backend_fingerprint(self):
@@ -233,6 +234,12 @@ class FakeExecutionBackend:
         )
         root.mkdir(parents=True, exist_ok=True)
         pred = prediction_bytes(unit.window.expected_sessions)
+        if self.prediction_transform is not None:
+            frame = pd.read_pickle(io.BytesIO(pred))
+            frame = self.prediction_transform(unit, frame)
+            transformed = io.BytesIO()
+            frame.to_pickle(transformed)
+            pred = transformed.getvalue()
         model = b"bounded-model"
         manifest = ("manifest:%s:%s" % (scope.scope_fingerprint, unit.position)).encode("ascii")
         values = (

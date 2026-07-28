@@ -10,17 +10,27 @@ candidate-specific wrapper.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
+import math
 import os
+import re
+import select
 import shutil
+import socket
 import stat
+import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
+from unittest.mock import patch
 
 
 GATE_PROTOCOL = "rolling_aggregate_candidate_gate_v2"
@@ -33,6 +43,323 @@ MAX_WRITE_BYTES = 512 * 1024 ** 2
 
 class AggregateGateError(RuntimeError):
     pass
+
+
+class _WorkspaceMutationObserver:
+    """Observe every mutation below the gate's pre-created write parents."""
+
+    _MASK = (
+        0x00000002  # IN_MODIFY
+        | 0x00000004  # IN_ATTRIB
+        | 0x00000008  # IN_CLOSE_WRITE
+        | 0x00000040  # IN_MOVED_FROM
+        | 0x00000080  # IN_MOVED_TO
+        | 0x00000100  # IN_CREATE
+        | 0x00000200  # IN_DELETE
+        | 0x00000400  # IN_DELETE_SELF
+        | 0x00000800  # IN_MOVE_SELF
+    )
+    _EVENT = struct.Struct("iIII")
+
+    def __init__(self, root, excluded_relative_paths=()):
+        self.root = Path(root)
+        self._exclusions = frozenset(excluded_relative_paths)
+        self._fd = -1
+        self._paths = {}
+        self._observed = set()
+        self._error = None
+        self._stop_requested = threading.Event()
+        self._thread = None
+        self._add_watch = None
+
+    def _excluded(self, path):
+        if path == self.root:
+            return False
+        relative = path.relative_to(self.root)
+        return bool(relative.parts and relative.parts[0] in self._exclusions)
+
+    def _record_tree(self, directory):
+        if directory.is_symlink():
+            return
+        for current, names, files in os.walk(
+            str(directory), topdown=True, followlinks=False,
+        ):
+            current_path = Path(current)
+            names[:] = [
+                name for name in names
+                if (
+                    not (current_path / name).is_symlink()
+                    and not (
+                        current_path == self.root
+                        and name in self._exclusions
+                    )
+                )
+            ]
+            for name in names + files:
+                path = current_path / name
+                try:
+                    relative = path.relative_to(self.root).as_posix()
+                except ValueError:
+                    continue
+                self._observed.add(relative)
+            self._add_directory_watch(current_path)
+
+    def _add_directory_watch(self, directory):
+        relative = (
+            ""
+            if directory == self.root
+            else directory.relative_to(self.root).as_posix()
+        )
+        if self._excluded(directory):
+            return
+        watch = self._add_watch(
+            self._fd, os.fsencode(str(directory)), self._MASK,
+        )
+        if watch < 0:
+            error = ctypes.get_errno()
+            if error == 2:  # The directory disappeared before observation.
+                self._observed.add(relative)
+                return
+            raise AggregateGateError(
+                "gate lifecycle write parent is unavailable"
+            )
+        self._paths[watch] = relative
+
+    def _drain(self):
+        while True:
+            try:
+                data = os.read(self._fd, 1024 * 1024)
+            except BlockingIOError:
+                return
+            if not data:
+                return
+            offset = 0
+            while offset < len(data):
+                watch, mask, _cookie, name_length = self._EVENT.unpack_from(
+                    data, offset,
+                )
+                offset += self._EVENT.size
+                raw_name = data[offset:offset + name_length]
+                offset += name_length
+                if mask & 0x00004000:
+                    raise AggregateGateError(
+                        "gate lifecycle write observer overflowed"
+                    )
+                name = os.fsdecode(raw_name.rstrip(b"\0"))
+                parent = self._paths.get(watch, "")
+                relative = "/".join(
+                    item for item in (parent, name) if item
+                )
+                if relative:
+                    self._observed.add(relative)
+                if (
+                    relative
+                    and mask & (0x00000100 | 0x00000080)
+                    and mask & 0x40000000
+                ):
+                    self._record_tree(self.root / relative)
+
+    def _consume(self):
+        try:
+            while not self._stop_requested.is_set():
+                ready, _write, _error = select.select(
+                    (self._fd,), (), (), 0.05,
+                )
+                if ready:
+                    self._drain()
+            self._drain()
+        except BaseException as exc:
+            self._error = exc
+
+    def start(self):
+        libc = ctypes.CDLL(None, use_errno=True)
+        try:
+            init = libc.inotify_init1
+            add_watch = libc.inotify_add_watch
+        except AttributeError as exc:
+            raise AggregateGateError(
+                "gate lifecycle write observation requires inotify"
+            ) from exc
+        init.argtypes = (ctypes.c_int,)
+        init.restype = ctypes.c_int
+        add_watch.argtypes = (
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32,
+        )
+        add_watch.restype = ctypes.c_int
+        fd = init(os.O_NONBLOCK | os.O_CLOEXEC)
+        if fd < 0:
+            raise AggregateGateError(
+                "gate lifecycle write observer could not start"
+            )
+        self._fd = fd
+        self._add_watch = add_watch
+        try:
+            self._record_tree(self.root)
+            self._observed.clear()
+            self._thread = threading.Thread(
+                target=self._consume,
+                name="rolling-aggregate-gate-write-observer",
+                daemon=True,
+            )
+            self._thread.start()
+        except BaseException:
+            self.close()
+            raise
+        return self
+
+    def stop(self):
+        self._stop_requested.set()
+        try:
+            if self._thread is not None:
+                self._thread.join(timeout=5)
+                if self._thread.is_alive():
+                    raise AggregateGateError(
+                        "gate lifecycle write observer did not stop"
+                    )
+            if self._error is not None:
+                raise self._error
+        finally:
+            self.close()
+        return tuple(sorted(self._observed))
+
+    def close(self):
+        self._stop_requested.set()
+        if (
+            self._thread is not None
+            and self._thread is not threading.current_thread()
+            and self._thread.is_alive()
+        ):
+            self._thread.join(timeout=1)
+        if self._fd >= 0:
+            os.close(self._fd)
+            self._fd = -1
+        self._paths = {}
+        self._thread = None
+        self._add_watch = None
+
+
+class _GateActivityObserver:
+    """Deny network activity and count the fixed runner's actual actions."""
+
+    def __init__(self, runtime_root=None):
+        self.runner_calls = 0
+        self.training_calls = 0
+        self.gpu_calls = 0
+        self.network_calls = 0
+        self.runtime_root = (
+            Path(runtime_root)
+            if runtime_root is not None else Path("/tmp")
+        )
+
+    def observe_runner(self):
+        self.runner_calls += 1
+
+    def _profile(self, frame, event, _argument):
+        if event != "call":
+            return self._profile
+        module = str(frame.f_globals.get("__name__", ""))
+        function = frame.f_code.co_name
+        if (
+            function in (
+                "fit", "train", "train_single_model", "train_cpcv_model",
+            )
+            and module.startswith((
+                "qlib.contrib.model", "qlib.model.trainer",
+                "quantpits.utils.train_utils",
+            ))
+        ):
+            self.training_calls += 1
+            raise AggregateGateError("training activity is forbidden")
+        if module.startswith(("cupy.cuda", "torch.cuda")):
+            self.gpu_calls += 1
+            raise AggregateGateError("GPU activity is forbidden")
+        return self._profile
+
+    def _deny_network(self, *_args, **_kwargs):
+        self.network_calls += 1
+        raise AggregateGateError("network activity is forbidden")
+
+    def disable_qlib_repository_logging(self):
+        from qlib.workflow.recorder import MLflowRecorder
+
+        self._stack.enter_context(patch.object(
+            MLflowRecorder, "_log_uncommitted_code",
+            lambda _recorder: None,
+        ))
+
+    def __enter__(self):
+        self._stack = ExitStack()
+        self._prior_profile = sys.getprofile()
+        self._prior_thread_profile = getattr(
+            threading, "_profile_hook", None,
+        )
+        self._prior_cwd = Path.cwd()
+        self._stack.enter_context(
+            patch.object(socket.socket, "connect", self._deny_network)
+        )
+        self._stack.enter_context(
+            patch.object(socket.socket, "connect_ex", self._deny_network)
+        )
+        self._stack.enter_context(
+            patch.object(socket.socket, "sendto", self._deny_network)
+        )
+        self._stack.enter_context(
+            patch.object(socket, "create_connection", self._deny_network)
+        )
+        self._stack.enter_context(
+            patch.object(socket, "getaddrinfo", self._deny_network)
+        )
+        self._stack.enter_context(
+            patch.object(socket, "gethostbyname", self._deny_network)
+        )
+        self._stack.enter_context(patch.dict(os.environ, {
+            "CUDA_VISIBLE_DEVICES": "",
+            "NVIDIA_VISIBLE_DEVICES": "void",
+            "HOME": str(self.runtime_root),
+            "TMPDIR": str(self.runtime_root),
+            "TMP": str(self.runtime_root),
+            "TEMP": str(self.runtime_root),
+            "XDG_CACHE_HOME": str(self.runtime_root / "cache"),
+            "MPLCONFIGDIR": str(self.runtime_root / "matplotlib"),
+            "USER": "quantpits-gate",
+            "LOGNAME": "quantpits-gate",
+        }))
+        self._stack.enter_context(
+            patch.object(tempfile, "tempdir", str(self.runtime_root))
+        )
+        self._stack.enter_context(
+            patch.object(sys, "dont_write_bytecode", True)
+        )
+        self._stack.enter_context(
+            patch.object(sys, "argv", ["quantpits-r35-gate"])
+        )
+        os.chdir("/")
+        sys.setprofile(self._profile)
+        threading.setprofile(self._profile)
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        sys.setprofile(self._prior_profile)
+        threading.setprofile(self._prior_thread_profile)
+        try:
+            return self._stack.__exit__(exc_type, exc, traceback)
+        finally:
+            os.chdir(str(self._prior_cwd))
+
+
+def _process_physical_write_bytes():
+    try:
+        rows = {}
+        for line in Path("/proc/self/io").read_text(
+            encoding="ascii",
+        ).splitlines():
+            key, value = line.split(":", 1)
+            rows[key] = int(value.strip())
+        return rows["write_bytes"]
+    except (OSError, KeyError, ValueError) as exc:
+        raise AggregateGateError(
+            "physical write-byte observer is unavailable"
+        ) from exc
 
 
 def _strict_int(value, field):
@@ -280,6 +607,10 @@ def _initialize_fixture_tracking(context):
 def _build_fixture_scope(context):
     from quantpits.model_capabilities.catalog import AUTHORITATIVE_CATALOG
     from quantpits.model_capabilities.inspector import ModelCapabilityInspector
+    from quantpits.model_capabilities.probes import (
+        ImportObservation,
+        ProtocolProbeFailure,
+    )
     from quantpits.rolling import (
         PreparedRollingRun,
         ResolvedRollingRun,
@@ -307,15 +638,23 @@ def _build_fixture_scope(context):
         and item.action == "train"
         and item.execution_family == "rolling"
     )
-    matrix = ModelCapabilityInspector().inspect((declaration,))
-    if not matrix.results[0].preflight_allowed:
+    matrix = ModelCapabilityInspector._with_probes(
+        lambda _module, _class: ImportObservation(
+            False, False, False, False, False, False, True,
+            "gate_fixture_model_probe_forbidden",
+        ),
+        lambda _declaration: ProtocolProbeFailure(
+            "gate_fixture_protocol_probe_forbidden",
+        ),
+    ).inspect((declaration,))
+    if matrix.results[0].preflight_allowed:
         raise AggregateGateError(
-            "deterministic fixture capability is unavailable"
+            "deterministic fixture cannot claim model capability"
         )
     relative = "config/demo_linear_gate.yaml"
     workflow = context.root / relative
     workflow.parent.mkdir(parents=True, exist_ok=True)
-    workflow.write_text(
+    workflow_bytes = (
         "task:\n"
         "  model: {class: LinearModel, module_path: qlib.contrib.model.linear}\n"
         "  dataset:\n"
@@ -326,9 +665,12 @@ def _build_fixture_scope(context):
         "        class: Alpha158\n"
         "        module_path: qlib.contrib.data.handler\n"
         "        kwargs: {}\n"
-        "      segments: {}\n",
-        encoding="utf-8",
-    )
+        "      segments: {}\n"
+    ).encode("utf-8")
+    if not workflow.exists():
+        workflow.write_bytes(workflow_bytes)
+    elif workflow.read_bytes() != workflow_bytes:
+        raise AggregateGateError("deterministic fixture workflow drifted")
     target_identity = RollingTargetIdentity("demo_linear", "rolling")
     mapped = map_workflow_capability(
         context, target_identity.target_key, relative, matrix,
@@ -405,10 +747,10 @@ class _FixtureExecutionBackend:
 
 
 class _FixtureRunner:
-    def __init__(self, context, runtime_params):
+    def __init__(self, context, runtime_params, activity):
         self.context = context
         self.runtime_params = runtime_params
-        self.calls = 0
+        self.activity = activity
 
     @property
     def runtime_params_fingerprint(self):
@@ -420,7 +762,7 @@ class _FixtureRunner:
         from qlib.workflow import R
         from quantpits.rolling import RollingUnitRunnerObservation
 
-        self.calls += 1
+        self.activity.observe_runner()
         experiment_name = "Rolling_Aggregate_Gate_Sources"
         with R.start(experiment_name=experiment_name):
             recorder = R.get_recorder()
@@ -458,6 +800,94 @@ class _FixtureRunner:
         )
 
 
+def _materialize_no_training_source_fixtures(
+    scope, repository, source, runner,
+):
+    """Create exact Phase 32/34 fixture evidence without capability probing."""
+
+    from quantpits.rolling.execution_backend import (
+        _claim,
+        _snapshot,
+        _source_extensions,
+    )
+
+    attempt_id = "gate-execution-attempt"
+    initial = repository.inspect_readonly()
+    if initial.inspection.classification != "missing":
+        raise AggregateGateError("source fixture state is not disposable")
+    receipt = repository.commit(
+        _snapshot(scope, "prepared", None, ()),
+        initial.baseline,
+    )
+    if receipt.status != "committed" or receipt.cas_baseline is None:
+        raise AggregateGateError("source fixture prepared State failed")
+    baseline = receipt.cas_baseline
+    requests = []
+    successful_claims = []
+    for unit in scope.units:
+        recorder_baseline = source.capture_recorder_inventory(
+            scope, unit, attempt_id,
+        )
+        observation = runner.execute(scope, unit, attempt_id)
+        request = source.commit_execution_manifest(
+            scope, unit, observation, recorder_baseline,
+        )
+        evidence = source.inspect(scope, (request,))
+        if (
+            evidence.status != "all_valid"
+            or len(evidence.unit_results) != 1
+            or evidence.unit_results[0].classification != "valid"
+        ):
+            raise AggregateGateError(
+                "source fixture evidence did not become valid"
+            )
+        requests.append(request)
+        successful_claims.append(_claim(
+            unit, "success", observation.recorder_id,
+            evidence.unit_results[0].evidence_fingerprint,
+            _source_extensions(request, attempt_id),
+        ))
+    claims = [_claim(unit, "running") for unit in scope.units]
+    receipt = repository.commit(
+        _snapshot(scope, "executing", attempt_id, claims),
+        baseline,
+    )
+    if receipt.status != "committed" or receipt.cas_baseline is None:
+        raise AggregateGateError(
+            "source fixture executing State failed: %s"
+            % receipt.reason_code
+        )
+    baseline = receipt.cas_baseline
+    for position, success_claim in enumerate(successful_claims):
+        claims[position] = success_claim
+        evidence_set = source.inspect(
+            scope, tuple(requests[:position + 1]),
+        )
+        receipt = repository.commit_evidence_authorized(
+            _snapshot(scope, "executing", attempt_id, claims),
+            baseline, evidence_set,
+        )
+        if receipt.status != "committed" or receipt.cas_baseline is None:
+            raise AggregateGateError(
+                "source fixture success State failed: %s"
+                % receipt.reason_code
+            )
+        baseline = receipt.cas_baseline
+    evidence_set = source.inspect(scope, tuple(requests))
+    if (
+        evidence_set.status != "all_valid"
+        or evidence_set.requested_unit_keys != scope.requested_unit_keys
+    ):
+        raise AggregateGateError("source fixture evidence set is incomplete")
+    receipt = repository.commit_evidence_authorized(
+        _snapshot(scope, "units_complete", attempt_id, claims),
+        baseline, evidence_set,
+    )
+    if receipt.status != "committed":
+        raise AggregateGateError("source fixture terminal State failed")
+    return repository.inspect_readonly()
+
+
 def _workspace_bytes(snapshot):
     return sum(
         size for _path, kind, size, _digest_value in snapshot
@@ -466,10 +896,95 @@ def _workspace_bytes(snapshot):
 
 
 def _assert_gate_budgets(elapsed_seconds, write_bytes):
+    if (
+        isinstance(elapsed_seconds, bool)
+        or not isinstance(elapsed_seconds, (int, float))
+        or not math.isfinite(float(elapsed_seconds))
+        or elapsed_seconds < 0
+    ):
+        raise AggregateGateError("gate elapsed time is invalid")
+    if _strict_int(write_bytes, "write_bytes") < 0:
+        raise AggregateGateError("gate write-byte count is invalid")
     if elapsed_seconds > WALL_SECONDS:
         raise AggregateGateError("gate wall-clock budget exceeded")
     if write_bytes > MAX_WRITE_BYTES:
         raise AggregateGateError("gate write-byte budget exceeded")
+
+
+_RUN_RESULT_FIELDS = frozenset({
+    "status", "candidate_fingerprint", "candidate_row_count",
+    "new_candidate_recorders", "training_calls", "gpu_calls",
+    "network_calls", "runner_calls", "protected_unchanged",
+    "repository_unchanged", "elapsed_seconds", "workspace_bytes",
+    "write_bytes", "changed_path_count",
+})
+
+
+def _validate_run_result(result, reuse_only):
+    if not isinstance(result, Mapping) or frozenset(result) != _RUN_RESULT_FIELDS:
+        raise AggregateGateError("gate run evidence fields are not exact")
+    expected_status = (
+        "reused_success" if reuse_only else "materialized_success"
+    )
+    expected_new = 0 if reuse_only else 1
+    expected_runners = 0 if reuse_only else 2
+    if (
+        result["status"] != expected_status
+        or _strict_int(
+            result["new_candidate_recorders"],
+            "new_candidate_recorders",
+        ) != expected_new
+        or _strict_int(result["runner_calls"], "runner_calls")
+        != expected_runners
+        or any(
+            _strict_int(result[field], field) != 0
+            for field in ("training_calls", "gpu_calls", "network_calls")
+        )
+        or _strict_int(
+            result["candidate_row_count"], "candidate_row_count",
+        ) != 4
+        or not _strict_bool(
+            result["protected_unchanged"], "protected_unchanged",
+        )
+        or not _strict_bool(
+            result["repository_unchanged"], "repository_unchanged",
+        )
+        or not isinstance(result["candidate_fingerprint"], str)
+        or len(result["candidate_fingerprint"]) != 64
+        or any(
+            char not in "0123456789abcdef"
+            for char in result["candidate_fingerprint"]
+        )
+    ):
+        raise AggregateGateError("gate run evidence is inconsistent")
+    for field in ("workspace_bytes", "write_bytes", "changed_path_count"):
+        if _strict_int(result[field], field) < 0:
+            raise AggregateGateError("gate run count is negative")
+    elapsed = result["elapsed_seconds"]
+    if (
+        isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not math.isfinite(float(elapsed))
+        or elapsed < 0
+    ):
+        raise AggregateGateError("gate elapsed time is invalid")
+    _assert_gate_budgets(float(elapsed), result["write_bytes"])
+    if (
+        result["workspace_bytes"] <= 0
+        or (
+            reuse_only
+            and (
+                result["write_bytes"] != 0
+                or result["changed_path_count"] != 0
+            )
+        )
+        or (
+            not reuse_only
+            and result["changed_path_count"] <= 0
+        )
+    ):
+        raise AggregateGateError("gate write evidence is inconsistent")
+    return result
 
 
 def _assert_snapshot_unchanged(before, after, field):
@@ -477,7 +992,9 @@ def _assert_snapshot_unchanged(before, after, field):
         raise AggregateGateError("%s drifted" % field)
 
 
-def _assert_workspace_write_allowlist(before, after):
+def _assert_workspace_write_allowlist(
+    before, after, mutation_paths=(), observed_write_bytes=None,
+):
     before_map = {item[0]: item[1:] for item in before}
     after_map = {item[0]: item[1:] for item in after}
     changed = {
@@ -494,6 +1011,7 @@ def _assert_workspace_write_allowlist(before, after):
         "data/locks/rolling_aggregate_candidate.lock",
         "data/locks/training_execution.lock",
         "data/aggregate_gate_scenario.json",
+        "data/aggregate_gate_runtime",
         "data/rolling_aggregate_candidates_rolling",
         "mlruns",
         "mlruns/.aggregate-gate",
@@ -502,21 +1020,50 @@ def _assert_workspace_write_allowlist(before, after):
     }
     allowed_prefixes = (
         "data/rolling_aggregate_candidates_rolling/",
+        "data/aggregate_gate_runtime/",
         "mlruns/",
         "qlib_data/",
     )
+    def allowed(path):
+        return (
+            path in allowed_exact
+            or any(path.startswith(prefix) for prefix in allowed_prefixes)
+            or re.fullmatch(
+                r"data/\.rolling_state\.json\.[0-9a-f]{16}\.tmp",
+                path,
+            ) is not None
+            or re.fullmatch(
+                r"data/\.quantpits-aggregate-[a-z0-9_]+",
+                path,
+            ) is not None
+            or re.fullmatch(
+                r"data/\.quantpits-aggregate-[a-z0-9_]+/"
+                r"(?:pred\.pkl|aggregate_manifest\.json)",
+                path,
+            ) is not None
+        )
+
+    observed_paths = changed | set(mutation_paths)
     unexpected = tuple(sorted(
-        path for path in changed
-        if path not in allowed_exact
-        and not any(path.startswith(prefix) for prefix in allowed_prefixes)
+        path for path in observed_paths
+        if not allowed(path)
     ))
     if unexpected:
-        raise AggregateGateError("gate observed an undeclared write")
+        raise AggregateGateError(
+            "gate observed an undeclared write: %s"
+            % ", ".join(unexpected[:5])
+        )
     before_bytes = _workspace_bytes(before)
     after_bytes = _workspace_bytes(after)
-    write_bytes = max(0, after_bytes - before_bytes)
+    write_bytes = (
+        max(0, after_bytes - before_bytes)
+        if observed_write_bytes is None
+        else _strict_int(observed_write_bytes, "observed_write_bytes")
+    )
+    if write_bytes < 0:
+        raise AggregateGateError("observed_write_bytes cannot be negative")
     _assert_gate_budgets(0, write_bytes)
-    return len(changed), write_bytes
+    return len(observed_paths), write_bytes
 
 
 def _snapshot_tracked_repository(root):
@@ -539,20 +1086,11 @@ def _snapshot_tracked_repository(root):
     return tuple(rows)
 
 
-def _run_real_gate(binding, reuse_only=False):
-    started = time.monotonic()
+def _run_real_gate_action(binding, reuse_only, activity):
     workspace = binding["workspace"]
-    protected_before = snapshot_tree(binding["protected_workspace"])
-    repository_root = Path(__file__).resolve().parents[2]
-    repository_before = _snapshot_tracked_repository(repository_root)
-    workspace_before = snapshot_tree(workspace)
-    for name in ("config", "data", "mlruns", "output", "qlib_data"):
-        path = workspace / name
-        path.mkdir(parents=True, exist_ok=True)
-        if path.is_symlink() or path.resolve(strict=True).parent != workspace:
-            raise AggregateGateError("fixture directory is not contained")
     marker = workspace / "mlruns" / ".aggregate-gate"
-    marker.touch(exist_ok=True)
+    if not marker.exists():
+        marker.touch()
     scenario_marker = workspace / "data" / "aggregate_gate_scenario.json"
     if not scenario_marker.exists():
         scenario_marker.write_text(json.dumps({
@@ -578,11 +1116,11 @@ def _run_real_gate(binding, reuse_only=False):
     if not str(context.mlflow_uri).startswith("file://"):
         raise AggregateGateError("fixture tracking backend is not file-contained")
     _initialize_fixture_tracking(context)
+    activity.disable_qlib_repository_logging()
     scope, runtime_params = _build_fixture_scope(context)
     from quantpits.rolling import (
         QlibMlflowAggregateBackend,
         QlibMlflowExecutionBackend,
-        RollingExecutionKernel,
         RollingStateRepository,
         build_rolling_aggregate_scope,
         materialize_rolling_aggregate_candidates,
@@ -590,18 +1128,15 @@ def _run_real_gate(binding, reuse_only=False):
     repository = RollingStateRepository.for_workspace(context, "rolling")
     source = _FixtureExecutionBackend(QlibMlflowExecutionBackend(context))
     state_view = repository.inspect_readonly()
-    runner_calls = 0
     if state_view.inspection.classification == "missing":
         if reuse_only:
             raise AggregateGateError("reuse process found no fixture state")
-        runner = _FixtureRunner(context, runtime_params)
-        execution = RollingExecutionKernel(
-            repository, source, runner,
-        ).execute(scope, "gate-execution-attempt")
-        runner_calls = runner.calls
-        if execution.status != "success" or runner_calls != 2:
+        runner = _FixtureRunner(context, runtime_params, activity)
+        state_view = _materialize_no_training_source_fixtures(
+            scope, repository, source, runner,
+        )
+        if activity.runner_calls != 2:
             raise AggregateGateError("deterministic source fixture failed")
-        state_view = repository.inspect_readonly()
     elif not reuse_only:
         raise AggregateGateError("disposable workspace is stale")
     aggregate = build_rolling_aggregate_scope(
@@ -618,7 +1153,7 @@ def _run_real_gate(binding, reuse_only=False):
             result.status != "success"
             or result.target_results[0].status != "reused_success"
             or after_count != before_count
-            or runner_calls != 0
+            or activity.runner_calls != 0
         ):
             raise AggregateGateError("second-process reuse was not zero-write")
     elif (
@@ -630,23 +1165,123 @@ def _run_real_gate(binding, reuse_only=False):
     candidate = result.target_results[0].candidate
     if candidate.row_count != 4:
         raise AggregateGateError("candidate row cardinality is unexpected")
-    _assert_snapshot_unchanged(
-        protected_before,
-        snapshot_tree(binding["protected_workspace"]),
-        "protected workspace",
+    return candidate, before_count, after_count
+
+
+def _run_real_gate(binding, reuse_only=False):
+    started = time.monotonic()
+    workspace = binding["workspace"]
+    repository_root = Path(__file__).resolve().parents[2]
+    workspace_before = snapshot_tree(workspace)
+    write_before = _process_physical_write_bytes()
+    declared_directories = (
+        "config", "data", "data/locks",
+        "data/aggregate_gate_runtime",
+        "data/rolling_aggregate_candidates_rolling",
+        "mlruns", "output", "qlib_data",
     )
-    _assert_snapshot_unchanged(
-        repository_before,
-        _snapshot_tracked_repository(repository_root),
-        "tracked repository",
+    for name in declared_directories:
+        path = workspace / name
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.resolve(strict=True).relative_to(workspace)
+        except ValueError:
+            raise AggregateGateError("fixture directory is not contained")
+        if path.is_symlink() or path.resolve(strict=True) != path.absolute():
+            raise AggregateGateError("fixture directory is not contained")
+    observers = []
+    try:
+        workspace_observer = _WorkspaceMutationObserver(workspace).start()
+        observers.append(workspace_observer)
+        protected_observer = _WorkspaceMutationObserver(
+            binding["protected_workspace"],
+        ).start()
+        observers.append(protected_observer)
+        repository_observer = _WorkspaceMutationObserver(
+            repository_root, (".git", "plan", "workspaces"),
+        ).start()
+        observers.append(repository_observer)
+    except BaseException:
+        for active_observer in observers:
+            active_observer.close()
+        raise
+    try:
+        protected_before = snapshot_tree(
+            binding["protected_workspace"],
+        )
+        repository_before = _snapshot_tracked_repository(
+            repository_root,
+        )
+    except BaseException:
+        workspace_observer.close()
+        protected_observer.close()
+        repository_observer.close()
+        raise
+    activity = _GateActivityObserver(
+        workspace / "data" / "aggregate_gate_runtime",
     )
+    try:
+        with activity:
+            candidate, before_count, after_count = _run_real_gate_action(
+                binding, reuse_only, activity,
+            )
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        workspace_observer.close()
+        protected_observer.close()
+        repository_observer.close()
+        raise
+    except BaseException:
+        workspace_observer.close()
+        protected_observer.close()
+        repository_observer.close()
+        raise
+    try:
+        _assert_snapshot_unchanged(
+            protected_before,
+            snapshot_tree(binding["protected_workspace"]),
+            "protected workspace",
+        )
+        _assert_snapshot_unchanged(
+            repository_before,
+            _snapshot_tracked_repository(repository_root),
+            "tracked repository",
+        )
+        workspace_after = snapshot_tree(workspace)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        workspace_observer.close()
+        protected_observer.close()
+        repository_observer.close()
+        raise
+    except BaseException:
+        workspace_observer.close()
+        protected_observer.close()
+        repository_observer.close()
+        raise
+    mutation_paths = workspace_observer.stop()
+    protected_mutations = protected_observer.stop()
+    repository_mutations = repository_observer.stop()
+    if protected_mutations:
+        raise AggregateGateError(
+            "protected workspace lifecycle observer detected a write"
+        )
+    if repository_mutations:
+        raise AggregateGateError(
+            "repository lifecycle observer detected a write"
+        )
+    write_bytes = max(
+        0, _process_physical_write_bytes() - write_before,
+    )
+    if (
+        activity.training_calls != 0
+        or activity.gpu_calls != 0
+        or activity.network_calls != 0
+    ):
+        raise AggregateGateError(
+            "gate observed forbidden training, GPU, or network activity"
+        )
     elapsed = time.monotonic() - started
-    workspace_after = snapshot_tree(workspace)
-    changed_file_count, durable_write_bytes = _assert_workspace_write_allowlist(
-        workspace_before, workspace_after,
-    )
-    write_bytes = (
-        durable_write_bytes + candidate_backend.staging_write_bytes
+    changed_file_count, write_bytes = _assert_workspace_write_allowlist(
+        workspace_before, workspace_after, mutation_paths, write_bytes,
     )
     _assert_gate_budgets(elapsed, write_bytes)
     total_bytes = _workspace_bytes(workspace_after)
@@ -655,8 +1290,10 @@ def _run_real_gate(binding, reuse_only=False):
         "candidate_fingerprint": candidate.content_fingerprint,
         "candidate_row_count": candidate.row_count,
         "new_candidate_recorders": after_count - before_count,
-        "training_calls": 0,
-        "runner_calls": runner_calls,
+        "training_calls": activity.training_calls,
+        "gpu_calls": activity.gpu_calls,
+        "network_calls": activity.network_calls,
+        "runner_calls": activity.runner_calls,
         "protected_unchanged": True,
         "repository_unchanged": True,
         "elapsed_seconds": round(elapsed, 6),
@@ -667,7 +1304,14 @@ def _run_real_gate(binding, reuse_only=False):
 
 
 def execute_gate(binding):
-    primary = _run_real_gate(binding, reuse_only=False)
+    gate_started = time.monotonic()
+    primary = _validate_run_result(
+        _run_real_gate(binding, reuse_only=False),
+        reuse_only=False,
+    )
+    remaining_seconds = WALL_SECONDS - (time.monotonic() - gate_started)
+    if remaining_seconds <= 0:
+        raise AggregateGateError("aggregate gate wall-clock budget exceeded")
     command = [
         sys.executable, "-m",
         "quantpits.tools.verify_rolling_aggregate_candidate",
@@ -678,7 +1322,7 @@ def execute_gate(binding):
         "--internal-reuse",
     ]
     child = subprocess.run(
-        command, capture_output=True, text=True, timeout=WALL_SECONDS,
+        command, capture_output=True, text=True, timeout=remaining_seconds,
     )
     if child.returncode != 0:
         raise AggregateGateError("separate-process reuse failed")
@@ -687,19 +1331,33 @@ def execute_gate(binding):
     except (ValueError, IndexError):
         raise AggregateGateError("separate-process evidence is invalid")
     if (
-        reuse.get("status") != "gate_passed"
-        or reuse.get("result", {}).get("status") != "reused_success"
-        or reuse.get("result", {}).get("new_candidate_recorders") != 0
-        or reuse.get("result", {}).get("runner_calls") != 0
-        or reuse.get("result", {}).get("training_calls") != 0
-        or reuse.get("result", {}).get("write_bytes") != 0
-        or reuse.get("result", {}).get("changed_path_count") != 0
-        or reuse.get("result", {}).get("candidate_fingerprint")
+        not isinstance(reuse, Mapping)
+        or frozenset(reuse) != {
+            "status", "reason_code", "protocol",
+            "scenario_fingerprint", "commit", "tree", "result",
+        }
+        or reuse.get("status") != "gate_passed"
+        or reuse.get("reason_code")
+        != "rolling_aggregate_gate_reuse_passed"
+        or reuse.get("protocol") != GATE_PROTOCOL
+        or reuse.get("scenario_fingerprint")
+        != binding["scenario_fingerprint"]
+        or reuse.get("commit") != binding["commit"]
+        or reuse.get("tree") != binding["tree"]
+    ):
+        raise AggregateGateError("separate-process reuse envelope failed")
+    reuse_result = _validate_run_result(
+        reuse["result"], reuse_only=True,
+    )
+    if (
+        reuse_result.get("candidate_fingerprint")
         != primary.get("candidate_fingerprint")
-        or reuse.get("result", {}).get("candidate_row_count")
+        or reuse_result.get("candidate_row_count")
         != primary.get("candidate_row_count")
     ):
         raise AggregateGateError("separate-process reuse evidence failed")
+    total_elapsed = time.monotonic() - gate_started
+    _assert_gate_budgets(total_elapsed, primary["write_bytes"])
     return {
         "status": "gate_passed",
         "reason_code": "rolling_aggregate_gate_passed",
@@ -707,7 +1365,8 @@ def execute_gate(binding):
         "commit": binding["commit"],
         "tree": binding["tree"],
         "result": primary,
-        "reuse": reuse["result"],
+        "reuse": reuse_result,
+        "total_elapsed_seconds": round(total_elapsed, 6),
         "cleanup": "preserved",
     }
 
@@ -796,7 +1455,14 @@ def main(argv=None):
             {
                 "status": "gate_passed",
                 "reason_code": "rolling_aggregate_gate_reuse_passed",
-                "result": _run_real_gate(binding, reuse_only=True),
+                "protocol": GATE_PROTOCOL,
+                "scenario_fingerprint": binding["scenario_fingerprint"],
+                "commit": binding["commit"],
+                "tree": binding["tree"],
+                "result": _validate_run_result(
+                    _run_real_gate(binding, reuse_only=True),
+                    reuse_only=True,
+                ),
             }
             if args.internal_reuse
             else execute_gate(binding) if args.execute

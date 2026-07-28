@@ -246,6 +246,14 @@ candidate cannot receive `publication_input`. The terminal-reuse open itself nev
 lock. If the lock disappears after precheck or is not the canonical regular file, a known
 zero-write result is `blocked / did_write=false`; manually recreating the lock does not turn that
 invocation into success.
+Source prediction bytes must also match the exact size/SHA-256 frozen in the Phase 32 request.
+The candidate artifact root permits only the direct regular files `pred.pkl` and
+`aggregate_manifest.json`; any extra directory, symlink, or special node blocks reuse. Gate execute
+uses a recursive lifecycle mutation observer that dynamically adds new directories to catch
+write-then-delete, obtains physical write bytes from
+`/proc/self/io`, and enforces one combined 300-second budget across primary and reuse.
+The Gate source fixture never invokes a model-capability probe or `LinearModel.fit`;
+`training_calls=0` must come from the profiler observer rather than a constant declaration.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|

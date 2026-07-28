@@ -21,6 +21,38 @@ from tests.quantpits.rolling.aggregate_support import (
 )
 
 
+def test_no_create_terminal_lock_open_is_read_only(tmp_path, monkeypatch):
+    parent = tmp_path / "locks"
+    parent.mkdir()
+    lock = parent / "rolling_aggregate_candidate.lock"
+    lock.write_bytes(b"")
+    parent_meta = parent.stat()
+    original_open = aggregate_backend_module.os.open
+    observed = {}
+
+    def capture_open(path, flags, *args, **kwargs):
+        if path == lock.name and kwargs.get("dir_fd") is not None:
+            observed["flags"] = flags
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        aggregate_backend_module.os, "open", capture_open,
+    )
+    handle = aggregate_backend_module._open_regular_child(
+        parent, lock.name, (parent_meta.st_dev, parent_meta.st_ino),
+        create_if_missing=False,
+    )
+    with handle:
+        assert handle.read() == b""
+    write_flags = (
+        aggregate_backend_module.os.O_WRONLY
+        | aggregate_backend_module.os.O_RDWR
+        | aggregate_backend_module.os.O_APPEND
+        | aggregate_backend_module.os.O_CREAT
+    )
+    assert observed["flags"] & write_flags == 0
+
+
 def _real_backend_case(tmp_path, fault_hook=None):
     context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
     fixture = FakeCandidateBackend(context)
@@ -140,6 +172,59 @@ def test_real_backend_provenance_tamper_cannot_become_reusable(tmp_path):
     )
     assert rebuilt.classification == "identity_mismatch"
     assert rebuilt.capabilities == ("render",)
+
+
+@pytest.mark.parametrize(
+    "node_kind",
+    ["symlink_file", "symlink_directory", "directory", "fifo"],
+)
+def test_real_backend_rejects_non_regular_extra_candidate_artifact_nodes(
+    tmp_path, node_kind,
+):
+    (
+        context, _repository, _source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    target = aggregate.target_keys[0]
+    candidate_key = aggregate.candidate_keys[0]
+    created = backend.create_candidate(
+        aggregate, target, candidate_key, prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    recorder = next(iter(
+        backend._recorders("Rolling_Aggregate_Candidates").values()
+    ))
+    artifact_uri = recorder.get_artifact_uri()
+    artifact_root = Path(
+        artifact_uri[7:] if artifact_uri.startswith("file://")
+        else artifact_uri
+    )
+    extra = artifact_root / "escaped"
+    if node_kind == "directory":
+        extra.mkdir()
+    elif node_kind == "fifo":
+        import os
+        os.mkfifo(str(extra))
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir(exist_ok=True)
+        target_path = (
+            outside if node_kind == "symlink_directory"
+            else outside / "foreign.bin"
+        )
+        if node_kind == "symlink_file":
+            target_path.write_bytes(b"foreign")
+        extra.symlink_to(
+            target_path,
+            target_is_directory=node_kind == "symlink_directory",
+        )
+
+    observed = backend.inspect_candidate(
+        aggregate, target, candidate_key,
+        _candidate_manifest_contract_fingerprint(manifest),
+    )
+
+    assert observed == {"classification": "partial"}
 
 
 def test_real_backend_deleted_finished_run_is_audit_only(tmp_path):

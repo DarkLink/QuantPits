@@ -12,6 +12,7 @@ import json
 import math
 import numbers
 import struct
+import unicodedata
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Mapping, Optional, Protocol
 
@@ -416,7 +417,11 @@ def _canonical_frame(data: bytes, expected_sessions: tuple) -> tuple:
     instruments = tuple(index.get_level_values(instrument_positions[0]))
     if any(type(item) is not str for item in instruments):
         _contract("prediction instruments must already be strings")
-    if any(not item or item != item.strip() for item in instruments):
+    if any(
+        not item or item != item.strip()
+        or any(unicodedata.category(char) == "Cc" for char in item)
+        for item in instruments
+    ):
         _contract("prediction instruments are invalid")
     scores = payload.iloc[:, 0]
     if not pd.api.types.is_numeric_dtype(scores.dtype) or pd.api.types.is_bool_dtype(scores.dtype):
@@ -658,6 +663,18 @@ def inspect_rolling_aggregate_sources(
             if not isinstance(raw, bytes):
                 raise RollingAggregateContractError(
                     "source backend returned non-byte prediction data"
+                )
+            prediction_artifact = next(
+                item for item in request.artifacts
+                if item.role == "prediction"
+            )
+            if (
+                len(raw) != prediction_artifact.size_bytes
+                or hashlib.sha256(raw).hexdigest()
+                != prediction_artifact.fingerprint
+            ):
+                raise RollingAggregateContractError(
+                    "source prediction bytes do not match frozen evidence"
                 )
             rows, values = _canonical_frame(
                 raw, request.expected_prediction_sessions,

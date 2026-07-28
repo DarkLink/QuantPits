@@ -233,7 +233,9 @@ Phase 35 在上述 exact `units_complete` 边界之后新增 non-current aggrega
 `materialize_rolling_aggregate_candidates()`。它按 target-major 顺序重新观察每个 original
 execution-bound source，要求 requested target/window、business session、canonical
 `(datetime, instrument)` 行和 finite float64 score 全部守恒。prediction index 必须恰好为两层，
-instrument 原始值必须已经是字符串；额外 partition level 或隐式字符串转换都会阻断。窗口重叠、重复行、foreign source、
+instrument 原始值必须已经是无控制字符的字符串；额外 partition level、隐式字符串转换或 NUL/换行等控制字符都会阻断。
+aggregate inspector 会独立把 backend 返回的 prediction bytes 与 Phase 32 request 中唯一 prediction artifact
+的冻结 size/SHA-256 精确比较，不能依赖 backend 自证。窗口重叠、重复行、foreign source、
 缺失或 partial artifact、非有限数值、State/backend/root 漂移都会 fail closed；不会采用 legacy
 `keep='last'` 语义。成功结果只生成 append-only 的 `Rolling_Aggregate_Candidates` 或
 `CPCV_Rolling_Aggregate_Candidates` recorder，并提供 proposal-only `publication_input` capability。
@@ -252,7 +254,9 @@ fingerprint，以及独立重算的 candidate index/value/content fingerprint。
 candidate/publication capability。candidate staging、lock、experiment metadata 与 artifacts
 必须物理包含于同一个 canonical workspace；repository、execution/source scope 与 candidate backend
 workspace identity 必须精确一致。candidate experiment artifact location 必须精确等于
-`data/rolling_aggregate_candidates_<family>/`，仅“位于 workspace 内”不足以授权写入。最终授予
+`data/rolling_aggregate_candidates_<family>/`，仅“位于 workspace 内”不足以授权写入。
+candidate artifact root 必须通过 no-follow 直接子节点清单验证，且只能包含两个 regular file：
+`pred.pkl` 与 `aggregate_manifest.json`；额外目录、symlink（包括外逃 symlink）或特殊节点均阻断。最终授予
 `publication_input` 前会在 candidate lock 内重新检查 source/State/current/backend，并要求每个 target
 在 terminal inventory 中恰好存在一个 active、`FINISHED`、exact candidate；duplicate 或竞态漂移均 fail closed。
 首次创建 candidate experiment namespace 本身也计为 durable write。
@@ -309,7 +313,16 @@ python -m quantpits.tools.verify_rolling_aggregate_candidate \
 candidate。真实 `--execute` 只允许 release owner 在一次性 validation workspace 上授权；production
 workspace 始终只读。
 当前修正 gate protocol 为 `rolling_aggregate_candidate_gate_v2`；真实执行授权字符串为
-`authorize-rolling-aggregate-candidate-gate-v2`。旧 v1 gate evidence 不能关闭新的修正候选。
+`authorize-rolling-aggregate-candidate-gate-v2`。execute lane 使用 Linux inotify 递归观察 disposable、
+protected 与 tracked-repository 的生命周期 mutation，并动态接管新建目录，包含 write-then-delete；物理写字节来自
+`/proc/self/io`，network 被主动拒绝，training/GPU 调用由 profiler 观察。primary 与 separate-process
+reuse 共用一个 300 秒总预算，reuse 仍必须是零 writer/recorder/path/write-byte。旧 v1 gate evidence
+不能关闭新的修正候选。
+deterministic source fixture 不调用 model capability protocol probe 或 `LinearModel.fit`；它只用
+固定 runner 生成 prediction artifact，再通过真实 Phase 32 evidence inspector 与 State repository
+CAS 建立 `units_complete` fixture。Qlib 自动 repository-code logging 在该隔离 fixture 中禁用，
+temp/cache/file-lock 均绑定 disposable workspace；自动记录的 argv/user 固定为通用 Gate 值，
+不会把 protected path 或本机账号写入保留式验证产物。
 
 > `--training-method` 可覆盖 `rolling_config.yaml` 中的设置，无需改配置文件即可切换模式对比效果。
 

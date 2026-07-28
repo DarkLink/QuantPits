@@ -127,7 +127,9 @@ class FakeCandidateBackend:
         return dict(observation)
 
 
-def aggregate_case(tmp_path, n_targets=1, n_windows=2):
+def aggregate_case(
+    tmp_path, n_targets=1, n_windows=2, prediction_transform=None,
+):
     root = (tmp_path / "Demo_Workspace").resolve()
     for name in ("config", "data", "mlruns", "output"):
         (root / name).mkdir(parents=True, exist_ok=True)
@@ -136,7 +138,9 @@ def aggregate_case(tmp_path, n_targets=1, n_windows=2):
         context, linear_capability_result(), n_targets, n_windows,
     )
     repository = RollingStateRepository.for_workspace(context, "rolling")
-    source = FakeExecutionBackend(context)
+    source = FakeExecutionBackend(
+        context, prediction_transform=prediction_transform,
+    )
     execution = RollingExecutionKernel(
         repository, source, FakeRunner(context),
     ).execute(scope, "execution-attempt")

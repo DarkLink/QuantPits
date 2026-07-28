@@ -137,14 +137,17 @@ def _open_regular_child(
             raise RollingAggregateBackendError(
                 "file parent identity drifted before open"
             )
-        flags = os.O_RDWR | os.O_APPEND
-        if create_if_missing:
-            flags |= os.O_CREAT
+        flags = (
+            os.O_RDWR | os.O_APPEND | os.O_CREAT
+            if create_if_missing else os.O_RDONLY
+        )
         flags |= getattr(os, "O_NOFOLLOW", 0)
         file_fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
     finally:
         os.close(parent_fd)
-    return os.fdopen(file_fd, "a+b")
+    return os.fdopen(
+        file_fd, "a+b" if create_if_missing else "rb",
+    )
 
 
 class _MlflowRecorderView:
@@ -557,10 +560,13 @@ class QlibMlflowAggregateBackend:
             root.resolve(strict=True).relative_to(
                 experiment_root.resolve(strict=True)
             )
-            artifact_files = tuple(sorted(
-                path.relative_to(root).as_posix()
-                for path in root.rglob("*") if path.is_file()
-            ))
+            artifact_files = []
+            for path in root.iterdir():
+                node = path.lstat()
+                if not stat.S_ISREG(node.st_mode):
+                    return {"classification": "partial"}
+                artifact_files.append(path.name)
+            artifact_files = tuple(sorted(artifact_files))
             if artifact_files != (
                 "aggregate_manifest.json", "pred.pkl",
             ):

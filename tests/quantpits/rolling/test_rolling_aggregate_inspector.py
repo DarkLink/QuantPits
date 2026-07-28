@@ -1,3 +1,4 @@
+import hashlib
 import io
 from pathlib import Path
 
@@ -119,6 +120,84 @@ def test_aggregate_rejects_non_string_instrument_without_coercion(
     )
     assert result.status == "incomplete"
     assert result.unit_results[0].classification == "incomplete"
+
+
+@pytest.mark.parametrize(
+    "instrument",
+    [
+        "DEMO\x00FOREIGN", "DEMO\nFOREIGN",
+        "DEMO\x7fFOREIGN", "DEMO\u0085FOREIGN",
+    ],
+)
+def test_aggregate_rejects_instrument_control_characters(
+    tmp_path, instrument,
+):
+    def inject_control(_unit, frame):
+        frame.index = pd.MultiIndex.from_tuples(
+            [
+                (session, instrument)
+                for session, _original in frame.index
+            ],
+            names=("datetime", "instrument"),
+        )
+        return frame
+
+    context, _scope, _repository, source, aggregate = aggregate_case(
+        tmp_path, prediction_transform=inject_control,
+    )
+    requests = source.requests_for_state(
+        aggregate.execution_scope,
+        aggregate.state_repository_view.inspection.snapshot,
+    )
+    result = inspect_rolling_aggregate_sources(
+        context, aggregate, requests, source,
+    )
+    assert result.status == "incomplete"
+    assert result.unit_results[0].classification == "incomplete"
+
+
+@pytest.mark.parametrize("replacement_kind", ["same_shape", "extra_byte"])
+def test_source_backend_cannot_replace_frozen_prediction_bytes(
+    tmp_path, replacement_kind,
+):
+    context, _scope, _repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    requests = source.requests_for_state(
+        aggregate.execution_scope,
+        aggregate.state_repository_view.inspection.snapshot,
+    )
+    original_backend = source.prediction_bytes
+    original = original_backend(requests[0])
+    if replacement_kind == "same_shape":
+        frame = pd.read_pickle(io.BytesIO(original))
+        frame.iloc[0, 0] = float(frame.iloc[0, 0]) + 0.5
+        output = io.BytesIO()
+        frame.to_pickle(output)
+        replacement = output.getvalue()
+        assert len(replacement) == len(original)
+        assert hashlib.sha256(replacement).digest() != hashlib.sha256(
+            original
+        ).digest()
+        source.prediction_bytes = lambda request: (
+            replacement
+            if request.unit_key == requests[0].unit_key
+            else original_backend(request)
+        )
+    else:
+        source.prediction_bytes = lambda request: (
+            original + b"x"
+            if request.unit_key == requests[0].unit_key
+            else original_backend(request)
+        )
+
+    result = inspect_rolling_aggregate_sources(
+        context, aggregate, requests, source,
+    )
+
+    assert result.status == "incomplete"
+    assert result.unit_results[0].classification == "incomplete"
+    assert "aggregate_source" not in result.unit_results[0].capabilities
 
 
 def test_source_backend_observation_failure_is_publicly_drifted(tmp_path):
