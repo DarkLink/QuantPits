@@ -29,6 +29,7 @@ from quantpits.rolling.errors import (
 from quantpits.rolling.identity import workspace_fingerprint
 from quantpits.rolling.mlflow_execution_backend import (
     _local_artifact_root,
+    _observe_local_artifact_root,
     _tracking_uri_identity,
 )
 from quantpits.rolling.evidence import _secure_read
@@ -554,20 +555,19 @@ class QlibMlflowAggregateBackend:
         if any(str(tags.get(key)) != str(value) for key, value in expected_tags.items()):
             return {"classification": "foreign"}
         try:
-            root = _local_artifact_root(
-                recorder.get_artifact_uri(), self.context.root,
+            artifact_uri = recorder.get_artifact_uri()
+            root, root_identity, artifact_nodes = (
+                _observe_local_artifact_root(
+                    artifact_uri, self.context.root,
+                    include_inventory=True,
+                )
             )
-            root.resolve(strict=True).relative_to(
-                experiment_root.resolve(strict=True)
-            )
-            artifact_files = []
-            for path in root.iterdir():
-                node = path.lstat()
-                if not stat.S_ISREG(node.st_mode):
-                    return {"classification": "partial"}
-                artifact_files.append(path.name)
-            artifact_files = tuple(sorted(artifact_files))
-            if artifact_files != (
+            root.relative_to(experiment_root)
+            if artifact_nodes is None or any(
+                not stat.S_ISREG(mode) for _name, mode in artifact_nodes
+            ) or tuple(
+                name for name, _mode in artifact_nodes
+            ) != (
                 "aggregate_manifest.json", "pred.pkl",
             ):
                 return {"classification": "partial"}
@@ -583,6 +583,18 @@ class QlibMlflowAggregateBackend:
             pred = pred_snapshot.data
             manifest_raw = manifest_snapshot.data
             manifest = _strict_json_object(manifest_raw)
+            reobserved_root, reobserved_identity, reobserved_nodes = (
+                _observe_local_artifact_root(
+                    recorder.get_artifact_uri(), self.context.root,
+                    include_inventory=True,
+                )
+            )
+            if (
+                reobserved_root != root
+                or reobserved_identity != root_identity
+                or reobserved_nodes != artifact_nodes
+            ):
+                return {"classification": "drifted"}
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except Exception:
@@ -701,6 +713,23 @@ class QlibMlflowAggregateBackend:
             != expected_manifest_contract_fingerprint
         ):
             return {"classification": "identity_mismatch"}
+        try:
+            reobserved_root, reobserved_identity, reobserved_nodes = (
+                _observe_local_artifact_root(
+                    recorder.get_artifact_uri(), self.context.root,
+                    include_inventory=True,
+                )
+            )
+            if (
+                reobserved_root != root
+                or reobserved_identity != root_identity
+                or reobserved_nodes != artifact_nodes
+            ):
+                return {"classification": "drifted"}
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
+            return {"classification": "drifted"}
         return {
             "classification": "valid",
             "candidate_key": candidate_key,

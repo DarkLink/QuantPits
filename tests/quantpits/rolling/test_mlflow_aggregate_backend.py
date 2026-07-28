@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -225,6 +226,114 @@ def test_real_backend_rejects_non_regular_extra_candidate_artifact_nodes(
     )
 
     assert observed == {"classification": "partial"}
+
+
+@pytest.mark.parametrize("alias_level", ["root", "ancestor"])
+def test_real_backend_public_artifact_root_alias_denies_candidate_authority(
+    tmp_path, alias_level,
+):
+    (
+        _context, repository, source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    target = aggregate.target_keys[0]
+    candidate_key = aggregate.candidate_keys[0]
+    created = backend.create_candidate(
+        aggregate, target, candidate_key, prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    recorder = next(iter(
+        backend._recorders("Rolling_Aggregate_Candidates").values()
+    ))
+    artifact_uri = recorder.get_artifact_uri()
+    public_root = Path(
+        artifact_uri[7:] if artifact_uri.startswith("file://")
+        else artifact_uri
+    )
+    public_node = (
+        public_root if alias_level == "root" else public_root.parent
+    )
+    physical_node = public_node.with_name(
+        public_node.name + "-physical",
+    )
+    public_node.rename(physical_node)
+    public_node.symlink_to(physical_node, target_is_directory=True)
+
+    observed = backend.inspect_candidate(
+        aggregate, target, candidate_key,
+        _candidate_manifest_contract_fingerprint(manifest),
+    )
+    assert observed == {"classification": "corrupt"}
+    expected = {
+        "content_fingerprint": manifest["content_fingerprint"],
+        "row_count": manifest["row_count"],
+        "manifest_contract_fingerprint":
+            _candidate_manifest_contract_fingerprint(manifest),
+    }
+    rebuilt = _candidate_from_observation(
+        aggregate, target, candidate_key, observed, expected,
+    )
+    assert "candidate_reference" not in rebuilt.capabilities
+
+    terminal = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert terminal.status == "blocked"
+    assert "publication_input" not in terminal.capabilities
+
+
+def test_real_backend_rechecks_public_root_identity_after_artifact_reads(
+    tmp_path, monkeypatch,
+):
+    (
+        _context, _repository, _source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    target = aggregate.target_keys[0]
+    candidate_key = aggregate.candidate_keys[0]
+    created = backend.create_candidate(
+        aggregate, target, candidate_key, prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    recorder = next(iter(
+        backend._recorders("Rolling_Aggregate_Candidates").values()
+    ))
+    artifact_uri = recorder.get_artifact_uri()
+    public_root = Path(
+        artifact_uri[7:] if artifact_uri.startswith("file://")
+        else artifact_uri
+    )
+    displaced = public_root.with_name(public_root.name + "-displaced")
+    original_decode = aggregate_backend_module._strict_json_object
+    replaced = {"done": False}
+
+    def decode_then_replace(data):
+        payload = original_decode(data)
+        if not replaced["done"]:
+            replaced["done"] = True
+            public_root.rename(displaced)
+            shutil.copytree(displaced, public_root)
+        return payload
+
+    monkeypatch.setattr(
+        aggregate_backend_module, "_strict_json_object",
+        decode_then_replace,
+    )
+    observed = backend.inspect_candidate(
+        aggregate, target, candidate_key,
+        _candidate_manifest_contract_fingerprint(manifest),
+    )
+    assert observed == {"classification": "drifted"}
+    expected = {
+        "content_fingerprint": manifest["content_fingerprint"],
+        "row_count": manifest["row_count"],
+        "manifest_contract_fingerprint":
+            _candidate_manifest_contract_fingerprint(manifest),
+    }
+    rebuilt = _candidate_from_observation(
+        aggregate, target, candidate_key, observed, expected,
+    )
+    assert "candidate_reference" not in rebuilt.capabilities
 
 
 def test_real_backend_deleted_finished_run_is_audit_only(tmp_path):

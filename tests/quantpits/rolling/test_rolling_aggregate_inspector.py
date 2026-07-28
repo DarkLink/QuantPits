@@ -1,14 +1,18 @@
 import hashlib
 import io
 from pathlib import Path
+import shutil
 
 import pandas as pd
 import pytest
 
+import quantpits.rolling.mlflow_execution_backend as execution_backend_module
 from quantpits.rolling import (
+    QlibMlflowExecutionBackend,
     RollingAggregateContractError,
     inspect_rolling_aggregate_sources,
 )
+from quantpits.rolling.errors import RollingExecutionBackendError
 
 from tests.quantpits.rolling.aggregate_support import aggregate_case
 from quantpits.utils.workspace import fingerprint_value
@@ -280,7 +284,6 @@ def test_source_partial_and_duplicate_evidence_are_incomplete(
 
 
 def test_candidate_write_parent_is_physically_contained_and_stable(tmp_path):
-    from quantpits.rolling.errors import RollingExecutionBackendError
     from quantpits.rolling.mlflow_execution_backend import _local_artifact_root
 
     workspace = tmp_path / "Demo_Workspace"
@@ -291,6 +294,122 @@ def test_candidate_write_parent_is_physically_contained_and_stable(tmp_path):
     escaped.symlink_to(outside, target_is_directory=True)
     with pytest.raises(RollingExecutionBackendError):
         _local_artifact_root(escaped.as_uri(), workspace)
+
+
+@pytest.mark.parametrize("alias_level", ["root", "ancestor"])
+def test_source_artifact_public_root_alias_denies_aggregate_authority(
+    tmp_path, alias_level,
+):
+    context, _scope, _repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    requests = source.requests_for_state(
+        aggregate.execution_scope,
+        aggregate.state_repository_view.inspection.snapshot,
+    )
+    request = requests[0]
+    public_roots = {
+        item.recorder_id: Path(
+            source.candidates[item.unit_key]["artifact_root_uri"][
+                len("file://"):
+            ]
+        )
+        for item in requests
+    }
+    public_root = public_roots[request.recorder_id]
+    public_node = (
+        public_root if alias_level == "root" else public_root.parent
+    )
+    physical_node = public_node.with_name(
+        public_node.name + "-physical",
+    )
+    class Recorder:
+        def __init__(self, root):
+            self.root = root
+
+        def get_artifact_uri(self):
+            return self.root.as_uri()
+
+    adapter = QlibMlflowExecutionBackend(context)
+    adapter._recorder = lambda _experiment, recorder_id: Recorder(
+        public_roots[recorder_id],
+    )
+    original_inspect = source.inspect
+
+    def inspect_then_alias(scope, observed_requests):
+        inspected = original_inspect(scope, observed_requests)
+        public_node.rename(physical_node)
+        public_node.symlink_to(
+            physical_node, target_is_directory=True,
+        )
+        return inspected
+
+    source.inspect = inspect_then_alias
+    source.prediction_bytes = adapter.prediction_bytes
+
+    result = inspect_rolling_aggregate_sources(
+        context, aggregate, requests, source,
+    )
+    assert result.status == "observation_drifted"
+    assert result.unit_results[0].classification == "observation_drifted"
+    assert "aggregate_source" not in result.unit_results[0].capabilities
+
+
+def test_source_artifact_root_identity_is_rechecked_after_prediction_read(
+    tmp_path, monkeypatch,
+):
+    context, _scope, _repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    requests = source.requests_for_state(
+        aggregate.execution_scope,
+        aggregate.state_repository_view.inspection.snapshot,
+    )
+    public_roots = {
+        item.recorder_id: Path(
+            source.candidates[item.unit_key]["artifact_root_uri"][
+                len("file://"):
+            ]
+        )
+        for item in requests
+    }
+    public_root = public_roots[requests[0].recorder_id]
+
+    class Recorder:
+        def __init__(self, root):
+            self.root = root
+
+        def get_artifact_uri(self):
+            return self.root.as_uri()
+
+    adapter = QlibMlflowExecutionBackend(context)
+    adapter._recorder = lambda _experiment, recorder_id: Recorder(
+        public_roots[recorder_id],
+    )
+    source.prediction_bytes = adapter.prediction_bytes
+    original_read = execution_backend_module._secure_read
+    replaced = {"done": False}
+
+    def read_then_replace(root, artifact_root, logical_key):
+        observed = original_read(root, artifact_root, logical_key)
+        if artifact_root == public_root and not replaced["done"]:
+            replaced["done"] = True
+            displaced = public_root.with_name(
+                public_root.name + "-displaced",
+            )
+            public_root.rename(displaced)
+            shutil.copytree(displaced, public_root)
+        return observed
+
+    monkeypatch.setattr(
+        execution_backend_module, "_secure_read", read_then_replace,
+    )
+    result = inspect_rolling_aggregate_sources(
+        context, aggregate, requests, source,
+    )
+    assert result.status == "observation_drifted"
+    assert result.unit_results[0].classification == "observation_drifted"
+    assert "aggregate_source" not in result.unit_results[0].capabilities
 
 
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -float("inf"), 2 ** 54])

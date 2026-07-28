@@ -287,7 +287,11 @@ The candidate experiment artifact location must equal
 `data/rolling_aggregate_candidates_<family>/`; mere workspace containment is insufficient.
 The candidate artifact root is inventoried through no-follow direct children and may contain only
 the two regular files `pred.pkl` and `aggregate_manifest.json`; an extra directory, symlink
-(including an escaping symlink), or special node blocks reuse. Before
+(including an escaping symlink), or special node blocks reuse. The lexical MLflow public URI is
+preserved: every directory from the canonical workspace to the artifact root is opened no-follow
+and identity-frozen, so an alias at the root or any ancestor is rejected even when it targets a
+directory inside the same workspace. After both artifacts are read and validated, the complete
+directory chain is re-established through that original public URI. Before
 granting `publication_input`, the kernel rechecks source/State/current/backend under the candidate
 lock and requires exactly one active, `FINISHED`, exact candidate per target in terminal inventory.
 Duplicates and race drift fail closed. The candidate experiment namespace itself counts as a durable

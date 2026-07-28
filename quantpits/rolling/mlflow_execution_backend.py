@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import tempfile
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
@@ -44,20 +46,128 @@ class _RecorderInventoryBaseline:
         object.__setattr__(self, "_backend_authority", True)
 
 
-def _local_artifact_root(uri, workspace_root):
+def _local_artifact_root_observation(
+    path, workspace_root, include_inventory=False,
+):
+    """Observe one lexical directory path without following any component."""
+
+    path = Path(path)
+    root = Path(workspace_root)
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise RollingExecutionBackendError(
+            "recorder artifact root escapes the workspace"
+        ) from exc
+    if not relative.parts or any(
+        part in ("", ".", "..") for part in relative.parts
+    ):
+        raise RollingExecutionBackendError(
+            "recorder artifact root is not a canonical workspace child"
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    opened = []
+    identities = []
+    inventory = None
+    try:
+        root_public = os.lstat(str(root))
+        if stat.S_ISLNK(root_public.st_mode) or not stat.S_ISDIR(
+            root_public.st_mode
+        ):
+            raise RollingExecutionBackendError(
+                "workspace root is not a canonical directory"
+            )
+        current_fd = os.open(str(root), flags)
+        opened.append(current_fd)
+        current = os.fstat(current_fd)
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino)
+            != (root_public.st_dev, root_public.st_ino)
+        ):
+            raise RollingExecutionBackendError(
+                "workspace root identity drifted"
+            )
+        identities.append((current.st_dev, current.st_ino))
+        for part in relative.parts:
+            public = os.stat(
+                part, dir_fd=current_fd, follow_symlinks=False,
+            )
+            if stat.S_ISLNK(public.st_mode) or not stat.S_ISDIR(
+                public.st_mode
+            ):
+                raise RollingExecutionBackendError(
+                    "recorder artifact path contains a non-directory alias"
+                )
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            opened.append(next_fd)
+            observed = os.fstat(next_fd)
+            if (
+                not stat.S_ISDIR(observed.st_mode)
+                or (observed.st_dev, observed.st_ino)
+                != (public.st_dev, public.st_ino)
+            ):
+                raise RollingExecutionBackendError(
+                    "recorder artifact directory identity drifted"
+                )
+            identities.append((observed.st_dev, observed.st_ino))
+            current_fd = next_fd
+        if include_inventory:
+            inventory = tuple(sorted(
+                (
+                    name,
+                    os.stat(
+                        name, dir_fd=current_fd,
+                        follow_symlinks=False,
+                    ).st_mode,
+                )
+                for name in os.listdir(current_fd)
+            ))
+    except RollingExecutionBackendError:
+        raise
+    except OSError as exc:
+        raise RollingExecutionBackendError(
+            "recorder artifact root is unavailable by its public name"
+        ) from exc
+    finally:
+        for fd in reversed(opened):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    return tuple(identities), inventory
+
+
+def _observe_local_artifact_root(
+    uri, workspace_root, include_inventory=False,
+):
     parsed = urlparse(uri)
-    if parsed.scheme not in ("", "file"):
+    if (
+        parsed.scheme not in ("", "file")
+        or parsed.netloc not in ("", "localhost")
+    ):
         raise RollingExecutionBackendError("only a contained local artifact backend is supported")
     raw = unquote(parsed.path if parsed.scheme else uri)
-    path = Path(raw).expanduser().resolve(strict=True)
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise RollingExecutionBackendError(
+            "recorder artifact root must be an absolute public path"
+        )
+    path = path.absolute()
     root = Path(workspace_root).resolve(strict=True)
-    try:
-        path.relative_to(root)
-    except ValueError:
-        raise RollingExecutionBackendError("recorder artifact root escapes the workspace")
-    if not path.is_dir():
-        raise RollingExecutionBackendError("recorder artifact root is not a directory")
-    return path
+    identity, inventory = _local_artifact_root_observation(
+        path, root, include_inventory=include_inventory,
+    )
+    return path, identity, inventory
+
+
+def _local_artifact_root(uri, workspace_root):
+    return _observe_local_artifact_root(uri, workspace_root)[0]
 
 
 def _tracking_uri_identity(uri, workspace_root):
@@ -84,18 +194,16 @@ def _tracking_uri_identity(uri, workspace_root):
     return present, True
 
 
-def _artifact(path, logical_key, role):
-    node = path / logical_key
-    try:
-        physical = node.resolve(strict=True)
-        physical.relative_to(path.resolve(strict=True))
-    except (OSError, ValueError):
-        raise RollingExecutionBackendError("recorder artifact is missing or physically escaped")
-    if node.is_symlink() or not physical.is_file():
-        raise RollingExecutionBackendError("recorder artifact is not a regular file")
-    data = physical.read_bytes()
+def _artifact(path, logical_key, role, workspace_root):
+    snapshot, status, _detail, _checked = _secure_read(
+        Path(workspace_root).resolve(strict=True), path, logical_key,
+    )
+    if status != "valid" or snapshot is None:
+        raise RollingExecutionBackendError(
+            "recorder artifact is not a contained regular file"
+        )
     return RollingArtifactExpectation(
-        logical_key, role, len(data), hashlib.sha256(data).hexdigest(),
+        logical_key, role, snapshot.size_bytes, snapshot.fingerprint,
     )
 
 
@@ -142,10 +250,16 @@ class QlibMlflowExecutionBackend:
         )
 
     def _request_from_recorder(self, scope, unit, attempt_id, experiment_name, experiment_id, recorder):
-        artifact_root = _local_artifact_root(recorder.get_artifact_uri(), self.context.root)
+        artifact_root, artifact_root_identity, _inventory = (
+            _observe_local_artifact_root(
+                recorder.get_artifact_uri(), self.context.root,
+            )
+        )
         def expected_or_missing(key, role):
             try:
-                return _artifact(artifact_root, key, role)
+                return _artifact(
+                    artifact_root, key, role, self.context.root,
+                )
             except RollingExecutionBackendError:
                 return RollingArtifactExpectation(key, role, 0, "0" * 64)
 
@@ -158,8 +272,21 @@ class QlibMlflowExecutionBackend:
             expected_or_missing("pred.pkl", "prediction"),
         )
         try:
-            manifest = json.loads((artifact_root / "execution_manifest.json").read_text(encoding="utf-8"))
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            manifest_snapshot, manifest_status, _detail, _checked = (
+                _secure_read(
+                    self.context.root.resolve(strict=True),
+                    artifact_root, "execution_manifest.json",
+                )
+            )
+            if manifest_status != "valid" or manifest_snapshot is None:
+                raise ValueError("execution manifest is unavailable")
+            manifest = json.loads(
+                manifest_snapshot.data.decode("utf-8"),
+            )
+        except (
+            OSError, TypeError, UnicodeDecodeError, ValueError,
+            json.JSONDecodeError,
+        ):
             manifest = None
         expected_manifest = {
             "protocol": "execution_bound_v1",
@@ -204,6 +331,18 @@ class QlibMlflowExecutionBackend:
             experiment_name, str(experiment_id), recorder.info["id"],
             expectations, unit.window.expected_sessions,
         )
+        reobserved_root, reobserved_identity, _inventory = (
+            _observe_local_artifact_root(
+                recorder.get_artifact_uri(), self.context.root,
+            )
+        )
+        if (
+            reobserved_root != artifact_root
+            or reobserved_identity != artifact_root_identity
+        ):
+            raise RollingExecutionBackendError(
+                "recorder artifact root identity drifted during source observation"
+            )
         return request, artifact_root, manifest_valid
 
     @staticmethod
@@ -338,9 +477,19 @@ class QlibMlflowExecutionBackend:
         }
         if not all(str(tags.get(key)) == str(value) for key, value in expected_tags.items()):
             raise RollingExecutionBackendError("runner recorder provenance tags disagree")
-        artifact_root = _local_artifact_root(recorder.get_artifact_uri(), self.context.root)
-        model = _artifact(artifact_root, "model.pkl", "supporting")
-        prediction = _artifact(artifact_root, "pred.pkl", "prediction")
+        artifact_root, artifact_root_identity, _inventory = (
+            _observe_local_artifact_root(
+                recorder.get_artifact_uri(), self.context.root,
+            )
+        )
+        model = _artifact(
+            artifact_root, "model.pkl", "supporting",
+            self.context.root,
+        )
+        prediction = _artifact(
+            artifact_root, "pred.pkl", "prediction",
+            self.context.root,
+        )
         manifest_payload = {
             "protocol": "execution_bound_v1",
             "run_fingerprint": scope.run_identity.fingerprint,
@@ -366,7 +515,22 @@ class QlibMlflowExecutionBackend:
             recorder.log_artifact(str(local))
         if self._recorder_inventory() != after:
             raise RollingExecutionBackendError("recorder inventory drifted during manifest commit")
-        manifest = _artifact(artifact_root, "execution_manifest.json", "supporting")
+        manifest = _artifact(
+            artifact_root, "execution_manifest.json", "supporting",
+            self.context.root,
+        )
+        reobserved_root, reobserved_identity, _inventory = (
+            _observe_local_artifact_root(
+                recorder.get_artifact_uri(), self.context.root,
+            )
+        )
+        if (
+            reobserved_root != artifact_root
+            or reobserved_identity != artifact_root_identity
+        ):
+            raise RollingExecutionBackendError(
+                "recorder artifact root identity drifted during manifest commit"
+            )
         run = RollingRunIdentity(
             workspace_fingerprint=scope.run_identity.workspace_fingerprint,
             family=scope.run_identity.family,
@@ -486,7 +650,7 @@ class QlibMlflowExecutionBackend:
                 "prediction read requires RollingUnitEvidenceRequest"
             )
         recorder = self._recorder(request.experiment_name, request.recorder_id)
-        root = _local_artifact_root(
+        root, root_identity, _inventory = _observe_local_artifact_root(
             recorder.get_artifact_uri(), self.context.root,
         )
         expectation = next(
@@ -509,5 +673,17 @@ class QlibMlflowExecutionBackend:
         ):
             raise RollingExecutionBackendError(
                 "source prediction bytes changed"
+            )
+        reobserved_root, reobserved_identity, _inventory = (
+            _observe_local_artifact_root(
+                recorder.get_artifact_uri(), self.context.root,
+            )
+        )
+        if (
+            reobserved_root != root
+            or reobserved_identity != root_identity
+        ):
+            raise RollingExecutionBackendError(
+                "source prediction artifact root identity drifted"
             )
         return snapshot.data

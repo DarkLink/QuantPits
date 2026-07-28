@@ -256,7 +256,10 @@ candidate/publication capability。candidate staging、lock、experiment metadat
 workspace identity 必须精确一致。candidate experiment artifact location 必须精确等于
 `data/rolling_aggregate_candidates_<family>/`，仅“位于 workspace 内”不足以授权写入。
 candidate artifact root 必须通过 no-follow 直接子节点清单验证，且只能包含两个 regular file：
-`pred.pkl` 与 `aggregate_manifest.json`；额外目录、symlink（包括外逃 symlink）或特殊节点均阻断。最终授予
+`pred.pkl` 与 `aggregate_manifest.json`；额外目录、symlink（包括外逃 symlink）或特殊节点均阻断。
+artifact root 的 MLflow 公开 URI 保留词法身份；从 canonical workspace 到 root 的每一级目录都以
+no-follow 方式打开并冻结身份，root 本身或任一祖先即使只链接到同一 workspace 内也会阻断。
+两个 artifact 读取并验证后还会通过原公开 URI 复核整条目录链，不能用解析后的物理别名获得授权。最终授予
 `publication_input` 前会在 candidate lock 内重新检查 source/State/current/backend，并要求每个 target
 在 terminal inventory 中恰好存在一个 active、`FINISHED`、exact candidate；duplicate 或竞态漂移均 fail closed。
 首次创建 candidate experiment namespace 本身也计为 durable write。

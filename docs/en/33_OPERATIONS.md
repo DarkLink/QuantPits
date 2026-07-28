@@ -248,7 +248,10 @@ zero-write result is `blocked / did_write=false`; manually recreating the lock d
 invocation into success.
 Source prediction bytes must also match the exact size/SHA-256 frozen in the Phase 32 request.
 The candidate artifact root permits only the direct regular files `pred.pkl` and
-`aggregate_manifest.json`; any extra directory, symlink, or special node blocks reuse. Gate execute
+`aggregate_manifest.json`; any extra directory, symlink, or special node blocks reuse. Neither the
+root nor any ancestor in the MLflow public artifact URI may be a directory alias, including an
+alias to a contained target in the same workspace; the directory chain is rechecked through the
+original public URI after the reads. Gate execute
 uses a recursive lifecycle mutation observer and installs each new-directory watch synchronously
 before `mkdir` or directory rename returns, including no-wait write-then-delete. Its write
 allow-list is anchored back to the terminal experiment, recorder, and candidate identities, so a

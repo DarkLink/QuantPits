@@ -297,7 +297,9 @@ active、`FINISHED` exact candidate，检查在 candidate lock 内完成；dupli
 把该次结果解释为成功。
 source prediction bytes 还必须与 Phase 32 request 冻结的 exact size/SHA-256 一致。candidate artifact
 root 只允许 `pred.pkl` 和 `aggregate_manifest.json` 两个 direct regular file；额外目录、symlink
-或特殊节点一律阻断。Gate execute 使用递归生命周期 mutation observer，并在 `mkdir`/directory
+或特殊节点一律阻断。MLflow 公开 artifact URI 的 root 及任一祖先都不能是目录链接，包括指向同一
+workspace 内的 contained alias；读取后会从原公开 URI 复核逐级目录身份。Gate execute 使用递归生命周期
+mutation observer，并在 `mkdir`/directory
 rename 返回前同步安装新目录 watch，以捕获无等待的 write-then-delete；write allow-list 由 terminal
 experiment/recorder/candidate identity 反向锚定，不能用 `mlruns/`、`qlib_data/` 等宽前缀绕过。物理
 写字节来自 `/proc/self/io`。primary 在独立进程中受 300 秒 hard timeout 约束，reuse 只能使用同一
