@@ -1,7 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
 import subprocess
-import time
 
 import pytest
 
@@ -43,6 +42,12 @@ def _reuse_envelope(binding, result):
     }
 
 
+def _primary_envelope(binding, result):
+    envelope = _reuse_envelope(binding, result)
+    envelope["reason_code"] = "rolling_aggregate_gate_primary_passed"
+    return envelope
+
+
 def test_verify_rolling_aggregate_gate_core_negative_matrix(
     tmp_path, monkeypatch,
 ):
@@ -58,6 +63,11 @@ def test_verify_rolling_aggregate_gate_core_negative_matrix(
             return tree + "\n"
         if command == [
             "git", "status", "--porcelain", "--untracked-files=no",
+        ]:
+            return ""
+        if command == [
+            "git", "ls-files", "--others", "--exclude-standard",
+            "--", "quantpits",
         ]:
             return ""
         raise AssertionError("unexpected git command: %r" % (command,))
@@ -95,6 +105,23 @@ def test_verify_rolling_aggregate_gate_core_negative_matrix(
         execute=True, authorization=EXECUTE_AUTHORIZATION,
     )
     assert authorized["execute"] is True
+    monkeypatch.setattr(
+        subprocess, "check_output",
+        lambda command, **kwargs: (
+            "quantpits/foreign.py\n"
+            if command == [
+                "git", "ls-files", "--others", "--exclude-standard",
+                "--", "quantpits",
+            ]
+            else isolated_git(command, **kwargs)
+        ),
+    )
+    with pytest.raises(AggregateGateError):
+        validate_binding(
+            scenario, disposable, protected, commit, tree,
+            execute=True, authorization=EXECUTE_AUTHORIZATION,
+        )
+    monkeypatch.setattr(subprocess, "check_output", isolated_git)
     protected_link = tmp_path / "Protected_Workspace_Link"
     protected_link.symlink_to(protected, target_is_directory=True)
     linked = validate_binding(
@@ -298,7 +325,8 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
     candidate_after = (
         ("data/rolling_aggregate_candidates_rolling", "directory", None, None),
         (
-            "data/rolling_aggregate_candidates_rolling/run/artifacts/pred.pkl",
+            "data/rolling_aggregate_candidates_rolling/"
+            + "a" * 32 + "/artifacts/pred.pkl",
             "file", 4, __import__("hashlib").sha256(b"pred").hexdigest(),
         ),
     )
@@ -327,11 +355,13 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
     lifecycle_root = tmp_path / "lifecycle"
     lifecycle_root.mkdir()
     (lifecycle_root / "output").mkdir()
+    original_mkdir = __import__("os").mkdir
     observer = _WorkspaceMutationObserver(lifecycle_root).start()
     transient = lifecycle_root / "output" / "write-then-delete.bin"
     transient.write_bytes(b"not durable")
     transient.unlink()
     lifecycle_paths = observer.stop()
+    assert __import__("os").mkdir is original_mkdir
     assert "output/write-then-delete.bin" in lifecycle_paths
     with pytest.raises(AggregateGateError):
         _assert_workspace_write_allowlist(
@@ -359,22 +389,46 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
     nested_root = tmp_path / "nested-lifecycle"
     nested_root.mkdir()
     nested_observer = _WorkspaceMutationObserver(nested_root).start()
-    created = nested_root / "mlruns" / "experiment" / "recorder"
-    created.mkdir(parents=True)
-    deadline = time.monotonic() + 2
-    while (
-        "mlruns/experiment/recorder"
-        not in nested_observer._paths.values()
-        and time.monotonic() < deadline
-    ):
-        time.sleep(0.01)
-    assert "mlruns/experiment/recorder" in nested_observer._paths.values()
-    nested_transient = created / "write-then-delete.bin"
-    nested_transient.write_bytes(b"not durable")
-    nested_transient.unlink()
+    for position in range(100):
+        created = (
+            nested_root / "mlruns" / ("experiment-%03d" % position)
+            / "recorder"
+        )
+        created.mkdir(parents=True)
+        nested_transient = created / "write-then-delete.bin"
+        nested_transient.write_bytes(b"not durable")
+        nested_transient.unlink()
     nested_paths = nested_observer.stop()
-    assert "mlruns/experiment/recorder" in nested_paths
-    assert "mlruns/experiment/recorder/write-then-delete.bin" in nested_paths
+    for position in range(100):
+        prefix = "mlruns/experiment-%03d/recorder" % position
+        assert prefix in nested_paths
+        assert prefix + "/write-then-delete.bin" in nested_paths
+    rename_root = tmp_path / "rename-lifecycle"
+    rename_root.mkdir()
+    prepared = tmp_path / "prepared-directory"
+    prepared.mkdir()
+    (prepared / "write-then-delete.bin").write_bytes(b"not durable")
+    rename_observer = _WorkspaceMutationObserver(rename_root).start()
+    moved = rename_root / "moved"
+    prepared.rename(moved)
+    (moved / "write-then-delete.bin").unlink()
+    moved.rmdir()
+    rename_paths = rename_observer.stop()
+    assert "moved" in rename_paths
+    assert "moved/write-then-delete.bin" in rename_paths
+    for forbidden in (
+        "mlruns/arbitrary/forbidden.bin",
+        "mlruns/123/" + "f" * 32 + "/tags/mlflow.user",
+        "qlib_data/arbitrary/forbidden.bin",
+        "data/rolling_aggregate_candidates_rolling/arbitrary/forbidden.bin",
+        "data/rolling_aggregate_candidates_rolling/"
+        + "f" * 32 + "/artifacts/pred.pkl",
+        "data/aggregate_gate_runtime/arbitrary/forbidden.bin",
+    ):
+        with pytest.raises(AggregateGateError):
+            _assert_workspace_write_allowlist(
+                (), (), (forbidden,), 1,
+            )
     excluded_root = tmp_path / "excluded-lifecycle"
     excluded = excluded_root / "protected-subtree"
     excluded.mkdir(parents=True)
@@ -488,10 +542,6 @@ def test_gate_enforces_one_total_wall_clock_budget(monkeypatch, tmp_path):
     clock = iter((0.0, 100.0, 299.0))
     observed = {}
     monkeypatch.setattr(gate_module.time, "monotonic", lambda: next(clock))
-    monkeypatch.setattr(
-        gate_module, "_run_real_gate",
-        lambda _binding, reuse_only=False: primary,
-    )
 
     workspace, protected = _roots(tmp_path)
     binding = {
@@ -503,16 +553,33 @@ def test_gate_enforces_one_total_wall_clock_budget(monkeypatch, tmp_path):
     }
 
     def child(*_args, **kwargs):
-        observed["timeout"] = kwargs["timeout"]
+        command = _args[0]
+        if command[-1] == "--internal-primary":
+            observed["primary_timeout"] = kwargs["timeout"]
+            envelope = _primary_envelope(binding, primary)
+        else:
+            observed["reuse_timeout"] = kwargs["timeout"]
+            envelope = _reuse_envelope(binding, reuse)
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps(_reuse_envelope(binding, reuse)),
+            stdout=json.dumps(envelope),
         )
 
     monkeypatch.setattr(gate_module.subprocess, "run", child)
     result = execute_gate(binding)
-    assert observed["timeout"] == 200.0
+    assert observed["primary_timeout"] == 300
+    assert observed["reuse_timeout"] == 200.0
     assert result["total_elapsed_seconds"] == 299.0
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(_args[0], 300)
+
+    monkeypatch.setattr(gate_module.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(gate_module.subprocess, "run", timeout)
+    with pytest.raises(
+        AggregateGateError, match="primary process exceeded",
+    ):
+        execute_gate(binding)
 
 
 @pytest.mark.parametrize(
@@ -570,10 +637,6 @@ def test_gate_rejects_every_nonzero_or_drifted_second_process_fact(
         "changed_path_count": 0,
     }
     reuse[field] = value
-    monkeypatch.setattr(
-        gate_module, "_run_real_gate",
-        lambda _binding, reuse_only=False: primary,
-    )
     workspace, protected = _roots(tmp_path)
     binding = {
         "workspace": workspace,
@@ -582,13 +645,17 @@ def test_gate_rejects_every_nonzero_or_drifted_second_process_fact(
         "commit": "1" * 40,
         "tree": "2" * 40,
     }
-    monkeypatch.setattr(
-        gate_module.subprocess, "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(_reuse_envelope(binding, reuse)),
-        ),
-    )
+    def child(command, **_kwargs):
+        envelope = (
+            _primary_envelope(binding, primary)
+            if command[-1] == "--internal-primary"
+            else _reuse_envelope(binding, reuse)
+        )
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps(envelope),
+        )
+
+    monkeypatch.setattr(gate_module.subprocess, "run", child)
     with pytest.raises(AggregateGateError):
         execute_gate(binding)
 

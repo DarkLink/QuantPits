@@ -297,8 +297,11 @@ active、`FINISHED` exact candidate，检查在 candidate lock 内完成；dupli
 把该次结果解释为成功。
 source prediction bytes 还必须与 Phase 32 request 冻结的 exact size/SHA-256 一致。candidate artifact
 root 只允许 `pred.pkl` 和 `aggregate_manifest.json` 两个 direct regular file；额外目录、symlink
-或特殊节点一律阻断。Gate execute 使用递归、动态接管新建目录的生命周期 mutation observer 捕获 write-then-delete，以
-`/proc/self/io` 观察物理写字节，并对 primary+reuse 强制一个合计 300 秒预算。
+或特殊节点一律阻断。Gate execute 使用递归生命周期 mutation observer，并在 `mkdir`/directory
+rename 返回前同步安装新目录 watch，以捕获无等待的 write-then-delete；write allow-list 由 terminal
+experiment/recorder/candidate identity 反向锚定，不能用 `mlruns/`、`qlib_data/` 等宽前缀绕过。物理
+写字节来自 `/proc/self/io`。primary 在独立进程中受 300 秒 hard timeout 约束，reuse 只能使用同一
+总预算的剩余时间。
 Gate source fixture 不调用 model capability probe 或 `LinearModel.fit`；`training_calls=0`
 必须来自 profiler observer，而不是常量声明。
 

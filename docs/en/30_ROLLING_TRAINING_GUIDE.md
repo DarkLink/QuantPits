@@ -358,11 +358,13 @@ owner authorization and a disposable validation workspace. The production worksp
 read-only.
 The corrected gate protocol is `rolling_aggregate_candidate_gate_v2`, with execution authorization
 `authorize-rolling-aggregate-candidate-gate-v2`. The execute lane uses Linux inotify to recursively
-observe lifecycle mutations, dynamically adding newly created directories and including
-write-then-delete, in the disposable workspace, protected workspace, and tracked-repository
-boundary. Physical write bytes come from `/proc/self/io`;
-network access is denied and training/GPU calls are profiled. Primary materialization and
-separate-process reuse share one 300-second total budget, and reuse must remain zero
+observe lifecycle mutations in the disposable workspace, protected workspace, and
+tracked-repository boundary. It installs a new-directory watch synchronously before `mkdir` or a
+directory rename returns, including no-wait write-then-delete, and anchors allowed paths to the
+terminal experiment, recorder, and candidate identities instead of broad directory prefixes.
+Physical write bytes come from `/proc/self/io`; network access is denied and training/GPU calls are
+profiled. Primary runs in a separate process with a hard 300-second timeout; separate-process reuse
+gets only the remainder of that total budget and must remain zero
 writer/recorder/path/write-byte. Historical v1 gate evidence cannot close the correction candidate.
 The deterministic source fixture does not invoke the model-capability protocol probe or
 `LinearModel.fit`. A fixed runner creates prediction artifacts, after which the real Phase 32

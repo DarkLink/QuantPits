@@ -60,6 +60,11 @@ class _WorkspaceMutationObserver:
         | 0x00000800  # IN_MOVE_SELF
     )
     _EVENT = struct.Struct("iIII")
+    _registry_lock = threading.RLock()
+    _active_observers = set()
+    _saved_mkdir = None
+    _saved_rename = None
+    _saved_replace = None
 
     def __init__(self, root, excluded_relative_paths=()):
         self.root = Path(root)
@@ -71,6 +76,8 @@ class _WorkspaceMutationObserver:
         self._stop_requested = threading.Event()
         self._thread = None
         self._add_watch = None
+        self._lock = threading.RLock()
+        self._registered = False
 
     def _excluded(self, path):
         if path == self.root:
@@ -79,30 +86,31 @@ class _WorkspaceMutationObserver:
         return bool(relative.parts and relative.parts[0] in self._exclusions)
 
     def _record_tree(self, directory):
-        if directory.is_symlink():
-            return
-        for current, names, files in os.walk(
-            str(directory), topdown=True, followlinks=False,
-        ):
-            current_path = Path(current)
-            names[:] = [
-                name for name in names
-                if (
-                    not (current_path / name).is_symlink()
-                    and not (
-                        current_path == self.root
-                        and name in self._exclusions
+        with self._lock:
+            if directory.is_symlink():
+                return
+            for current, names, files in os.walk(
+                str(directory), topdown=True, followlinks=False,
+            ):
+                current_path = Path(current)
+                names[:] = [
+                    name for name in names
+                    if (
+                        not (current_path / name).is_symlink()
+                        and not (
+                            current_path == self.root
+                            and name in self._exclusions
+                        )
                     )
-                )
-            ]
-            for name in names + files:
-                path = current_path / name
-                try:
-                    relative = path.relative_to(self.root).as_posix()
-                except ValueError:
-                    continue
-                self._observed.add(relative)
-            self._add_directory_watch(current_path)
+                ]
+                for name in names + files:
+                    path = current_path / name
+                    try:
+                        relative = path.relative_to(self.root).as_posix()
+                    except ValueError:
+                        continue
+                    self._observed.add(relative)
+                self._add_directory_watch(current_path)
 
     def _add_directory_watch(self, directory):
         relative = (
@@ -118,12 +126,116 @@ class _WorkspaceMutationObserver:
         if watch < 0:
             error = ctypes.get_errno()
             if error == 2:  # The directory disappeared before observation.
-                self._observed.add(relative)
+                with self._lock:
+                    self._observed.add(relative)
                 return
             raise AggregateGateError(
                 "gate lifecycle write parent is unavailable"
             )
-        self._paths[watch] = relative
+        with self._lock:
+            self._paths[watch] = relative
+
+    @staticmethod
+    def _absolute_path(path, directory_fd=None):
+        candidate = Path(os.fsdecode(os.fspath(path)))
+        if candidate.is_absolute():
+            return candidate
+        base = (
+            Path(os.readlink("/proc/self/fd/%d" % directory_fd))
+            if directory_fd is not None else Path.cwd()
+        )
+        return (base / candidate).absolute()
+
+    def _observe_created_directory(self, path, directory_fd=None):
+        try:
+            candidate = self._absolute_path(path, directory_fd)
+            relative = candidate.relative_to(self.root)
+        except (OSError, TypeError, ValueError):
+            return
+        if not relative.parts or relative.parts[0] in self._exclusions:
+            return
+        with self._lock:
+            self._observed.add(relative.as_posix())
+        try:
+            candidate.resolve(strict=True).relative_to(
+                self.root.resolve(strict=True)
+            )
+        except (OSError, ValueError):
+            return
+        self._record_tree(candidate)
+
+    @classmethod
+    def _notify_created_directory(cls, path, directory_fd=None):
+        with cls._registry_lock:
+            observers = tuple(cls._active_observers)
+        for observer in observers:
+            observer._observe_created_directory(path, directory_fd)
+
+    @classmethod
+    def _mkdir(cls, path, mode=0o777, *, dir_fd=None):
+        result = cls._saved_mkdir(path, mode, dir_fd=dir_fd)
+        cls._notify_created_directory(path, dir_fd)
+        return result
+
+    @classmethod
+    def _rename(
+        cls, source, destination, *, src_dir_fd=None, dst_dir_fd=None,
+    ):
+        result = cls._saved_rename(
+            source, destination,
+            src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
+        )
+        try:
+            candidate = cls._absolute_path(destination, dst_dir_fd)
+            if candidate.is_dir() and not candidate.is_symlink():
+                cls._notify_created_directory(destination, dst_dir_fd)
+        except (OSError, TypeError, ValueError):
+            pass
+        return result
+
+    @classmethod
+    def _replace(
+        cls, source, destination, *, src_dir_fd=None, dst_dir_fd=None,
+    ):
+        result = cls._saved_replace(
+            source, destination,
+            src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
+        )
+        try:
+            candidate = cls._absolute_path(destination, dst_dir_fd)
+            if candidate.is_dir() and not candidate.is_symlink():
+                cls._notify_created_directory(destination, dst_dir_fd)
+        except (OSError, TypeError, ValueError):
+            pass
+        return result
+
+    def _register_directory_creation_barrier(self):
+        cls = type(self)
+        with cls._registry_lock:
+            if not cls._active_observers:
+                cls._saved_mkdir = os.mkdir
+                cls._saved_rename = os.rename
+                cls._saved_replace = os.replace
+                os.mkdir = cls._mkdir
+                os.rename = cls._rename
+                os.replace = cls._replace
+            cls._active_observers.add(self)
+            self._registered = True
+
+    def _unregister_directory_creation_barrier(self):
+        cls = type(self)
+        with cls._registry_lock:
+            if not self._registered:
+                return
+            cls._active_observers.discard(self)
+            self._registered = False
+            if not cls._active_observers:
+                os.mkdir = cls._saved_mkdir
+                os.rename = cls._saved_rename
+                os.replace = cls._saved_replace
+                cls._saved_mkdir = None
+                cls._saved_rename = None
+                cls._saved_replace = None
 
     def _drain(self):
         while True:
@@ -146,12 +258,14 @@ class _WorkspaceMutationObserver:
                         "gate lifecycle write observer overflowed"
                     )
                 name = os.fsdecode(raw_name.rstrip(b"\0"))
-                parent = self._paths.get(watch, "")
+                with self._lock:
+                    parent = self._paths.get(watch, "")
                 relative = "/".join(
                     item for item in (parent, name) if item
                 )
                 if relative:
-                    self._observed.add(relative)
+                    with self._lock:
+                        self._observed.add(relative)
                 if (
                     relative
                     and mask & (0x00000100 | 0x00000080)
@@ -202,6 +316,7 @@ class _WorkspaceMutationObserver:
                 daemon=True,
             )
             self._thread.start()
+            self._register_directory_creation_barrier()
         except BaseException:
             self.close()
             raise
@@ -220,7 +335,8 @@ class _WorkspaceMutationObserver:
                 raise self._error
         finally:
             self.close()
-        return tuple(sorted(self._observed))
+        with self._lock:
+            return tuple(sorted(self._observed))
 
     def close(self):
         self._stop_requested.set()
@@ -233,6 +349,7 @@ class _WorkspaceMutationObserver:
         if self._fd >= 0:
             os.close(self._fd)
             self._fd = -1
+        self._unregister_directory_creation_barrier()
         self._paths = {}
         self._thread = None
         self._add_watch = None
@@ -547,7 +664,14 @@ def validate_binding(
             ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=str(repository), text=True, timeout=10,
         )
-        if dirty.strip():
+        untracked_runtime = subprocess.check_output(
+            [
+                "git", "ls-files", "--others", "--exclude-standard",
+                "--", "quantpits",
+            ],
+            cwd=str(repository), text=True, timeout=10,
+        )
+        if dirty.strip() or untracked_runtime.strip():
             raise AggregateGateError(
                 "execute requires a clean tracked candidate"
             )
@@ -994,6 +1118,7 @@ def _assert_snapshot_unchanged(before, after, field):
 
 def _assert_workspace_write_allowlist(
     before, after, mutation_paths=(), observed_write_bytes=None,
+    reuse_only=None,
 ):
     before_map = {item[0]: item[1:] for item in before}
     after_map = {item[0]: item[1:] for item in after}
@@ -1015,19 +1140,138 @@ def _assert_workspace_write_allowlist(
         "data/rolling_aggregate_candidates_rolling",
         "mlruns",
         "mlruns/.aggregate-gate",
+        "mlruns/.trash",
+        "mlruns/filelock",
         "output",
         "qlib_data",
     }
-    allowed_prefixes = (
-        "data/rolling_aggregate_candidates_rolling/",
-        "data/aggregate_gate_runtime/",
-        "mlruns/",
-        "qlib_data/",
+    transient_patterns = (
+        r"data/aggregate_gate_runtime/"
+        r"quantpits-execution-manifest-[a-z0-9_]+",
+        r"data/aggregate_gate_runtime/"
+        r"quantpits-execution-manifest-[a-z0-9_]+/"
+        r"execution_manifest\.json",
+        r"data/aggregate_gate_runtime/tmp[a-z0-9_]+",
+        r"data/aggregate_gate_runtime/tmp[a-z0-9_]+/"
+        r"(?:model\.pkl|pred\.pkl)",
     )
+    after_paths = frozenset(after_map)
+    experiment_ids = frozenset(
+        match.group(1)
+        for path in after_paths
+        for match in [re.fullmatch(r"mlruns/([0-9]+)/meta\.yaml", path)]
+        if match is not None
+    )
+    run_ids = frozenset(
+        (match.group(1), match.group(2))
+        for path in after_paths
+        for match in [
+            re.fullmatch(
+                r"mlruns/([0-9]+)/([0-9a-f]{32})/meta\.yaml", path,
+            )
+        ]
+        if match is not None
+    )
+    source_run_ids = frozenset(
+        (match.group(1), match.group(2))
+        for path in after_paths
+        for match in [
+            re.fullmatch(
+                r"mlruns/([0-9]+)/([0-9a-f]{32})/"
+                r"artifacts/execution_manifest\.json",
+                path,
+            )
+        ]
+        if match is not None
+    )
+    candidate_ids = frozenset(
+        match.group(1)
+        for path in after_paths
+        for match in [
+            re.fullmatch(
+                r"data/rolling_aggregate_candidates_rolling/"
+                r"([0-9a-f]{32})/artifacts/"
+                r"(?:pred\.pkl|aggregate_manifest\.json)",
+                path,
+            )
+        ]
+        if match is not None
+    )
+
+    def persisted_gate_path(path):
+        candidate = re.fullmatch(
+            r"data/rolling_aggregate_candidates_rolling/"
+            r"([0-9a-f]{32})(?:|/artifacts|/artifacts/"
+            r"(?:pred\.pkl|aggregate_manifest\.json))",
+            path,
+        )
+        if candidate is not None:
+            return candidate.group(1) in candidate_ids
+        experiment = re.fullmatch(
+            r"mlruns/([0-9]+)(/meta\.yaml)?", path,
+        )
+        if experiment is not None:
+            return experiment.group(1) in experiment_ids
+        run = re.fullmatch(
+            r"mlruns/([0-9]+)/([0-9a-f]{32})"
+            r"(?:/(artifacts|metrics|params|tags|meta\.yaml))?",
+            path,
+        )
+        if run is not None:
+            return (run.group(1), run.group(2)) in run_ids
+        artifact = re.fullmatch(
+            r"mlruns/([0-9]+)/([0-9a-f]{32})/artifacts/"
+            r"(execution_manifest\.json|model\.pkl|pred\.pkl)",
+            path,
+        )
+        if artifact is not None:
+            return (artifact.group(1), artifact.group(2)) in source_run_ids
+        parameter = re.fullmatch(
+            r"mlruns/([0-9]+)/([0-9a-f]{32})/params/cmd-sys\.argv",
+            path,
+        )
+        if parameter is not None:
+            return (parameter.group(1), parameter.group(2)) in source_run_ids
+        tag = re.fullmatch(
+            r"mlruns/([0-9]+)/([0-9a-f]{32})/tags/"
+            r"(aggregate_attempt_id|aggregate_protocol|attempt_id|"
+            r"candidate_key|candidate_kind|execution_protocol|fixture_kind|"
+            r"mlflow\.runName|mlflow\.source\.name|mlflow\.source\.type|"
+            r"mlflow\.user|run_fingerprint|scope_fingerprint|"
+            r"source_operation|target_key|window_key)",
+            path,
+        )
+        if tag is None:
+            return False
+        identity = (tag.group(1), tag.group(2))
+        name = tag.group(3)
+        if name == "mlflow.runName":
+            return identity in run_ids
+        if identity in source_run_ids:
+            return name in {
+                "attempt_id", "execution_protocol", "fixture_kind",
+                "mlflow.source.name", "mlflow.source.type", "mlflow.user",
+                "run_fingerprint", "source_operation", "target_key",
+                "window_key",
+            }
+        return (
+            identity in run_ids
+            and identity[1] in candidate_ids
+            and name in {
+                "aggregate_attempt_id", "aggregate_protocol",
+                "candidate_key", "candidate_kind", "scope_fingerprint",
+                "target_key",
+            }
+        )
+
     def allowed(path):
         return (
             path in allowed_exact
-            or any(path.startswith(prefix) for prefix in allowed_prefixes)
+            or any(
+                re.fullmatch(pattern, path) is not None
+                for pattern in transient_patterns
+            )
+            or persisted_gate_path(path)
             or re.fullmatch(
                 r"data/\.rolling_state\.json\.[0-9a-f]{16}\.tmp",
                 path,
@@ -1044,6 +1288,80 @@ def _assert_workspace_write_allowlist(
         )
 
     observed_paths = changed | set(mutation_paths)
+    if reuse_only is not None and type(reuse_only) is not bool:
+        raise AggregateGateError("reuse_only must be an exact boolean")
+    if reuse_only is not None:
+        run_counts = sorted(
+            sum(1 for item in run_ids if item[0] == experiment_id)
+            for experiment_id in experiment_ids
+        )
+        candidate_runs = {
+            identity for identity in run_ids
+            if identity[1] in candidate_ids
+        }
+        source_experiments = {
+            experiment_id for experiment_id, _run_id in source_run_ids
+        }
+        candidate_experiments = {
+            experiment_id for experiment_id, _run_id in candidate_runs
+        }
+        if (
+            len(experiment_ids) != 2
+            or len(run_ids) != 3
+            or run_counts != [1, 2]
+            or len(source_run_ids) != 2
+            or len(source_experiments) != 1
+            or len(candidate_ids) != 1
+            or len(candidate_runs) != 1
+            or candidate_runs & source_run_ids
+            or len(candidate_experiments) != 1
+            or candidate_experiments & source_experiments
+        ):
+            raise AggregateGateError(
+                "gate persisted write namespace is not exact"
+            )
+        transient_roots = {
+            "state": {
+                path for path in mutation_paths
+                if re.fullmatch(
+                    r"data/\.rolling_state\.json\.[0-9a-f]{16}\.tmp",
+                    path,
+                )
+            },
+            "manifest": {
+                path for path in mutation_paths
+                if re.fullmatch(
+                    r"data/aggregate_gate_runtime/"
+                    r"quantpits-execution-manifest-[a-z0-9_]+",
+                    path,
+                )
+            },
+            "objects": {
+                path for path in mutation_paths
+                if re.fullmatch(
+                    r"data/aggregate_gate_runtime/tmp[a-z0-9_]+",
+                    path,
+                )
+            },
+            "candidate": {
+                path for path in mutation_paths
+                if re.fullmatch(
+                    r"data/\.quantpits-aggregate-[a-z0-9_]+",
+                    path,
+                )
+            },
+        }
+        expected_counts = (
+            {"state": 0, "manifest": 0, "objects": 0, "candidate": 0}
+            if reuse_only else
+            {"state": 5, "manifest": 2, "objects": 2, "candidate": 1}
+        )
+        if {
+            key: len(value) for key, value in transient_roots.items()
+        } != expected_counts:
+            raise AggregateGateError(
+                "gate transient write namespace is not exact"
+            )
     unexpected = tuple(sorted(
         path for path in observed_paths
         if not allowed(path)
@@ -1180,15 +1498,6 @@ def _run_real_gate(binding, reuse_only=False):
         "data/rolling_aggregate_candidates_rolling",
         "mlruns", "output", "qlib_data",
     )
-    for name in declared_directories:
-        path = workspace / name
-        path.mkdir(parents=True, exist_ok=True)
-        try:
-            path.resolve(strict=True).relative_to(workspace)
-        except ValueError:
-            raise AggregateGateError("fixture directory is not contained")
-        if path.is_symlink() or path.resolve(strict=True) != path.absolute():
-            raise AggregateGateError("fixture directory is not contained")
     observers = []
     try:
         workspace_observer = _WorkspaceMutationObserver(workspace).start()
@@ -1201,6 +1510,18 @@ def _run_real_gate(binding, reuse_only=False):
             repository_root, (".git", "plan", "workspaces"),
         ).start()
         observers.append(repository_observer)
+        for name in declared_directories:
+            path = workspace / name
+            path.mkdir(parents=True, exist_ok=True)
+            try:
+                path.resolve(strict=True).relative_to(workspace)
+            except ValueError:
+                raise AggregateGateError("fixture directory is not contained")
+            if (
+                path.is_symlink()
+                or path.resolve(strict=True) != path.absolute()
+            ):
+                raise AggregateGateError("fixture directory is not contained")
     except BaseException:
         for active_observer in observers:
             active_observer.close()
@@ -1282,6 +1603,7 @@ def _run_real_gate(binding, reuse_only=False):
     elapsed = time.monotonic() - started
     changed_file_count, write_bytes = _assert_workspace_write_allowlist(
         workspace_before, workspace_after, mutation_paths, write_bytes,
+        reuse_only=reuse_only,
     )
     _assert_gate_budgets(elapsed, write_bytes)
     total_bytes = _workspace_bytes(workspace_after)
@@ -1303,15 +1625,33 @@ def _run_real_gate(binding, reuse_only=False):
     }
 
 
+def _parse_internal_envelope(child, binding, reason_code):
+    if child.returncode != 0:
+        raise AggregateGateError("separate gate process failed")
+    try:
+        envelope = json.loads(child.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise AggregateGateError("separate gate process evidence is invalid")
+    if (
+        not isinstance(envelope, Mapping)
+        or frozenset(envelope) != {
+            "status", "reason_code", "protocol",
+            "scenario_fingerprint", "commit", "tree", "result",
+        }
+        or envelope.get("status") != "gate_passed"
+        or envelope.get("reason_code") != reason_code
+        or envelope.get("protocol") != GATE_PROTOCOL
+        or envelope.get("scenario_fingerprint")
+        != binding["scenario_fingerprint"]
+        or envelope.get("commit") != binding["commit"]
+        or envelope.get("tree") != binding["tree"]
+    ):
+        raise AggregateGateError("separate gate process envelope failed")
+    return envelope
+
+
 def execute_gate(binding):
     gate_started = time.monotonic()
-    primary = _validate_run_result(
-        _run_real_gate(binding, reuse_only=False),
-        reuse_only=False,
-    )
-    remaining_seconds = WALL_SECONDS - (time.monotonic() - gate_started)
-    if remaining_seconds <= 0:
-        raise AggregateGateError("aggregate gate wall-clock budget exceeded")
     command = [
         sys.executable, "-m",
         "quantpits.tools.verify_rolling_aggregate_candidate",
@@ -1319,33 +1659,37 @@ def execute_gate(binding):
         "--protected-workspace", str(binding["protected_workspace"]),
         "--commit", binding["commit"], "--tree", binding["tree"],
         "--execute", "--authorization", EXECUTE_AUTHORIZATION,
-        "--internal-reuse",
     ]
-    child = subprocess.run(
-        command, capture_output=True, text=True, timeout=remaining_seconds,
-    )
-    if child.returncode != 0:
-        raise AggregateGateError("separate-process reuse failed")
     try:
-        reuse = json.loads(child.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        raise AggregateGateError("separate-process evidence is invalid")
-    if (
-        not isinstance(reuse, Mapping)
-        or frozenset(reuse) != {
-            "status", "reason_code", "protocol",
-            "scenario_fingerprint", "commit", "tree", "result",
-        }
-        or reuse.get("status") != "gate_passed"
-        or reuse.get("reason_code")
-        != "rolling_aggregate_gate_reuse_passed"
-        or reuse.get("protocol") != GATE_PROTOCOL
-        or reuse.get("scenario_fingerprint")
-        != binding["scenario_fingerprint"]
-        or reuse.get("commit") != binding["commit"]
-        or reuse.get("tree") != binding["tree"]
-    ):
-        raise AggregateGateError("separate-process reuse envelope failed")
+        primary_child = subprocess.run(
+            command + ["--internal-primary"],
+            capture_output=True, text=True, timeout=WALL_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AggregateGateError(
+            "primary process exceeded the gate wall-clock budget"
+        ) from exc
+    primary_envelope = _parse_internal_envelope(
+        primary_child, binding, "rolling_aggregate_gate_primary_passed",
+    )
+    primary = _validate_run_result(
+        primary_envelope["result"], reuse_only=False,
+    )
+    remaining_seconds = WALL_SECONDS - (time.monotonic() - gate_started)
+    if remaining_seconds <= 0:
+        raise AggregateGateError("aggregate gate wall-clock budget exceeded")
+    try:
+        child = subprocess.run(
+            command + ["--internal-reuse"],
+            capture_output=True, text=True, timeout=remaining_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AggregateGateError(
+            "reuse process exceeded the gate wall-clock budget"
+        ) from exc
+    reuse = _parse_internal_envelope(
+        child, binding, "rolling_aggregate_gate_reuse_passed",
+    )
     reuse_result = _validate_run_result(
         reuse["result"], reuse_only=True,
     )
@@ -1416,6 +1760,8 @@ def _parser():
     parser.add_argument("--authorization")
     parser.add_argument("--internal-reuse", action="store_true",
                         help=argparse.SUPPRESS)
+    parser.add_argument("--internal-primary", action="store_true",
+                        help=argparse.SUPPRESS)
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--cleanup-authorization")
     return parser
@@ -1424,14 +1770,18 @@ def _parser():
 def main(argv=None):
     args = _parser().parse_args(argv)
     try:
-        if args.cleanup and (args.execute or args.internal_reuse):
+        if args.cleanup and (
+            args.execute or args.internal_reuse or args.internal_primary
+        ):
             raise AggregateGateError(
                 "cleanup and execute/reuse modes are mutually exclusive"
             )
-        if args.internal_reuse and not args.execute:
+        if (args.internal_reuse or args.internal_primary) and not args.execute:
             raise AggregateGateError(
-                "internal reuse requires explicit execute mode"
+                "internal execution requires explicit execute mode"
             )
+        if args.internal_reuse and args.internal_primary:
+            raise AggregateGateError("internal execution modes are exclusive")
         if args.scenario:
             payload = json.loads(
                 Path(args.scenario).read_text(encoding="utf-8"),
@@ -1442,7 +1792,8 @@ def main(argv=None):
         binding = validate_binding(
             scenario, args.workspace, args.protected_workspace,
             args.commit, args.tree,
-            args.execute or args.internal_reuse, args.authorization,
+            args.execute or args.internal_reuse or args.internal_primary,
+            args.authorization,
         )
         evidence = (
             cleanup_gate_workspace(
@@ -1465,6 +1816,20 @@ def main(argv=None):
                 ),
             }
             if args.internal_reuse
+            else
+            {
+                "status": "gate_passed",
+                "reason_code": "rolling_aggregate_gate_primary_passed",
+                "protocol": GATE_PROTOCOL,
+                "scenario_fingerprint": binding["scenario_fingerprint"],
+                "commit": binding["commit"],
+                "tree": binding["tree"],
+                "result": _validate_run_result(
+                    _run_real_gate(binding, reuse_only=False),
+                    reuse_only=False,
+                ),
+            }
+            if args.internal_primary
             else execute_gate(binding) if args.execute
             else preflight_evidence(binding)
         )

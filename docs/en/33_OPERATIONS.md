@@ -249,9 +249,12 @@ invocation into success.
 Source prediction bytes must also match the exact size/SHA-256 frozen in the Phase 32 request.
 The candidate artifact root permits only the direct regular files `pred.pkl` and
 `aggregate_manifest.json`; any extra directory, symlink, or special node blocks reuse. Gate execute
-uses a recursive lifecycle mutation observer that dynamically adds new directories to catch
-write-then-delete, obtains physical write bytes from
-`/proc/self/io`, and enforces one combined 300-second budget across primary and reuse.
+uses a recursive lifecycle mutation observer and installs each new-directory watch synchronously
+before `mkdir` or directory rename returns, including no-wait write-then-delete. Its write
+allow-list is anchored back to the terminal experiment, recorder, and candidate identities, so a
+broad `mlruns/` or `qlib_data/` prefix grants no authority. Physical write bytes come from
+`/proc/self/io`. Primary runs in a separate process with a hard 300-second timeout; reuse receives
+only the remainder of that same total budget.
 The Gate source fixture never invokes a model-capability probe or `LinearModel.fit`;
 `training_calls=0` must come from the profiler observer rather than a constant declaration.
 

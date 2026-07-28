@@ -314,9 +314,11 @@ candidate。真实 `--execute` 只允许 release owner 在一次性 validation w
 workspace 始终只读。
 当前修正 gate protocol 为 `rolling_aggregate_candidate_gate_v2`；真实执行授权字符串为
 `authorize-rolling-aggregate-candidate-gate-v2`。execute lane 使用 Linux inotify 递归观察 disposable、
-protected 与 tracked-repository 的生命周期 mutation，并动态接管新建目录，包含 write-then-delete；物理写字节来自
-`/proc/self/io`，network 被主动拒绝，training/GPU 调用由 profiler 观察。primary 与 separate-process
-reuse 共用一个 300 秒总预算，reuse 仍必须是零 writer/recorder/path/write-byte。旧 v1 gate evidence
+protected 与 tracked-repository 的生命周期 mutation，并在 `mkdir`/directory rename 返回前同步接管
+新目录，覆盖无等待 write-then-delete；write allow-list 精确绑定 terminal experiment/recorder/candidate
+identity，宽目录前缀不构成授权。物理写字节来自 `/proc/self/io`，network 被主动拒绝，training/GPU
+调用由 profiler 观察。primary 独立子进程有 300 秒 hard timeout，separate-process reuse 只能使用
+同一总预算的剩余时间，且仍必须是零 writer/recorder/path/write-byte。旧 v1 gate evidence
 不能关闭新的修正候选。
 deterministic source fixture 不调用 model capability protocol probe 或 `LinearModel.fit`；它只用
 固定 runner 生成 prediction artifact，再通过真实 Phase 32 evidence inspector 与 State repository
