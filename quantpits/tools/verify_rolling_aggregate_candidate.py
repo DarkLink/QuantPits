@@ -65,6 +65,10 @@ class _WorkspaceMutationObserver:
     _saved_mkdir = None
     _saved_rename = None
     _saved_replace = None
+    _pathlib_accessor = None
+    _saved_pathlib_mkdir = None
+    _saved_pathlib_rename = None
+    _saved_pathlib_replace = None
 
     def __init__(self, root, excluded_relative_paths=()):
         self.root = Path(root)
@@ -209,6 +213,34 @@ class _WorkspaceMutationObserver:
             pass
         return result
 
+    @classmethod
+    def _pathlib_mkdir(cls, path, mode=0o777):
+        result = cls._saved_pathlib_mkdir(path, mode)
+        cls._notify_created_directory(path)
+        return result
+
+    @classmethod
+    def _pathlib_rename(cls, source, destination):
+        result = cls._saved_pathlib_rename(source, destination)
+        try:
+            candidate = cls._absolute_path(destination)
+            if candidate.is_dir() and not candidate.is_symlink():
+                cls._notify_created_directory(destination)
+        except (OSError, TypeError, ValueError):
+            pass
+        return result
+
+    @classmethod
+    def _pathlib_replace(cls, source, destination):
+        result = cls._saved_pathlib_replace(source, destination)
+        try:
+            candidate = cls._absolute_path(destination)
+            if candidate.is_dir() and not candidate.is_symlink():
+                cls._notify_created_directory(destination)
+        except (OSError, TypeError, ValueError):
+            pass
+        return result
+
     def _register_directory_creation_barrier(self):
         cls = type(self)
         with cls._registry_lock:
@@ -216,9 +248,43 @@ class _WorkspaceMutationObserver:
                 cls._saved_mkdir = os.mkdir
                 cls._saved_rename = os.rename
                 cls._saved_replace = os.replace
-                os.mkdir = cls._mkdir
-                os.rename = cls._rename
-                os.replace = cls._replace
+                accessor = getattr(Path("."), "_accessor", None)
+                try:
+                    if accessor is not None:
+                        cls._pathlib_accessor = accessor
+                        cls._saved_pathlib_mkdir = accessor.mkdir
+                        cls._saved_pathlib_rename = accessor.rename
+                        cls._saved_pathlib_replace = accessor.replace
+                        accessor.mkdir = cls._pathlib_mkdir
+                        accessor.rename = cls._pathlib_rename
+                        accessor.replace = cls._pathlib_replace
+                    os.mkdir = cls._mkdir
+                    os.rename = cls._rename
+                    os.replace = cls._replace
+                except Exception as exc:
+                    os.mkdir = cls._saved_mkdir
+                    os.rename = cls._saved_rename
+                    os.replace = cls._saved_replace
+                    if cls._pathlib_accessor is not None:
+                        cls._pathlib_accessor.mkdir = (
+                            cls._saved_pathlib_mkdir
+                        )
+                        cls._pathlib_accessor.rename = (
+                            cls._saved_pathlib_rename
+                        )
+                        cls._pathlib_accessor.replace = (
+                            cls._saved_pathlib_replace
+                        )
+                    cls._saved_mkdir = None
+                    cls._saved_rename = None
+                    cls._saved_replace = None
+                    cls._pathlib_accessor = None
+                    cls._saved_pathlib_mkdir = None
+                    cls._saved_pathlib_rename = None
+                    cls._saved_pathlib_replace = None
+                    raise AggregateGateError(
+                        "gate lifecycle directory barrier could not start"
+                    ) from exc
             cls._active_observers.add(self)
             self._registered = True
 
@@ -233,9 +299,17 @@ class _WorkspaceMutationObserver:
                 os.mkdir = cls._saved_mkdir
                 os.rename = cls._saved_rename
                 os.replace = cls._saved_replace
+                if cls._pathlib_accessor is not None:
+                    cls._pathlib_accessor.mkdir = cls._saved_pathlib_mkdir
+                    cls._pathlib_accessor.rename = cls._saved_pathlib_rename
+                    cls._pathlib_accessor.replace = cls._saved_pathlib_replace
                 cls._saved_mkdir = None
                 cls._saved_rename = None
                 cls._saved_replace = None
+                cls._pathlib_accessor = None
+                cls._saved_pathlib_mkdir = None
+                cls._saved_pathlib_rename = None
+                cls._saved_pathlib_replace = None
 
     def _drain(self):
         while True:

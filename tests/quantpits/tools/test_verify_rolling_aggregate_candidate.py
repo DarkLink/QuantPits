@@ -356,12 +356,30 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
     lifecycle_root.mkdir()
     (lifecycle_root / "output").mkdir()
     original_mkdir = __import__("os").mkdir
+    original_rename = __import__("os").rename
+    original_replace = __import__("os").replace
+    pathlib_accessor = getattr(lifecycle_root, "_accessor", None)
+    original_pathlib_mkdir = (
+        pathlib_accessor.mkdir if pathlib_accessor is not None else None
+    )
+    original_pathlib_rename = (
+        pathlib_accessor.rename if pathlib_accessor is not None else None
+    )
+    original_pathlib_replace = (
+        pathlib_accessor.replace if pathlib_accessor is not None else None
+    )
     observer = _WorkspaceMutationObserver(lifecycle_root).start()
     transient = lifecycle_root / "output" / "write-then-delete.bin"
     transient.write_bytes(b"not durable")
     transient.unlink()
     lifecycle_paths = observer.stop()
     assert __import__("os").mkdir is original_mkdir
+    assert __import__("os").rename is original_rename
+    assert __import__("os").replace is original_replace
+    if pathlib_accessor is not None:
+        assert pathlib_accessor.mkdir is original_pathlib_mkdir
+        assert pathlib_accessor.rename is original_pathlib_rename
+        assert pathlib_accessor.replace is original_pathlib_replace
     assert "output/write-then-delete.bin" in lifecycle_paths
     with pytest.raises(AggregateGateError):
         _assert_workspace_write_allowlist(
