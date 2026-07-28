@@ -273,7 +273,10 @@ or orders. Existing `rolling_train.py` commands remain on the legacy aggregation
 combined recorder is not a Phase 35 verified candidate.
 The source-set observer preserves the complete requested-unit identity. Content or coverage defects
 return `incomplete`; incomparable observation or State joins return `observation_drifted`. Both are
-render-only and neither drops later units nor grants aggregate/publication capability.
+render-only and neither drops later units nor grants aggregate/publication capability. Each source
+unit also carries an inspector-owned namespace fingerprint. The same public root, no-follow
+directory chain, and direct-artifact device/inode identities must survive from before evidence
+inspection through both sides of the prediction-byte read and the kernel terminal postcondition.
 
 Candidate reuse is stricter than recorder or artifact existence. The MLflow run must still be
 active and terminal `FINISHED`, and reinspection must match the source-derived manifest contract:
@@ -291,9 +294,19 @@ the two regular files `pred.pkl` and `aggregate_manifest.json`; an extra directo
 preserved: every directory from the canonical workspace to the artifact root is opened no-follow
 and identity-frozen, so an alias at the root or any ancestor is rejected even when it targets a
 directory inside the same workspace. After both artifacts are read and validated, the complete
-directory chain is re-established through that original public URI. During creation, the first
-artifact upload freezes the experiment, recorder-artifact-root, and staging namespace identities;
-the second upload, terminal transition, inventory, and final reinspection recheck that chain.
+directory chain is re-established through that original public URI. During creation, the canonical
+experiment and recorder artifact root are safely established and frozen before the first upload.
+The pre-observed present/absent fact and device/inode are checked in the same no-follow
+establishment action, so a create or replacement race between observation and `mkdir` fails closed;
+the staging namespace is frozen before use as well. Each `pred.pkl` and
+`aggregate_manifest.json` regular-node device/inode identity is frozen immediately after it enters
+the candidate namespace and is rechecked after later uploads, terminal transition, inventory,
+create return, and final reinspection. A byte-identical file replacement therefore fails closed.
+Each direct artifact must also be an independent regular node with link count one; stable
+size/mtime/ctime metadata is part of the namespace fingerprint, so a hardlink or byte-identical
+same-inode rewrite fails closed as well.
+The candidate inspection's namespace fingerprint is carried from create/reuse observation through
+the kernel terminal recheck, so equal bytes cannot hide a cross-stage namespace replacement.
 A stable tracking URI alone is insufficient: the complete source-evidence-plus-prediction-bytes
 observation and candidate inventory/inspection/locking/materialization also freeze the public
 SQLite-file or file-store-root
@@ -302,6 +315,8 @@ granting `publication_input`, the kernel rechecks source/State/current/backend u
 lock and requires exactly one active, `FINISHED`, exact candidate per target in terminal inventory.
 Duplicates and race drift fail closed. The candidate experiment namespace itself counts as a durable
 write when first created.
+If the canonical artifact root is first established before experiment metadata, inventory observes
+that directory write separately; a later failure cannot report `did_write=false`.
 The no-create terminal-lock reacquisition path also omits create semantics from the actual
 `openat()`, so deletion between its precheck and open cannot recreate a missing lock parent or
 node. An existing lock that cannot be opened as the canonical regular file is likewise

@@ -311,6 +311,59 @@ def test_gate_deliberate_contract_negatives_use_real_inspectors(
     assert backend.calls == []
     assert "publication_input" not in drifted_backend.capabilities
 
+    context, _scope, _repository, source, aggregate = case(
+        "source-namespace-drift",
+    )
+    requests = source.requests_for_state(
+        aggregate.execution_scope,
+        aggregate.state_repository_view.inspection.snapshot,
+    )
+    selected = requests[0]
+    source_root = Path(
+        source.candidates[selected.unit_key]["artifact_root_uri"][7:]
+    )
+    displaced_source = source_root.with_name(
+        source_root.name + "-displaced",
+    )
+    original_prediction = source.prediction_bytes
+
+    def bytes_then_replace(request):
+        data = original_prediction(request)
+        if request.unit_key == selected.unit_key and source_root.exists():
+            source_root.rename(displaced_source)
+            __import__("shutil").copytree(displaced_source, source_root)
+        return data
+
+    source.prediction_bytes = bytes_then_replace
+    drifted_source = inspect_rolling_aggregate_sources(
+        context, aggregate, requests, source,
+    )
+    assert drifted_source.status == "observation_drifted"
+    assert "aggregate_source" not in (
+        drifted_source.unit_results[0].capabilities
+    )
+
+    context, _scope, repository, source, aggregate = case(
+        "candidate-namespace-drift",
+    )
+    backend = FakeCandidateBackend(context)
+    original_create = backend.create_candidate
+
+    def create_then_drift(*args, **kwargs):
+        observation = original_create(*args, **kwargs)
+        backend.candidates[
+            aggregate.candidate_keys[0]
+        ]["namespace_fingerprint"] = "f" * 64
+        return observation
+
+    backend.create_candidate = create_then_drift
+    drifted_candidate = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert drifted_candidate.status == "indeterminate"
+    assert drifted_candidate.target_results[0].did_write is True
+    assert "publication_input" not in drifted_candidate.capabilities
+
 
 def test_gate_scenario_rejects_unknown_and_non_strict_fields():
     payload = frozen_scenario().to_public_dict()

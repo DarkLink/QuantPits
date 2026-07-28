@@ -251,11 +251,19 @@ The candidate artifact root permits only the direct regular files `pred.pkl` and
 `aggregate_manifest.json`; any extra directory, symlink, or special node blocks reuse. Neither the
 root nor any ancestor in the MLflow public artifact URI may be a directory alias, including an
 alias to a contained target in the same workspace; the directory chain is rechecked through the
-original public URI after the reads. The first candidate artifact upload freezes the experiment,
-recorder-artifact-root, and staging identities, which are rechecked after later uploads, the
-terminal transition, inventory, and final reinspection. A same-URI replacement of the SQLite file
+original public URI after the reads. Before the first candidate artifact upload, the canonical
+experiment, recorder artifact root, and staging identities are frozen. Each direct artifact's
+device/inode is frozen immediately after its first write and rechecked after later uploads,
+terminal transition, inventory, create return, and final reinspection. The create/reuse namespace
+fingerprint also binds link count and stable size/mtime/ctime metadata; hardlinks and same-inode
+rewrites fail closed, and the fingerprint remains joined through the kernel terminal recheck.
+Source root/direct-node identity
+likewise spans from before evidence inspection through returned prediction bytes and the terminal
+postcondition. A same-URI replacement of the SQLite file
 or file-store root is backend drift and cannot grant source, candidate, or publication authority;
-the source boundary spans both evidence inspection and every prediction-bytes read.
+byte-identical directory or file inode replacement cannot grant authority either.
+Artifact-root creation and experiment metadata are separate before/after inventory facts. Even
+with a zero recorder delta, creation of either namespace preserves `did_write=true`.
 Gate execute uses a recursive lifecycle mutation observer and installs each new-directory watch synchronously
 before `mkdir` or directory rename returns, including no-wait write-then-delete. Its write
 allow-list is anchored back to the terminal experiment, recorder, and candidate identities, so a

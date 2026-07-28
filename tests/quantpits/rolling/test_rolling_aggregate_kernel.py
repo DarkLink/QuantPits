@@ -84,6 +84,31 @@ def test_candidate_reuse_requires_one_exact_reobserved_candidate(tmp_path):
     assert len(backend.calls) == 1
 
 
+def test_candidate_without_namespace_observation_cannot_gain_authority(
+    tmp_path,
+):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    backend = FakeCandidateBackend(context)
+    original_create = backend.create_candidate
+
+    def create_without_namespace(*args, **kwargs):
+        observation = original_create(*args, **kwargs)
+        observation.pop("namespace_fingerprint")
+        return observation
+
+    backend.create_candidate = create_without_namespace
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+
+    assert result.status == "indeterminate"
+    assert result.target_results[0].did_write is True
+    assert result.target_results[0].candidate is None
+    assert "publication_input" not in result.capabilities
+
+
 def test_foreign_candidate_backend_workspace_is_blocked_before_write(
     tmp_path,
 ):

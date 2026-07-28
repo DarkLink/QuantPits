@@ -219,6 +219,27 @@ class FakeExecutionBackend:
             "present": True, "contained": True, "foreign": False,
         }
 
+    def source_namespace_identity(self, request):
+        candidate = self.candidates[request.unit_key]
+        root = Path(candidate["artifact_root_uri"][len("file://"):])
+        root_node = root.stat()
+        nodes = []
+        for child in root.iterdir():
+            node = child.lstat()
+            nodes.append((
+                child.name, node.st_mode, node.st_dev, node.st_ino,
+                node.st_nlink, node.st_size, node.st_mtime_ns,
+                node.st_ctime_ns,
+            ))
+        nodes = tuple(sorted(nodes))
+        return fingerprint_value({
+            "recorder_id": request.recorder_id,
+            "artifact_root_identity": (
+                root_node.st_dev, root_node.st_ino,
+            ),
+            "artifact_nodes": nodes,
+        })
+
     def capture_recorder_inventory(self, scope, unit, attempt_id):
         return frozenset(self.candidates)
 

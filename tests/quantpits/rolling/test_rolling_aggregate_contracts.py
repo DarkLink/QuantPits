@@ -73,7 +73,7 @@ def test_aggregate_rejects_forged_or_replayed_source_authority(tmp_path):
             item.unit_key, item.request_fingerprint,
             item.evidence_fingerprint, item.recorder_id, item.sessions,
             item.canonical_rows, item.canonical_values,
-            item.content_fingerprint,
+            item.content_fingerprint, item.namespace_fingerprint,
         )
     with pytest.raises(RollingAggregateContractError):
         RollingAggregateSourceFailure(

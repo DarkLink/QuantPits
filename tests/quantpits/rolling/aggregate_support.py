@@ -28,6 +28,7 @@ class FakeCandidateBackend:
         self.controls = {}
         self.fault_point = None
         self.experiment_present = False
+        self.artifact_root_present = False
 
     def _fault(self, point):
         if self.fault_point == point:
@@ -35,11 +36,23 @@ class FakeCandidateBackend:
 
     def inventory(self, aggregate_scope):
         rows = tuple(self.candidates.values())
+        artifact_root_identity = (
+            fingerprint_value({"fake_artifact_root": 1})
+            if self.artifact_root_present else None
+        )
+        facts = {
+            "experiment_present": self.experiment_present,
+            "artifact_root_present": self.artifact_root_present,
+            "artifact_root_identity": artifact_root_identity,
+            "candidates": rows,
+        }
         return {
             "raw_count": len(rows),
-            "fingerprint": fingerprint_value(rows),
+            "fingerprint": fingerprint_value(facts),
             "candidates": rows,
             "experiment_present": self.experiment_present,
+            "artifact_root_present": self.artifact_root_present,
+            "artifact_root_identity": artifact_root_identity,
         }
 
     def protected_snapshot(self, aggregate_scope):
@@ -91,6 +104,7 @@ class FakeCandidateBackend:
             raise self.controls[position]
         self._fault("before_candidate_namespace")
         self.experiment_present = True
+        self.artifact_root_present = True
         self._fault("after_candidate_experiment_namespace")
         partial = {
             "classification": "partial",
@@ -117,6 +131,10 @@ class FakeCandidateBackend:
             "row_count": manifest["row_count"],
             "manifest_contract_fingerprint":
                 _candidate_manifest_contract_fingerprint(manifest),
+            "namespace_fingerprint": fingerprint_value({
+                "candidate_key": candidate_key,
+                "namespace_generation": 1,
+            }),
             "run_status": "FINISHED",
             "lifecycle_stage": "active",
             "prediction_bytes": prediction_bytes,

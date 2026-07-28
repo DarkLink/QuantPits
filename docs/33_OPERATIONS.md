@@ -299,10 +299,16 @@ source prediction bytes 还必须与 Phase 32 request 冻结的 exact size/SHA-2
 root 只允许 `pred.pkl` 和 `aggregate_manifest.json` 两个 direct regular file；额外目录、symlink
 或特殊节点一律阻断。MLflow 公开 artifact URI 的 root 及任一祖先都不能是目录链接，包括指向同一
 workspace 内的 contained alias；读取后会从原公开 URI 复核逐级目录身份。
-候选创建的第一次 artifact 上传后会冻结 experiment、recorder artifact root 和 staging directory，
-并在其余上传、terminal transition、inventory 与最终 reinspection 后比较完整身份链。tracking URI
+候选创建会在第一次 artifact 上传前冻结 canonical experiment、recorder artifact root 和 staging
+directory；两个 direct artifact 的 device/inode 在各自首次落盘后立即冻结，并在其余上传、terminal
+transition、inventory、create 返回与最终 reinspection 后比较。create/reuse inspection 的 namespace
+fingerprint 还绑定 link-count、size/mtime/ctime；hardlink 与 same-inode rewrite 均会阻断，并一直
+比较到 kernel terminal recheck。source 侧同样从 evidence inspection 前到
+prediction bytes 返回后及 terminal postcondition 持有 root/direct-node fingerprint。tracking URI
 相同但 SQLite file/file-store root node 被替换也属于 backend drift，不得获得 source、candidate 或
-publication authority；source 侧比较覆盖 evidence inspection 前后以及每次 prediction bytes 读取前后。
+publication authority；byte-identical 目录或文件 inode replacement 也不能获得 authority。
+artifact root mkdir 与 experiment metadata 分别进入 before/after inventory；即使 recorder delta 为零，
+任一 namespace 已创建都必须保留 `did_write=true`。
 Gate execute 使用递归生命周期 mutation observer，并在 `mkdir`/directory rename 返回前同步安装新目录
 watch，以捕获无等待的 write-then-delete；write allow-list 由 terminal experiment/recorder/candidate
 identity 反向锚定，不能用 `mlruns/`、`qlib_data/` 等宽前缀绕过。物理写字节来自 `/proc/self/io`。

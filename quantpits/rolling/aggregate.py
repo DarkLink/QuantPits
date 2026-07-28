@@ -261,6 +261,7 @@ class RollingAggregateSourceUnit:
     canonical_rows: tuple
     canonical_values: tuple
     content_fingerprint: str
+    namespace_fingerprint: str
     _authority: InitVar[Any] = None
     _inspector_authority: bool = field(init=False, repr=False, compare=False)
 
@@ -284,6 +285,7 @@ class RollingAggregateSourceUnit:
         if any(type(value) is not float or not math.isfinite(value) for value in values):
             _contract("source values must be finite binary64")
         _digest(self.content_fingerprint, "content_fingerprint")
+        _digest(self.namespace_fingerprint, "namespace_fingerprint")
         if self.content_fingerprint != _content_fingerprint(rows, values):
             _contract("source content fingerprint is inconsistent")
         object.__setattr__(self, "_inspector_authority", True)
@@ -301,6 +303,7 @@ class RollingAggregateSourceUnit:
             "sessions": list(self.sessions),
             "row_count": len(self.canonical_rows),
             "content_fingerprint": self.content_fingerprint,
+            "namespace_fingerprint": self.namespace_fingerprint,
             "capabilities": list(self.capabilities),
         }
 
@@ -509,6 +512,7 @@ def _candidate_manifest_contract_fingerprint(manifest: Mapping[str, Any]) -> str
 
 class RollingAggregateSourceBackend(Protocol):
     def tracking_identity(self) -> Mapping[str, Any]: ...
+    def source_namespace_identity(self, request: RollingUnitEvidenceRequest) -> str: ...
     def inspect(self, scope: RollingExecutionScope, requests: tuple) -> RollingEvidenceSetInspection: ...
     def prediction_bytes(self, request: RollingUnitEvidenceRequest) -> bytes: ...
 
@@ -638,6 +642,28 @@ def inspect_rolling_aggregate_sources(
         except Exception:
             return False
 
+    def source_namespaces():
+        observed = tuple(
+            source_backend.source_namespace_identity(request)
+            for request in requests
+        )
+        for item in observed:
+            _digest(item, "source_namespace_identity")
+        return observed
+
+    try:
+        namespace_baseline = source_namespaces()
+    except _CONTROL:
+        raise
+    except Exception:
+        return failed_set(
+            "observation_drifted",
+            fingerprint_value({
+                "scope": aggregate_scope.scope_fingerprint,
+                "source_namespace_failure": "before_evidence",
+            }),
+        )
+
     try:
         evidence = _rebuild_evidence_set(
             source_backend.inspect(
@@ -655,6 +681,13 @@ def inspect_rolling_aggregate_sources(
             }),
         )
     if not source_backend_stable():
+        return failed_set("observation_drifted", evidence.fingerprint)
+    try:
+        if source_namespaces() != namespace_baseline:
+            return failed_set("observation_drifted", evidence.fingerprint)
+    except _CONTROL:
+        raise
+    except Exception:
         return failed_set("observation_drifted", evidence.fingerprint)
     if evidence.requested_unit_keys != aggregate_scope.requested_unit_keys:
         return failed_set("observation_drifted", evidence.fingerprint)
@@ -682,7 +715,9 @@ def inspect_rolling_aggregate_sources(
     results = []
     physical_ids = set()
     prior_sessions = {}
-    for request, observed in zip(requests, evidence.unit_results):
+    for position, (request, observed) in enumerate(
+        zip(requests, evidence.unit_results)
+    ):
         try:
             if (
                 observed.classification != "valid"
@@ -703,6 +738,13 @@ def inspect_rolling_aggregate_sources(
                 raise _SourceBackendDrifted(
                     "source backend identity drifted before prediction read"
                 )
+            if (
+                source_backend.source_namespace_identity(request)
+                != namespace_baseline[position]
+            ):
+                raise _SourceBackendDrifted(
+                    "source namespace drifted before prediction read"
+                )
             raw = source_backend.prediction_bytes(request)
             if not isinstance(raw, bytes):
                 raise RollingAggregateContractError(
@@ -711,6 +753,13 @@ def inspect_rolling_aggregate_sources(
             if not source_backend_stable():
                 raise _SourceBackendDrifted(
                     "source backend identity drifted after prediction read"
+                )
+            if (
+                source_backend.source_namespace_identity(request)
+                != namespace_baseline[position]
+            ):
+                raise _SourceBackendDrifted(
+                    "source namespace drifted after prediction read"
                 )
             prediction_artifact = next(
                 item for item in request.artifacts
@@ -745,6 +794,7 @@ def inspect_rolling_aggregate_sources(
                 request.unit_key, request.source_manifest_fingerprint,
                 observed.evidence_fingerprint, recorder_id, sessions,
                 rows, values, _content_fingerprint(rows, values),
+                namespace_baseline[position],
                 _authority=_SOURCE_TOKEN,
             ))
         except _CONTROL:
@@ -762,6 +812,13 @@ def inspect_rolling_aggregate_sources(
                 _authority=_SOURCE_SET_TOKEN,
             ))
     if not source_backend_stable():
+        return failed_set("observation_drifted", evidence.fingerprint)
+    try:
+        if source_namespaces() != namespace_baseline:
+            return failed_set("observation_drifted", evidence.fingerprint)
+    except _CONTROL:
+        raise
+    except Exception:
         return failed_set("observation_drifted", evidence.fingerprint)
     status = (
         "all_valid"
@@ -792,6 +849,7 @@ class RollingAggregateCandidateInspection:
     content_fingerprint: Optional[str] = None
     row_count: Optional[int] = None
     manifest_contract_fingerprint: Optional[str] = None
+    namespace_fingerprint: Optional[str] = None
     _authority: InitVar[Any] = None
     _inspector_authority: bool = field(init=False, repr=False, compare=False)
 
@@ -807,6 +865,7 @@ class RollingAggregateCandidateInspection:
             self.recorder_id, self.manifest_fingerprint,
             self.content_fingerprint, self.row_count,
             self.manifest_contract_fingerprint,
+            self.namespace_fingerprint,
         )
         if valid:
             if any(item is None for item in facts) or type(self.row_count) is not int or self.row_count <= 0:
@@ -818,6 +877,7 @@ class RollingAggregateCandidateInspection:
                 self.manifest_contract_fingerprint,
                 "manifest_contract_fingerprint",
             )
+            _digest(self.namespace_fingerprint, "namespace_fingerprint")
         elif any(item is not None for item in facts):
             _contract("invalid candidate cannot grant candidate facts")
         object.__setattr__(self, "_inspector_authority", valid)
@@ -838,6 +898,7 @@ class RollingAggregateCandidateInspection:
             "row_count": self.row_count,
             "manifest_contract_fingerprint":
                 self.manifest_contract_fingerprint,
+            "namespace_fingerprint": self.namespace_fingerprint,
             "capabilities": list(self.capabilities),
         }
 
@@ -860,6 +921,14 @@ def _candidate_from_observation(scope, target_key, candidate_key, observation, e
         or observation.get("row_count") != expected["row_count"]
         or observation.get("manifest_contract_fingerprint")
         != expected["manifest_contract_fingerprint"]
+        or not isinstance(
+            observation.get("namespace_fingerprint"), str,
+        )
+        or len(observation.get("namespace_fingerprint", "")) != 64
+        or any(
+            char not in _DIGEST_CHARS
+            for char in observation.get("namespace_fingerprint", "")
+        )
     ):
         return RollingAggregateCandidateInspection(target_key, candidate_key, "identity_mismatch")
     return RollingAggregateCandidateInspection(
@@ -867,6 +936,7 @@ def _candidate_from_observation(scope, target_key, candidate_key, observation, e
         observation.get("manifest_fingerprint"),
         observation.get("content_fingerprint"), observation.get("row_count"),
         observation.get("manifest_contract_fingerprint"),
+        observation.get("namespace_fingerprint"),
         _authority=_CANDIDATE_TOKEN,
     )
 
@@ -1128,6 +1198,7 @@ class RollingAggregateCandidateKernel:
                     "source_identity_order_cardinality",
                     "source_state_join",
                     "source_terminal_evidence",
+                    "source_namespace_identity",
                     "source_session_exactness",
                     "source_non_overlap",
                     "candidate_index_exactness",
@@ -1227,9 +1298,16 @@ class RollingAggregateCandidateKernel:
                         not before_target_inventory["experiment_present"]
                         and after_error["experiment_present"]
                     )
+                    artifact_root_created = (
+                        not before_target_inventory[
+                            "artifact_root_present"
+                        ]
+                        and after_error["artifact_root_present"]
+                    )
                     results.append(self._result(
                         target, unit_keys, "failed",
-                        bool(delta) or experiment_created,
+                        bool(delta) or experiment_created
+                        or artifact_root_created,
                     ))
                 except _CONTROL:
                     raise
@@ -1369,15 +1447,28 @@ class RollingAggregateCandidateKernel:
 
     @staticmethod
     def _valid_inventory(inventory):
+        def digest(value):
+            return (
+                isinstance(value, str)
+                and len(value) == 64
+                and all(character in "0123456789abcdef"
+                        for character in value)
+            )
+
         return (
             isinstance(inventory, Mapping)
             and type(inventory.get("raw_count")) is int
             and inventory["raw_count"] >= 0
             and isinstance(inventory.get("candidates"), tuple)
             and inventory["raw_count"] == len(inventory["candidates"])
-            and isinstance(inventory.get("fingerprint"), str)
-            and len(inventory["fingerprint"]) == 64
+            and digest(inventory.get("fingerprint"))
             and type(inventory.get("experiment_present")) is bool
+            and type(inventory.get("artifact_root_present")) is bool
+            and (
+                inventory.get("artifact_root_identity") is None
+                if not inventory["artifact_root_present"]
+                else digest(inventory.get("artifact_root_identity"))
+            )
         )
 
     @staticmethod

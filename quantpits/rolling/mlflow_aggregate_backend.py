@@ -105,22 +105,109 @@ def _prospective_contained_path(uri, workspace_root, field):
     return path
 
 
-def _ensure_child_directory(parent, name, parent_identity):
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
+def _establish_child_directory(
+    parent, name, parent_identity, expected_present, expected_identity=None,
+):
+    """Create/open one direct child without losing its pre-observed identity."""
+
+    if type(expected_present) is not bool:
+        raise RollingAggregateContractError(
+            "directory presence must be an exact boolean"
+        )
+    if expected_present and (
+        not isinstance(expected_identity, tuple)
+        or len(expected_identity) != 2
+    ):
+        raise RollingAggregateContractError(
+            "existing directory requires its observed identity"
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     parent_fd = os.open(str(parent), flags)
+    child_fd = None
     try:
-        meta = os.fstat(parent_fd)
-        if (meta.st_dev, meta.st_ino) != parent_identity:
+        parent_meta = os.fstat(parent_fd)
+        if (parent_meta.st_dev, parent_meta.st_ino) != parent_identity:
             raise RollingAggregateBackendError(
-                "directory parent identity drifted before mkdir"
+                "directory parent identity drifted before establishment"
             )
         try:
             os.mkdir(name, dir_fd=parent_fd)
+            created = True
         except FileExistsError:
-            pass
+            created = False
+        if created == expected_present:
+            raise RollingAggregateBackendError(
+                "directory presence drifted during establishment"
+            )
+        public = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISLNK(public.st_mode) or not stat.S_ISDIR(public.st_mode):
+            raise RollingAggregateBackendError(
+                "directory child is not canonical"
+            )
+        child_fd = os.open(name, flags, dir_fd=parent_fd)
+        opened = os.fstat(child_fd)
+        identity = (opened.st_dev, opened.st_ino)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or identity != (public.st_dev, public.st_ino)
+            or (
+                expected_present
+                and identity != expected_identity
+            )
+        ):
+            raise RollingAggregateBackendError(
+                "directory child identity drifted during establishment"
+            )
+        return identity
+    finally:
+        if child_fd is not None:
+            os.close(child_fd)
+        os.close(parent_fd)
+
+
+def _establish_observed_child_directory(parent, name, parent_identity):
+    """Observe and establish one direct child under one frozen parent."""
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    parent_fd = os.open(str(parent), flags)
+    try:
+        parent_meta = os.fstat(parent_fd)
+        if (parent_meta.st_dev, parent_meta.st_ino) != parent_identity:
+            raise RollingAggregateBackendError(
+                "directory parent identity drifted before observation"
+            )
+        try:
+            public = os.stat(
+                name, dir_fd=parent_fd, follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            expected_present = False
+            expected_identity = None
+        else:
+            if stat.S_ISLNK(public.st_mode) or not stat.S_ISDIR(
+                public.st_mode
+            ):
+                raise RollingAggregateBackendError(
+                    "directory child is not canonical"
+                )
+            expected_present = True
+            expected_identity = (public.st_dev, public.st_ino)
     finally:
         os.close(parent_fd)
+    return _establish_child_directory(
+        parent, name, parent_identity,
+        expected_present, expected_identity,
+    )
 
 
 def _open_regular_child(
@@ -283,7 +370,7 @@ class QlibMlflowAggregateBackend:
         )
         lock_dir = self.context.data_dir / "locks"
         if create_if_missing:
-            _ensure_child_directory(
+            _establish_observed_child_directory(
                 self.context.data_dir, "locks", data_identity,
             )
         elif not lock_dir.exists():
@@ -487,6 +574,10 @@ class QlibMlflowAggregateBackend:
             )
         tracking_path, tracking_identity = self._tracking_observation()
         experiment_name = CANDIDATE_EXPERIMENTS[aggregate_scope.family]
+        expected_experiment_root = (
+            self.context.data_dir
+            / ("rolling_aggregate_candidates_%s" % aggregate_scope.family)
+        ).absolute()
         from mlflow.tracking import MlflowClient
         client = MlflowClient(tracking_uri=str(self.context.mlflow_uri))
         try:
@@ -496,6 +587,23 @@ class QlibMlflowAggregateBackend:
                 self._candidate_experiment_root(
                     aggregate_scope, experiment.artifact_location,
                 )
+            try:
+                os.lstat(str(expected_experiment_root))
+                artifact_root_present = True
+            except FileNotFoundError:
+                artifact_root_present = False
+            artifact_root_identity = None
+            if artifact_root_present:
+                observed_root, artifact_root_identity, _inventory = (
+                    _observe_local_artifact_root(
+                        expected_experiment_root.as_uri(),
+                        self.context.root,
+                    )
+                )
+                if observed_root != expected_experiment_root:
+                    raise RollingAggregateBackendError(
+                        "candidate experiment artifact root is not canonical"
+                    )
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except Exception as exc:
@@ -531,11 +639,22 @@ class QlibMlflowAggregateBackend:
             raise RollingAggregateBackendError(
                 "candidate tracking backend drifted during inventory"
             )
+        inventory_facts = {
+            "experiment_present": experiment_present,
+            "artifact_root_present": artifact_root_present,
+            "artifact_root_identity": artifact_root_identity,
+            "candidates": rows,
+        }
         return {
             "raw_count": len(rows),
-            "fingerprint": fingerprint_value(rows),
+            "fingerprint": fingerprint_value(inventory_facts),
             "candidates": tuple(rows),
             "experiment_present": experiment_present,
+            "artifact_root_present": artifact_root_present,
+            "artifact_root_identity": (
+                fingerprint_value(artifact_root_identity)
+                if artifact_root_identity is not None else None
+            ),
         }
 
     def inspect_candidate(
@@ -619,9 +738,17 @@ class QlibMlflowAggregateBackend:
             )
             root.relative_to(experiment_root)
             if artifact_nodes is None or any(
-                not stat.S_ISREG(mode) for _name, mode in artifact_nodes
+                not stat.S_ISREG(mode)
+                or links != 1
+                for (
+                    _name, mode, _device, _inode, links,
+                    _size, _mtime_ns, _ctime_ns,
+                ) in artifact_nodes
             ) or tuple(
-                name for name, _mode in artifact_nodes
+                name for (
+                    name, _mode, _device, _inode, _links,
+                    _size, _mtime_ns, _ctime_ns,
+                ) in artifact_nodes
             ) != (
                 "aggregate_manifest.json", "pred.pkl",
             ):
@@ -667,6 +794,7 @@ class QlibMlflowAggregateBackend:
             "source_identity_order_cardinality",
             "source_state_join",
             "source_terminal_evidence",
+            "source_namespace_identity",
             "source_session_exactness",
             "source_non_overlap",
             "candidate_index_exactness",
@@ -787,6 +915,11 @@ class QlibMlflowAggregateBackend:
             return {"classification": "drifted"}
         if not tracking_stable():
             return {"classification": "drifted"}
+        namespace_fingerprint = fingerprint_value({
+            "recorder_id": recorder_id,
+            "artifact_root_identity": root_identity,
+            "artifact_nodes": artifact_nodes,
+        })
         return {
             "classification": "valid",
             "candidate_key": candidate_key,
@@ -799,6 +932,7 @@ class QlibMlflowAggregateBackend:
             "row_count": manifest.get("row_count"),
             "manifest_contract_fingerprint":
                 manifest_contract_fingerprint,
+            "namespace_fingerprint": namespace_fingerprint,
         }
 
     def create_candidate(
@@ -873,7 +1007,7 @@ class QlibMlflowAggregateBackend:
             "candidate artifact store parent",
         )
         lock_dir = self.context.data_dir / "locks"
-        _ensure_child_directory(
+        _establish_observed_child_directory(
             self.context.data_dir, "locks", data_identity,
         )
         lock_parent_identity = _contained_directory_identity(
@@ -961,18 +1095,93 @@ class QlibMlflowAggregateBackend:
                 raise RollingAggregateBackendError(
                     "candidate identity appeared after lock acquisition"
                 )
+            locked_before = self.inventory(aggregate_scope)
+            if (
+                locked_before["fingerprint"] != before["fingerprint"]
+                or locked_before["raw_count"] != before["raw_count"]
+                or locked_before["experiment_present"]
+                != before["experiment_present"]
+                or locked_before["artifact_root_present"]
+                != before["artifact_root_present"]
+            ):
+                raise RollingAggregateBackendError(
+                    "candidate namespace drifted before write"
+                )
             self._fault("before_candidate_namespace")
             assert_base_identities()
             experiment_name = CANDIDATE_EXPERIMENTS[aggregate_scope.family]
             from mlflow.tracking import MlflowClient
             client = MlflowClient(tracking_uri=str(self.context.mlflow_uri))
             experiment = client.get_experiment_by_name(experiment_name)
+            experiment_dir_name = (
+                "rolling_aggregate_candidates_%s"
+                % aggregate_scope.family
+            )
+            canonical_experiment_root = (
+                self.context.data_dir / experiment_dir_name
+            ).absolute()
+            try:
+                os.lstat(str(canonical_experiment_root))
+                current_artifact_root_present = True
+            except FileNotFoundError:
+                current_artifact_root_present = False
+            if (
+                current_artifact_root_present
+                != locked_before["artifact_root_present"]
+            ):
+                raise RollingAggregateBackendError(
+                    "candidate experiment root appeared or disappeared"
+                )
+            if current_artifact_root_present:
+                (
+                    current_root,
+                    current_identity,
+                    _current_inventory,
+                ) = _observe_local_artifact_root(
+                    canonical_experiment_root.as_uri(),
+                    self.context.root,
+                )
+                if (
+                    current_root != canonical_experiment_root
+                    or fingerprint_value(current_identity)
+                    != locked_before["artifact_root_identity"]
+                ):
+                    raise RollingAggregateBackendError(
+                        "candidate experiment root identity drifted"
+                    )
+            established_experiment_identity = _establish_child_directory(
+                self.context.data_dir,
+                experiment_dir_name,
+                data_identity,
+                current_artifact_root_present,
+                (
+                    current_identity[-1]
+                    if current_artifact_root_present else None
+                ),
+            )
+            (
+                observed_experiment_root,
+                experiment_artifact_identity,
+                _experiment_inventory,
+            ) = _observe_local_artifact_root(
+                canonical_experiment_root.as_uri(),
+                self.context.root,
+            )
+            if observed_experiment_root != canonical_experiment_root:
+                raise RollingAggregateBackendError(
+                    "candidate experiment public root is not canonical"
+                )
+            if (
+                experiment_artifact_identity[-1]
+                != established_experiment_identity
+            ):
+                raise RollingAggregateBackendError(
+                    "candidate experiment root drifted after establishment"
+                )
+            self._fault("after_candidate_artifact_root")
+            assert_base_identities()
             if experiment is None:
-                artifact_location = (
-                    self.context.data_dir
-                    / ("rolling_aggregate_candidates_%s"
-                       % aggregate_scope.family)
-                ).as_uri()
+                artifact_location = canonical_experiment_root.as_uri()
                 experiment_id = client.create_experiment(
                     experiment_name, artifact_location=artifact_location,
                 )
@@ -996,10 +1205,32 @@ class QlibMlflowAggregateBackend:
                     aggregate_scope, experiment_artifact_uri,
                 )
                 experiment_id = str(experiment.experiment_id)
+            if experiment_root != canonical_experiment_root:
+                raise RollingAggregateBackendError(
+                    "candidate experiment root changed during establishment"
+                )
             experiment_parent_identity = _contained_directory_identity(
                 experiment_root.parent, self.context.root,
                 "candidate experiment artifact parent",
             )
+
+            def assert_experiment_artifact_identity():
+                (
+                    observed_root,
+                    observed_identity,
+                    _inventory,
+                ) = _observe_local_artifact_root(
+                    experiment_artifact_uri, self.context.root,
+                )
+                if (
+                    observed_root != experiment_root
+                    or observed_identity != experiment_artifact_identity
+                ):
+                    raise RollingAggregateBackendError(
+                        "candidate experiment artifact root identity drifted"
+                    )
+
+            assert_experiment_artifact_identity()
             run = client.create_run(
                 experiment_id,
                 tags={
@@ -1014,8 +1245,45 @@ class QlibMlflowAggregateBackend:
             )
             recorder_id = str(run.info.run_id)
             candidate_artifact_uri = str(run.info.artifact_uri)
-            candidate_artifact_root = None
-            candidate_artifact_identity = None
+            expected_candidate_root = (
+                experiment_root / recorder_id / "artifacts"
+            ).absolute()
+            parsed_candidate_uri = urlparse(candidate_artifact_uri)
+            if (
+                parsed_candidate_uri.scheme not in ("", "file")
+                or parsed_candidate_uri.netloc not in ("", None)
+            ):
+                raise RollingAggregateBackendError(
+                    "candidate artifact root is not local"
+                )
+            parsed_candidate_root = Path(unquote(
+                parsed_candidate_uri.path
+                if parsed_candidate_uri.scheme
+                else candidate_artifact_uri
+            )).expanduser().absolute()
+            if parsed_candidate_root != expected_candidate_root:
+                raise RollingAggregateBackendError(
+                    "candidate artifact public root is not canonical"
+                )
+            _establish_observed_child_directory(
+                experiment_root, recorder_id,
+                experiment_artifact_identity[-1],
+            )
+            recorder_directory = experiment_root / recorder_id
+            recorder_directory_identity = _contained_directory_identity(
+                recorder_directory, self.context.root,
+                "candidate recorder artifact parent",
+            )
+            _establish_observed_child_directory(
+                recorder_directory, "artifacts",
+                recorder_directory_identity,
+            )
+            (
+                candidate_artifact_root,
+                candidate_artifact_identity,
+            ) = (None, None)
+            candidate_prediction_node = None
+            candidate_namespace_fingerprint = None
 
             def observe_candidate_artifact_root():
                 observed_root, observed_identity, _inventory = (
@@ -1043,11 +1311,54 @@ class QlibMlflowAggregateBackend:
                         "candidate artifact root identity drifted"
                     )
 
+            def observe_candidate_artifact_nodes(expected_names):
+                (
+                    observed_root,
+                    observed_identity,
+                    observed_nodes,
+                ) = _observe_local_artifact_root(
+                    candidate_artifact_uri, self.context.root,
+                    include_inventory=True,
+                )
+                if (
+                    observed_root != candidate_artifact_root
+                    or observed_identity != candidate_artifact_identity
+                    or observed_nodes is None
+                    or tuple(
+                        name
+                        for (
+                            name, _mode, _device, _inode, _links,
+                            _size, _mtime_ns, _ctime_ns,
+                        )
+                        in observed_nodes
+                    ) != expected_names
+                    or any(
+                        not stat.S_ISREG(mode) or links != 1
+                        for (
+                            _name, mode, _device, _inode, links,
+                            _size, _mtime_ns, _ctime_ns,
+                        )
+                        in observed_nodes
+                    )
+                ):
+                    raise RollingAggregateBackendError(
+                        "candidate artifact namespace drifted"
+                    )
+                return observed_nodes
+
             try:
+                (
+                    candidate_artifact_root,
+                    candidate_artifact_identity,
+                ) = observe_candidate_artifact_root()
                 self._fault("after_candidate_namespace")
                 assert_base_identities()
+                assert_experiment_artifact_identity()
+                assert_candidate_artifact_identity()
                 self._fault("after_candidate_tags")
                 assert_base_identities()
+                assert_experiment_artifact_identity()
+                assert_candidate_artifact_identity()
             except (KeyboardInterrupt, SystemExit, GeneratorExit):
                 try:
                     client.set_terminated(recorder_id, status="KILLED")
@@ -1105,13 +1416,20 @@ class QlibMlflowAggregateBackend:
                     client.log_artifact(
                         recorder_id, str(temporary / "pred.pkl"),
                     )
-                    (
-                        candidate_artifact_root,
-                        candidate_artifact_identity,
-                    ) = observe_candidate_artifact_root()
+                    prediction_nodes = observe_candidate_artifact_nodes(
+                        ("pred.pkl",),
+                    )
+                    candidate_prediction_node = prediction_nodes[0]
                     self._fault("after_candidate_prediction")
                     assert_base_identities()
+                    assert_experiment_artifact_identity()
                     assert_candidate_artifact_identity()
+                    if observe_candidate_artifact_nodes(
+                        ("pred.pkl",),
+                    )[0] != candidate_prediction_node:
+                        raise RollingAggregateBackendError(
+                            "candidate prediction node identity drifted"
+                        )
                     if _contained_directory_identity(
                         temporary, self.context.root,
                         "candidate staging directory",
@@ -1123,9 +1441,35 @@ class QlibMlflowAggregateBackend:
                         recorder_id,
                         str(temporary / "aggregate_manifest.json"),
                     )
+                    complete_nodes = observe_candidate_artifact_nodes((
+                        "aggregate_manifest.json", "pred.pkl",
+                    ))
+                    if complete_nodes[1] != candidate_prediction_node:
+                        raise RollingAggregateBackendError(
+                            "candidate prediction node identity drifted"
+                        )
+                    candidate_namespace_fingerprint = fingerprint_value({
+                        "recorder_id": recorder_id,
+                        "artifact_root_identity":
+                            candidate_artifact_identity,
+                        "artifact_nodes": complete_nodes,
+                    })
                     self._fault("after_candidate_manifest")
                     assert_base_identities()
+                    assert_experiment_artifact_identity()
                     assert_candidate_artifact_identity()
+                    if fingerprint_value({
+                        "recorder_id": recorder_id,
+                        "artifact_root_identity":
+                            candidate_artifact_identity,
+                        "artifact_nodes":
+                            observe_candidate_artifact_nodes((
+                                "aggregate_manifest.json", "pred.pkl",
+                            )),
+                    }) != candidate_namespace_fingerprint:
+                        raise RollingAggregateBackendError(
+                            "candidate artifact node identity drifted"
+                        )
                     if _contained_directory_identity(
                         temporary, self.context.root,
                         "candidate staging directory",
@@ -1135,7 +1479,19 @@ class QlibMlflowAggregateBackend:
                         )
                 client.set_terminated(recorder_id, status="FINISHED")
                 assert_base_identities()
+                assert_experiment_artifact_identity()
                 assert_candidate_artifact_identity()
+                if fingerprint_value({
+                    "recorder_id": recorder_id,
+                    "artifact_root_identity": candidate_artifact_identity,
+                    "artifact_nodes":
+                        observe_candidate_artifact_nodes((
+                            "aggregate_manifest.json", "pred.pkl",
+                        )),
+                }) != candidate_namespace_fingerprint:
+                    raise RollingAggregateBackendError(
+                        "candidate artifact node identity drifted"
+                    )
             except (KeyboardInterrupt, SystemExit, GeneratorExit):
                 try:
                     client.set_terminated(recorder_id, status="KILLED")
@@ -1185,6 +1541,7 @@ class QlibMlflowAggregateBackend:
             _local_artifact_root(
                 experiment_artifact_uri, self.context.root,
             )
+            assert_experiment_artifact_identity()
             if _contained_directory_identity(
                 experiment_root.parent, self.context.root,
                 "candidate experiment artifact parent",
@@ -1214,12 +1571,32 @@ class QlibMlflowAggregateBackend:
                     "candidate write did not create exactly one recorder"
                 )
             assert_base_identities()
+            assert_experiment_artifact_identity()
             assert_candidate_artifact_identity()
+            if fingerprint_value({
+                "recorder_id": recorder_id,
+                "artifact_root_identity": candidate_artifact_identity,
+                "artifact_nodes": observe_candidate_artifact_nodes((
+                    "aggregate_manifest.json", "pred.pkl",
+                )),
+            }) != candidate_namespace_fingerprint:
+                raise RollingAggregateBackendError(
+                    "candidate artifact node identity drifted"
+                )
         observed = self.inspect_candidate(
             aggregate_scope, target_key, candidate_key,
             expected_manifest_contract_fingerprint,
         )
         self._fault("after_candidate_reinspection")
         assert_tracking_identity()
+        assert_experiment_artifact_identity()
         assert_candidate_artifact_identity()
+        if (
+            observed.get("classification") == "valid"
+            and observed.get("namespace_fingerprint")
+            != candidate_namespace_fingerprint
+        ):
+            raise RollingAggregateBackendError(
+                "candidate namespace changed before create returned"
+            )
         return observed

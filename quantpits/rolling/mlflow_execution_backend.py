@@ -121,12 +121,21 @@ def _local_artifact_root_observation(
             inventory = tuple(sorted(
                 (
                     name,
+                    node.st_mode,
+                    node.st_dev,
+                    node.st_ino,
+                    node.st_nlink,
+                    node.st_size,
+                    node.st_mtime_ns,
+                    node.st_ctime_ns,
+                )
+                for name in os.listdir(current_fd)
+                for node in (
                     os.stat(
                         name, dir_fd=current_fd,
                         follow_symlinks=False,
-                    ).st_mode,
+                    ),
                 )
-                for name in os.listdir(current_fd)
             ))
     except RollingExecutionBackendError:
         raise
@@ -386,6 +395,42 @@ class QlibMlflowExecutionBackend:
             "contained": current == expected and contained,
             "foreign": current != expected or not contained,
         }
+
+    def source_namespace_identity(self, request):
+        """Observe the recorder public namespace used by one aggregate source."""
+
+        if not isinstance(request, RollingUnitEvidenceRequest):
+            raise RollingExecutionContractError(
+                "source namespace observation requires RollingUnitEvidenceRequest"
+            )
+        recorder = self._recorder(
+            request.experiment_name, request.recorder_id,
+        )
+        root, root_identity, inventory = _observe_local_artifact_root(
+            recorder.get_artifact_uri(), self.context.root,
+            include_inventory=True,
+        )
+        if inventory is None:
+            raise RollingExecutionBackendError(
+                "source artifact namespace is unavailable"
+            )
+        nodes = {item[0]: item for item in inventory}
+        for expectation in request.artifacts:
+            node = nodes.get(expectation.logical_key)
+            if (
+                node is None
+                or "/" in expectation.logical_key
+                or not stat.S_ISREG(node[1])
+                or node[4] != 1
+            ):
+                raise RollingExecutionBackendError(
+                    "source artifact is not one direct unlinked regular node"
+                )
+        return fingerprint_value({
+            "recorder_id": request.recorder_id,
+            "artifact_root_identity": root_identity,
+            "artifact_nodes": inventory,
+        })
 
     @staticmethod
     def _recorder(experiment_name, recorder_id):

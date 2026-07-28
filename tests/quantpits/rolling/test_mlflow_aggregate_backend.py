@@ -58,6 +58,50 @@ def test_no_create_terminal_lock_open_is_read_only(tmp_path, monkeypatch):
     assert observed["flags"] & write_flags == 0
 
 
+@pytest.mark.parametrize("expected_present", [False, True])
+def test_directory_establishment_rejects_presence_or_identity_race(
+    tmp_path, monkeypatch, expected_present,
+):
+    parent = tmp_path / "data"
+    parent.mkdir()
+    child = parent / "candidate-root"
+    if expected_present:
+        child.mkdir()
+        child_meta = child.stat()
+        expected_identity = (child_meta.st_dev, child_meta.st_ino)
+    else:
+        expected_identity = None
+    parent_meta = parent.stat()
+    parent_identity = (parent_meta.st_dev, parent_meta.st_ino)
+    original_mkdir = aggregate_backend_module.os.mkdir
+
+    def replace_during_mkdir(path, mode=0o777, *, dir_fd=None):
+        if path != child.name or dir_fd is None:
+            return original_mkdir(path, mode, dir_fd=dir_fd)
+        if expected_present:
+            os.rename(
+                child.name, "displaced",
+                src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
+            )
+        original_mkdir(child.name, mode, dir_fd=dir_fd)
+        raise FileExistsError(child.name)
+
+    monkeypatch.setattr(
+        aggregate_backend_module.os, "mkdir", replace_during_mkdir,
+    )
+    with pytest.raises(
+        RollingAggregateBackendError,
+        match="presence drifted|identity drifted",
+    ):
+        aggregate_backend_module._establish_child_directory(
+            parent,
+            child.name,
+            parent_identity,
+            expected_present,
+            expected_identity,
+        )
+
+
 @pytest.mark.parametrize("backend_kind", ["sqlite", "file"])
 def test_tracking_backend_observer_detects_same_public_path_replacement(
     tmp_path, backend_kind,
@@ -202,6 +246,37 @@ def test_real_backend_experiment_namespace_is_counted_and_retryable(tmp_path):
     assert first.target_results[0].did_write is True
     inventory = backend.inventory(aggregate)
     assert inventory["experiment_present"] is True
+    assert inventory["raw_count"] == 0
+    backend._fault_hook = None
+    retry = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    assert retry.status == "success"
+    assert retry.target_results[0].status == "materialized_success"
+
+
+def test_real_backend_artifact_root_namespace_is_counted_before_experiment(
+    tmp_path,
+):
+    (
+        _context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(
+        tmp_path,
+        fault_hook=lambda point: (
+            (_ for _ in ()).throw(RuntimeError(point))
+            if point == "after_candidate_artifact_root" else None
+        ),
+    )
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+    inventory = backend.inventory(aggregate)
+
+    assert result.status == "failed"
+    assert result.target_results[0].did_write is True
+    assert inventory["artifact_root_present"] is True
+    assert inventory["experiment_present"] is False
     assert inventory["raw_count"] == 0
     backend._fault_hook = None
     retry = materialize_rolling_aggregate_candidates(
@@ -422,9 +497,12 @@ def test_real_backend_rechecks_public_root_identity_after_artifact_reads(
 @pytest.mark.parametrize(
     ("fault_point", "namespace"),
     (
+        ("after_candidate_namespace", "experiment"),
         ("after_candidate_prediction", "experiment"),
         ("after_candidate_prediction", "recorder"),
+        ("after_candidate_prediction", "prediction"),
         ("after_candidate_manifest", "staging"),
+        ("after_candidate_manifest", "manifest"),
     ),
 )
 def test_real_backend_rejects_namespace_replacement_during_candidate_create(
@@ -460,11 +538,33 @@ def test_real_backend_rejects_namespace_replacement_during_candidate_create(
                 if artifact_uri.startswith("file://")
                 else artifact_uri
             )
-        else:
+        elif namespace == "staging":
             path = next(
                 context.data_dir.glob(".quantpits-aggregate-*")
             )
-        replace_directory(path)
+        else:
+            recorder = next(iter(
+                backend._recorders(
+                    "Rolling_Aggregate_Candidates",
+                ).values()
+            ))
+            artifact_uri = recorder.get_artifact_uri()
+            root = Path(
+                artifact_uri[7:]
+                if artifact_uri.startswith("file://")
+                else artifact_uri
+            )
+            path = root / (
+                "pred.pkl"
+                if namespace == "prediction"
+                else "aggregate_manifest.json"
+            )
+        if path.is_dir():
+            replace_directory(path)
+        else:
+            displaced = path.with_name(path.name + "-displaced")
+            path.rename(displaced)
+            shutil.copy2(displaced, path)
         replaced["done"] = True
 
     (
@@ -485,6 +585,159 @@ def test_real_backend_rejects_namespace_replacement_during_candidate_create(
         result.target_results[0].capabilities
     )
     assert "publication_input" not in result.capabilities
+
+
+def test_candidate_root_identity_survives_create_to_terminal_recheck(
+    tmp_path,
+):
+    (
+        _context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path)
+    original_create = backend.create_candidate
+    replaced = {"done": False}
+
+    def create_then_replace(*args, **kwargs):
+        observation = original_create(*args, **kwargs)
+        recorder = next(iter(
+            backend._recorders(
+                "Rolling_Aggregate_Candidates",
+            ).values()
+        ))
+        artifact_uri = recorder.get_artifact_uri()
+        public_root = Path(
+            artifact_uri[7:]
+            if artifact_uri.startswith("file://")
+            else artifact_uri
+        )
+        displaced = public_root.with_name(
+            public_root.name + "-displaced",
+        )
+        public_root.rename(displaced)
+        shutil.copytree(displaced, public_root)
+        replaced["done"] = True
+        return observation
+
+    backend.create_candidate = create_then_replace
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+
+    assert replaced["done"] is True
+    assert result.status == "indeterminate"
+    assert result.target_results[0].did_write is True
+    assert result.target_results[0].candidate is None
+    assert "publication_input" not in result.capabilities
+
+
+def test_existing_experiment_root_identity_survives_inventory_to_first_write(
+    tmp_path,
+):
+    holder = {}
+    replaced = {"done": False}
+
+    def fault(point):
+        if point != "before_candidate_namespace" or replaced["done"]:
+            return
+        root = (
+            holder["context"].data_dir
+            / "rolling_aggregate_candidates_rolling"
+        )
+        displaced = root.with_name(root.name + "-displaced")
+        root.rename(displaced)
+        shutil.copytree(displaced, root)
+        replaced["done"] = True
+
+    (
+        context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path, fault_hook=fault)
+    holder["context"] = context
+    experiment_root = (
+        context.data_dir / "rolling_aggregate_candidates_rolling"
+    )
+    experiment_root.mkdir()
+    from mlflow.tracking import MlflowClient
+    MlflowClient(
+        tracking_uri=str(context.mlflow_uri),
+    ).create_experiment(
+        "Rolling_Aggregate_Candidates",
+        artifact_location=experiment_root.as_uri(),
+    )
+
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+
+    assert replaced["done"] is True
+    assert result.status in ("failed", "indeterminate")
+    assert result.target_results[0].candidate is None
+    assert "publication_input" not in result.capabilities
+
+
+@pytest.mark.parametrize(
+    "replacement_kind", ("new_inode", "hardlink", "same_inode"),
+)
+def test_candidate_direct_artifact_identity_is_stable_during_inspection(
+    tmp_path, monkeypatch, replacement_kind,
+):
+    (
+        _context, _repository, _source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    target = aggregate.target_keys[0]
+    candidate_key = aggregate.candidate_keys[0]
+    created = backend.create_candidate(
+        aggregate, target, candidate_key, prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    recorder = next(iter(
+        backend._recorders("Rolling_Aggregate_Candidates").values()
+    ))
+    artifact_uri = recorder.get_artifact_uri()
+    artifact_root = Path(
+        artifact_uri[7:] if artifact_uri.startswith("file://")
+        else artifact_uri
+    )
+    prediction_path = artifact_root / "pred.pkl"
+    displaced = tmp_path / "pred-displaced.pkl"
+    original_decode = aggregate_backend_module._strict_json_object
+    replaced = {"done": False}
+
+    def decode_then_replace(data):
+        payload = original_decode(data)
+        if not replaced["done"]:
+            if replacement_kind == "same_inode":
+                original = prediction_path.read_bytes()
+                before = prediction_path.stat()
+                prediction_path.write_bytes(original)
+                os.utime(
+                    prediction_path,
+                    ns=(
+                        before.st_atime_ns,
+                        before.st_mtime_ns + 1_000_000,
+                    ),
+                )
+            else:
+                prediction_path.rename(displaced)
+                if replacement_kind == "hardlink":
+                    os.link(displaced, prediction_path)
+                else:
+                    shutil.copy2(displaced, prediction_path)
+            replaced["done"] = True
+        return payload
+
+    monkeypatch.setattr(
+        aggregate_backend_module, "_strict_json_object",
+        decode_then_replace,
+    )
+    observed = backend.inspect_candidate(
+        aggregate, target, candidate_key,
+        _candidate_manifest_contract_fingerprint(manifest),
+    )
+
+    assert replaced["done"] is True
+    assert observed == {"classification": "drifted"}
 
 
 def test_real_backend_rejects_same_uri_tracking_node_replacement(

@@ -244,7 +244,9 @@ aggregate inspector 会独立把 backend 返回的 prediction bytes 与 Phase 32
 Phase 35 verified candidate。
 source-set observer 会保留完整 requested unit identity：内容/覆盖不完整返回 `incomplete`，
 观察或 State join 不可比较返回 `observation_drifted`；两者都只有 render 能力，不会抛弃后续 unit
-或获得 aggregate/publication capability。
+或获得 aggregate/publication capability。每个 source unit 还携带 inspector-owned namespace
+fingerprint：从 evidence inspection 之前、prediction bytes 读取前后直到 kernel terminal
+postcondition 都必须保持同一 public root、逐级目录和 direct artifact node 的 device/inode identity。
 
 candidate 复用比“recorder 或 artifact 存在”更严格：MLflow run 必须仍为 active 且终态为
 `FINISHED`，重新检查还必须与 source-derived manifest contract 完全一致，包括有序 unit key、
@@ -259,15 +261,25 @@ candidate artifact root 必须通过 no-follow 直接子节点清单验证，且
 `pred.pkl` 与 `aggregate_manifest.json`；额外目录、symlink（包括外逃 symlink）或特殊节点均阻断。
 artifact root 的 MLflow 公开 URI 保留词法身份；从 canonical workspace 到 root 的每一级目录都以
 no-follow 方式打开并冻结身份，root 本身或任一祖先即使只链接到同一 workspace 内也会阻断。
-创建时第一次 artifact 上传后即冻结 experiment、recorder artifact root 与 staging namespace 身份，
-在第二次上传、terminal transition、inventory 和最终 reinspection 后逐次复核；同一公开路径下的目录替换
-也会阻断。两个 artifact 读取并验证后还会通过原公开 URI 复核整条目录链，不能用解析后的物理别名获得授权。
+创建时会在第一次 artifact 上传前安全建立并冻结 canonical experiment、recorder artifact root；
+目录的“原先存在/原先不存在”事实与 device/inode 在同一次 no-follow 建立动作中核对，
+因此观察与 `mkdir` 之间的抢先创建或替换也会 fail closed；
+staging namespace 也在上传前冻结。`pred.pkl` 与 `aggregate_manifest.json` 每次落入 candidate
+namespace 后立即冻结各自的 regular-node device/inode，并在后续上传、terminal transition、inventory、
+create 返回和最终 reinspection 后逐次复核；同一公开路径下的目录或 byte-identical file replacement
+都会阻断。direct artifact 还必须是 link-count 为 1 的独立 regular node，稳定 size/mtime/ctime
+元数据也进入 namespace fingerprint；hardlink 或 same-inode byte-identical rewrite 同样阻断。
+两个 artifact 读取并验证后还会通过原公开 URI 复核整条目录链和两个 direct node，
+不能用解析后的物理别名获得授权。candidate inspection 产生的 namespace fingerprint 会从
+create/reuse 观察一直带到 kernel terminal recheck，不能以相同 bytes 掩盖跨阶段 namespace replacement。
 tracking URI 相等本身不足以证明 backend 连续；SQLite file 或 file-store root 的公开 node 身份也在
 完整 source evidence+prediction-bytes observation、candidate inventory/inspection、lock 和
 materialization 前后冻结，同 URI inode 替换 fail closed。最终授予
 `publication_input` 前会在 candidate lock 内重新检查 source/State/current/backend，并要求每个 target
 在 terminal inventory 中恰好存在一个 active、`FINISHED`、exact candidate；duplicate 或竞态漂移均 fail closed。
 首次创建 candidate experiment namespace 本身也计为 durable write。
+若 canonical artifact root 在 experiment metadata 之前被首次建立，该目录写入也由 inventory
+单独观察，后续失败不得伪报 `did_write=false`。
 无创建的 terminal lock 重获路径在实际 `openat()` 也不使用 create 语义，因此即使 lock 在预检后、
 打开前被删除，也不会补建缺失的 lock parent/node；已存在但无法作为 canonical regular file
 打开的 lock 同样视为 unavailable。lock unavailable 在已知零写入时返回
