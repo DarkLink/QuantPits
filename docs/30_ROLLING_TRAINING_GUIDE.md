@@ -259,7 +259,12 @@ candidate artifact root 必须通过 no-follow 直接子节点清单验证，且
 `pred.pkl` 与 `aggregate_manifest.json`；额外目录、symlink（包括外逃 symlink）或特殊节点均阻断。
 artifact root 的 MLflow 公开 URI 保留词法身份；从 canonical workspace 到 root 的每一级目录都以
 no-follow 方式打开并冻结身份，root 本身或任一祖先即使只链接到同一 workspace 内也会阻断。
-两个 artifact 读取并验证后还会通过原公开 URI 复核整条目录链，不能用解析后的物理别名获得授权。最终授予
+创建时第一次 artifact 上传后即冻结 experiment、recorder artifact root 与 staging namespace 身份，
+在第二次上传、terminal transition、inventory 和最终 reinspection 后逐次复核；同一公开路径下的目录替换
+也会阻断。两个 artifact 读取并验证后还会通过原公开 URI 复核整条目录链，不能用解析后的物理别名获得授权。
+tracking URI 相等本身不足以证明 backend 连续；SQLite file 或 file-store root 的公开 node 身份也在
+完整 source evidence+prediction-bytes observation、candidate inventory/inspection、lock 和
+materialization 前后冻结，同 URI inode 替换 fail closed。最终授予
 `publication_input` 前会在 candidate lock 内重新检查 source/State/current/backend，并要求每个 target
 在 terminal inventory 中恰好存在一个 active、`FINISHED`、exact candidate；duplicate 或竞态漂移均 fail closed。
 首次创建 candidate experiment namespace 本身也计为 durable write。

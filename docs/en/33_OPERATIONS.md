@@ -251,8 +251,12 @@ The candidate artifact root permits only the direct regular files `pred.pkl` and
 `aggregate_manifest.json`; any extra directory, symlink, or special node blocks reuse. Neither the
 root nor any ancestor in the MLflow public artifact URI may be a directory alias, including an
 alias to a contained target in the same workspace; the directory chain is rechecked through the
-original public URI after the reads. Gate execute
-uses a recursive lifecycle mutation observer and installs each new-directory watch synchronously
+original public URI after the reads. The first candidate artifact upload freezes the experiment,
+recorder-artifact-root, and staging identities, which are rechecked after later uploads, the
+terminal transition, inventory, and final reinspection. A same-URI replacement of the SQLite file
+or file-store root is backend drift and cannot grant source, candidate, or publication authority;
+the source boundary spans both evidence inspection and every prediction-bytes read.
+Gate execute uses a recursive lifecycle mutation observer and installs each new-directory watch synchronously
 before `mkdir` or directory rename returns, including no-wait write-then-delete. Its write
 allow-list is anchored back to the terminal experiment, recorder, and candidate identities, so a
 broad `mlruns/` or `qlib_data/` prefix grants no authority. Physical write bytes come from

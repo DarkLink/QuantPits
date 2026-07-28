@@ -65,6 +65,12 @@ class _TerminalCandidateBlocked(Exception):
 
 class _TerminalObservationIndeterminate(Exception):
     """Terminal facts cannot be compared after candidate work."""
+
+
+class _SourceBackendDrifted(Exception):
+    """Source tracking identity changed during aggregate observation."""
+
+
 _DIGEST_CHARS = frozenset("0123456789abcdef")
 
 
@@ -502,6 +508,7 @@ def _candidate_manifest_contract_fingerprint(manifest: Mapping[str, Any]) -> str
 
 
 class RollingAggregateSourceBackend(Protocol):
+    def tracking_identity(self) -> Mapping[str, Any]: ...
     def inspect(self, scope: RollingExecutionScope, requests: tuple) -> RollingEvidenceSetInspection: ...
     def prediction_bytes(self, request: RollingUnitEvidenceRequest) -> bytes: ...
 
@@ -601,6 +608,37 @@ def inspect_rolling_aggregate_sources(
         )
 
     try:
+        source_backend_identity = source_backend.tracking_identity()
+        if not isinstance(source_backend_identity, Mapping):
+            raise RollingAggregateContractError(
+                "source backend identity is not comparable"
+            )
+        source_backend_identity = dict(source_backend_identity)
+    except _CONTROL:
+        raise
+    except Exception as exc:
+        return failed_set(
+            "observation_drifted",
+            fingerprint_value({
+                "scope": aggregate_scope.scope_fingerprint,
+                "source_backend_identity_failure":
+                    exc.__class__.__name__,
+            }),
+        )
+
+    def source_backend_stable():
+        try:
+            observed = source_backend.tracking_identity()
+            return (
+                isinstance(observed, Mapping)
+                and dict(observed) == source_backend_identity
+            )
+        except _CONTROL:
+            raise
+        except Exception:
+            return False
+
+    try:
         evidence = _rebuild_evidence_set(
             source_backend.inspect(
                 aggregate_scope.execution_scope, requests,
@@ -616,6 +654,8 @@ def inspect_rolling_aggregate_sources(
                 "failure": exc.__class__.__name__,
             }),
         )
+    if not source_backend_stable():
+        return failed_set("observation_drifted", evidence.fingerprint)
     if evidence.requested_unit_keys != aggregate_scope.requested_unit_keys:
         return failed_set("observation_drifted", evidence.fingerprint)
     try:
@@ -659,10 +699,18 @@ def inspect_rolling_aggregate_sources(
                 raise RollingAggregateContractError(
                     "one physical recorder cannot represent two requested units"
                 )
+            if not source_backend_stable():
+                raise _SourceBackendDrifted(
+                    "source backend identity drifted before prediction read"
+                )
             raw = source_backend.prediction_bytes(request)
             if not isinstance(raw, bytes):
                 raise RollingAggregateContractError(
                     "source backend returned non-byte prediction data"
+                )
+            if not source_backend_stable():
+                raise _SourceBackendDrifted(
+                    "source backend identity drifted after prediction read"
                 )
             prediction_artifact = next(
                 item for item in request.artifacts
@@ -713,6 +761,8 @@ def inspect_rolling_aggregate_sources(
                 "rolling_aggregate_source_observation_drifted",
                 _authority=_SOURCE_SET_TOKEN,
             ))
+    if not source_backend_stable():
+        return failed_set("observation_drifted", evidence.fingerprint)
     status = (
         "all_valid"
         if all(isinstance(item, RollingAggregateSourceUnit)

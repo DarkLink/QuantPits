@@ -291,7 +291,13 @@ the two regular files `pred.pkl` and `aggregate_manifest.json`; an extra directo
 preserved: every directory from the canonical workspace to the artifact root is opened no-follow
 and identity-frozen, so an alias at the root or any ancestor is rejected even when it targets a
 directory inside the same workspace. After both artifacts are read and validated, the complete
-directory chain is re-established through that original public URI. Before
+directory chain is re-established through that original public URI. During creation, the first
+artifact upload freezes the experiment, recorder-artifact-root, and staging namespace identities;
+the second upload, terminal transition, inventory, and final reinspection recheck that chain.
+A stable tracking URI alone is insufficient: the complete source-evidence-plus-prediction-bytes
+observation and candidate inventory/inspection/locking/materialization also freeze the public
+SQLite-file or file-store-root
+node, so a same-URI inode replacement fails closed. Before
 granting `publication_input`, the kernel rechecks source/State/current/backend under the candidate
 lock and requires exactly one active, `FINISHED`, exact candidate per target in terminal inventory.
 Duplicates and race drift fail closed. The candidate experiment namespace itself counts as a durable

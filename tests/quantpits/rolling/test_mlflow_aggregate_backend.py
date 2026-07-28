@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -13,7 +14,10 @@ from quantpits.rolling.aggregate import (
     _candidate_from_observation,
     _candidate_manifest_contract_fingerprint,
 )
-from quantpits.rolling.errors import RollingAggregateBackendError
+from quantpits.rolling.errors import (
+    RollingAggregateBackendError,
+    RollingExecutionBackendError,
+)
 from quantpits.utils.workspace import fingerprint_value
 
 from tests.quantpits.rolling.aggregate_support import (
@@ -54,8 +58,87 @@ def test_no_create_terminal_lock_open_is_read_only(tmp_path, monkeypatch):
     assert observed["flags"] & write_flags == 0
 
 
+@pytest.mark.parametrize("backend_kind", ["sqlite", "file"])
+def test_tracking_backend_observer_detects_same_public_path_replacement(
+    tmp_path, backend_kind,
+):
+    workspace = tmp_path / "Demo_Workspace"
+    workspace.mkdir()
+    if backend_kind == "sqlite":
+        node = workspace / "mlflow.db"
+        node.write_bytes(b"metadata")
+        uri = "sqlite:///%s" % node
+    else:
+        node = workspace / "mlruns"
+        node.mkdir()
+        (node / "metadata").write_bytes(b"metadata")
+        uri = node.as_uri()
+    public_before, identity_before = (
+        aggregate_backend_module._observe_tracking_backend(
+            uri, workspace,
+        )
+    )
+    displaced = node.with_name(node.name + "-displaced")
+    node.rename(displaced)
+    if backend_kind == "sqlite":
+        shutil.copy2(displaced, node)
+    else:
+        shutil.copytree(displaced, node)
+    public_after, identity_after = (
+        aggregate_backend_module._observe_tracking_backend(
+            uri, workspace,
+        )
+    )
+
+    assert public_after == public_before == node
+    assert identity_after != identity_before
+
+
+@pytest.mark.parametrize(
+    "node_kind",
+    ["file_symlink", "directory_symlink", "ancestor_symlink", "fifo"],
+)
+def test_tracking_backend_observer_rejects_aliases_and_special_nodes(
+    tmp_path, node_kind,
+):
+    workspace = tmp_path / "Demo_Workspace"
+    workspace.mkdir()
+    physical = workspace / "physical"
+    if node_kind == "directory_symlink":
+        physical.mkdir()
+        node = workspace / "mlruns"
+        node.symlink_to(physical, target_is_directory=True)
+        uri = node.as_uri()
+    elif node_kind == "ancestor_symlink":
+        physical.mkdir()
+        (physical / "mlflow.db").write_bytes(b"metadata")
+        ancestor = workspace / "alias"
+        ancestor.symlink_to(physical, target_is_directory=True)
+        uri = "sqlite:///%s" % (ancestor / "mlflow.db")
+    else:
+        node = workspace / "mlflow.db"
+        if node_kind == "file_symlink":
+            physical.write_bytes(b"metadata")
+            node.symlink_to(physical)
+        else:
+            os.mkfifo(str(node))
+        uri = "sqlite:///%s" % node
+
+    with pytest.raises(RollingExecutionBackendError):
+        aggregate_backend_module._observe_tracking_backend(
+            uri, workspace,
+        )
+
+
 def _real_backend_case(tmp_path, fault_hook=None):
     context, _scope, repository, source, aggregate = aggregate_case(tmp_path)
+    from mlflow.tracking import MlflowClient
+
+    MlflowClient(
+        tracking_uri=str(context.mlflow_uri),
+    ).get_experiment_by_name(
+        "__rolling_aggregate_fixture_initialization__",
+    )
     fixture = FakeCandidateBackend(context)
     fixture_result = materialize_rolling_aggregate_candidates(
         aggregate, repository, source, fixture,
@@ -334,6 +417,209 @@ def test_real_backend_rechecks_public_root_identity_after_artifact_reads(
         aggregate, target, candidate_key, observed, expected,
     )
     assert "candidate_reference" not in rebuilt.capabilities
+
+
+@pytest.mark.parametrize(
+    ("fault_point", "namespace"),
+    (
+        ("after_candidate_prediction", "experiment"),
+        ("after_candidate_prediction", "recorder"),
+        ("after_candidate_manifest", "staging"),
+    ),
+)
+def test_real_backend_rejects_namespace_replacement_during_candidate_create(
+    tmp_path, fault_point, namespace,
+):
+    holder = {}
+    replaced = {"done": False}
+
+    def replace_directory(path):
+        displaced = path.with_name(path.name + "-displaced")
+        path.rename(displaced)
+        shutil.copytree(displaced, path)
+
+    def fault(point):
+        if point != fault_point or replaced["done"]:
+            return
+        context = holder["context"]
+        backend = holder["backend"]
+        if namespace == "experiment":
+            path = (
+                context.data_dir
+                / "rolling_aggregate_candidates_rolling"
+            )
+        elif namespace == "recorder":
+            recorder = next(iter(
+                backend._recorders(
+                    "Rolling_Aggregate_Candidates",
+                ).values()
+            ))
+            artifact_uri = recorder.get_artifact_uri()
+            path = Path(
+                artifact_uri[7:]
+                if artifact_uri.startswith("file://")
+                else artifact_uri
+            )
+        else:
+            path = next(
+                context.data_dir.glob(".quantpits-aggregate-*")
+            )
+        replace_directory(path)
+        replaced["done"] = True
+
+    (
+        context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path, fault_hook=fault)
+    holder.update(context=context, backend=backend)
+
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+
+    assert replaced["done"] is True
+    assert result.status in ("failed", "indeterminate")
+    assert result.target_results[0].did_write is True
+    assert result.target_results[0].candidate is None
+    assert "candidate_reference" not in (
+        result.target_results[0].capabilities
+    )
+    assert "publication_input" not in result.capabilities
+
+
+def test_real_backend_rejects_same_uri_tracking_node_replacement(
+    tmp_path,
+):
+    holder = {}
+    replaced = {"done": False}
+    identities = {}
+
+    def fault(point):
+        if point != "after_candidate_reinspection" or replaced["done"]:
+            return
+        database = holder["context"].root / "mlflow.db"
+        identities["before"] = (
+            database.stat().st_dev, database.stat().st_ino,
+        )
+        replacement = database.with_name("mlflow.db.replacement")
+        shutil.copy2(database, replacement)
+        os.replace(replacement, database)
+        identities["after"] = (
+            database.stat().st_dev, database.stat().st_ino,
+        )
+        replaced["done"] = True
+
+    (
+        context, repository, source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path, fault_hook=fault)
+    holder["context"] = context
+
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+
+    assert replaced["done"] is True
+    assert identities["before"] != identities["after"]
+    assert result.status in ("failed", "indeterminate")
+    assert result.target_results[0].did_write is True
+    assert result.target_results[0].candidate is None
+    assert "publication_input" not in result.capabilities
+
+
+@pytest.mark.parametrize("observer", ["inventory", "inspection", "lock"])
+def test_real_backend_rechecks_tracking_node_across_every_observer(
+    tmp_path, monkeypatch, observer,
+):
+    (
+        context, _repository, _source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    target = aggregate.target_keys[0]
+    candidate_key = aggregate.candidate_keys[0]
+    created = backend.create_candidate(
+        aggregate, target, candidate_key, prediction, manifest,
+    )
+    assert created["classification"] == "valid"
+    database = context.root / "mlflow.db"
+    replaced = {"done": False}
+
+    def replace_database():
+        if replaced["done"]:
+            return
+        replacement = database.with_name("mlflow.db.replacement")
+        shutil.copy2(database, replacement)
+        os.replace(replacement, database)
+        replaced["done"] = True
+
+    if observer in ("inventory", "inspection"):
+        original_recorders = backend._recorders
+
+        def recorders_then_replace(experiment_name):
+            observed = original_recorders(experiment_name)
+            replace_database()
+            return observed
+
+        monkeypatch.setattr(
+            backend, "_recorders", recorders_then_replace,
+        )
+    if observer == "inventory":
+        with pytest.raises(RollingAggregateBackendError):
+            backend.inventory(aggregate)
+    elif observer == "inspection":
+        observed = backend.inspect_candidate(
+            aggregate, target, candidate_key,
+            _candidate_manifest_contract_fingerprint(manifest),
+        )
+        assert observed == {"classification": "drifted"}
+    else:
+        with pytest.raises(RollingAggregateBackendError):
+            backend.with_candidate_lock(
+                aggregate, replace_database,
+                create_if_missing=False,
+            )
+    assert replaced["done"] is True
+
+
+def test_real_backend_tracking_node_drift_blocks_before_candidate_write(
+    tmp_path, monkeypatch,
+):
+    (
+        context, _repository, _source, aggregate, backend,
+        prediction, manifest,
+    ) = _real_backend_case(tmp_path)
+    original_inventory = backend.inventory
+    replaced = {"done": False}
+
+    def inventory_then_replace(scope):
+        observed = original_inventory(scope)
+        if not replaced["done"]:
+            database = context.root / "mlflow.db"
+            replacement = database.with_name(
+                "mlflow.db.replacement",
+            )
+            shutil.copy2(database, replacement)
+            os.replace(replacement, database)
+            replaced["done"] = True
+        return observed
+
+    monkeypatch.setattr(
+        backend, "inventory", inventory_then_replace,
+    )
+    with pytest.raises(RollingAggregateBackendError):
+        backend.create_candidate(
+            aggregate, aggregate.target_keys[0],
+            aggregate.candidate_keys[0], prediction, manifest,
+        )
+
+    assert replaced["done"] is True
+    assert not (
+        context.data_dir / "locks"
+        / "rolling_aggregate_candidate.lock"
+    ).exists()
+    assert backend._recorders(
+        "Rolling_Aggregate_Candidates",
+    ) == {}
 
 
 def test_real_backend_deleted_finished_run_is_audit_only(tmp_path):

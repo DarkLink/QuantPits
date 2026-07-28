@@ -30,6 +30,7 @@ from quantpits.rolling.identity import workspace_fingerprint
 from quantpits.rolling.mlflow_execution_backend import (
     _local_artifact_root,
     _observe_local_artifact_root,
+    _observe_tracking_backend,
     _tracking_uri_identity,
 )
 from quantpits.rolling.evidence import _secure_read
@@ -210,17 +211,33 @@ class QlibMlflowAggregateBackend:
             )
 
     def backend_identity(self, aggregate_scope):
-        self._assert_tracking()
+        tracking_path, tracking_identity = self._tracking_observation()
         return fingerprint_value({
             "workspace_fingerprint": self.workspace_identity(
                 aggregate_scope,
             ),
             "backend_fingerprint": self.backend_fingerprint,
             "tracking_uri": str(self.context.mlflow_uri),
+            "tracking_public_path": tracking_path.as_posix(),
+            "tracking_node_fingerprint":
+                fingerprint_value(tracking_identity),
         })
 
     def workspace_identity(self, aggregate_scope):
         return workspace_fingerprint(self.context.root)
+
+    def _tracking_observation(self):
+        self._assert_tracking()
+        try:
+            return _observe_tracking_backend(
+                self.context.mlflow_uri, self.context.root,
+            )
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception as exc:
+            raise RollingAggregateBackendError(
+                "candidate tracking backend identity is unavailable"
+            ) from exc
 
     def _candidate_experiment_root(self, aggregate_scope, artifact_uri):
         root = _prospective_contained_path(
@@ -256,6 +273,7 @@ class QlibMlflowAggregateBackend:
             raise RollingAggregateBackendError(
                 "candidate backend workspace is foreign"
             )
+        tracking_path, tracking_identity = self._tracking_observation()
         root_identity = _contained_directory_identity(
             self.context.root, self.context.root, "workspace root",
         )
@@ -334,7 +352,16 @@ class QlibMlflowAggregateBackend:
                     "aggregate candidate lock is busy"
                 ) from exc
             def assert_lock_boundary():
-                self._assert_tracking()
+                observed_tracking_path, observed_tracking_identity = (
+                    self._tracking_observation()
+                )
+                if (
+                    observed_tracking_path != tracking_path
+                    or observed_tracking_identity != tracking_identity
+                ):
+                    raise RollingAggregateBackendError(
+                        "candidate tracking backend identity drifted"
+                    )
                 if _contained_directory_identity(
                     self.context.root, self.context.root,
                     "workspace root",
@@ -458,7 +485,7 @@ class QlibMlflowAggregateBackend:
             raise RollingAggregateContractError(
                 "inventory requires RollingAggregateScope"
             )
-        self._assert_tracking()
+        tracking_path, tracking_identity = self._tracking_observation()
         experiment_name = CANDIDATE_EXPERIMENTS[aggregate_scope.family]
         from mlflow.tracking import MlflowClient
         client = MlflowClient(tracking_uri=str(self.context.mlflow_uri))
@@ -494,6 +521,16 @@ class QlibMlflowAggregateBackend:
                 "run_status": recorder.get_status(),
                 "lifecycle_stage": recorder.get_lifecycle_stage(),
             })
+        observed_tracking_path, observed_tracking_identity = (
+            self._tracking_observation()
+        )
+        if (
+            observed_tracking_path != tracking_path
+            or observed_tracking_identity != tracking_identity
+        ):
+            raise RollingAggregateBackendError(
+                "candidate tracking backend drifted during inventory"
+            )
         return {
             "raw_count": len(rows),
             "fingerprint": fingerprint_value(rows),
@@ -512,7 +549,22 @@ class QlibMlflowAggregateBackend:
             raise RollingAggregateContractError(
                 "candidate inspection requires the reobserved manifest contract"
             )
-        self._assert_tracking()
+        tracking_path, tracking_identity = self._tracking_observation()
+
+        def tracking_stable():
+            try:
+                observed_path, observed_identity = (
+                    self._tracking_observation()
+                )
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except Exception:
+                return False
+            return (
+                observed_path == tracking_path
+                and observed_identity == tracking_identity
+            )
+
         experiment_name = CANDIDATE_EXPERIMENTS[aggregate_scope.family]
         from mlflow.tracking import MlflowClient
         experiment = MlflowClient(
@@ -536,7 +588,10 @@ class QlibMlflowAggregateBackend:
             if tags.get("candidate_key") == candidate_key:
                 matches.append((str(recorder_id), recorder, tags))
         if not matches:
-            return {"classification": "missing"}
+            return {
+                "classification":
+                    "missing" if tracking_stable() else "drifted"
+            }
         if len(matches) != 1:
             return {"classification": "duplicate"}
         recorder_id, recorder, tags = matches[0]
@@ -730,6 +785,8 @@ class QlibMlflowAggregateBackend:
             raise
         except Exception:
             return {"classification": "drifted"}
+        if not tracking_stable():
+            return {"classification": "drifted"}
         return {
             "classification": "valid",
             "candidate_key": candidate_key,
@@ -784,12 +841,25 @@ class QlibMlflowAggregateBackend:
             raise RollingAggregateContractError(
                 "candidate manifest and prediction bytes disagree"
             )
-        self._assert_tracking()
+        tracking_path, tracking_identity = self._tracking_observation()
+
+        def assert_tracking_identity():
+            observed_path, observed_identity = self._tracking_observation()
+            if (
+                observed_path != tracking_path
+                or observed_identity != tracking_identity
+            ):
+                raise RollingAggregateBackendError(
+                    "candidate tracking backend identity drifted"
+                )
+
         before = self.inventory(aggregate_scope)
+        assert_tracking_identity()
         existing = self.inspect_candidate(
             aggregate_scope, target_key, candidate_key,
             expected_manifest_contract_fingerprint,
         )
+        assert_tracking_identity()
         if existing.get("classification") != "missing":
             return existing
         root_identity = _contained_directory_identity(
@@ -838,7 +908,7 @@ class QlibMlflowAggregateBackend:
                 )
 
             def assert_base_identities():
-                self._assert_tracking()
+                assert_tracking_identity()
                 if _contained_directory_identity(
                     self.context.root, self.context.root, "workspace root",
                 ) != root_identity:
@@ -943,6 +1013,36 @@ class QlibMlflowAggregateBackend:
                 },
             )
             recorder_id = str(run.info.run_id)
+            candidate_artifact_uri = str(run.info.artifact_uri)
+            candidate_artifact_root = None
+            candidate_artifact_identity = None
+
+            def observe_candidate_artifact_root():
+                observed_root, observed_identity, _inventory = (
+                    _observe_local_artifact_root(
+                        candidate_artifact_uri, self.context.root,
+                    )
+                )
+                try:
+                    observed_root.relative_to(experiment_root)
+                except ValueError as exc:
+                    raise RollingAggregateBackendError(
+                        "candidate artifact root escaped its experiment"
+                    ) from exc
+                return observed_root, observed_identity
+
+            def assert_candidate_artifact_identity():
+                observed_root, observed_identity = (
+                    observe_candidate_artifact_root()
+                )
+                if (
+                    observed_root != candidate_artifact_root
+                    or observed_identity != candidate_artifact_identity
+                ):
+                    raise RollingAggregateBackendError(
+                        "candidate artifact root identity drifted"
+                    )
+
             try:
                 self._fault("after_candidate_namespace")
                 assert_base_identities()
@@ -1005,8 +1105,13 @@ class QlibMlflowAggregateBackend:
                     client.log_artifact(
                         recorder_id, str(temporary / "pred.pkl"),
                     )
+                    (
+                        candidate_artifact_root,
+                        candidate_artifact_identity,
+                    ) = observe_candidate_artifact_root()
                     self._fault("after_candidate_prediction")
                     assert_base_identities()
+                    assert_candidate_artifact_identity()
                     if _contained_directory_identity(
                         temporary, self.context.root,
                         "candidate staging directory",
@@ -1020,7 +1125,17 @@ class QlibMlflowAggregateBackend:
                     )
                     self._fault("after_candidate_manifest")
                     assert_base_identities()
+                    assert_candidate_artifact_identity()
+                    if _contained_directory_identity(
+                        temporary, self.context.root,
+                        "candidate staging directory",
+                    ) != staging_identity:
+                        raise RollingAggregateBackendError(
+                            "candidate staging directory identity drifted"
+                        )
                 client.set_terminated(recorder_id, status="FINISHED")
+                assert_base_identities()
+                assert_candidate_artifact_identity()
             except (KeyboardInterrupt, SystemExit, GeneratorExit):
                 try:
                     client.set_terminated(recorder_id, status="KILLED")
@@ -1034,14 +1149,24 @@ class QlibMlflowAggregateBackend:
                     pass
                 raise
             recorder = self._recorder(experiment_name, recorder_id)
-            candidate_artifact_root = _local_artifact_root(
-                recorder.get_artifact_uri(), self.context.root,
+            recorder_artifact_root, recorder_artifact_identity, _inventory = (
+                _observe_local_artifact_root(
+                    recorder.get_artifact_uri(), self.context.root,
+                )
             )
-            candidate_artifact_root.resolve(strict=True).relative_to(
+            if (
+                recorder_artifact_root != candidate_artifact_root
+                or recorder_artifact_identity
+                != candidate_artifact_identity
+            ):
+                raise RollingAggregateBackendError(
+                    "candidate recorder public root identity drifted"
+                )
+            recorder_artifact_root.resolve(strict=True).relative_to(
                 experiment_root.resolve(strict=True)
             )
             _contained_directory_identity(
-                candidate_artifact_root, self.context.root,
+                recorder_artifact_root, self.context.root,
                 "candidate artifact root",
             )
             if _contained_directory_identity(
@@ -1088,9 +1213,13 @@ class QlibMlflowAggregateBackend:
                 raise RollingAggregateBackendError(
                     "candidate write did not create exactly one recorder"
                 )
+            assert_base_identities()
+            assert_candidate_artifact_identity()
         observed = self.inspect_candidate(
             aggregate_scope, target_key, candidate_key,
             expected_manifest_contract_fingerprint,
         )
         self._fault("after_candidate_reinspection")
+        assert_tracking_identity()
+        assert_candidate_artifact_identity()
         return observed

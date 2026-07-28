@@ -170,6 +170,145 @@ def _local_artifact_root(uri, workspace_root):
     return _observe_local_artifact_root(uri, workspace_root)[0]
 
 
+def _local_regular_node_observation(path, workspace_root):
+    """Observe one lexical regular file through a no-follow directory chain."""
+
+    path = Path(path)
+    root = Path(workspace_root)
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise RollingExecutionBackendError(
+            "tracking backend escapes the workspace"
+        ) from exc
+    if not relative.parts or any(
+        part in ("", ".", "..") for part in relative.parts
+    ):
+        raise RollingExecutionBackendError(
+            "tracking backend is not a canonical workspace child"
+        )
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    opened = []
+    identities = []
+    try:
+        root_public = os.lstat(str(root))
+        if stat.S_ISLNK(root_public.st_mode) or not stat.S_ISDIR(
+            root_public.st_mode
+        ):
+            raise RollingExecutionBackendError(
+                "workspace root is not a canonical directory"
+            )
+        current_fd = os.open(str(root), directory_flags)
+        opened.append(current_fd)
+        current = os.fstat(current_fd)
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino)
+            != (root_public.st_dev, root_public.st_ino)
+        ):
+            raise RollingExecutionBackendError(
+                "workspace root identity drifted"
+            )
+        identities.append((current.st_dev, current.st_ino))
+        for part in relative.parts[:-1]:
+            public = os.stat(
+                part, dir_fd=current_fd, follow_symlinks=False,
+            )
+            if stat.S_ISLNK(public.st_mode) or not stat.S_ISDIR(
+                public.st_mode
+            ):
+                raise RollingExecutionBackendError(
+                    "tracking backend path contains a non-directory alias"
+                )
+            next_fd = os.open(part, directory_flags, dir_fd=current_fd)
+            opened.append(next_fd)
+            observed = os.fstat(next_fd)
+            if (
+                not stat.S_ISDIR(observed.st_mode)
+                or (observed.st_dev, observed.st_ino)
+                != (public.st_dev, public.st_ino)
+            ):
+                raise RollingExecutionBackendError(
+                    "tracking backend parent identity drifted"
+                )
+            identities.append((observed.st_dev, observed.st_ino))
+            current_fd = next_fd
+        name = relative.parts[-1]
+        public = os.stat(
+            name, dir_fd=current_fd, follow_symlinks=False,
+        )
+        if stat.S_ISLNK(public.st_mode) or not stat.S_ISREG(
+            public.st_mode
+        ):
+            raise RollingExecutionBackendError(
+                "tracking backend is not a canonical regular file"
+            )
+        node_fd = os.open(name, file_flags, dir_fd=current_fd)
+        opened.append(node_fd)
+        observed = os.fstat(node_fd)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or (observed.st_dev, observed.st_ino)
+            != (public.st_dev, public.st_ino)
+        ):
+            raise RollingExecutionBackendError(
+                "tracking backend node identity drifted"
+            )
+        identities.append((observed.st_dev, observed.st_ino))
+    except RollingExecutionBackendError:
+        raise
+    except OSError as exc:
+        raise RollingExecutionBackendError(
+            "tracking backend is unavailable by its public name"
+        ) from exc
+    finally:
+        for fd in reversed(opened):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    return tuple(identities)
+
+
+def _observe_tracking_backend(uri, workspace_root):
+    """Return the lexical tracking node and its complete physical identity."""
+
+    parsed = urlparse(str(uri))
+    if (
+        parsed.scheme not in ("file", "sqlite")
+        or parsed.netloc not in ("", None)
+    ):
+        raise RollingExecutionBackendError(
+            "only a contained local tracking backend is supported"
+        )
+    raw = unquote(parsed.path)
+    if parsed.scheme == "sqlite" and raw.startswith("//"):
+        raw = raw[1:]
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise RollingExecutionBackendError(
+            "tracking backend must use an absolute public path"
+        )
+    path = path.absolute()
+    root = Path(workspace_root).resolve(strict=True)
+    if parsed.scheme == "sqlite":
+        identity = _local_regular_node_observation(path, root)
+    else:
+        identity, _inventory = _local_artifact_root_observation(path, root)
+    return path, identity
+
+
 def _tracking_uri_identity(uri, workspace_root):
     parsed = urlparse(str(uri))
     if parsed.scheme not in ("file", "sqlite") or parsed.netloc not in ("", None):
@@ -233,9 +372,16 @@ class QlibMlflowExecutionBackend:
         current = str(R.get_uri())
         expected = str(self.context.mlflow_uri)
         present, contained = _tracking_uri_identity(current, self.context.root)
+        backend_node_fingerprint = None
+        if present and current == expected and contained:
+            _path, node_identity = _observe_tracking_backend(
+                current, self.context.root,
+            )
+            backend_node_fingerprint = fingerprint_value(node_identity)
         return {
             "workspace_fingerprint": workspace_fingerprint(self.context.root),
             "backend_fingerprint": self.backend_fingerprint,
+            "backend_node_fingerprint": backend_node_fingerprint,
             "present": present,
             "contained": current == expected and contained,
             "foreign": current != expected or not contained,

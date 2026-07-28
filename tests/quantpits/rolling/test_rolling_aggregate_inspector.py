@@ -1,5 +1,6 @@
 import hashlib
 import io
+import os
 from pathlib import Path
 import shutil
 
@@ -410,6 +411,129 @@ def test_source_artifact_root_identity_is_rechecked_after_prediction_read(
     assert result.status == "observation_drifted"
     assert result.unit_results[0].classification == "observation_drifted"
     assert "aggregate_source" not in result.unit_results[0].capabilities
+
+
+def test_source_tracking_node_replacement_denies_aggregate_authority(
+    tmp_path,
+):
+    context, _scope, _repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    requests = source.requests_for_state(
+        aggregate.execution_scope,
+        aggregate.state_repository_view.inspection.snapshot,
+    )
+    from mlflow.tracking import MlflowClient
+
+    MlflowClient(
+        tracking_uri=str(context.mlflow_uri),
+    ).get_experiment_by_name(
+        "__rolling_aggregate_fixture_initialization__",
+    )
+    original_identity = source.tracking_identity
+    calls = {"count": 0}
+    identities = {}
+
+    def tracking_identity():
+        calls["count"] += 1
+        if calls["count"] == 2:
+            database = context.root / "mlflow.db"
+            identities["before"] = (
+                database.stat().st_dev, database.stat().st_ino,
+            )
+            replacement = database.with_name(
+                "mlflow.db.replacement",
+            )
+            shutil.copy2(database, replacement)
+            os.replace(replacement, database)
+            identities["after"] = (
+                database.stat().st_dev, database.stat().st_ino,
+            )
+        from quantpits.rolling.mlflow_execution_backend import (
+            _observe_tracking_backend,
+        )
+
+        value = dict(original_identity())
+        _path, node_identity = _observe_tracking_backend(
+            context.mlflow_uri, context.root,
+        )
+        value["backend_node_fingerprint"] = fingerprint_value(
+            node_identity,
+        )
+        return value
+
+    source.tracking_identity = tracking_identity
+    result = inspect_rolling_aggregate_sources(
+        context, aggregate, requests, source,
+    )
+
+    assert identities["before"] != identities["after"]
+    assert result.status == "observation_drifted"
+    assert all(
+        "aggregate_source" not in item.capabilities
+        for item in result.unit_results
+    )
+
+
+def test_source_tracking_replacement_after_evidence_denies_bytes_authority(
+    tmp_path,
+):
+    context, _scope, _repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    requests = source.requests_for_state(
+        aggregate.execution_scope,
+        aggregate.state_repository_view.inspection.snapshot,
+    )
+    from mlflow.tracking import MlflowClient
+    from quantpits.rolling.mlflow_execution_backend import (
+        _observe_tracking_backend,
+    )
+
+    MlflowClient(
+        tracking_uri=str(context.mlflow_uri),
+    ).search_experiments(max_results=1)
+    original_identity = source.tracking_identity
+
+    def tracking_identity():
+        value = dict(original_identity())
+        _path, node_identity = _observe_tracking_backend(
+            context.mlflow_uri, context.root,
+        )
+        value["backend_node_fingerprint"] = fingerprint_value(
+            node_identity,
+        )
+        return value
+
+    source.tracking_identity = tracking_identity
+    original_inspect = source.inspect
+    identities = {}
+
+    def inspect_then_replace(scope, observed_requests):
+        evidence = original_inspect(scope, observed_requests)
+        database = context.root / "mlflow.db"
+        identities["before"] = (
+            database.stat().st_dev, database.stat().st_ino,
+        )
+        replacement = database.with_name("mlflow.db.replacement")
+        shutil.copy2(database, replacement)
+        os.replace(replacement, database)
+        identities["after"] = (
+            database.stat().st_dev, database.stat().st_ino,
+        )
+        return evidence
+
+    source.inspect = inspect_then_replace
+    result = inspect_rolling_aggregate_sources(
+        context, aggregate, requests, source,
+    )
+
+    assert identities["before"] != identities["after"]
+    assert result.status == "observation_drifted"
+    assert all(
+        "aggregate_source" not in item.capabilities
+        for item in result.unit_results
+    )
 
 
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -float("inf"), 2 ** 54])
