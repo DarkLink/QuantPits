@@ -742,15 +742,53 @@ def _stable_regular_file_bytes(path, initial, field):
         os.close(descriptor)
 
 
-def snapshot_tree(root):
+def _stable_symlink_target(path, initial):
+    if not stat.S_ISLNK(initial.st_mode):
+        raise AggregateGateError("snapshot node is not a symlink")
+    expected = (
+        initial.st_dev, initial.st_ino, initial.st_mode, initial.st_nlink,
+        initial.st_size, initial.st_mtime_ns, initial.st_ctime_ns,
+    )
+    try:
+        target = os.readlink(str(path))
+        terminal = os.lstat(str(path))
+    except OSError as exc:
+        raise AggregateGateError(
+            "snapshot symlink could not be observed canonically"
+        ) from exc
+    if (
+        not stat.S_ISLNK(terminal.st_mode)
+        or (
+            terminal.st_dev, terminal.st_ino, terminal.st_mode,
+            terminal.st_nlink, terminal.st_size, terminal.st_mtime_ns,
+            terminal.st_ctime_ns,
+        ) != expected
+    ):
+        raise AggregateGateError(
+            "snapshot symlink identity drifted during observation"
+        )
+    return os.fsencode(target)
+
+
+def snapshot_tree(root, allow_symlinks=False):
+    if type(allow_symlinks) is not bool:
+        raise AggregateGateError(
+            "snapshot symlink policy must be an exact boolean"
+        )
     root = _real_directory(root, "snapshot root")
     rows = []
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root).as_posix()
         node = path.lstat()
         if stat.S_ISLNK(node.st_mode):
-            raise AggregateGateError("snapshot encountered a symlink")
-        if stat.S_ISREG(node.st_mode):
+            if not allow_symlinks:
+                raise AggregateGateError("snapshot encountered a symlink")
+            target = _stable_symlink_target(path, node)
+            rows.append((
+                relative, "symlink", len(target),
+                hashlib.sha256(target).hexdigest(),
+            ))
+        elif stat.S_ISREG(node.st_mode):
             data = _stable_regular_file_bytes(
                 path, node, "snapshot node",
             )
@@ -846,7 +884,7 @@ def validate_binding(
 
 def preflight_evidence(binding):
     protected = tuple(
-        snapshot_tree(root)
+        snapshot_tree(root, allow_symlinks=True)
         for root in _binding_protected_workspaces(binding)
     )
     return {
@@ -1704,7 +1742,8 @@ def _run_real_gate(binding, reuse_only=False):
         raise
     try:
         protected_before = tuple(
-            snapshot_tree(root) for root in protected_roots
+            snapshot_tree(root, allow_symlinks=True)
+            for root in protected_roots
         )
         repository_before = _snapshot_tracked_repository(
             repository_root,
@@ -1729,7 +1768,10 @@ def _run_real_gate(binding, reuse_only=False):
     try:
         _assert_snapshot_unchanged(
             protected_before,
-            tuple(snapshot_tree(root) for root in protected_roots),
+            tuple(
+                snapshot_tree(root, allow_symlinks=True)
+                for root in protected_roots
+            ),
             "protected workspaces",
         )
         _assert_snapshot_unchanged(

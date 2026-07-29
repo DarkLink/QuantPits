@@ -386,10 +386,11 @@ python -m quantpits.tools.verify_rolling_aggregate_candidate \
 
 `--protected-workspace` is repeatable; every production and experimental protected root must be
 listed. By default it only validates the frozen scenario, selector, capacity, paths, and all
-protected snapshots;
-it performs no training, networking, or candidate write. The real `--execute` route requires release
-owner authorization and a disposable validation workspace. The production workspace remains
-read-only.
+protected snapshots; it performs no training, networking, or candidate write. A protected snapshot
+observes an existing symlink node and a hash of its target text without following the target; a node
+or target-text change still fails the before/after comparison. Disposable workspaces continue to
+reject symlinks. The real `--execute` route requires release owner authorization and a disposable
+validation workspace. The production workspace remains read-only.
 The corrected gate protocol is `rolling_aggregate_candidate_gate_v2`, with execution authorization
 `authorize-rolling-aggregate-candidate-gate-v2`. The execute lane uses Linux inotify to recursively
 observe lifecycle mutations in the disposable workspace, protected workspace, and

@@ -91,8 +91,14 @@ def test_verify_rolling_aggregate_gate_core_negative_matrix(
         protected.resolve(), second_protected.resolve(),
     )
     (second_protected / "forbidden-link").symlink_to(protected)
+    linked_evidence = preflight_evidence(multiple)
+    assert linked_evidence["status"] == "preflight_passed"
     with pytest.raises(AggregateGateError, match="symlink"):
-        preflight_evidence(multiple)
+        snapshot_tree(second_protected)
+    linked_snapshot = snapshot_tree(
+        second_protected, allow_symlinks=True,
+    )
+    assert linked_snapshot[0][0:2] == ("forbidden-link", "symlink")
     for change in (
         {"family": "cpcv_rolling"},
         {"target_count": 0},

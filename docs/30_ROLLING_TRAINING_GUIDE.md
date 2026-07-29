@@ -338,8 +338,10 @@ python -m quantpits.tools.verify_rolling_aggregate_candidate \
 
 `--protected-workspace` 可重复，所有 production/experimental protected roots 都必须逐一传入。
 该命令默认只验证冻结 scenario、selector、容量、路径与全部 protected snapshots，不训练、不联网且不写
-candidate。真实 `--execute` 只允许 release owner 在一次性 validation workspace 上授权；production
-workspace 始终只读。
+candidate。protected snapshot 对既有 symlink 只观察链接节点本身及其目标文本哈希，不跟随目标；
+链接节点或目标文本的变化仍会使前后快照不一致。disposable workspace 继续严格拒绝 symlink。
+真实 `--execute` 只允许 release owner 在一次性 validation workspace 上授权；production workspace
+始终只读。
 当前修正 gate protocol 为 `rolling_aggregate_candidate_gate_v2`；真实执行授权字符串为
 `authorize-rolling-aggregate-candidate-gate-v2`。execute lane 使用 Linux inotify 递归观察 disposable、
 protected 与 tracked-repository 的生命周期 mutation，并在 `mkdir`/directory rename 返回前同步接管
