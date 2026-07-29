@@ -242,7 +242,9 @@ workspace. Repository, source scope, and candidate backend must bind the same ca
 and the candidate experiment artifact location must be
 `data/rolling_aggregate_candidates_<family>/`. Terminal inventory must contain exactly one active,
 `FINISHED`, exact candidate per target, checked under the candidate lock. A duplicate or drifted
-candidate cannot receive `publication_input`. The terminal-reuse open itself never creates the
+candidate cannot receive `publication_input`. A different candidate key under the same scope or
+the same attempt/target is a requested collision, not an orphan; terminal
+raw/requested/orphan/unassigned counts remain visible. The terminal-reuse open itself never creates the
 lock. If the lock disappears after precheck or is not the canonical regular file, a known
 zero-write result is `blocked / did_write=false`; manually recreating the lock does not turn that
 invocation into success.
@@ -257,6 +259,11 @@ device/inode is frozen immediately after its first write and rechecked after lat
 terminal transition, inventory, create return, and final reinspection. The create/reuse namespace
 fingerprint also binds link count and stable size/mtime/ctime metadata; hardlinks and same-inode
 rewrites fail closed, and the fingerprint remains joined through the kernel terminal recheck.
+The candidate lock, staging files, SQLite tracking database, and any existing journal/WAL/SHM
+sidecars must be link-count-one regular nodes. Staging uses exclusive creation and rechecks the
+public/open identity before and after writing and upload. The Gate must repeat
+`--protected-workspace` for every production and experimental read-only root. Cleanup defaults to
+preserve and cannot remove a protected/repository ancestor or an aliased tree.
 Source root/direct-node identity
 likewise spans from before evidence inspection through returned prediction bytes and the terminal
 postcondition. A same-URI replacement of the SQLite file

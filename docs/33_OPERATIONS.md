@@ -292,13 +292,19 @@ partial、duplicate 或 provenance 不一致的 run 仅供审计。所有 candid
 绑定同一个 canonical workspace；candidate experiment artifact location 只能是
 `data/rolling_aggregate_candidates_<family>/`。最终 terminal inventory 中每个 target 必须恰有一个
 active、`FINISHED` exact candidate，检查在 candidate lock 内完成；duplicate 或漂移不得获得
-`publication_input`。terminal reuse 的实际打开操作不会创建 lock；预检后 lock 被删除或 lock
+`publication_input`。同一 scope 或同一 attempt/target 下的不同 candidate key 属于 requested
+collision，不能伪装为 orphan；terminal raw/requested/orphan/unassigned counts 仍保持可见。
+terminal reuse 的实际打开操作不会创建 lock；预检后 lock 被删除或 lock
 不是 canonical regular file 时，已知零写入结果为 `blocked / did_write=false`，不得手工补建后
 把该次结果解释为成功。
 source prediction bytes 还必须与 Phase 32 request 冻结的 exact size/SHA-256 一致。candidate artifact
 root 只允许 `pred.pkl` 和 `aggregate_manifest.json` 两个 direct regular file；额外目录、symlink
 或特殊节点一律阻断。MLflow 公开 artifact URI 的 root 及任一祖先都不能是目录链接，包括指向同一
 workspace 内的 contained alias；读取后会从原公开 URI 复核逐级目录身份。
+candidate lock、staging 文件、SQLite tracking database 及存在的 journal/WAL/SHM sidecar
+都必须是 link-count-one regular node；staging 使用 exclusive create，写入和上传前后重检
+public/open identity。Gate 必须重复传入全部 production/experimental `--protected-workspace`
+只读根；cleanup 默认 preserve，且不得删除任何 protected/repository ancestor 或 alias tree。
 候选创建会在第一次 artifact 上传前冻结 canonical experiment、recorder artifact root 和 staging
 directory；两个 direct artifact 的 device/inode 在各自首次落盘后立即冻结，并在其余上传、terminal
 transition、inventory、create 返回与最终 reinspection 后比较。create/reuse inspection 的 namespace

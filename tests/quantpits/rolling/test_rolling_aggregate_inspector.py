@@ -132,6 +132,10 @@ def test_aggregate_rejects_non_string_instrument_without_coercion(
     [
         "DEMO\x00FOREIGN", "DEMO\nFOREIGN",
         "DEMO\x7fFOREIGN", "DEMO\u0085FOREIGN",
+        "DEMO\u202eFOREIGN", "DEMO\u2028FOREIGN",
+        "/private/instrument", r"C:\private\instrument",
+        "file:/private/instrument", "https://private.example/instrument",
+        "urn:quantpits:instrument",
     ],
 )
 def test_aggregate_rejects_instrument_control_characters(

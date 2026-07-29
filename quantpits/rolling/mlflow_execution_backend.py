@@ -259,22 +259,25 @@ def _local_regular_node_observation(path, workspace_root):
         )
         if stat.S_ISLNK(public.st_mode) or not stat.S_ISREG(
             public.st_mode
-        ):
+        ) or public.st_nlink != 1:
             raise RollingExecutionBackendError(
-                "tracking backend is not a canonical regular file"
+                "tracking backend is not one canonical regular file"
             )
         node_fd = os.open(name, file_flags, dir_fd=current_fd)
         opened.append(node_fd)
         observed = os.fstat(node_fd)
         if (
             not stat.S_ISREG(observed.st_mode)
+            or observed.st_nlink != 1
             or (observed.st_dev, observed.st_ino)
             != (public.st_dev, public.st_ino)
         ):
             raise RollingExecutionBackendError(
                 "tracking backend node identity drifted"
             )
-        identities.append((observed.st_dev, observed.st_ino))
+        identities.append((
+            observed.st_dev, observed.st_ino, observed.st_nlink,
+        ))
     except RollingExecutionBackendError:
         raise
     except OSError as exc:
@@ -312,7 +315,21 @@ def _observe_tracking_backend(uri, workspace_root):
     path = path.absolute()
     root = Path(workspace_root).resolve(strict=True)
     if parsed.scheme == "sqlite":
-        identity = _local_regular_node_observation(path, root)
+        identity = list(_local_regular_node_observation(path, root))
+        sidecars = []
+        for suffix in ("-journal", "-wal", "-shm"):
+            sidecar = Path(str(path) + suffix)
+            try:
+                os.lstat(str(sidecar))
+            except FileNotFoundError:
+                sidecars.append((suffix, None))
+            else:
+                sidecars.append((
+                    suffix,
+                    _local_regular_node_observation(sidecar, root),
+                ))
+        identity.append(("sqlite_sidecars", tuple(sidecars)))
+        identity = tuple(identity)
     else:
         identity, _inventory = _local_artifact_root_observation(path, root)
     return path, identity

@@ -58,6 +58,82 @@ def test_no_create_terminal_lock_open_is_read_only(tmp_path, monkeypatch):
     assert observed["flags"] & write_flags == 0
 
 
+@pytest.mark.parametrize("node_kind", ["hardlink", "fifo"])
+def test_regular_child_create_rejects_aliased_or_special_node_before_write(
+    tmp_path, node_kind,
+):
+    parent = tmp_path / "staging"
+    parent.mkdir()
+    child = parent / "pred.pkl"
+    sentinel = tmp_path / "sentinel.bin"
+    sentinel.write_bytes(b"must-not-change")
+    if node_kind == "hardlink":
+        os.link(sentinel, child)
+    else:
+        os.mkfifo(child)
+    parent_meta = parent.stat()
+
+    with pytest.raises(RollingAggregateBackendError):
+        aggregate_backend_module._open_regular_child(
+            parent, child.name,
+            (parent_meta.st_dev, parent_meta.st_ino),
+            create_if_missing=True, require_missing=True,
+        )
+
+    assert sentinel.read_bytes() == b"must-not-change"
+
+
+def test_regular_child_exclusive_create_uses_excl_and_unlinked_node(
+    tmp_path, monkeypatch,
+):
+    parent = tmp_path / "staging"
+    parent.mkdir()
+    parent_meta = parent.stat()
+    original_open = aggregate_backend_module.os.open
+    observed = {}
+
+    def capture_open(path, flags, *args, **kwargs):
+        if path == "pred.pkl" and kwargs.get("dir_fd") is not None:
+            observed["flags"] = flags
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        aggregate_backend_module.os, "open", capture_open,
+    )
+    with aggregate_backend_module._open_regular_child(
+        parent, "pred.pkl",
+        (parent_meta.st_dev, parent_meta.st_ino),
+        create_if_missing=True, require_missing=True,
+    ) as handle:
+        handle.write(b"candidate")
+        handle.flush()
+
+    assert observed["flags"] & os.O_EXCL
+    assert (parent / "pred.pkl").stat().st_nlink == 1
+
+
+def test_regular_child_observation_rejects_post_creation_hardlink(
+    tmp_path,
+):
+    parent = tmp_path / "staging"
+    parent.mkdir()
+    parent_meta = parent.stat()
+    with aggregate_backend_module._open_regular_child(
+        parent, "pred.pkl",
+        (parent_meta.st_dev, parent_meta.st_ino),
+        create_if_missing=True, require_missing=True,
+    ) as handle:
+        handle.write(b"candidate")
+        handle.flush()
+    os.link(parent / "pred.pkl", tmp_path / "alias.pkl")
+
+    with pytest.raises(RollingAggregateBackendError):
+        aggregate_backend_module._observe_regular_child(
+            parent, "pred.pkl",
+            (parent_meta.st_dev, parent_meta.st_ino),
+        )
+
+
 @pytest.mark.parametrize("expected_present", [False, True])
 def test_directory_establishment_rejects_presence_or_identity_race(
     tmp_path, monkeypatch, expected_present,
@@ -138,6 +214,32 @@ def test_tracking_backend_observer_detects_same_public_path_replacement(
     assert identity_after != identity_before
 
 
+@pytest.mark.parametrize("node_kind", ["database", "wal", "shm", "journal"])
+def test_tracking_backend_observer_rejects_hardlinked_sqlite_nodes(
+    tmp_path, node_kind,
+):
+    workspace = tmp_path / "Demo_Workspace"
+    workspace.mkdir()
+    database = workspace / "mlflow.db"
+    database.write_bytes(b"database")
+    target = database if node_kind == "database" else Path(
+        str(database) + "-" + node_kind
+    )
+    if node_kind != "database":
+        sentinel = tmp_path / ("sentinel-" + node_kind)
+        sentinel.write_bytes(b"sidecar")
+        os.link(sentinel, target)
+    else:
+        original = tmp_path / "database-original"
+        database.rename(original)
+        os.link(original, database)
+
+    with pytest.raises(RollingExecutionBackendError):
+        aggregate_backend_module._observe_tracking_backend(
+            "sqlite:///%s" % database, workspace,
+        )
+
+
 @pytest.mark.parametrize(
     "node_kind",
     ["file_symlink", "directory_symlink", "ancestor_symlink", "fifo"],
@@ -196,6 +298,35 @@ def _real_backend_case(tmp_path, fault_hook=None):
         fixture_candidate["prediction_bytes"],
         fixture_candidate["manifest"],
     )
+
+
+@pytest.mark.parametrize("node_kind", ["hardlink", "fifo"])
+def test_candidate_lock_rejects_hardlink_and_special_nodes(
+    tmp_path, node_kind,
+):
+    (
+        context, _repository, _source, aggregate, backend,
+        _prediction, _manifest,
+    ) = _real_backend_case(tmp_path)
+    lock_dir = context.data_dir / "locks"
+    lock_dir.mkdir(exist_ok=True)
+    lock = lock_dir / "rolling_aggregate_candidate.lock"
+    sentinel = tmp_path / "lock-sentinel.bin"
+    sentinel.write_bytes(b"must-not-change")
+    if node_kind == "hardlink":
+        os.link(sentinel, lock)
+    else:
+        os.mkfifo(lock)
+    called = []
+
+    with pytest.raises(RollingAggregateBackendError):
+        backend.with_candidate_lock(
+            aggregate, lambda: called.append(True),
+            create_if_missing=True,
+        )
+
+    assert called == []
+    assert sentinel.read_bytes() == b"must-not-change"
 
 
 def test_real_backend_requires_active_finished_run_for_reuse(tmp_path):

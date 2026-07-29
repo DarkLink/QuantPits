@@ -277,6 +277,8 @@ tracking URI 相等本身不足以证明 backend 连续；SQLite file 或 file-s
 materialization 前后冻结，同 URI inode 替换 fail closed。最终授予
 `publication_input` 前会在 candidate lock 内重新检查 source/State/current/backend，并要求每个 target
 在 terminal inventory 中恰好存在一个 active、`FINISHED`、exact candidate；duplicate 或竞态漂移均 fail closed。
+同一 scope 或同一 attempt/target 的不同 candidate key 是 requested collision，不能归为 orphan；
+即使阻断 publication，raw/requested/orphan/unassigned inventory counts 仍保留。
 首次创建 candidate experiment namespace 本身也计为 durable write。
 若 canonical artifact root 在 experiment metadata 之前被首次建立，该目录写入也由 inventory
 单独观察，后续失败不得伪报 `did_write=false`。
@@ -284,6 +286,10 @@ materialization 前后冻结，同 URI inode 替换 fail closed。最终授予
 打开前被删除，也不会补建缺失的 lock parent/node；已存在但无法作为 canonical regular file
 打开的 lock 同样视为 unavailable。lock unavailable 在已知零写入时返回
 `blocked / did_write=false`。`did_write` 只接受 exact boolean 或 null，不接受整数 `0`/`1`。
+lock 与 staging 文件均通过 no-follow observation→open/create→public-name recheck 建立；
+新 staging 文件必须使用 exclusive create，所有可写 regular node 在写入前后均要求
+`st_nlink == 1`。SQLite tracking database 及存在的 journal/WAL/SHM sidecar 同样拒绝
+symlink、hardlink 和特殊节点。
 若 candidate 已物化后最终重检变为不可比较，结果保持
 `indeterminate`，同时保留已观察到的 `did_write=true`，不会把已知 durable write 降级为未知。
 修正后的语义使用 `rolling_aggregate_candidate_v2`；v1 candidate identity 不会被当作 v2 复用。
@@ -325,11 +331,13 @@ Phase 35 的 acceptance preflight 使用：
 ```bash
 python -m quantpits.tools.verify_rolling_aggregate_candidate \
   --workspace /path/to/Demo_Workspace_validation \
-  --protected-workspace /path/to/Demo_Workspace_readonly \
+  --protected-workspace /path/to/Production_Workspace_readonly \
+  --protected-workspace /path/to/Experimental_Workspace_readonly \
   --commit <40-char-commit> --tree <40-char-tree>
 ```
 
-该命令默认只验证冻结 scenario、selector、容量、路径与 protected snapshot，不训练、不联网且不写
+`--protected-workspace` 可重复，所有 production/experimental protected roots 都必须逐一传入。
+该命令默认只验证冻结 scenario、selector、容量、路径与全部 protected snapshots，不训练、不联网且不写
 candidate。真实 `--execute` 只允许 release owner 在一次性 validation workspace 上授权；production
 workspace 始终只读。
 当前修正 gate protocol 为 `rolling_aggregate_candidate_gate_v2`；真实执行授权字符串为
@@ -340,6 +348,9 @@ identity，宽目录前缀不构成授权。物理写字节来自 `/proc/self/io
 调用由 profiler 观察。primary 独立子进程有 300 秒 hard timeout，separate-process reuse 只能使用
 同一总预算的剩余时间，且仍必须是零 writer/recorder/path/write-byte。旧 v1 gate evidence
 不能关闭新的修正候选。
+cleanup 默认仍为 preserve；显式 cleanup 只接受与 protected roots、repository 均不重叠的
+exact disposable root，并通过目录描述符逐级 no-follow 删除。ancestor、symlink、hardlink、
+特殊节点或 identity drift 均 fail closed。
 deterministic source fixture 不调用 model capability protocol probe 或 `LinearModel.fit`；它只用
 固定 runner 生成 prediction artifact，再通过真实 Phase 32 evidence inspector 与 State repository
 CAS 建立 `units_complete` fixture。Qlib 自动 repository-code logging 在该隔离 fixture 中禁用，

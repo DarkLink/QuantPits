@@ -16,8 +16,10 @@ from quantpits.tools.verify_rolling_aggregate_candidate import (
     _assert_workspace_write_allowlist,
     _assert_gate_budgets,
     _assert_snapshot_unchanged,
+    _parser,
     preflight_evidence,
     scenario_from_mapping,
+    snapshot_tree,
     validate_binding,
 )
 
@@ -79,6 +81,18 @@ def test_verify_rolling_aggregate_gate_core_negative_matrix(
     evidence = preflight_evidence(binding)
     assert evidence["status"] == "preflight_passed"
     assert evidence["budgets"]["training_calls"] == 0
+    second_protected = tmp_path / "Second_Protected_Demo_Workspace"
+    second_protected.mkdir()
+    multiple = validate_binding(
+        scenario, disposable, (protected, second_protected),
+        commit, tree,
+    )
+    assert multiple["protected_workspaces"] == (
+        protected.resolve(), second_protected.resolve(),
+    )
+    (second_protected / "forbidden-link").symlink_to(protected)
+    with pytest.raises(AggregateGateError, match="symlink"):
+        preflight_evidence(multiple)
     for change in (
         {"family": "cpcv_rolling"},
         {"target_count": 0},
@@ -133,6 +147,18 @@ def test_verify_rolling_aggregate_gate_core_negative_matrix(
     with pytest.raises(AggregateGateError):
         validate_binding(
             scenario, disposable_link, protected, commit, tree,
+        )
+    protected_inside = disposable / "protected"
+    protected_inside.mkdir()
+    with pytest.raises(AggregateGateError, match="overlaps"):
+        validate_binding(
+            scenario, disposable, protected_inside, commit, tree,
+        )
+    disposable_inside = protected / "disposable"
+    disposable_inside.mkdir()
+    with pytest.raises(AggregateGateError, match="overlaps"):
+        validate_binding(
+            scenario, disposable_inside, protected, commit, tree,
         )
     from types import SimpleNamespace
     import quantpits.tools.verify_rolling_aggregate_candidate as gate_module
@@ -542,6 +568,120 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
     payload["unknown"] = "forged"
     with pytest.raises(AggregateGateError):
         scenario_from_mapping(payload)
+
+
+def test_gate_accepts_repeated_protected_workspace_bindings():
+    args = _parser().parse_args([
+        "--workspace", "/tmp/disposable-demo",
+        "--protected-workspace", "/tmp/protected-production",
+        "--protected-workspace", "/tmp/protected-experiment",
+        "--commit", "a" * 40,
+        "--tree", "b" * 40,
+    ])
+    assert args.protected_workspace == [
+        "/tmp/protected-production",
+        "/tmp/protected-experiment",
+    ]
+
+
+def test_snapshot_rejects_hardlinked_file_identity(tmp_path):
+    root = tmp_path / "snapshot"
+    root.mkdir()
+    sentinel = tmp_path / "sentinel.bin"
+    sentinel.write_bytes(b"must-not-change")
+    __import__("os").link(sentinel, root / "alias.bin")
+
+    with pytest.raises(AggregateGateError, match="canonical regular"):
+        snapshot_tree(root)
+
+    assert sentinel.read_bytes() == b"must-not-change"
+
+
+def test_cleanup_rejects_ancestor_of_protected_workspace_without_deleting(
+    tmp_path,
+):
+    broad = tmp_path / "broad"
+    protected = broad / "protected"
+    marker = broad / "data" / "aggregate_gate_scenario.json"
+    protected.mkdir(parents=True)
+    marker.parent.mkdir()
+    marker.write_text(__import__("json").dumps({
+        "protocol": frozen_scenario().protocol,
+        "scenario_fingerprint": frozen_scenario().fingerprint,
+    }, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(AggregateGateError, match="protected or broad"):
+        cleanup_gate_workspace(
+            broad, protected, frozen_scenario().fingerprint,
+            CLEANUP_AUTHORIZATION,
+        )
+
+    assert broad.is_dir()
+    assert protected.is_dir()
+    assert marker.is_file()
+
+
+def test_cleanup_rejects_aliased_tree_node_without_following_it(
+    tmp_path,
+):
+    disposable, protected = _roots(tmp_path)
+    marker = disposable / "data" / "aggregate_gate_scenario.json"
+    marker.parent.mkdir()
+    marker.write_text(__import__("json").dumps({
+        "protocol": frozen_scenario().protocol,
+        "scenario_fingerprint": frozen_scenario().fingerprint,
+    }, sort_keys=True), encoding="utf-8")
+    sentinel = tmp_path / "sentinel.bin"
+    sentinel.write_bytes(b"must-not-change")
+    __import__("os").link(
+        sentinel, disposable / "data" / "aliased.bin",
+    )
+
+    with pytest.raises(AggregateGateError, match="aliased or special"):
+        cleanup_gate_workspace(
+            disposable, protected, frozen_scenario().fingerprint,
+            CLEANUP_AUTHORIZATION,
+        )
+
+    assert sentinel.read_bytes() == b"must-not-change"
+    assert marker.exists()
+    assert disposable.exists()
+
+
+def test_cleanup_rejects_marker_public_name_replacement(
+    tmp_path, monkeypatch,
+):
+    disposable, protected = _roots(tmp_path)
+    marker = disposable / "data" / "aggregate_gate_scenario.json"
+    marker.parent.mkdir()
+    payload = __import__("json").dumps({
+        "protocol": frozen_scenario().protocol,
+        "scenario_fingerprint": frozen_scenario().fingerprint,
+    }, sort_keys=True).encode("utf-8")
+    marker.write_bytes(payload)
+    displaced = disposable / "data" / "displaced-marker.json"
+    import quantpits.tools.verify_rolling_aggregate_candidate as gate_module
+    original_read = gate_module.os.read
+    replaced = [False]
+
+    def replace_after_first_read(descriptor, size):
+        chunk = original_read(descriptor, size)
+        if chunk and not replaced[0]:
+            replaced[0] = True
+            marker.rename(displaced)
+            marker.write_bytes(payload)
+        return chunk
+
+    monkeypatch.setattr(gate_module.os, "read", replace_after_first_read)
+    with pytest.raises(AggregateGateError, match="drifted"):
+        cleanup_gate_workspace(
+            disposable, protected, frozen_scenario().fingerprint,
+            CLEANUP_AUTHORIZATION,
+        )
+
+    assert marker.read_bytes() == payload
+    assert displaced.read_bytes() == payload
+    assert disposable.exists()
 
 
 def test_gate_activity_observer_counts_and_denies_forbidden_actions():

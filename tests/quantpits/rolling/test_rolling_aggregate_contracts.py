@@ -21,6 +21,19 @@ def test_aggregate_scope_requires_matching_units_complete_authority(tmp_path):
     assert rebuilt.requested_unit_keys == aggregate.requested_unit_keys
     with pytest.raises(RollingAggregateContractError):
         replace(aggregate, aggregate_attempt_id="forged")
+    for invalid_attempt in (
+        "attempt\u0085foreign",
+        "attempt\u202eforeign",
+        "attempt\u2028foreign",
+        "/private/attempt",
+        r"C:\private\attempt",
+        "file:/private/attempt",
+        "urn:quantpits:attempt",
+    ):
+        with pytest.raises(RollingAggregateContractError):
+            build_rolling_aggregate_scope(
+                scope, repository.inspect_readonly(), invalid_attempt,
+            )
 
 
 def test_source_join_revalidates_every_state_claim_field(tmp_path):

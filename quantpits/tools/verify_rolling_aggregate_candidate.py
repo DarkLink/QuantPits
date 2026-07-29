@@ -677,6 +677,71 @@ def _real_directory(path, field, allow_linked_entry=False):
     return resolved
 
 
+def _stable_regular_file_bytes(path, initial, field):
+    if (
+        not stat.S_ISREG(initial.st_mode)
+        or initial.st_nlink != 1
+    ):
+        raise AggregateGateError(
+            "%s is not one canonical regular file" % field
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(str(path), flags)
+    except OSError as exc:
+        raise AggregateGateError(
+            "%s could not be opened canonically" % field
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino)
+            != (initial.st_dev, initial.st_ino)
+        ):
+            raise AggregateGateError(
+                "%s identity drifted before read" % field
+            )
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        completed = os.fstat(descriptor)
+        terminal = os.lstat(str(path))
+        expected = (
+            opened.st_dev, opened.st_ino, opened.st_nlink,
+            opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns,
+        )
+        if (
+            not stat.S_ISREG(terminal.st_mode)
+            or terminal.st_nlink != 1
+            or (
+                completed.st_dev, completed.st_ino, completed.st_nlink,
+                completed.st_size, completed.st_mtime_ns,
+                completed.st_ctime_ns,
+            ) != expected
+            or (
+                terminal.st_dev, terminal.st_ino, terminal.st_nlink,
+                terminal.st_size, terminal.st_mtime_ns,
+                terminal.st_ctime_ns,
+            ) != expected
+        ):
+            raise AggregateGateError(
+                "%s identity drifted during read" % field
+            )
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
 def snapshot_tree(root):
     root = _real_directory(root, "snapshot root")
     rows = []
@@ -685,10 +750,12 @@ def snapshot_tree(root):
         node = path.lstat()
         if stat.S_ISLNK(node.st_mode):
             raise AggregateGateError("snapshot encountered a symlink")
-        if path.is_file():
-            data = path.read_bytes()
+        if stat.S_ISREG(node.st_mode):
+            data = _stable_regular_file_bytes(
+                path, node, "snapshot node",
+            )
             rows.append((relative, "file", len(data), hashlib.sha256(data).hexdigest()))
-        elif path.is_dir():
+        elif stat.S_ISDIR(node.st_mode):
             rows.append((relative, "directory", None, None))
         else:
             raise AggregateGateError("snapshot encountered a special node")
@@ -702,18 +769,35 @@ def validate_binding(
     if not isinstance(scenario, AggregateGateScenario):
         raise AggregateGateError("binding requires a validated scenario")
     workspace = _real_directory(workspace, "disposable workspace")
-    protected = _real_directory(
-        protected_workspace, "protected workspace", allow_linked_entry=True,
+    protected_values = (
+        tuple(protected_workspace)
+        if isinstance(protected_workspace, (tuple, list))
+        else (protected_workspace,)
     )
-    if workspace == protected:
-        raise AggregateGateError("disposable and protected workspaces differ")
+    if not protected_values:
+        raise AggregateGateError(
+            "at least one protected workspace is required"
+        )
+    protected = tuple(_real_directory(
+        value, "protected workspace", allow_linked_entry=True,
+    ) for value in protected_values)
+    if len(protected) != len(set(protected)):
+        raise AggregateGateError("protected workspaces must be unique")
+    repository = Path(__file__).resolve().parents[2]
+    if any(
+        _path_contains(workspace, boundary)
+        or _path_contains(boundary, workspace)
+        for boundary in protected + (repository,)
+    ):
+        raise AggregateGateError(
+            "disposable workspace overlaps a protected boundary"
+        )
     for value, field in ((commit, "commit"), (tree, "tree")):
         if (
             not isinstance(value, str) or len(value) != 40
             or any(char not in "0123456789abcdef" for char in value)
         ):
             raise AggregateGateError("%s must be a full lowercase git id" % field)
-    repository = Path(__file__).resolve().parents[2]
     try:
         actual_commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=str(repository),
@@ -752,7 +836,8 @@ def validate_binding(
     return {
         "scenario_fingerprint": scenario.fingerprint,
         "workspace": workspace,
-        "protected_workspace": protected,
+        "protected_workspace": protected[0],
+        "protected_workspaces": protected,
         "commit": commit,
         "tree": tree,
         "execute": execute,
@@ -760,7 +845,10 @@ def validate_binding(
 
 
 def preflight_evidence(binding):
-    protected = snapshot_tree(binding["protected_workspace"])
+    protected = tuple(
+        snapshot_tree(root)
+        for root in _binding_protected_workspaces(binding)
+    )
     return {
         "protocol": GATE_PROTOCOL,
         "status": "preflight_passed",
@@ -1471,9 +1559,15 @@ def _snapshot_tracked_repository(root):
             continue
         relative = raw.decode("utf-8")
         path = root / relative
-        if path.is_symlink() or not path.is_file():
-            raise AggregateGateError("tracked repository node is not regular")
-        data = path.read_bytes()
+        try:
+            node = os.lstat(str(path))
+        except OSError as exc:
+            raise AggregateGateError(
+                "tracked repository node is unavailable"
+            ) from exc
+        data = _stable_regular_file_bytes(
+            path, node, "tracked repository node",
+        )
         rows.append((relative, len(data), hashlib.sha256(data).hexdigest()))
     return tuple(rows)
 
@@ -1573,13 +1667,22 @@ def _run_real_gate(binding, reuse_only=False):
         "mlruns", "output", "qlib_data",
     )
     observers = []
+    protected_observers = []
+    protected_roots = _binding_protected_workspaces(binding)
+
+    def close_observers():
+        for active_observer in observers:
+            active_observer.close()
+
     try:
         workspace_observer = _WorkspaceMutationObserver(workspace).start()
         observers.append(workspace_observer)
-        protected_observer = _WorkspaceMutationObserver(
-            binding["protected_workspace"],
-        ).start()
-        observers.append(protected_observer)
+        for protected_root in protected_roots:
+            observer = _WorkspaceMutationObserver(
+                protected_root,
+            ).start()
+            protected_observers.append(observer)
+            observers.append(observer)
         repository_observer = _WorkspaceMutationObserver(
             repository_root, (".git", "plan", "workspaces"),
         ).start()
@@ -1597,20 +1700,17 @@ def _run_real_gate(binding, reuse_only=False):
             ):
                 raise AggregateGateError("fixture directory is not contained")
     except BaseException:
-        for active_observer in observers:
-            active_observer.close()
+        close_observers()
         raise
     try:
-        protected_before = snapshot_tree(
-            binding["protected_workspace"],
+        protected_before = tuple(
+            snapshot_tree(root) for root in protected_roots
         )
         repository_before = _snapshot_tracked_repository(
             repository_root,
         )
     except BaseException:
-        workspace_observer.close()
-        protected_observer.close()
-        repository_observer.close()
+        close_observers()
         raise
     activity = _GateActivityObserver(
         workspace / "data" / "aggregate_gate_runtime",
@@ -1621,20 +1721,16 @@ def _run_real_gate(binding, reuse_only=False):
                 binding, reuse_only, activity,
             )
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
-        workspace_observer.close()
-        protected_observer.close()
-        repository_observer.close()
+        close_observers()
         raise
     except BaseException:
-        workspace_observer.close()
-        protected_observer.close()
-        repository_observer.close()
+        close_observers()
         raise
     try:
         _assert_snapshot_unchanged(
             protected_before,
-            snapshot_tree(binding["protected_workspace"]),
-            "protected workspace",
+            tuple(snapshot_tree(root) for root in protected_roots),
+            "protected workspaces",
         )
         _assert_snapshot_unchanged(
             repository_before,
@@ -1643,18 +1739,21 @@ def _run_real_gate(binding, reuse_only=False):
         )
         workspace_after = snapshot_tree(workspace)
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
-        workspace_observer.close()
-        protected_observer.close()
-        repository_observer.close()
+        close_observers()
         raise
     except BaseException:
-        workspace_observer.close()
-        protected_observer.close()
-        repository_observer.close()
+        close_observers()
         raise
-    mutation_paths = workspace_observer.stop()
-    protected_mutations = protected_observer.stop()
-    repository_mutations = repository_observer.stop()
+    try:
+        mutation_paths = workspace_observer.stop()
+        protected_mutations = tuple(
+            path
+            for observer in protected_observers
+            for path in observer.stop()
+        )
+        repository_mutations = repository_observer.stop()
+    finally:
+        close_observers()
     if protected_mutations:
         raise AggregateGateError(
             "protected workspace lifecycle observer detected a write"
@@ -1730,10 +1829,13 @@ def execute_gate(binding):
         sys.executable, "-m",
         "quantpits.tools.verify_rolling_aggregate_candidate",
         "--workspace", str(binding["workspace"]),
-        "--protected-workspace", str(binding["protected_workspace"]),
         "--commit", binding["commit"], "--tree", binding["tree"],
         "--execute", "--authorization", EXECUTE_AUTHORIZATION,
     ]
+    for protected_root in _binding_protected_workspaces(binding):
+        command.extend((
+            "--protected-workspace", str(protected_root),
+        ))
     try:
         primary_child = subprocess.run(
             command + ["--internal-primary"],
@@ -1789,29 +1891,307 @@ def execute_gate(binding):
     }
 
 
+def _binding_protected_workspaces(binding):
+    values = binding.get("protected_workspaces")
+    if values is None:
+        values = (binding["protected_workspace"],)
+    return tuple(values)
+
+
+def _path_contains(parent, child):
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _read_regular_child_bytes(directory_fd, name):
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(name, flags, dir_fd=directory_fd)
+    try:
+        opened = os.fstat(descriptor)
+        public = os.stat(
+            name, dir_fd=directory_fd, follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(public.st_mode)
+            or opened.st_nlink != 1
+            or public.st_nlink != 1
+            or (opened.st_dev, opened.st_ino)
+            != (public.st_dev, public.st_ino)
+        ):
+            raise AggregateGateError(
+                "cleanup marker is not one canonical regular file"
+            )
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        completed = os.fstat(descriptor)
+        terminal = os.stat(
+            name, dir_fd=directory_fd, follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(terminal.st_mode)
+            or terminal.st_nlink != 1
+            or (
+                completed.st_dev, completed.st_ino,
+                completed.st_size, completed.st_mtime_ns,
+                completed.st_ctime_ns, completed.st_nlink,
+            ) != (
+                opened.st_dev, opened.st_ino,
+                opened.st_size, opened.st_mtime_ns,
+                opened.st_ctime_ns, opened.st_nlink,
+            )
+            or (
+                terminal.st_dev, terminal.st_ino,
+                terminal.st_size, terminal.st_mtime_ns,
+                terminal.st_ctime_ns, terminal.st_nlink,
+            ) != (
+                opened.st_dev, opened.st_ino,
+                opened.st_size, opened.st_mtime_ns,
+                opened.st_ctime_ns, opened.st_nlink,
+            )
+        ):
+            raise AggregateGateError(
+                "cleanup marker drifted during observation"
+            )
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _delete_exact_tree_contents(directory_fd):
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    for name in os.listdir(directory_fd):
+        node = os.stat(
+            name, dir_fd=directory_fd, follow_symlinks=False,
+        )
+        if stat.S_ISDIR(node.st_mode):
+            child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+            try:
+                opened = os.fstat(child_fd)
+                identity = (opened.st_dev, opened.st_ino)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or identity != (node.st_dev, node.st_ino)
+                ):
+                    raise AggregateGateError(
+                        "cleanup directory identity drifted"
+                    )
+                _delete_exact_tree_contents(child_fd)
+                public = os.stat(
+                    name, dir_fd=directory_fd, follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISDIR(public.st_mode)
+                    or (public.st_dev, public.st_ino) != identity
+                ):
+                    raise AggregateGateError(
+                        "cleanup directory public name drifted"
+                    )
+                os.rmdir(name, dir_fd=directory_fd)
+            finally:
+                os.close(child_fd)
+        elif stat.S_ISREG(node.st_mode) and node.st_nlink == 1:
+            os.unlink(name, dir_fd=directory_fd)
+        else:
+            raise AggregateGateError(
+                "cleanup tree contains an aliased or special node"
+            )
+
+
+def _validate_exact_tree(directory_fd):
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    for name in os.listdir(directory_fd):
+        try:
+            node = os.stat(
+                name, dir_fd=directory_fd, follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise AggregateGateError(
+                "cleanup tree inventory is unavailable"
+            ) from exc
+        if stat.S_ISREG(node.st_mode):
+            if node.st_nlink != 1:
+                raise AggregateGateError(
+                    "cleanup tree contains an aliased or special node"
+                )
+            continue
+        if not stat.S_ISDIR(node.st_mode):
+            raise AggregateGateError(
+                "cleanup tree contains an aliased or special node"
+            )
+        try:
+            child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+        except OSError as exc:
+            raise AggregateGateError(
+                "cleanup directory identity drifted"
+            ) from exc
+        try:
+            opened = os.fstat(child_fd)
+            identity = (opened.st_dev, opened.st_ino)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or identity != (node.st_dev, node.st_ino)
+            ):
+                raise AggregateGateError(
+                    "cleanup directory identity drifted"
+                )
+            _validate_exact_tree(child_fd)
+            public = os.stat(
+                name, dir_fd=directory_fd, follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(public.st_mode)
+                or (public.st_dev, public.st_ino) != identity
+            ):
+                raise AggregateGateError(
+                    "cleanup directory public name drifted"
+                )
+        finally:
+            os.close(child_fd)
+
+
 def cleanup_gate_workspace(
     workspace, protected_workspace, scenario_fingerprint, authorization,
 ):
     if authorization != CLEANUP_AUTHORIZATION:
         raise AggregateGateError("cleanup authorization is missing or invalid")
     workspace = _real_directory(workspace, "cleanup workspace")
-    protected = _real_directory(
-        protected_workspace, "protected workspace", allow_linked_entry=True,
+    protected_values = (
+        tuple(protected_workspace)
+        if isinstance(protected_workspace, (tuple, list))
+        else (protected_workspace,)
     )
+    protected = tuple(_real_directory(
+        value, "protected workspace", allow_linked_entry=True,
+    ) for value in protected_values)
     repository = Path(__file__).resolve().parents[2]
-    if workspace in (protected, repository) or workspace == workspace.parent:
+    if (
+        workspace == workspace.parent
+        or any(
+            _path_contains(workspace, boundary)
+            or _path_contains(boundary, workspace)
+            for boundary in protected + (repository,)
+        )
+    ):
         raise AggregateGateError("cleanup target is protected or broad")
-    marker = workspace / "data" / "aggregate_gate_scenario.json"
+    parent = workspace.parent
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    parent_fd = os.open(str(parent), directory_flags)
+    workspace_fd = None
     try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise AggregateGateError("cleanup scenario marker is unavailable") from exc
-    if payload != {
-        "protocol": GATE_PROTOCOL,
-        "scenario_fingerprint": scenario_fingerprint,
-    }:
-        raise AggregateGateError("cleanup scenario identity disagrees")
-    shutil.rmtree(str(workspace))
+        parent_node = os.fstat(parent_fd)
+        parent_public = os.lstat(str(parent))
+        if (
+            not stat.S_ISDIR(parent_node.st_mode)
+            or not stat.S_ISDIR(parent_public.st_mode)
+            or (parent_node.st_dev, parent_node.st_ino)
+            != (parent_public.st_dev, parent_public.st_ino)
+        ):
+            raise AggregateGateError("cleanup parent identity drifted")
+        workspace_public = os.stat(
+            workspace.name, dir_fd=parent_fd, follow_symlinks=False,
+        )
+        workspace_fd = os.open(
+            workspace.name, directory_flags, dir_fd=parent_fd,
+        )
+        workspace_node = os.fstat(workspace_fd)
+        workspace_identity = (
+            workspace_node.st_dev, workspace_node.st_ino,
+        )
+        if (
+            not stat.S_ISDIR(workspace_node.st_mode)
+            or workspace_identity
+            != (workspace_public.st_dev, workspace_public.st_ino)
+        ):
+            raise AggregateGateError("cleanup target identity drifted")
+        try:
+            data_fd = os.open(
+                "data", directory_flags, dir_fd=workspace_fd,
+            )
+        except OSError as exc:
+            raise AggregateGateError(
+                "cleanup scenario marker is unavailable"
+            ) from exc
+        try:
+            try:
+                marker_bytes = _read_regular_child_bytes(
+                    data_fd, "aggregate_gate_scenario.json",
+                )
+            except OSError as exc:
+                raise AggregateGateError(
+                    "cleanup scenario marker is unavailable"
+                ) from exc
+        finally:
+            os.close(data_fd)
+        try:
+            payload = json.loads(marker_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise AggregateGateError(
+                "cleanup scenario marker is unavailable"
+            ) from exc
+        if payload != {
+            "protocol": GATE_PROTOCOL,
+            "scenario_fingerprint": scenario_fingerprint,
+        }:
+            raise AggregateGateError(
+                "cleanup scenario identity disagrees"
+            )
+        current = os.stat(
+            workspace.name, dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino) != workspace_identity
+        ):
+            raise AggregateGateError(
+                "cleanup target drifted before deletion"
+            )
+        _validate_exact_tree(workspace_fd)
+        _delete_exact_tree_contents(workspace_fd)
+        current = os.stat(
+            workspace.name, dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino) != workspace_identity
+        ):
+            raise AggregateGateError(
+                "cleanup target drifted before root removal"
+            )
+        os.rmdir(workspace.name, dir_fd=parent_fd)
+    finally:
+        if workspace_fd is not None:
+            os.close(workspace_fd)
+        os.close(parent_fd)
     if workspace.exists():
         raise AggregateGateError("cleanup postcondition is uncertain")
     return {
@@ -1827,7 +2207,9 @@ def _parser():
     )
     parser.add_argument("--scenario")
     parser.add_argument("--workspace", required=True)
-    parser.add_argument("--protected-workspace", required=True)
+    parser.add_argument(
+        "--protected-workspace", required=True, action="append",
+    )
     parser.add_argument("--commit", required=True)
     parser.add_argument("--tree", required=True)
     parser.add_argument("--execute", action="store_true")
@@ -1871,7 +2253,8 @@ def main(argv=None):
         )
         evidence = (
             cleanup_gate_workspace(
-                binding["workspace"], binding["protected_workspace"],
+                binding["workspace"],
+                _binding_protected_workspaces(binding),
                 binding["scenario_fingerprint"],
                 args.cleanup_authorization,
             )

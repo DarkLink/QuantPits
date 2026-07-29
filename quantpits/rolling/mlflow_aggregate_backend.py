@@ -212,31 +212,106 @@ def _establish_observed_child_directory(parent, name, parent_identity):
 
 def _open_regular_child(
     parent, name, parent_identity, create_if_missing,
+    require_missing=False,
 ):
     if type(create_if_missing) is not bool:
         raise RollingAggregateContractError(
             "create_if_missing must be an exact boolean"
         )
-    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    if type(require_missing) is not bool or (
+        require_missing and not create_if_missing
+    ):
+        raise RollingAggregateContractError(
+            "require_missing requires an exact create request"
+        )
+    parent_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+    )
     parent_flags |= getattr(os, "O_NOFOLLOW", 0)
     parent_fd = os.open(str(parent), parent_flags)
+    file_fd = None
     try:
         parent_meta = os.fstat(parent_fd)
         if (parent_meta.st_dev, parent_meta.st_ino) != parent_identity:
             raise RollingAggregateBackendError(
                 "file parent identity drifted before open"
             )
-        flags = (
-            os.O_RDWR | os.O_APPEND | os.O_CREAT
-            if create_if_missing else os.O_RDONLY
+        try:
+            before = os.stat(
+                name, dir_fd=parent_fd, follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            before = None
+        if before is not None and (
+            require_missing
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+        ):
+            raise RollingAggregateBackendError(
+                "file child is not one canonical regular node"
+            )
+        if before is None and not create_if_missing:
+            raise FileNotFoundError(name)
+        flags = os.O_RDONLY
+        if create_if_missing:
+            flags = os.O_RDWR | os.O_APPEND
+            if before is None:
+                flags |= os.O_CREAT | os.O_EXCL
+        flags |= (
+            getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
         )
-        flags |= getattr(os, "O_NOFOLLOW", 0)
         file_fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
+        opened = os.fstat(file_fd)
+        after = os.stat(
+            name, dir_fd=parent_fd, follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1
+            or (opened.st_dev, opened.st_ino)
+            != (after.st_dev, after.st_ino)
+            or (
+                before is not None
+                and (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)
+            )
+        ):
+            raise RollingAggregateBackendError(
+                "file child identity drifted during open"
+            )
+    except BaseException:
+        if file_fd is not None:
+            os.close(file_fd)
+        raise
     finally:
         os.close(parent_fd)
     return os.fdopen(
         file_fd, "a+b" if create_if_missing else "rb",
     )
+
+
+def _observe_regular_child(parent, name, parent_identity):
+    """Return exact metadata for one unaliased direct regular child."""
+
+    with _open_regular_child(
+        parent, name, parent_identity, create_if_missing=False,
+    ) as handle:
+        node = os.fstat(handle.fileno())
+        return (
+            node.st_mode,
+            node.st_dev,
+            node.st_ino,
+            node.st_nlink,
+            node.st_size,
+            node.st_mtime_ns,
+            node.st_ctime_ns,
+        )
 
 
 class _MlflowRecorderView:
@@ -401,7 +476,7 @@ class QlibMlflowAggregateBackend:
                 lock_dir, lock_path.name, lock_parent_identity,
                 create_if_missing=create_if_missing,
             )
-        except OSError as exc:
+        except (OSError, RollingAggregateBackendError) as exc:
             if not create_if_missing:
                 raise RollingAggregateLockUnavailableError(
                     "terminal candidate lock cannot be opened"
@@ -421,6 +496,8 @@ class QlibMlflowAggregateBackend:
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or not stat.S_ISREG(public.st_mode)
+                or opened.st_nlink != 1
+                or public.st_nlink != 1
                 or (public.st_dev, public.st_ino) != identity
             ):
                 if not create_if_missing:
@@ -465,10 +542,14 @@ class QlibMlflowAggregateBackend:
                 open_node = os.fstat(handle.fileno())
                 public_node = os.lstat(str(lock_path))
                 if (
-                    open_node.st_dev, open_node.st_ino,
-                ) != identity or (
-                    public_node.st_dev, public_node.st_ino,
-                ) != identity:
+                    not stat.S_ISREG(open_node.st_mode)
+                    or not stat.S_ISREG(public_node.st_mode)
+                    or open_node.st_nlink != 1
+                    or public_node.st_nlink != 1
+                    or (open_node.st_dev, open_node.st_ino) != identity
+                    or (public_node.st_dev, public_node.st_ino)
+                    != identity
+                ):
                     raise RollingAggregateBackendError(
                         "candidate lock node drifted"
                     )
@@ -1034,6 +1115,8 @@ class QlibMlflowAggregateBackend:
             if (
                 not stat.S_ISREG(lock_open_meta.st_mode)
                 or not stat.S_ISREG(lock_public_meta.st_mode)
+                or lock_open_meta.st_nlink != 1
+                or lock_public_meta.st_nlink != 1
                 or (lock_public_meta.st_dev, lock_public_meta.st_ino)
                 != lock_identity
             ):
@@ -1072,10 +1155,15 @@ class QlibMlflowAggregateBackend:
                 public_lock = os.lstat(str(lock_path))
                 open_lock = os.fstat(lock_handle.fileno())
                 if (
-                    public_lock.st_dev, public_lock.st_ino,
-                ) != lock_identity or (
-                    open_lock.st_dev, open_lock.st_ino,
-                ) != lock_identity:
+                    not stat.S_ISREG(public_lock.st_mode)
+                    or not stat.S_ISREG(open_lock.st_mode)
+                    or public_lock.st_nlink != 1
+                    or open_lock.st_nlink != 1
+                    or (public_lock.st_dev, public_lock.st_ino)
+                    != lock_identity
+                    or (open_lock.st_dev, open_lock.st_ino)
+                    != lock_identity
+                ):
                     raise RollingAggregateBackendError(
                         "aggregate lock node identity drifted"
                     )
@@ -1395,14 +1483,24 @@ class QlibMlflowAggregateBackend:
                     manifest_bytes = _json_bytes(payload)
                     with _open_regular_child(
                         temporary, "pred.pkl", staging_identity,
-                        create_if_missing=True,
+                        create_if_missing=True, require_missing=True,
                     ) as staging_pred:
                         staging_pred.write(prediction_bytes)
+                        staging_pred.flush()
+                    staging_prediction_node = _observe_regular_child(
+                        temporary, "pred.pkl", staging_identity,
+                    )
                     with _open_regular_child(
                         temporary, "aggregate_manifest.json",
                         staging_identity, create_if_missing=True,
+                        require_missing=True,
                     ) as staging_manifest:
                         staging_manifest.write(manifest_bytes)
+                        staging_manifest.flush()
+                    staging_manifest_node = _observe_regular_child(
+                        temporary, "aggregate_manifest.json",
+                        staging_identity,
+                    )
                     self._staging_write_bytes += (
                         len(prediction_bytes) + len(manifest_bytes)
                     )
@@ -1416,6 +1514,12 @@ class QlibMlflowAggregateBackend:
                     client.log_artifact(
                         recorder_id, str(temporary / "pred.pkl"),
                     )
+                    if _observe_regular_child(
+                        temporary, "pred.pkl", staging_identity,
+                    ) != staging_prediction_node:
+                        raise RollingAggregateBackendError(
+                            "candidate staging prediction node drifted"
+                        )
                     prediction_nodes = observe_candidate_artifact_nodes(
                         ("pred.pkl",),
                     )
@@ -1441,6 +1545,18 @@ class QlibMlflowAggregateBackend:
                         recorder_id,
                         str(temporary / "aggregate_manifest.json"),
                     )
+                    if (
+                        _observe_regular_child(
+                            temporary, "pred.pkl", staging_identity,
+                        ) != staging_prediction_node
+                        or _observe_regular_child(
+                            temporary, "aggregate_manifest.json",
+                            staging_identity,
+                        ) != staging_manifest_node
+                    ):
+                        raise RollingAggregateBackendError(
+                            "candidate staging artifact node drifted"
+                        )
                     complete_nodes = observe_candidate_artifact_nodes((
                         "aggregate_manifest.json", "pred.pkl",
                     ))

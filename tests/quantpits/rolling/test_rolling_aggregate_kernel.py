@@ -1,3 +1,5 @@
+import pytest
+
 from quantpits.rolling import (
     materialize_rolling_aggregate_candidates,
     rolling_aggregate_result_json,
@@ -54,6 +56,9 @@ def test_candidate_inventory_partition_is_disjoint_and_count_conserving(tmp_path
         "target_key": aggregate.target_keys[0],
         "scope_fingerprint": "d" * 64,
         "aggregate_attempt_id": "historical-attempt",
+        "recorder_id": "historical-recorder",
+        "run_status": "FINISHED",
+        "lifecycle_stage": "active",
     }
     backend.candidates["malformed"] = {"candidate_key": None}
     result = materialize_rolling_aggregate_candidates(
@@ -66,6 +71,69 @@ def test_candidate_inventory_partition_is_disjoint_and_count_conserving(tmp_path
         "raw_inventory_count": 3,
         "n_requested_owned": 1,
         "n_orphan_owned": 1,
+        "n_unassigned": 1,
+    }
+
+
+@pytest.mark.parametrize("candidate_key", ("c" * 64, ["malformed"]))
+def test_candidate_inventory_collision_cannot_hide_as_orphan(
+    tmp_path, candidate_key,
+):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    backend = FakeCandidateBackend(context)
+    backend.candidates["collision"] = {
+        "candidate_key": candidate_key,
+        "target_key": aggregate.target_keys[0],
+        "scope_fingerprint": aggregate.scope_fingerprint,
+        "aggregate_attempt_id": aggregate.aggregate_attempt_id,
+        "recorder_id": "collision-recorder",
+        "run_status": "FINISHED",
+        "lifecycle_stage": "active",
+    }
+
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+
+    assert result.status == "indeterminate"
+    assert result.target_results[0].candidate is None
+    assert "publication_input" not in result.capabilities
+    assert result.to_public_dict()["candidate_inventory"] == {
+        "raw_inventory_count": 2,
+        "n_requested_owned": 2,
+        "n_orphan_owned": 0,
+        "n_unassigned": 0,
+    }
+
+
+def test_nonterminal_foreign_inventory_row_remains_unassigned(
+    tmp_path,
+):
+    context, _scope, repository, source, aggregate = aggregate_case(
+        tmp_path,
+    )
+    backend = FakeCandidateBackend(context)
+    backend.candidates["failed-foreign"] = {
+        "candidate_key": "c" * 64,
+        "target_key": aggregate.target_keys[0],
+        "scope_fingerprint": "d" * 64,
+        "aggregate_attempt_id": "historical-attempt",
+        "recorder_id": "historical-recorder",
+        "run_status": "FAILED",
+        "lifecycle_stage": "active",
+    }
+
+    result = materialize_rolling_aggregate_candidates(
+        aggregate, repository, source, backend,
+    )
+
+    assert result.status == "success"
+    assert result.to_public_dict()["candidate_inventory"] == {
+        "raw_inventory_count": 2,
+        "n_requested_owned": 1,
+        "n_orphan_owned": 0,
         "n_unassigned": 1,
     }
 
@@ -162,7 +230,7 @@ def test_terminal_duplicate_denies_publication_input(tmp_path):
     )
     assert result.status == "indeterminate"
     assert result.target_results[0].did_write is True
-    assert result.inventory_counts == ()
+    assert result.inventory_counts == (2, 2, 0, 0)
     assert result.target_results[0].candidate is None
     assert "publication_input" not in result.capabilities
 

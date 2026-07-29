@@ -313,7 +313,9 @@ SQLite-file or file-store-root
 node, so a same-URI inode replacement fails closed. Before
 granting `publication_input`, the kernel rechecks source/State/current/backend under the candidate
 lock and requires exactly one active, `FINISHED`, exact candidate per target in terminal inventory.
-Duplicates and race drift fail closed. The candidate experiment namespace itself counts as a durable
+Duplicates and race drift fail closed. A different candidate key under the same scope or
+attempt/target is a requested collision, not an orphan; raw/requested/orphan/unassigned inventory
+counts remain visible even when publication is denied. The candidate experiment namespace itself counts as a durable
 write when first created.
 If the canonical artifact root is first established before experiment metadata, inventory observes
 that directory write separately; a later failure cannot report `did_write=false`.
@@ -325,6 +327,10 @@ unavailable. Lock unavailability with a known zero-write history returns
 `0`/`1`. If terminal reinspection becomes
 incomparable after candidate materialization, the result remains `indeterminate` while preserving
 the observed `did_write=true` fact instead of degrading a known durable write to unknown.
+Lock and staging files use a no-follow observation → open/create → public-name recheck.
+New staging files require exclusive creation, and every writable regular node must retain
+`st_nlink == 1` before and after writing. The SQLite tracking database and any existing
+journal/WAL/SHM sidecars likewise reject symlinks, hardlinks, and special nodes.
 These corrected semantics use `rolling_aggregate_candidate_v2`; v1 candidate identities are not
 reused as v2 candidates.
 
@@ -373,11 +379,14 @@ Use the Phase 35 acceptance preflight as follows:
 ```bash
 python -m quantpits.tools.verify_rolling_aggregate_candidate \
   --workspace /path/to/Demo_Workspace_validation \
-  --protected-workspace /path/to/Demo_Workspace_readonly \
+  --protected-workspace /path/to/Production_Workspace_readonly \
+  --protected-workspace /path/to/Experimental_Workspace_readonly \
   --commit <40-char-commit> --tree <40-char-tree>
 ```
 
-By default it only validates the frozen scenario, selector, capacity, paths, and protected snapshot;
+`--protected-workspace` is repeatable; every production and experimental protected root must be
+listed. By default it only validates the frozen scenario, selector, capacity, paths, and all
+protected snapshots;
 it performs no training, networking, or candidate write. The real `--execute` route requires release
 owner authorization and a disposable validation workspace. The production workspace remains
 read-only.
@@ -391,6 +400,10 @@ Physical write bytes come from `/proc/self/io`; network access is denied and tra
 profiled. Primary runs in a separate process with a hard 300-second timeout; separate-process reuse
 gets only the remainder of that total budget and must remain zero
 writer/recorder/path/write-byte. Historical v1 gate evidence cannot close the correction candidate.
+Cleanup still defaults to preserve. Explicit cleanup accepts only an exact disposable root that
+does not overlap any protected root or the repository, and deletes it component-by-component
+through no-follow directory descriptors. Ancestors, symlinks, hardlinks, special nodes, or
+identity drift fail closed.
 The deterministic source fixture does not invoke the model-capability protocol probe or
 `LinearModel.fit`. A fixed runner creates prediction artifacts, after which the real Phase 32
 evidence inspector and State-repository CAS establish the `units_complete` fixture. Qlib automatic

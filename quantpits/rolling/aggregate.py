@@ -10,7 +10,10 @@ import hashlib
 import io
 import json
 import math
+import ntpath
 import numbers
+import posixpath
+import re
 import struct
 import unicodedata
 from dataclasses import InitVar, dataclass, field
@@ -62,6 +65,10 @@ _BATCH_TOKEN = object()
 class _TerminalCandidateBlocked(Exception):
     """A comparable terminal candidate fact denies reuse capability."""
 
+    def __init__(self, message, inventory_counts=()):
+        super().__init__(message)
+        self.inventory_counts = inventory_counts
+
 
 class _TerminalObservationIndeterminate(Exception):
     """Terminal facts cannot be compared after candidate work."""
@@ -81,9 +88,13 @@ def _contract(message: str) -> None:
 def _text(value: Any, field_name: str) -> str:
     if (
         not isinstance(value, str) or not value or value != value.strip()
-        or any(ord(char) < 32 or ord(char) == 127 for char in value)
-        or value.startswith(("/", "\\"))
-        or "://" in value
+        or any(
+            unicodedata.category(char) in ("Cc", "Cf", "Cs", "Zl", "Zp")
+            for char in value
+        )
+        or posixpath.isabs(value)
+        or ntpath.isabs(value)
+        or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value)
     ):
         _contract("%s must be a public non-empty trimmed identifier" % field_name)
     return value
@@ -426,12 +437,8 @@ def _canonical_frame(data: bytes, expected_sessions: tuple) -> tuple:
     instruments = tuple(index.get_level_values(instrument_positions[0]))
     if any(type(item) is not str for item in instruments):
         _contract("prediction instruments must already be strings")
-    if any(
-        not item or item != item.strip()
-        or any(unicodedata.category(char) == "Cc" for char in item)
-        for item in instruments
-    ):
-        _contract("prediction instruments are invalid")
+    for item in instruments:
+        _text(item, "prediction instrument")
     scores = payload.iloc[:, 0]
     if not pd.api.types.is_numeric_dtype(scores.dtype) or pd.api.types.is_bool_dtype(scores.dtype):
         _contract("prediction score must be numeric and bool-free")
@@ -1370,7 +1377,7 @@ class RollingAggregateCandidateKernel:
                         != candidate.to_public_dict()
                     ):
                         raise _TerminalCandidateBlocked(
-                            "terminal candidate drifted"
+                            "terminal candidate drifted", counts,
                         )
                     rebuilt.append(self._result(
                         result.target_key, result.requested_unit_keys,
@@ -1402,10 +1409,13 @@ class RollingAggregateCandidateKernel:
             )
         except _CONTROL:
             raise
-        except (
-            RollingAggregateLockUnavailableError,
-            _TerminalCandidateBlocked,
-        ):
+        except _TerminalCandidateBlocked as exc:
+            return tuple(self._result(
+                item.target_key, item.requested_unit_keys,
+                "indeterminate" if item.did_write is True else "blocked",
+                item.did_write,
+            ) for item in results), exc.inventory_counts
+        except RollingAggregateLockUnavailableError:
             return tuple(self._result(
                 item.target_key, item.requested_unit_keys,
                 "indeterminate" if item.did_write is True else "blocked",
@@ -1502,27 +1512,62 @@ class RollingAggregateCandidateKernel:
         requested = set(scope.candidate_keys)
         requested_owned = orphan_owned = unassigned = 0
         requested_rows = {key: [] for key in scope.candidate_keys}
+        requested_collision = False
         for item in inventory["candidates"]:
             if not isinstance(item, Mapping):
                 unassigned += 1
                 continue
             candidate_key = item.get("candidate_key")
-            if candidate_key in requested:
+            if isinstance(candidate_key, str) and candidate_key in requested:
                 requested_owned += 1
                 requested_rows[candidate_key].append(item)
+                continue
+            if (
+                item.get("scope_fingerprint") == scope.scope_fingerprint
+                or (
+                    item.get("aggregate_attempt_id")
+                    == scope.aggregate_attempt_id
+                    and item.get("target_key") in scope.target_keys
+                )
+            ):
+                requested_owned += 1
+                requested_collision = True
                 continue
             try:
                 _digest(candidate_key, "inventory candidate_key")
                 RollingTargetIdentity.parse(item.get("target_key"))
-                _text(item.get("scope_fingerprint"), "inventory scope")
+                _digest(
+                    item.get("scope_fingerprint"),
+                    "inventory scope fingerprint",
+                )
                 _text(
                     item.get("aggregate_attempt_id"),
                     "inventory aggregate attempt",
                 )
+                _text(
+                    item.get("recorder_id"),
+                    "inventory recorder id",
+                )
+                if (
+                    item.get("run_status") != "FINISHED"
+                    or item.get("lifecycle_stage") != "active"
+                ):
+                    raise RollingAggregateContractError(
+                        "inventory orphan is not terminal and active"
+                    )
                 orphan_owned += 1
             except RollingAggregateContractError:
                 unassigned += 1
+        counts = (
+            inventory["raw_count"], requested_owned,
+            orphan_owned, unassigned,
+        )
         if require_exact_terminal:
+            if requested_collision:
+                raise _TerminalCandidateBlocked(
+                    "terminal candidate inventory contains a requested collision",
+                    counts,
+                )
             for position, candidate_key in enumerate(scope.candidate_keys):
                 rows = requested_rows[candidate_key]
                 if (
@@ -1537,12 +1582,10 @@ class RollingAggregateCandidateKernel:
                     or rows[0].get("lifecycle_stage") != "active"
                 ):
                     raise _TerminalCandidateBlocked(
-                        "terminal candidate inventory is not exact"
+                        "terminal candidate inventory is not exact",
+                        counts,
                     )
-        return (
-            inventory["raw_count"], requested_owned,
-            orphan_owned, unassigned,
-        )
+        return counts
 
     def _batch(
         self, scope, results, observe_inventory,
