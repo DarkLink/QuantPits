@@ -318,6 +318,9 @@ artifact root mkdir 与 experiment metadata 分别进入 before/after inventory�
 Gate execute 使用递归生命周期 mutation observer，并在 `mkdir`/directory rename 返回前同步安装新目录
 watch，以捕获无等待的 write-then-delete；write allow-list 由 terminal experiment/recorder/candidate
 identity 反向锚定，不能用 `mlruns/`、`qlib_data/` 等宽前缀绕过。物理写字节来自 `/proc/self/io`。
+observer 同时以 no-follow descriptor 冻结 disposable、每个 protected 与 repository 公开根目录
+及完整祖先链的 device/inode，记录无 child name 的 root/ancestor move/delete self event，并在
+停止时从原公开路径重验；移走后恢复或用同内容目录替换任一受观察目录都属于 drift。
 primary 在独立进程中受 300 秒 hard timeout 约束，reuse 只能使用同一总预算的剩余时间。
 Gate source fixture 不调用 model capability probe 或 `LinearModel.fit`；`training_calls=0`
 必须来自 profiler observer，而不是常量声明。

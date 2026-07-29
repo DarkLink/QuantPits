@@ -59,6 +59,11 @@ class _WorkspaceMutationObserver:
         | 0x00000400  # IN_DELETE_SELF
         | 0x00000800  # IN_MOVE_SELF
     )
+    _ANCESTOR_MASK = (
+        0x00000004  # IN_ATTRIB
+        | 0x00000400  # IN_DELETE_SELF
+        | 0x00000800  # IN_MOVE_SELF
+    )
     _EVENT = struct.Struct("iIII")
     _registry_lock = threading.RLock()
     _active_observers = set()
@@ -71,9 +76,12 @@ class _WorkspaceMutationObserver:
     _saved_pathlib_replace = None
 
     def __init__(self, root, excluded_relative_paths=()):
-        self.root = Path(root)
+        self.root = Path(root).absolute()
         self._exclusions = frozenset(excluded_relative_paths)
         self._fd = -1
+        self._root_fd = -1
+        self._root_identity = None
+        self._root_ancestors = []
         self._paths = {}
         self._observed = set()
         self._error = None
@@ -337,9 +345,9 @@ class _WorkspaceMutationObserver:
                 relative = "/".join(
                     item for item in (parent, name) if item
                 )
-                if relative:
+                if relative or (not name and mask & self._MASK):
                     with self._lock:
-                        self._observed.add(relative)
+                        self._observed.add(relative or ".")
                 if (
                     relative
                     and mask & (0x00000100 | 0x00000080)
@@ -359,30 +367,159 @@ class _WorkspaceMutationObserver:
         except BaseException as exc:
             self._error = exc
 
-    def start(self):
-        libc = ctypes.CDLL(None, use_errno=True)
+    @staticmethod
+    def _directory_identity(observation):
+        if not stat.S_ISDIR(observation.st_mode):
+            raise AggregateGateError(
+                "gate lifecycle root is not a directory"
+            )
+        return (
+            observation.st_dev, observation.st_ino,
+            stat.S_IFMT(observation.st_mode),
+        )
+
+    def _open_root_identity(self):
+        flags = (
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
         try:
+            descriptor = os.open(str(self.root), flags)
+            opened = os.fstat(descriptor)
+            public = os.lstat(str(self.root))
+            opened_identity = self._directory_identity(opened)
+            public_identity = self._directory_identity(public)
+        except BaseException as exc:
+            if "descriptor" in locals():
+                os.close(descriptor)
+            if isinstance(
+                exc, (KeyboardInterrupt, SystemExit, GeneratorExit),
+            ):
+                raise
+            raise AggregateGateError(
+                "gate lifecycle root identity is unavailable"
+            ) from exc
+        if opened_identity != public_identity:
+            os.close(descriptor)
+            raise AggregateGateError(
+                "gate lifecycle root identity drifted"
+            )
+        self._root_fd = descriptor
+        self._root_identity = opened_identity
+        ancestors = []
+        try:
+            for path in reversed(self.root.parents):
+                ancestor_fd = os.open(str(path), flags)
+                try:
+                    opened = self._directory_identity(
+                        os.fstat(ancestor_fd)
+                    )
+                    public = self._directory_identity(
+                        os.lstat(str(path))
+                    )
+                    if opened != public:
+                        raise AggregateGateError(
+                            "gate lifecycle root ancestor identity drifted"
+                        )
+                except BaseException:
+                    os.close(ancestor_fd)
+                    raise
+                ancestors.append((ancestor_fd, path, opened))
+        except BaseException as exc:
+            for ancestor_fd, _path, _identity in ancestors:
+                os.close(ancestor_fd)
+            self._root_ancestors = []
+            os.close(self._root_fd)
+            self._root_fd = -1
+            self._root_identity = None
+            if isinstance(
+                exc, (KeyboardInterrupt, SystemExit, GeneratorExit),
+            ):
+                raise
+            raise AggregateGateError(
+                "gate lifecycle root ancestor identity is unavailable"
+            ) from exc
+        self._root_ancestors = ancestors
+
+    def _watch_root_ancestors(self):
+        for _descriptor, path, _identity in self._root_ancestors:
+            watch = self._add_watch(
+                self._fd, os.fsencode(str(path)), self._ANCESTOR_MASK,
+            )
+            if watch < 0:
+                raise AggregateGateError(
+                    "gate lifecycle root ancestor is unavailable"
+                )
+            with self._lock:
+                self._paths[watch] = ""
+
+    def _assert_root_identity(self):
+        if self._root_fd < 0 or self._root_identity is None:
+            raise AggregateGateError(
+                "gate lifecycle root identity is unavailable"
+            )
+        try:
+            opened = self._directory_identity(os.fstat(self._root_fd))
+            public = self._directory_identity(os.lstat(str(self.root)))
+        except (OSError, AggregateGateError) as exc:
+            raise AggregateGateError(
+                "gate lifecycle root identity drifted"
+            ) from exc
+        if opened != self._root_identity or public != self._root_identity:
+            raise AggregateGateError(
+                "gate lifecycle root identity drifted"
+            )
+        for descriptor, path, identity in self._root_ancestors:
+            try:
+                opened = self._directory_identity(os.fstat(descriptor))
+                public = self._directory_identity(os.lstat(str(path)))
+            except (OSError, AggregateGateError) as exc:
+                raise AggregateGateError(
+                    "gate lifecycle root ancestor identity drifted"
+                ) from exc
+            if opened != identity or public != identity:
+                raise AggregateGateError(
+                    "gate lifecycle root ancestor identity drifted"
+                )
+
+    def start(self):
+        self._open_root_identity()
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
             init = libc.inotify_init1
             add_watch = libc.inotify_add_watch
+            init.argtypes = (ctypes.c_int,)
+            init.restype = ctypes.c_int
+            add_watch.argtypes = (
+                ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32,
+            )
+            add_watch.restype = ctypes.c_int
+            fd = init(os.O_NONBLOCK | os.O_CLOEXEC)
         except AttributeError as exc:
+            self.close()
             raise AggregateGateError(
                 "gate lifecycle write observation requires inotify"
             ) from exc
-        init.argtypes = (ctypes.c_int,)
-        init.restype = ctypes.c_int
-        add_watch.argtypes = (
-            ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32,
-        )
-        add_watch.restype = ctypes.c_int
-        fd = init(os.O_NONBLOCK | os.O_CLOEXEC)
+        except BaseException as exc:
+            self.close()
+            if isinstance(
+                exc, (KeyboardInterrupt, SystemExit, GeneratorExit),
+            ):
+                raise
+            raise AggregateGateError(
+                "gate lifecycle write observer could not start"
+            ) from exc
         if fd < 0:
+            self.close()
             raise AggregateGateError(
                 "gate lifecycle write observer could not start"
             )
         self._fd = fd
         self._add_watch = add_watch
         try:
+            self._watch_root_ancestors()
+            self._add_directory_watch(self.root)
             self._record_tree(self.root)
+            self._assert_root_identity()
             self._observed.clear()
             self._thread = threading.Thread(
                 target=self._consume,
@@ -407,6 +544,7 @@ class _WorkspaceMutationObserver:
                     )
             if self._error is not None:
                 raise self._error
+            self._assert_root_identity()
         finally:
             self.close()
         with self._lock:
@@ -423,6 +561,13 @@ class _WorkspaceMutationObserver:
         if self._fd >= 0:
             os.close(self._fd)
             self._fd = -1
+        if self._root_fd >= 0:
+            os.close(self._root_fd)
+            self._root_fd = -1
+        self._root_identity = None
+        for descriptor, _path, _identity in self._root_ancestors:
+            os.close(descriptor)
+        self._root_ancestors = []
         self._unregister_directory_creation_barrier()
         self._paths = {}
         self._thread = None
@@ -1696,7 +1841,6 @@ def _run_real_gate(binding, reuse_only=False):
     started = time.monotonic()
     workspace = binding["workspace"]
     repository_root = Path(__file__).resolve().parents[2]
-    workspace_before = snapshot_tree(workspace)
     write_before = _process_physical_write_bytes()
     declared_directories = (
         "config", "data", "data/locks",
@@ -1725,6 +1869,7 @@ def _run_real_gate(binding, reuse_only=False):
             repository_root, (".git", "plan", "workspaces"),
         ).start()
         observers.append(repository_observer)
+        workspace_before = snapshot_tree(workspace)
         for name in declared_directories:
             path = workspace / name
             path.mkdir(parents=True, exist_ok=True)

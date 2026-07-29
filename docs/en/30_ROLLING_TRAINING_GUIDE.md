@@ -401,6 +401,11 @@ Physical write bytes come from `/proc/self/io`; network access is denied and tra
 profiled. Primary runs in a separate process with a hard 300-second timeout; separate-process reuse
 gets only the remainder of that total budget and must remain zero
 writer/recorder/path/write-byte. Historical v1 gate evidence cannot close the correction candidate.
+Each lifecycle observer also freezes the device/inode of its public root and complete ancestor
+chain through no-follow directory descriptors. Root/ancestor `MOVE_SELF`/`DELETE_SELF` events are
+recorded even without a child name, and shutdown rejoins every descriptor to the original public
+path. Moving and restoring a root/ancestor, or replacing one with a same-content directory,
+therefore fails closed even when the child-byte snapshots compare equal.
 Cleanup still defaults to preserve. Explicit cleanup accepts only an exact disposable root that
 does not overlap any protected root or the repository, and deletes it component-by-component
 through no-follow directory descriptors. Ancestors, symlinks, hardlinks, special nodes, or

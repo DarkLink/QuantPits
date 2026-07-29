@@ -576,6 +576,55 @@ def test_gate_write_observer_and_cleanup_fail_closed(tmp_path):
         scenario_from_mapping(payload)
 
 
+def test_gate_lifecycle_observer_rejects_root_namespace_replacement(
+    tmp_path,
+):
+    quiet_root = tmp_path / "quiet-root"
+    quiet_root.mkdir()
+    quiet_observer = _WorkspaceMutationObserver(quiet_root).start()
+    (tmp_path / "unrelated-sibling").mkdir()
+    assert quiet_observer.stop() == ()
+
+    attributed_root = tmp_path / "attributed-root"
+    attributed_root.mkdir()
+    attribute_observer = _WorkspaceMutationObserver(attributed_root).start()
+    attributed_root.chmod(0o700)
+    assert "." in attribute_observer.stop()
+
+    restored_root = tmp_path / "restored-root"
+    restored_root.mkdir()
+    (restored_root / "sentinel.bin").write_bytes(b"same bytes")
+    displaced_root = tmp_path / "temporarily-displaced-root"
+    restored_observer = _WorkspaceMutationObserver(restored_root).start()
+    restored_root.rename(displaced_root)
+    displaced_root.rename(restored_root)
+    assert "." in restored_observer.stop()
+
+    public_parent = tmp_path / "public-parent"
+    ancestor_root = public_parent / "observed-root"
+    ancestor_root.mkdir(parents=True)
+    displaced_parent = tmp_path / "temporarily-displaced-parent"
+    ancestor_observer = _WorkspaceMutationObserver(ancestor_root).start()
+    public_parent.rename(displaced_parent)
+    displaced_parent.rename(public_parent)
+    assert "." in ancestor_observer.stop()
+
+    public_root = tmp_path / "public-root"
+    public_root.mkdir()
+    (public_root / "sentinel.bin").write_bytes(b"same bytes")
+    replacement = tmp_path / "same-byte-replacement"
+    replacement.mkdir()
+    (replacement / "sentinel.bin").write_bytes(b"same bytes")
+    displaced = tmp_path / "displaced-root"
+    observer = _WorkspaceMutationObserver(public_root).start()
+    public_root.rename(displaced)
+    replacement.rename(public_root)
+    with pytest.raises(AggregateGateError, match="root identity drifted"):
+        observer.stop()
+    assert (displaced / "sentinel.bin").read_bytes() == b"same bytes"
+    assert (public_root / "sentinel.bin").read_bytes() == b"same bytes"
+
+
 def test_gate_accepts_repeated_protected_workspace_bindings():
     args = _parser().parse_args([
         "--workspace", "/tmp/disposable-demo",

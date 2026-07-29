@@ -275,7 +275,12 @@ Gate execute uses a recursive lifecycle mutation observer and installs each new-
 before `mkdir` or directory rename returns, including no-wait write-then-delete. Its write
 allow-list is anchored back to the terminal experiment, recorder, and candidate identities, so a
 broad `mlruns/` or `qlib_data/` prefix grants no authority. Physical write bytes come from
-`/proc/self/io`. Primary runs in a separate process with a hard 300-second timeout; reuse receives
+`/proc/self/io`. Each observer also freezes the device/inode of the disposable, every protected,
+and repository public root plus its complete ancestor chain through no-follow descriptors, records
+root/ancestor move/delete-self events without a child name, and rejoins every identity through the
+original public path at shutdown. Moving and restoring any observed directory or replacing it with
+a same-content directory is drift. Primary runs
+in a separate process with a hard 300-second timeout; reuse receives
 only the remainder of that same total budget.
 The Gate source fixture never invokes a model-capability probe or `LinearModel.fit`;
 `training_calls=0` must come from the profiler observer rather than a constant declaration.

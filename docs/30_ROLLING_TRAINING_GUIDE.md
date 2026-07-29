@@ -350,6 +350,11 @@ identity，宽目录前缀不构成授权。物理写字节来自 `/proc/self/io
 调用由 profiler 观察。primary 独立子进程有 300 秒 hard timeout，separate-process reuse 只能使用
 同一总预算的剩余时间，且仍必须是零 writer/recorder/path/write-byte。旧 v1 gate evidence
 不能关闭新的修正候选。
+每个生命周期 observer 还会用 no-follow directory descriptor 冻结其公开根目录及完整祖先链的
+device/inode；root/ancestor 的 `MOVE_SELF`/`DELETE_SELF` 即使没有 child name 也会被记录，
+停止观察时再从原公开路径核对整条目录身份。因此把 protected、disposable 或 repository observer
+root/ancestor 移走后用同内容目录替换，或移走后恢复，均会 fail closed，不能由相同的子树 bytes
+snapshot 掩盖。
 cleanup 默认仍为 preserve；显式 cleanup 只接受与 protected roots、repository 均不重叠的
 exact disposable root，并通过目录描述符逐级 no-follow 删除。ancestor、symlink、hardlink、
 特殊节点或 identity drift 均 fail closed。
