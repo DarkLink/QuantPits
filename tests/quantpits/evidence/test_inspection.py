@@ -4,6 +4,7 @@ import os
 import quantpits.evidence.inspection as inspection
 from quantpits.evidence.inspection import (
     PathBoundaryError, SourceMutationObserver, inspect_file, inspect_many,
+    inspect_tree,
 )
 
 
@@ -17,6 +18,29 @@ def test_symlink_and_parent_escape_are_blocked(tmp_path):
         inspect_file(root, "alias")
     with pytest.raises(PathBoundaryError):
         inspect_file(root, "../outside.txt")
+
+
+def test_internal_symlink_alias_is_blocked_even_when_target_is_contained(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = root / "target"
+    target.write_text("evidence")
+    (root / "alias").symlink_to(target)
+
+    with pytest.raises(PathBoundaryError, match="symlink"):
+        inspect_file(root, "alias")
+
+
+def test_tree_inventory_retains_special_nodes_as_incomparable(tmp_path):
+    root = tmp_path / "workspace"
+    tree = root / "tree"
+    tree.mkdir(parents=True)
+    os.mkfifo(str(tree / "unexpected"))
+
+    members = inspect_tree(root, "tree")
+    assert len(members) == 1
+    assert members[0].status == "incomparable"
+    assert "special node" in members[0].detail
 
 
 def test_hardlink_source_is_blocked_as_ambiguous_physical_ownership(tmp_path):
@@ -67,6 +91,22 @@ def test_git_observer_derives_clean_identity_and_raw_inventory_digests(tmp_path,
     assert result["commit"] == "a" * 40
     assert result["status_inventory_digest"]["domain"] == "raw_bytes"
     assert result["remote_relation"] == "no_upstream"
+
+
+def test_git_observer_failure_diagnostic_does_not_expose_absolute_path(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "private-workspace"
+    root.mkdir()
+
+    def fail(_repo, *_args):
+        raise OSError(5, "synthetic", str(root))
+
+    monkeypatch.setattr(inspection, "_git", fail)
+    result = inspection.inspect_git(root)
+    assert result["status"] == "dirty_unresolved"
+    assert str(root) not in result["detail"]
+    assert result["detail"] == "OSError(errno=5)"
 
 
 def test_ordinary_member_failure_preserves_later_identity_order_and_cardinality(tmp_path, monkeypatch):

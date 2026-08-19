@@ -5,9 +5,12 @@ from __future__ import annotations
 import errno
 import ctypes
 import hashlib
+import io
 import json
 import os
+import re
 import shutil
+import stat
 import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -47,6 +50,12 @@ EXPECTED_COMMANDS = {
     "ensemble": {"ensemble_fusion", "ensemble-fusion"},
     "order": {"order_gen", "order-gen"},
 }
+MANIFEST_FIELDS = frozenset({
+    "schema_version", "cycle_identity", "engine_identity", "workspace_identity",
+    "data_identity", "run_evidence", "model_and_ensemble_lineage", "ranking",
+    "portfolio_state", "decision_state", "referenced_evidence", "preservation",
+    "problems", "capture_time", "status", "request_content_digest",
+})
 
 
 def _result(
@@ -69,12 +78,77 @@ def _problem(code: str, evidence_class: str, detail: str, *, blocking: bool = Fa
     }
 
 
+def _exception_detail(exc: BaseException) -> str:
+    if isinstance(exc, (ContractError, PathBoundaryError)):
+        return str(exc)[:1000]
+    detail = type(exc).__name__
+    error_number = getattr(exc, "errno", None)
+    return "%s(errno=%s)" % (detail, error_number) if error_number is not None else detail
+
+
 def _fsync_dir(path: Path) -> None:
     descriptor = os.open(str(path), os.O_RDONLY)
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _stable_file_bytes(path: Path) -> bytes:
+    """Read one public regular file without accepting name replacement."""
+    before = os.lstat(str(path))
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(str(path), flags)
+    try:
+        opened = os.fstat(descriptor)
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    after = os.lstat(str(path))
+    identities = [
+        (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+        for item in (before, opened, after)
+    ]
+    if (
+        identities[0] != identities[1]
+        or identities[0] != identities[2]
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+    ):
+        raise ContractError("sealed member identity changed while reading")
+    return b"".join(chunks)
+
+
+def _lock_continuous(
+    lock: Path, lock_parent_fd: int, lock_fd: int,
+    parent_identity: Tuple[int, int], lock_identity: Tuple[int, int, int, int],
+) -> bool:
+    """Join the inspector-owned lock descriptor to its canonical public name."""
+    try:
+        parent_opened = os.fstat(lock_parent_fd)
+        parent_public = os.lstat(str(lock.parent))
+        opened = os.fstat(lock_fd)
+        public = os.stat(lock.name, dir_fd=lock_parent_fd, follow_symlinks=False)
+        return (
+            stat.S_ISDIR(parent_opened.st_mode)
+            and stat.S_ISDIR(parent_public.st_mode)
+            and not stat.S_ISLNK(parent_public.st_mode)
+            and (parent_opened.st_dev, parent_opened.st_ino) == parent_identity
+            and (parent_public.st_dev, parent_public.st_ino) == parent_identity
+            and stat.S_ISREG(opened.st_mode)
+            and stat.S_ISREG(public.st_mode)
+            and opened.st_nlink == 1
+            and public.st_nlink == 1
+            and (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) == lock_identity
+            and (public.st_dev, public.st_ino, public.st_size, public.st_mtime_ns) == lock_identity
+        )
+    except OSError:
+        return False
 
 
 def _atomic_bytes(path: Path, data: bytes) -> None:
@@ -133,11 +207,12 @@ def _rename_noreplace(source: Path, target: Path) -> None:
 def _relative_existing(root: Path, value: str) -> str:
     candidate = Path(value)
     if candidate.is_absolute():
-        resolved = candidate.resolve(strict=True)
+        canonical_root = root.resolve(strict=True)
         try:
-            return resolved.relative_to(root.resolve()).as_posix()
+            relative = candidate.relative_to(canonical_root).as_posix()
         except ValueError as exc:
             raise PathBoundaryError("referenced evidence escapes workspace") from exc
+        return contained_path(root, relative).relative_to(canonical_root).as_posix()
     return contained_path(root, value).relative_to(root.resolve()).as_posix()
 
 
@@ -214,7 +289,8 @@ class _BundleDraft:
     objects: Dict[str, bytes]
     problems: list
     blocked: bool = False
-    source_digests: Optional[Dict[str, Optional[TypedDigest]]] = None
+    source_observations: Optional[Dict[str, FileSnapshot]] = None
+    continuity_observations: Optional[Dict[Tuple[Path, str], FileSnapshot]] = None
 
 
 class ProductionCycleEvidenceSealer:
@@ -232,7 +308,30 @@ class ProductionCycleEvidenceSealer:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.fault_hook = fault_hook or (lambda _point: None)
 
-    def _embed(self, draft: _BundleDraft, snapshot: FileSnapshot) -> dict:
+    def _track_snapshot(
+        self, draft: _BundleDraft, snapshot: FileSnapshot, *, origin_root: Optional[Path] = None,
+    ) -> None:
+        observations = draft.continuity_observations
+        if observations is None:
+            observations = {}
+            draft.continuity_observations = observations
+        key = (origin_root or self.root, snapshot.logical_path)
+        previous = observations.get(key)
+        if previous is not None and not self._same_source_observation(previous, snapshot):
+            draft.problems.append(_problem(
+                "observation_continuity_lost", "capture",
+                "%s changed between evidence observations" % snapshot.logical_path,
+                blocking=True,
+            ))
+            return
+        observations[key] = snapshot
+
+    def _embed(
+        self, draft: _BundleDraft, snapshot: FileSnapshot, *,
+        origin_root: Optional[Path] = None, track: bool = True,
+    ) -> dict:
+        if track:
+            self._track_snapshot(draft, snapshot, origin_root=origin_root)
         if snapshot.status != "observed" or snapshot.digest is None:
             return snapshot.to_public_dict("missing" if snapshot.status == "missing" else "incomparable")
         digest = snapshot.digest.value
@@ -258,7 +357,7 @@ class ProductionCycleEvidenceSealer:
         public = []
         digests = {}
         for path, snapshot in snapshots:
-            public.append(self._embed(draft, snapshot))
+            public.append(self._embed(draft, snapshot, origin_root=self.engine_root))
             if snapshot.status != "observed" or snapshot.digest is None:
                 draft.problems.append(_problem("engine_surface_incomparable", "engine", path, blocking=True))
             else:
@@ -286,7 +385,9 @@ class ProductionCycleEvidenceSealer:
             public.append({"class": name, **self._embed(draft, snapshot)})
             parsed = parse_json(snapshot) if name != "deep_analysis" else None
             if name == "deep_analysis":
-                tree = inspect_tree(self.root, path)
+                tree = ()
+                if snapshot.status != "missing":
+                    tree = inspect_tree(self.root, path)
                 public[-1]["members"] = [self._embed(draft, item) for item in tree]
                 if not tree or any(item.status != "observed" for item in tree):
                     draft.problems.append(_problem("deep_analysis_incomplete", name, "trace tree is absent or incomparable", blocking=True))
@@ -302,7 +403,10 @@ class ProductionCycleEvidenceSealer:
                     )
                     by_name[name] = aggregate
                     members = public[-1]["members"]
-                    public[-1] = {"class": name, **self._embed(draft, aggregate), "members": members}
+                    public[-1] = {
+                        "class": name, **self._embed(draft, aggregate, track=False),
+                        "members": members,
+                    }
             elif name == "decision":
                 # Decision is validated separately; malformed input remains visible.
                 pass
@@ -317,8 +421,42 @@ class ProductionCycleEvidenceSealer:
                 if not isinstance(parsed.get("run_id"), str) or not parsed.get("run_id"):
                     draft.problems.append(_problem("manifest_run_id_missing", name, "manifest has no exact run ID", blocking=True))
         draft.manifest["run_evidence"] = public
-        draft.source_digests = {name: snapshot.digest for name, snapshot in by_name.items()}
+        draft.source_observations = dict(by_name)
         return manifests, by_name
+
+    def _source_snapshot(self, name: str, path: str) -> FileSnapshot:
+        if name != "deep_analysis":
+            return inspect_file(self.root, path)
+        try:
+            target = contained_path(self.root, path)
+        except FileNotFoundError:
+            return inspect_file(self.root, path)
+        if not target.is_dir():
+            return inspect_file(self.root, path)
+        tree = inspect_tree(self.root, path)
+        inventory = [
+            {"path": item.logical_path, "digest": item.digest.to_dict()}
+            for item in tree if item.digest is not None
+        ]
+        if not tree or any(item.status != "observed" for item in tree):
+            return FileSnapshot(
+                path, "incomparable", None, None, None,
+                "trace tree is absent or incomparable",
+            )
+        return FileSnapshot(
+            path, "observed", None,
+            TypedDigest.canonical(inventory, "file_inventory"), None,
+        )
+
+    @staticmethod
+    def _same_source_observation(before: FileSnapshot, after: FileSnapshot) -> bool:
+        return (
+            before.logical_path == after.logical_path
+            and before.status == after.status
+            and before.digest == after.digest
+            and before.identity == after.identity
+            and before.detail == after.detail
+        )
 
     def _decision(self, request: CaptureRequest, snapshot: Optional[FileSnapshot], draft: _BundleDraft) -> dict:
         if not request.decision_event:
@@ -337,8 +475,9 @@ class ProductionCycleEvidenceSealer:
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except Exception as exc:
-            draft.problems.append(_problem("decision_invalid", "decision", str(exc), blocking=True))
-            return {"status": "invalid", "detail": str(exc)[:1000]}
+            detail = _exception_detail(exc)
+            draft.problems.append(_problem("decision_invalid", "decision", detail, blocking=True))
+            return {"status": "invalid", "detail": detail}
 
     def _portfolio(self, draft: _BundleDraft) -> dict:
         snapshot = inspect_file(self.root, "config/prod_config.json")
@@ -359,7 +498,7 @@ class ProductionCycleEvidenceSealer:
             public["holding_count"] = len(holdings)
             return public
         except Exception as exc:
-            draft.problems.append(_problem("portfolio_invalid", "portfolio", str(exc), blocking=True))
+            draft.problems.append(_problem("portfolio_invalid", "portfolio", _exception_detail(exc), blocking=True))
             return public
 
     def _frozen_market(self, ensemble: Optional[Mapping[str, Any]], draft: _BundleDraft) -> Optional[str]:
@@ -377,6 +516,7 @@ class ProductionCycleEvidenceSealer:
         if not isinstance(expected, str):
             return None
         snapshot = inspect_file(self.root, "config/model_config.json")
+        self._track_snapshot(draft, snapshot)
         if snapshot.data is None:
             draft.problems.append(_problem("market_config_missing", "data", "frozen model config is unavailable", blocking=True))
             return None
@@ -393,7 +533,7 @@ class ProductionCycleEvidenceSealer:
                 raise ContractError("frozen model config has no market")
             return market.lower()
         except Exception as exc:
-            draft.problems.append(_problem("market_config_incomparable", "data", str(exc), blocking=True))
+            draft.problems.append(_problem("market_config_incomparable", "data", _exception_detail(exc), blocking=True))
             return None
 
     def _data_identity(
@@ -466,8 +606,9 @@ class ProductionCycleEvidenceSealer:
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except Exception as exc:
-            result["qlib_materialization_identity"] = {"status": "incomparable", "detail": str(exc)[:1000]}
-            draft.problems.append(_problem("qlib_identity_incomparable", "data", str(exc), blocking=True))
+            detail = _exception_detail(exc)
+            result["qlib_materialization_identity"] = {"status": "incomparable", "detail": detail}
+            draft.problems.append(_problem("qlib_identity_incomparable", "data", detail, blocking=True))
             return result, None
 
     def _ranking(
@@ -517,9 +658,15 @@ class ProductionCycleEvidenceSealer:
                 relative = _relative_existing(self.root, artifact_path)
                 pred_relative = (Path(relative) / "pred.pkl").as_posix()
                 snapshot = inspect_file(self.root, pred_relative)
+                self._track_snapshot(draft, snapshot)
                 if snapshot.status != "observed":
                     raise ContractError("M3 output pred.pkl is incomparable")
-                prediction = pd.read_pickle(contained_path(self.root, pred_relative))
+                prediction_data = _stable_file_bytes(
+                    contained_path(self.root, pred_relative),
+                )
+                if TypedDigest.raw(prediction_data) != snapshot.digest:
+                    raise ContractError("M3 output pred.pkl changed before parsing")
+                prediction = pd.read_pickle(io.BytesIO(prediction_data))
                 if getattr(prediction, "name", None) == "score":
                     prediction = prediction.to_frame("score")
                 if not hasattr(prediction, "index") or "score" not in prediction:
@@ -565,8 +712,9 @@ class ProductionCycleEvidenceSealer:
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except Exception as exc:
-            draft.problems.append(_problem("ranking_unavailable", "ranking", str(exc), blocking=True))
-            return {"status": "unavailable", "detail": str(exc)[:1000]}
+            detail = _exception_detail(exc)
+            draft.problems.append(_problem("ranking_unavailable", "ranking", detail, blocking=True))
+            return {"status": "unavailable", "detail": detail}
 
     def _referenced_evidence(self, manifests: Mapping[str, Mapping[str, Any]], draft: _BundleDraft) -> list:
         observed = []
@@ -605,7 +753,7 @@ class ProductionCycleEvidenceSealer:
         try:
             models = _selected_model_evidence(records, resolved)
         except ContractError as exc:
-            draft.problems.append(_problem("model_lineage_missing", "model", str(exc), blocking=True))
+            draft.problems.append(_problem("model_lineage_missing", "model", _exception_detail(exc), blocking=True))
             return observed
         if not models:
             draft.problems.append(_problem("model_lineage_missing", "model", "M3 has no source model evidence", blocking=True))
@@ -682,7 +830,7 @@ class ProductionCycleEvidenceSealer:
             except (KeyboardInterrupt, SystemExit, GeneratorExit):
                 raise
             except Exception as exc:
-                draft.problems.append(_problem("model_artifact_incomparable", "model", str(exc), blocking=True))
+                draft.problems.append(_problem("model_artifact_incomparable", "model", _exception_detail(exc), blocking=True))
         output = combo.get("output_evidence", {}) if combo else {}
         if isinstance(output, Mapping) and isinstance(output.get("artifact_path"), str):
             try:
@@ -700,14 +848,16 @@ class ProductionCycleEvidenceSealer:
                     ], "file_inventory").to_dict(),
                 })
             except Exception as exc:
-                draft.problems.append(_problem("ensemble_artifact_incomparable", "ensemble", str(exc), blocking=True))
+                draft.problems.append(_problem("ensemble_artifact_incomparable", "ensemble", _exception_detail(exc), blocking=True))
         return observed
 
     def _build(
         self, request: CaptureRequest, observer: SourceMutationObserver,
         data_observer: Optional[SourceMutationObserver],
     ) -> _BundleDraft:
-        draft = _BundleDraft({}, {}, {}, [], source_digests={})
+        draft = _BundleDraft(
+            {}, {}, {}, [], source_observations={}, continuity_observations={},
+        )
         original_root = root_identity(self.root)
         manifests, snapshots = self._observe_sources(request, draft)
         anchors = {name: _extract_anchor(value) for name, value in manifests.items()}
@@ -763,19 +913,8 @@ class ProductionCycleEvidenceSealer:
             if not path:
                 continue
             previous = snapshots.get(name)
-            if name == "deep_analysis" and contained_path(self.root, path).is_dir():
-                current_tree = inspect_tree(self.root, path)
-                current_inventory = [
-                    {"path": item.logical_path, "digest": item.digest.to_dict()}
-                    for item in current_tree if item.digest is not None
-                ]
-                current = FileSnapshot(
-                    path, "observed" if current_tree and all(item.status == "observed" for item in current_tree) else "incomparable",
-                    None, TypedDigest.canonical(current_inventory, "file_inventory"), None,
-                )
-            else:
-                current = inspect_file(self.root, path)
-            if previous is None or previous.digest != current.digest or current.status != "observed":
+            current = self._source_snapshot(name, path)
+            if previous is None or not self._same_source_observation(previous, current):
                 draft.problems.append(_problem("source_continuity_lost", name, "source changed during capture", blocking=True))
         core = {
             "schema_version": SCHEMA_VERSION,
@@ -815,27 +954,36 @@ class ProductionCycleEvidenceSealer:
         return draft
 
     def _sources_continuous(self, request: CaptureRequest, draft: _BundleDraft) -> bool:
-        initial = draft.source_digests or {}
+        initial = draft.source_observations or {}
         for name, path, _required in request.source_paths():
             if not path:
                 continue
-            if name == "deep_analysis" and contained_path(self.root, path).is_dir():
-                tree = inspect_tree(self.root, path)
-                inventory = [
-                    {"path": item.logical_path, "digest": item.digest.to_dict()}
-                    for item in tree if item.digest is not None
-                ]
-                current = TypedDigest.canonical(inventory, "file_inventory")
-                if not tree or any(item.status != "observed" for item in tree):
-                    return False
-            else:
-                snapshot = inspect_file(self.root, path)
-                if snapshot.status != "observed":
-                    return False
-                current = snapshot.digest
-            if current != initial.get(name):
+            previous = initial.get(name)
+            current = self._source_snapshot(name, path)
+            if previous is None or not self._same_source_observation(previous, current):
                 return False
         return True
+
+    def _observations_continuous(self, draft: _BundleDraft) -> bool:
+        for (origin_root, logical_path), previous in (
+            draft.continuity_observations or {}
+        ).items():
+            current = inspect_file(origin_root, logical_path)
+            if not self._same_source_observation(previous, current):
+                return False
+        return True
+
+    def _adoption_sources_continuous(
+        self, request: CaptureRequest, draft: _BundleDraft,
+        observer: SourceMutationObserver,
+        data_observer: Optional[SourceMutationObserver],
+    ) -> bool:
+        return (
+            not observer.mutated()
+            and (data_observer is None or not data_observer.mutated())
+            and self._sources_continuous(request, draft)
+            and self._observations_continuous(draft)
+        )
 
     def _existing(self, final: Path, cycle_id: str, request_digest: TypedDigest) -> Optional[CaptureResult]:
         if not final.exists():
@@ -850,15 +998,22 @@ class ProductionCycleEvidenceSealer:
                 info = os.lstat(str(public_file))
                 if public_file.is_symlink() or not public_file.is_file() or info.st_nlink != 1:
                     raise ContractError("existing seal member is not a canonical regular file")
-            manifest_data = manifest_path.read_bytes()
-            seal_data = seal_path.read_bytes()
+            manifest_data = _stable_file_bytes(manifest_path)
+            seal_data = _stable_file_bytes(seal_path)
             manifest = json.loads(manifest_data.decode("utf-8"))
             seal = json.loads(seal_data.decode("utf-8"))
             expected_seal_fields = {
                 "schema_version", "cycle_id", "status", "manifest_digest",
                 "artifact_root_digest", "object_digests", "named_file_digests",
             }
-            if not isinstance(manifest, dict) or not isinstance(seal, dict) or set(seal) != expected_seal_fields:
+            if (
+                not isinstance(manifest, dict)
+                or set(manifest) != MANIFEST_FIELDS
+                or not isinstance(seal, dict)
+                or set(seal) != expected_seal_fields
+                or manifest_data != canonical_json_bytes(manifest)
+                or seal_data != canonical_json_bytes(seal)
+            ):
                 raise ContractError("existing seal representation is invalid")
             if (
                 seal.get("schema_version") != SCHEMA_VERSION
@@ -867,8 +1022,33 @@ class ProductionCycleEvidenceSealer:
                 or seal.get("status") != manifest.get("status")
             ):
                 raise ContractError("existing cycle/seal identity is inconsistent")
-            if manifest.get("request_content_digest") != request_digest.to_dict():
+            declared_request_digest = TypedDigest(**manifest["request_content_digest"])
+            manifest_replay_core = {
+                key: value for key, value in manifest.items()
+                if key not in {"capture_time", "status", "request_content_digest", "workspace_identity"}
+            }
+            if (
+                declared_request_digest != TypedDigest.canonical(manifest_replay_core)
+                or declared_request_digest != request_digest
+            ):
                 return _result(cycle_id, "conflict", False, None, None)
+            problems = manifest.get("problems")
+            if (
+                not isinstance(problems, list)
+                or any(
+                    not isinstance(item, dict)
+                    or set(item) != {"code", "evidence_class", "detail", "blocks_complete"}
+                    or not isinstance(item.get("blocks_complete"), bool)
+                    for item in problems
+                )
+            ):
+                raise ContractError("existing problem inventory is invalid")
+            derived_status = (
+                "sealed_partial" if any(item["blocks_complete"] for item in problems)
+                else "sealed_complete"
+            )
+            if manifest.get("status") != derived_status:
+                raise ContractError("existing status is not derived from sealed problems")
             manifest_digest = TypedDigest(**seal["manifest_digest"])
             if manifest_digest != TypedDigest.raw(manifest_data):
                 raise ContractError("existing manifest digest is invalid")
@@ -877,27 +1057,38 @@ class ProductionCycleEvidenceSealer:
             if (
                 not isinstance(object_digests, list)
                 or object_digests != sorted(set(object_digests))
+                or any(not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in object_digests)
                 or not isinstance(named_digests, dict)
-                or any("/" in name or name in {"manifest.json", "seal.json", "objects"} for name in named_digests)
+                or any(name not in {"ranking.csv", "portfolio_state.json"} for name in named_digests)
             ):
                 raise ContractError("existing artifact inventory is invalid")
             objects_root = final / "objects"
             actual_objects = []
+            actual_object_dirs = []
             if objects_root.exists():
                 if objects_root.is_symlink() or not objects_root.is_dir():
                     raise ContractError("existing object root is not canonical")
                 for path in objects_root.rglob("*"):
                     if path.is_symlink():
                         raise ContractError("existing object inventory contains a symlink")
-                    if path.is_file():
-                        if path.stat().st_nlink != 1 or path.parent.name != path.name[:2]:
+                    relative = path.relative_to(objects_root)
+                    if path.is_dir():
+                        if len(relative.parts) != 1:
+                            raise ContractError("existing object directory layout is invalid")
+                        actual_object_dirs.append(relative.as_posix())
+                    elif path.is_file():
+                        if len(relative.parts) != 2 or path.stat().st_nlink != 1 or path.parent.name != path.name[:2]:
                             raise ContractError("existing object public name is invalid")
                         actual_objects.append(path.name)
+                    else:
+                        raise ContractError("existing object inventory contains a special node")
             if sorted(actual_objects) != object_digests:
                 raise ContractError("existing object inventory cardinality differs")
+            if sorted(actual_object_dirs) != sorted(set(digest[:2] for digest in object_digests)):
+                raise ContractError("existing object directory inventory differs")
             for digest in object_digests:
                 path = final / "objects" / digest[:2] / digest
-                if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                if hashlib.sha256(_stable_file_bytes(path)).hexdigest() != digest:
                     raise ContractError("existing embedded object is invalid")
             expected_top = {"manifest.json", "seal.json", *named_digests}
             if object_digests:
@@ -908,7 +1099,7 @@ class ProductionCycleEvidenceSealer:
             for name, digest in named_digests.items():
                 typed = TypedDigest(**digest)
                 path = final / name
-                if not path.is_file() or path.stat().st_nlink != 1 or TypedDigest.raw(path.read_bytes()) != typed:
+                if not path.is_file() or path.stat().st_nlink != 1 or TypedDigest.raw(_stable_file_bytes(path)) != typed:
                     raise ContractError("existing named evidence is invalid")
             artifact_root = TypedDigest.canonical({
                 "objects": object_digests, "named_files": named_digests,
@@ -965,7 +1156,7 @@ class ProductionCycleEvidenceSealer:
         except PathBoundaryError as exc:
             return _result(request.cycle_id, "blocked", False, None, None, (_problem("path_boundary", "workspace", str(exc), blocking=True),))
         except Exception as exc:
-            return _result(request.cycle_id, "blocked", False, None, None, (_problem("inspection_failed", "capture", "%s: %s" % (type(exc).__name__, exc), blocking=True),))
+            return _result(request.cycle_id, "blocked", False, None, None, (_problem("inspection_failed", "capture", _exception_detail(exc), blocking=True),))
         if draft.blocked:
             return _result(request.cycle_id, "blocked", False, None, None, tuple(draft.problems))
         request_digest = TypedDigest.canonical({
@@ -979,7 +1170,23 @@ class ProductionCycleEvidenceSealer:
         final = evidence_root / "cycles" / request.cycle_id
         if final.exists():
             existing = self._existing(final, request.cycle_id, request_digest)
-            if existing and existing.cycle_id == request.cycle_id:
+            if existing is not None and existing.status == "adopted":
+                if (
+                    root_identity(self.root) == root_before
+                    and self._adoption_sources_continuous(
+                        request, draft, observer, data_observer,
+                    )
+                ):
+                    return existing
+                return _result(
+                    request.cycle_id, "blocked", False, None, None,
+                    tuple(draft.problems + [_problem(
+                        "adoption_continuity_lost", "capture",
+                        "source identity changed while verifying existing evidence",
+                        blocking=True,
+                    )]),
+                )
+            if existing is not None:
                 return existing
             return _result(request.cycle_id, "conflict", False, None, None, tuple(draft.problems))
         object_digests = sorted(draft.objects)
@@ -1011,7 +1218,11 @@ class ProductionCycleEvidenceSealer:
         lock = evidence_root / ".locks" / (request.cycle_id + ".lock")
         stage = None
         stage_identity = None
+        staging_parent_identity = None
         lock_fd = None
+        lock_parent_fd = None
+        lock_parent_identity = None
+        lock_identity = None
         lock_owned = False
         wrote_staging = False
         published = False
@@ -1019,25 +1230,66 @@ class ProductionCycleEvidenceSealer:
             _safe_mkdirs(self.root, lock.parent)
             _safe_mkdirs(self.root, evidence_root / "cycles")
             lock_parent_fd = os.open(str(lock.parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            parent_info = os.fstat(lock_parent_fd)
+            lock_parent_identity = (parent_info.st_dev, parent_info.st_ino)
             lock_fd = os.open(lock.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=lock_parent_fd)
             lock_owned = True
             os.write(lock_fd, request_digest.value.encode("ascii"))
             os.fsync(lock_fd)
             os.fsync(lock_parent_fd)
+            lock_info = os.fstat(lock_fd)
+            lock_identity = (lock_info.st_dev, lock_info.st_ino, lock_info.st_size, lock_info.st_mtime_ns)
             self.fault_hook("after_lock")
+            if not _lock_continuous(lock, lock_parent_fd, lock_fd, lock_parent_identity, lock_identity):
+                return _result(
+                    request.cycle_id, "blocked", False, None, None,
+                    tuple(draft.problems + [_problem(
+                        "lock_continuity_lost", "publication",
+                        "evidence lock identity changed after acquisition", blocking=True,
+                    )]),
+                )
             if final.exists():
                 existing = self._existing(final, request.cycle_id, request_digest)
-                if existing and existing.cycle_id == request.cycle_id:
+                if existing is not None and existing.status == "adopted":
+                    if (
+                        root_identity(self.root) == root_before
+                        and _lock_continuous(
+                            lock, lock_parent_fd, lock_fd,
+                            lock_parent_identity, lock_identity,
+                        )
+                        and self._adoption_sources_continuous(
+                            request, draft, observer, data_observer,
+                        )
+                    ):
+                        return existing
+                    return _result(
+                        request.cycle_id, "blocked", False, None, None,
+                        tuple(draft.problems + [_problem(
+                            "adoption_continuity_lost", "capture",
+                            "source or lock identity changed while adopting evidence",
+                            blocking=True,
+                        )]),
+                    )
+                if existing is not None:
                     return existing
                 return _result(request.cycle_id, "conflict", False, None, None, tuple(draft.problems))
             if root_identity(self.root) != root_before:
                 return _result(request.cycle_id, "blocked", False, None, None, tuple(draft.problems))
             parent_identity = root_identity(final.parent)
             _safe_mkdirs(self.root, evidence_root / ".staging")
-            stage = Path(tempfile.mkdtemp(prefix=request.cycle_id + ".", dir=str(evidence_root / ".staging")))
+            staging_parent = evidence_root / ".staging"
+            staging_parent_identity = root_identity(staging_parent)
+            stage = Path(tempfile.mkdtemp(prefix=request.cycle_id + ".", dir=str(staging_parent)))
             stage_info = os.lstat(str(stage))
             stage_identity = (stage_info.st_dev, stage_info.st_ino)
             wrote_staging = True
+            if (
+                not stat.S_ISDIR(stage_info.st_mode)
+                or stat.S_ISLNK(stage_info.st_mode)
+                or stage_info.st_dev != parent_identity[0]
+                or root_identity(staging_parent) != staging_parent_identity
+            ):
+                raise PathBoundaryError("staging directory identity is invalid")
             for digest, data in draft.objects.items():
                 _atomic_bytes(stage / "objects" / digest[:2] / digest, data)
             for name, data in draft.named_files.items():
@@ -1050,6 +1302,7 @@ class ProductionCycleEvidenceSealer:
                 observer.mutated()
                 or (data_observer is not None and data_observer.mutated())
                 or not self._sources_continuous(request, draft)
+                or not self._observations_continuous(draft)
             ):
                 return _result(
                     request.cycle_id, "failed_no_final", True, None, None,
@@ -1058,8 +1311,43 @@ class ProductionCycleEvidenceSealer:
                         "source changed before namespace publication", blocking=True,
                     )]),
                 )
+            if not _lock_continuous(lock, lock_parent_fd, lock_fd, lock_parent_identity, lock_identity):
+                return _result(
+                    request.cycle_id, "failed_no_final", True, None, None,
+                    tuple(draft.problems + [_problem(
+                        "lock_continuity_lost", "publication",
+                        "evidence lock identity changed before namespace publication", blocking=True,
+                    )]),
+                )
+            try:
+                stage_public = os.lstat(str(stage))
+                stage_continuous = (
+                    stat.S_ISDIR(stage_public.st_mode)
+                    and not stat.S_ISLNK(stage_public.st_mode)
+                    and stage_identity == (stage_public.st_dev, stage_public.st_ino)
+                    and root_identity(stage.parent) == staging_parent_identity
+                    and stage_public.st_dev == parent_identity[0]
+                )
+            except OSError:
+                stage_continuous = False
+            if not stage_continuous:
+                return _result(
+                    request.cycle_id, "failed_no_final", True, None, None,
+                    tuple(draft.problems + [_problem(
+                        "staging_continuity_lost", "publication",
+                        "staging public identity changed before namespace publication",
+                        blocking=True,
+                    )]),
+                )
             if root_identity(self.root) != root_before or root_identity(final.parent) != parent_identity:
-                return _result(request.cycle_id, "blocked", False, None, None, tuple(draft.problems))
+                return _result(
+                    request.cycle_id, "failed_no_final", True, None, None,
+                    tuple(draft.problems + [_problem(
+                        "publish_parent_continuity_lost", "publication",
+                        "workspace or final parent changed before namespace publication",
+                        blocking=True,
+                    )]),
+                )
             _rename_noreplace(stage, final)
             published = True
             stage = None
@@ -1078,14 +1366,51 @@ class ProductionCycleEvidenceSealer:
                 not final_continuous
                 or root_identity(self.root) != root_before
                 or root_identity(final.parent) != parent_identity
+                or not _lock_continuous(lock, lock_parent_fd, lock_fd, lock_parent_identity, lock_identity)
             ):
-                return _result(request.cycle_id, "uncertain", True, None, None, tuple(draft.problems))
+                return _result(
+                    request.cycle_id, "uncertain", True, None, None,
+                    tuple(draft.problems + [_problem(
+                        "post_publish_continuity_lost", "publication",
+                        "final, root, parent, or lock identity changed after publication",
+                        blocking=True,
+                    )]),
+                )
             adopted = self._existing(final, request.cycle_id, request_digest)
-            if adopted is None or adopted.cycle_id != request.cycle_id:
-                return _result(request.cycle_id, "uncertain", True, None, None, tuple(draft.problems))
+            if (
+                adopted is None
+                or adopted.status != "adopted"
+                or adopted.cycle_id != request.cycle_id
+                or adopted.seal_digest != TypedDigest.raw(seal_data)
+                or adopted.sealed_status != draft.manifest["status"]
+            ):
+                return _result(
+                    request.cycle_id, "uncertain", True, None, None,
+                    tuple(draft.problems + [_problem(
+                        "post_publish_verification_failed", "publication",
+                        "canonical final bundle did not verify against the staged seal",
+                        blocking=True,
+                    )]),
+                )
             final_info_after = os.lstat(str(final))
-            if stage_identity != (final_info_after.st_dev, final_info_after.st_ino):
-                return _result(request.cycle_id, "uncertain", True, None, None, tuple(draft.problems))
+            if (
+                stage_identity != (final_info_after.st_dev, final_info_after.st_ino)
+                or root_identity(self.root) != root_before
+                or root_identity(final.parent) != parent_identity
+                or not _lock_continuous(lock, lock_parent_fd, lock_fd, lock_parent_identity, lock_identity)
+                or observer.mutated()
+                or (data_observer is not None and data_observer.mutated())
+                or not self._sources_continuous(request, draft)
+                or not self._observations_continuous(draft)
+            ):
+                return _result(
+                    request.cycle_id, "uncertain", True, None, None,
+                    tuple(draft.problems + [_problem(
+                        "post_publish_source_continuity_lost", "capture",
+                        "source, final, root, parent, or lock continuity was lost",
+                        blocking=True,
+                    )]),
+                )
             return _result(
                 request.cycle_id, draft.manifest["status"], True,
                 final.relative_to(self.root).as_posix(), TypedDigest.raw(seal_data),
@@ -1103,14 +1428,12 @@ class ProductionCycleEvidenceSealer:
             status = "conflict" if lock_owned else "blocked"
             return _result(request.cycle_id, status, False, None, None, tuple(draft.problems))
         except Exception as exc:
-            status = "uncertain" if published else "failed_no_final"
+            status = "uncertain" if published else "failed_no_final" if wrote_staging else "blocked"
             return _result(
                 request.cycle_id, status, published or wrote_staging, None, None,
-                tuple(draft.problems + [_problem("publication_failed", "publication", "%s: %s" % (type(exc).__name__, exc), blocking=True)]),
+                tuple(draft.problems + [_problem("publication_failed", "publication", _exception_detail(exc), blocking=True)]),
             )
         finally:
-            if lock_fd is not None:
-                os.close(lock_fd)
             if stage is not None:
                 try:
                     current = os.lstat(str(stage))
@@ -1122,14 +1445,23 @@ class ProductionCycleEvidenceSealer:
                 except (FileNotFoundError, ValueError, OSError):
                     pass
             try:
-                if 'lock_parent_fd' in locals():
+                if lock_parent_fd is not None:
                     try:
-                        if lock_owned:
+                        if (
+                            lock_owned and lock_fd is not None
+                            and lock_parent_identity is not None and lock_identity is not None
+                            and _lock_continuous(
+                                lock, lock_parent_fd, lock_fd,
+                                lock_parent_identity, lock_identity,
+                            )
+                        ):
                             os.unlink(lock.name, dir_fd=lock_parent_fd)
                             os.fsync(lock_parent_fd)
                     except FileNotFoundError:
                         pass
                     finally:
+                        if lock_fd is not None:
+                            os.close(lock_fd)
                         os.close(lock_parent_fd)
             except OSError:
                 pass

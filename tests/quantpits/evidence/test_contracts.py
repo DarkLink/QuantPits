@@ -5,6 +5,7 @@ import pytest
 from quantpits.evidence.contracts import (
     CaptureRequest, CaptureResult, ContractError, DecisionEvent, TypedDigest,
 )
+from quantpits.evidence.sealing import _result
 
 
 def request(**changes):
@@ -57,3 +58,22 @@ def test_aggregate_result_rejects_impossible_capability_combinations():
         CaptureResult("2099-01-02", "adopted", True, "bundle", TypedDigest.raw(b"x"))
     with pytest.raises(ContractError):
         CaptureResult("2099-01-02", "conflict", False, None, TypedDigest.raw(b"x"))
+
+
+def test_inspector_result_rejects_cross_field_status_and_problem_forgery():
+    blocking = ({
+        "code": "missing", "evidence_class": "synthetic",
+        "detail": "missing", "blocks_complete": True,
+    },)
+    with pytest.raises(ContractError, match="complete"):
+        _result(
+            "2099-01-02", "sealed_complete", True, "bundle",
+            TypedDigest.raw(b"seal"), blocking,
+        )
+    with pytest.raises(ContractError, match="partial"):
+        _result(
+            "2099-01-02", "sealed_partial", True, "bundle",
+            TypedDigest.raw(b"seal"), (),
+        )
+    with pytest.raises(ContractError, match="write"):
+        _result("2099-01-02", "uncertain", False, None, None)

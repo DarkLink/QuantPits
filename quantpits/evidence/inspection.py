@@ -20,6 +20,12 @@ class PathBoundaryError(ValueError):
     pass
 
 
+def _exception_detail(exc: BaseException) -> str:
+    detail = type(exc).__name__
+    error_number = getattr(exc, "errno", None)
+    return "%s(errno=%s)" % (detail, error_number) if error_number is not None else detail
+
+
 class SourceMutationObserver:
     """Linux inotify guard for transient replace/move/write source events."""
 
@@ -149,6 +155,17 @@ def contained_path(root: Path, logical_path: str, *, must_exist: bool = True) ->
         raise PathBoundaryError("path must be canonical and workspace-relative")
     canonical_root = root.resolve(strict=True)
     candidate = canonical_root.joinpath(*raw.parts)
+    current = canonical_root
+    for index, part in enumerate(raw.parts):
+        current = current / part
+        try:
+            current_info = os.lstat(str(current))
+        except FileNotFoundError:
+            if must_exist or index != len(raw.parts) - 1:
+                raise
+            break
+        if stat.S_ISLNK(current_info.st_mode):
+            raise PathBoundaryError("path contains a symlink alias")
     try:
         resolved = candidate.resolve(strict=must_exist)
     except (FileNotFoundError, RuntimeError, OSError) as exc:
@@ -199,7 +216,7 @@ def inspect_file(root: Path, logical_path: str) -> FileSnapshot:
     except FileNotFoundError:
         return FileSnapshot(logical_path, "missing", None, None, None, "file is missing")
     except Exception as exc:
-        return FileSnapshot(logical_path, "incomparable", None, None, None, "%s: %s" % (type(exc).__name__, exc))
+        return FileSnapshot(logical_path, "incomparable", None, None, None, _exception_detail(exc))
 
 
 def inspect_many(root: Path, members: Iterable[Tuple[str, str]]) -> Tuple[Tuple[str, FileSnapshot], ...]:
@@ -215,7 +232,7 @@ def inspect_many(root: Path, members: Iterable[Tuple[str, str]]) -> Tuple[Tuple[
         except Exception as exc:  # protects a caller-supplied inspector wrapper
             snapshot = FileSnapshot(
                 logical_path, "incomparable", None, None, None,
-                "%s: %s" % (type(exc).__name__, exc),
+                _exception_detail(exc),
             )
         results.append((name, snapshot))
     return tuple(results)
@@ -234,6 +251,12 @@ def inspect_tree(root: Path, logical_path: str) -> Tuple[FileSnapshot, ...]:
             members.append(FileSnapshot(relative, "incomparable", None, None, None, "symlink is not evidence"))
         elif path.is_file():
             members.append(inspect_file(root, path.relative_to(root.resolve()).as_posix()))
+        elif not path.is_dir():
+            relative = path.relative_to(root.resolve()).as_posix()
+            members.append(FileSnapshot(
+                relative, "incomparable", None, None, None,
+                "special node is not evidence",
+            ))
     return tuple(members)
 
 
@@ -248,9 +271,11 @@ def parse_json(snapshot: FileSnapshot) -> Optional[dict]:
 
 
 def _git(repo: Path, *args: str) -> bytes:
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     return subprocess.run(
         ["git", "-C", str(repo), *args], check=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
     ).stdout
 
 
@@ -291,4 +316,4 @@ def inspect_git(start: Path) -> dict:
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except Exception as exc:
-        return {"status": "dirty_unresolved", "detail": "%s: %s" % (type(exc).__name__, exc)}
+        return {"status": "dirty_unresolved", "detail": _exception_detail(exc)}

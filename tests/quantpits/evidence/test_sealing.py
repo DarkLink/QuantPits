@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import replace
 
 import pytest
@@ -190,6 +191,26 @@ def test_exact_replay_adopts_without_final_write(cycle_factory):
     assert (root / first.bundle_path / "seal.json").read_bytes() == before
 
 
+def test_replay_source_mutation_during_existing_verification_denies_adoption(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    assert sealer.capture(request).status == "sealed_complete"
+    source = root / request.order_manifest
+    original = ProductionCycleEvidenceSealer._existing
+
+    def mutate_after_verify(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        source.write_text(source.read_text() + " ")
+        return result
+
+    monkeypatch.setattr(ProductionCycleEvidenceSealer, "_existing", mutate_after_verify)
+    replay = sealer.capture(request)
+    assert replay.status == "blocked"
+    assert replay.capability == "none"
+
+
 def test_existing_bundle_member_tamper_denies_adoption_capability(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -199,6 +220,52 @@ def test_existing_bundle_member_tamper_denies_adoption_capability(cycle_factory)
     assert second.status == "conflict"
     assert second.capability == "none"
     assert second.seal_digest is None
+
+
+def test_existing_manifest_semantic_tamper_cannot_be_hidden_by_resealing(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    bundle = root / first.bundle_path
+    manifest_path = bundle / "manifest.json"
+    seal_path = bundle / "seal.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["ranking"]["eligible_count"] = 999
+    manifest_data = sealing_module.canonical_json_bytes(manifest)
+    manifest_path.write_bytes(manifest_data)
+    seal = json.loads(seal_path.read_text())
+    seal["manifest_digest"] = TypedDigest.raw(manifest_data).to_dict()
+    seal_path.write_bytes(sealing_module.canonical_json_bytes(seal))
+
+    replay = sealer.capture(request)
+    assert replay.status == "conflict"
+    assert replay.capability == "none"
+
+
+def test_existing_noncanonical_manifest_representation_denies_adoption(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    bundle = root / first.bundle_path
+    manifest_path = bundle / "manifest.json"
+    seal_path = bundle / "seal.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest_data = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+    manifest_path.write_bytes(manifest_data)
+    seal = json.loads(seal_path.read_text())
+    seal["manifest_digest"] = TypedDigest.raw(manifest_data).to_dict()
+    seal_path.write_bytes(sealing_module.canonical_json_bytes(seal))
+
+    assert sealer.capture(request).status == "conflict"
+
+
+def test_existing_extra_empty_object_directory_denies_adoption(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    (root / first.bundle_path / "objects" / "foreign").mkdir()
+
+    assert sealer.capture(request).status == "conflict"
 
 
 def test_same_cycle_changed_input_conflicts_without_overwrite(cycle_factory):
@@ -222,6 +289,27 @@ def test_missing_deep_analysis_is_visible_partial(cycle_factory):
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
     assert result.status == "sealed_partial"
     assert any(item["code"] == "deep_analysis_missing" for item in result.problems)
+
+
+def test_explicit_missing_deep_analysis_path_is_sealed_as_stable_partial(cycle_factory):
+    root, qlib, request = cycle_factory(deep=False)
+    request = replace(request, deep_analysis_run="output/deep/missing")
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert result.did_write is True
+    assert any(item["code"] == "deep_analysis_incomplete" for item in result.problems)
+
+
+def test_missing_required_manifest_is_preserved_in_partial_bundle(cycle_factory):
+    root, qlib, request = cycle_factory()
+    (root / request.order_manifest).unlink()
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert result.did_write is True
+    assert any(
+        item["code"] == "manifest_invalid" and item["evidence_class"] == "order"
+        for item in result.problems
+    )
 
 
 def test_partial_replay_adoption_never_upgrades_complete_capability(cycle_factory):
@@ -389,6 +477,58 @@ def test_source_mutation_before_publish_fails_without_final(cycle_factory):
     assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
 
 
+def test_portfolio_mutation_before_publish_fails_without_final(cycle_factory):
+    root, qlib, request = cycle_factory()
+    portfolio = root / "config/prod_config.json"
+
+    def fault(point):
+        if point == "before_publish":
+            portfolio.write_text(portfolio.read_text() + " ")
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+
+
+def test_same_bytes_portfolio_replacement_breaks_identity_continuity(cycle_factory):
+    root, qlib, request = cycle_factory()
+    portfolio = root / "config/prod_config.json"
+
+    def fault(point):
+        if point == "before_publish":
+            replacement = portfolio.with_suffix(".replacement")
+            replacement.write_bytes(portfolio.read_bytes())
+            os.replace(str(replacement), str(portfolio))
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+
+
+def test_prediction_artifact_change_between_consumers_prevents_publication(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    prediction = root / "mlruns/ensemble/pred.pkl"
+    original = ProductionCycleEvidenceSealer._lineage_artifacts
+
+    def mutate_then_observe(self, *args, **kwargs):
+        prediction.write_bytes(prediction.read_bytes() + b"changed")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        ProductionCycleEvidenceSealer, "_lineage_artifacts", mutate_then_observe,
+    )
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+    assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
+
+
 def test_qlib_mutation_before_publish_fails_without_final(cycle_factory):
     root, qlib, request = cycle_factory()
     calendar = qlib / "calendars/day.txt"
@@ -400,6 +540,40 @@ def test_qlib_mutation_before_publish_fails_without_final(cycle_factory):
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib, fault_hook=fault).capture(request)
     assert result.status == "failed_no_final"
     assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
+
+
+def test_source_mutation_after_publish_is_uncertain(cycle_factory):
+    root, qlib, request = cycle_factory()
+    source = root / request.order_manifest
+
+    def fault(point):
+        if point == "after_publish":
+            source.write_text(source.read_text() + " ")
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "uncertain"
+    assert result.capability == "none"
+    assert any(
+        item["code"] == "post_publish_source_continuity_lost"
+        for item in result.problems
+    )
+
+
+def test_portfolio_mutation_after_publish_is_uncertain(cycle_factory):
+    root, qlib, request = cycle_factory()
+    portfolio = root / "config/prod_config.json"
+
+    def fault(point):
+        if point == "after_publish":
+            portfolio.write_text(portfolio.read_text() + " ")
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "uncertain"
+    assert result.capability == "none"
 
 
 def test_process_interruption_propagates_and_claims_no_success(cycle_factory):
@@ -442,6 +616,47 @@ def test_post_publish_public_name_replacement_is_uncertain(cycle_factory):
     assert result.capability == "none"
 
 
+def test_post_publish_sealed_member_tamper_is_uncertain(cycle_factory):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == "after_publish":
+            ranking = root / "data/evidence/v1/cycles/2099-01-02/ranking.csv"
+            ranking.write_text("tampered\n")
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "uncertain"
+    assert result.capability == "none"
+    assert any(
+        item["code"] == "post_publish_verification_failed"
+        for item in result.problems
+    )
+
+
+def test_staging_public_name_replacement_before_publish_prevents_final(cycle_factory):
+    root, qlib, request = cycle_factory()
+    displaced = None
+
+    def fault(point):
+        nonlocal displaced
+        if point == "before_publish":
+            staging = root / "data/evidence/v1/.staging"
+            stage = next(staging.iterdir())
+            displaced = stage.with_name(stage.name + ".displaced")
+            stage.rename(displaced)
+            stage.mkdir()
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+    assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
+    assert displaced is not None and displaced.exists()
+
+
 def test_symlink_source_escape_is_blocked(cycle_factory, tmp_path):
     root, qlib, request = cycle_factory()
     outside = tmp_path / "foreign.json"
@@ -471,6 +686,29 @@ def test_foreign_existing_lock_is_blocked_and_never_removed(cycle_factory):
     lock.write_text("foreign-owner")
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
     assert result.status == "blocked"
+    assert lock.read_text() == "foreign-owner"
+
+
+@pytest.mark.parametrize("fault_point,expected_status", [
+    ("before_publish", "failed_no_final"),
+    ("after_publish", "uncertain"),
+])
+def test_replaced_owned_lock_fails_closed_and_preserves_foreign_lock(
+    cycle_factory, fault_point, expected_status,
+):
+    root, qlib, request = cycle_factory()
+    lock = root / "data/evidence/v1/.locks/2099-01-02.lock"
+
+    def fault(point):
+        if point == fault_point:
+            lock.unlink()
+            lock.write_text("foreign-owner")
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == expected_status
+    assert result.capability == "none"
     assert lock.read_text() == "foreign-owner"
 
 

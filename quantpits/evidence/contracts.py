@@ -206,10 +206,28 @@ class CaptureResult:
             raise ContractError("invalid capture result status")
         if not isinstance(self.did_write, bool):
             raise ContractError("did_write must be boolean")
+        if not isinstance(self.problems, tuple) or any(
+            not isinstance(item, dict)
+            or set(item) != {"code", "evidence_class", "detail", "blocks_complete"}
+            or not isinstance(item.get("code"), str)
+            or not item.get("code")
+            or not isinstance(item.get("evidence_class"), str)
+            or not item.get("evidence_class")
+            or not isinstance(item.get("detail"), str)
+            or not isinstance(item.get("blocks_complete"), bool)
+            for item in self.problems
+        ):
+            raise ContractError("problems must be an exact inspector-owned inventory")
         if self.status in {"conflict", "blocked", "failed_no_final", "uncertain"} and self.seal_digest is not None:
             raise ContractError("failed outcomes cannot grant a seal capability")
+        if self.status in {"conflict", "blocked"} and self.did_write:
+            raise ContractError("conflict and blocked outcomes cannot claim a write")
+        if self.status in {"failed_no_final", "uncertain"} and not self.did_write:
+            raise ContractError("post-write failures must retain their write fact")
+        if self.status in {"conflict", "blocked", "failed_no_final", "uncertain"} and self.bundle_path is not None:
+            raise ContractError("failed outcomes cannot expose a bundle capability path")
         if self.status in {"sealed_complete", "sealed_partial", "adopted"}:
-            if self.bundle_path is None or self.seal_digest is None:
+            if not isinstance(self.bundle_path, str) or not self.bundle_path or self.seal_digest is None:
                 raise ContractError("successful outcome requires bundle and seal")
         if self.status == "adopted" and self.did_write:
             raise ContractError("adopted cannot claim a write")
@@ -219,6 +237,12 @@ class CaptureResult:
                 raise ContractError("adopted requires its verified existing seal status")
         elif self.sealed_status != expected_sealed:
             raise ContractError("sealed_status must derive from terminal status")
+        effective_status = self.sealed_status if self.status == "adopted" else self.status
+        has_blocking_problem = any(item["blocks_complete"] for item in self.problems)
+        if effective_status == "sealed_complete" and has_blocking_problem:
+            raise ContractError("complete evidence cannot retain a blocking problem")
+        if effective_status == "sealed_partial" and not has_blocking_problem:
+            raise ContractError("partial evidence requires an exact blocking problem")
 
     @property
     def capability(self) -> str:
