@@ -1,0 +1,496 @@
+import json
+from dataclasses import replace
+
+import pytest
+import pandas as pd
+
+from quantpits.evidence import CaptureRequest, ContractError, ProductionCycleEvidenceSealer, TypedDigest
+import quantpits.evidence.sealing as sealing_module
+
+
+def _write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+
+
+@pytest.fixture
+def cycle_factory(tmp_path, monkeypatch):
+    def build(*, deep=True, decision=True, scores=None, dirty=False):
+        root = tmp_path / "workspace"
+        root.mkdir()
+        qlib = tmp_path / "qlib"
+        (qlib / "calendars").mkdir(parents=True)
+        (qlib / "instruments").mkdir()
+        (qlib / "calendars" / "day.txt").write_text("2099-01-01\n2099-01-02\n")
+        (qlib / "instruments" / "synthetic.txt").write_text(
+            "AAA\t2090-01-01\t2100-01-01\nBBB\t2090-01-01\t2100-01-01\n"
+        )
+        (root / "config").mkdir()
+        _write_json(root / "config" / "prod_config.json", {
+            "current_cash": 1000.0,
+            "current_holding": [{"instrument": "AAA", "amount": 10}],
+        })
+        (root / "output").mkdir()
+        (root / "output" / "post.txt").write_text("post\n")
+        (root / "output" / "prediction.txt").write_text("prediction\n")
+        (root / "output" / "orders.csv").write_text("instrument,amount\nAAA,1\n")
+        (root / "mlruns" / "train").mkdir(parents=True)
+        (root / "mlruns" / "ensemble").mkdir()
+        (root / "mlruns" / "source").mkdir()
+        (root / "mlruns" / "train" / "model.pkl").write_bytes(b"synthetic-model")
+        (root / "mlruns" / "train" / "pred.pkl").write_bytes(b"synthetic-model-prediction")
+        (root / "mlruns" / "source" / "model.pkl").write_bytes(b"synthetic-source-model")
+        values = scores if scores is not None else {"AAA": 2.0, "BBB": 1.0}
+        rows = ["instrument,datetime,score"]
+        rows.extend("%s,2099-01-02,%s" % item for item in values.items())
+        (root / "output" / "ensemble.csv").write_text("\n".join(rows) + "\n")
+        prediction_index = pd.MultiIndex.from_tuples(
+            [(instrument, "2099-01-02") for instrument in values],
+            names=["instrument", "datetime"],
+        )
+        pd.DataFrame({"score": list(values.values())}, index=prediction_index).to_pickle(
+            root / "mlruns" / "ensemble" / "pred.pkl"
+        )
+        manifests = root / "output" / "manifests"
+        common = {"status": "success", "records": {"anchor_date": "2099-01-02"}}
+        _write_json(manifests / "m1.json", {
+            **common, "run_id": "M1", "command": "post-trade",
+            "outputs": [{"path": "output/post.txt"}],
+        })
+        _write_json(manifests / "m2.json", {
+            **common, "run_id": "M2", "command": "static_train",
+            "outputs": [{"path": "output/prediction.txt"}],
+        })
+        _write_json(manifests / "m3.json", {
+            "status": "success", "run_id": "M3", "command": "ensemble_fusion",
+            "outputs": [{"path": "output/ensemble.csv"}],
+            "records": {
+                "anchor_date": "2099-01-02", "expected_anchor": "2099-01-02",
+                "experiment_name": "SYNTHETIC_ENSEMBLE",
+                "input_models": [{
+                    "resolved_key": "MODEL_A", "recorder_id": "TRAIN_RECORDER_A",
+                    "artifact_path": "mlruns/train", "status": "ready",
+                    "experiment_name": "SYNTHETIC_TRAINING",
+                    "experiment_id": "EXPERIMENT_A", "prediction_end": "2099-01-02",
+                    "source_recorder_id": "SOURCE_TRAINING_A",
+                    "source_experiment_name": "SYNTHETIC_SOURCE_TRAINING",
+                    "source_artifact_path": "mlruns/source",
+                }],
+                "combos": [{
+                    "name": "SYNTHETIC_COMBO", "method": "equal",
+                    "is_default": True, "models": ["MODEL_A"],
+                    "resolved_models": ["MODEL_A"],
+                    "pred_file": "output/ensemble.csv",
+                    "recorder_id": "ENSEMBLE_RECORDER_A",
+                    "output_evidence": {
+                        "artifact_path": "mlruns/ensemble", "contained": True,
+                        "recorder_id": "ENSEMBLE_RECORDER_A",
+                    },
+                }],
+            },
+        })
+        _write_json(manifests / "m4.json", {
+            **common, "run_id": "M4", "command": "order_gen",
+            "outputs": [{"path": "output/orders.csv"}],
+        })
+        deep_path = None
+        if deep:
+            deep_path = "output/deep"
+            _write_json(root / deep_path / "trace.json", {
+                "model": "synthetic-model", "prompt_digest": "2" * 64,
+                "input_digest": "3" * 64, "output_digest": "4" * 64,
+            })
+        decision_path = None
+        if decision:
+            decision_path = "data/decision.json"
+            _write_json(root / decision_path, {
+                "decision_id": "DECISION_1", "decision_time": "2099-01-02T12:00:00Z",
+                "evidence_cycle_id": "2099-01-02", "actor": "synthetic-owner",
+                "decision": "NO_ACTION", "target": "synthetic-target",
+                "reason_code": "FROZEN_OBSERVATION",
+            })
+        if dirty:
+            (root / "output" / "operator-note.txt").write_text("observed dirty member\n")
+        def synthetic_git(start):
+            is_workspace = start.resolve() == root.resolve()
+            dirty_members = []
+            if is_workspace:
+                dirty_members = sorted(
+                    path.relative_to(root).as_posix()
+                    for path in (root / "output").glob("operator-*.txt")
+                )
+            inventory = "\0".join(dirty_members).encode("utf-8")
+            return {
+                "status": "dirty_observed_and_fingerprinted" if dirty_members else "clean",
+                "commit": "a" * 40 if is_workspace else "b" * 40,
+                "tree": "c" * 40 if is_workspace else "d" * 40,
+                "status_inventory_digest": TypedDigest.raw(inventory).to_dict(),
+                "status_inventory": dirty_members,
+                "tracked_diff_digest": TypedDigest.raw(b"").to_dict(),
+                "repository_scope": "workspace", "remote_relation": "no_upstream",
+            }
+        monkeypatch.setattr(sealing_module, "inspect_git", synthetic_git)
+        return root, qlib, CaptureRequest(
+            cycle_id="2099-01-02", research_epoch_id="SYNTHETIC_V1",
+            post_trade_manifest="output/manifests/m1.json",
+            prediction_manifest="output/manifests/m2.json",
+            ensemble_manifest="output/manifests/m3.json",
+            order_manifest="output/manifests/m4.json",
+            deep_analysis_run=deep_path, decision_event=decision_path,
+        )
+    return build
+
+
+def test_complete_cycle_publishes_one_verified_deterministic_bundle(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    result = sealer.capture(request)
+    assert result.status == "sealed_complete"
+    assert result.did_write is True
+    bundle = root / result.bundle_path
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    seal = json.loads((bundle / "seal.json").read_text())
+    assert manifest["data_identity"]["source_to_materialization_relation"] == "unverified"
+    assert manifest["ranking"]["eligible_count"] == 2
+    assert (bundle / "ranking.csv").is_file()
+    assert (bundle / "portfolio_state.json").is_file()
+    assert seal["status"] == "sealed_complete"
+
+
+def test_dataclass_replace_cannot_replay_inspector_authority(cycle_factory):
+    root, qlib, request = cycle_factory()
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    with pytest.raises(ContractError, match="inspector-owned"):
+        replace(result, status="adopted", did_write=False)
+
+
+def test_capture_write_set_is_only_lock_staging_and_one_final_bundle(cycle_factory):
+    root, qlib, request = cycle_factory()
+    before = {path.relative_to(root).as_posix() for path in root.rglob("*")}
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    after = {path.relative_to(root).as_posix() for path in root.rglob("*")}
+    created = after - before
+    assert result.status == "sealed_complete"
+    assert created
+    assert all(path == "data/evidence" or path.startswith("data/evidence/") for path in created)
+    assert not any(path.endswith(".lock") or "/.staging/" in path for path in created)
+
+
+def test_exact_replay_adopts_without_final_write(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    before = (root / first.bundle_path / "seal.json").read_bytes()
+    second = sealer.capture(request)
+    assert second.status == "adopted"
+    assert second.did_write is False
+    assert second.sealed_status == "sealed_complete"
+    assert second.capability == "local_evidence_replay"
+    assert second.seal_digest == first.seal_digest
+    assert (root / first.bundle_path / "seal.json").read_bytes() == before
+
+
+def test_existing_bundle_member_tamper_denies_adoption_capability(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    (root / first.bundle_path / "ranking.csv").write_text("tampered\n")
+    second = sealer.capture(request)
+    assert second.status == "conflict"
+    assert second.capability == "none"
+    assert second.seal_digest is None
+
+
+def test_same_cycle_changed_input_conflicts_without_overwrite(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    seal_path = root / first.bundle_path / "seal.json"
+    before = seal_path.read_bytes()
+    path = root / request.ensemble_manifest
+    value = json.loads(path.read_text())
+    value["records"]["combos"][0]["method"] = "changed"
+    path.write_text(json.dumps(value))
+    result = sealer.capture(request)
+    assert result.status == "conflict"
+    assert result.did_write is False
+    assert seal_path.read_bytes() == before
+
+
+def test_missing_deep_analysis_is_visible_partial(cycle_factory):
+    root, qlib, request = cycle_factory(deep=False)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(item["code"] == "deep_analysis_missing" for item in result.problems)
+
+
+def test_partial_replay_adoption_never_upgrades_complete_capability(cycle_factory):
+    root, qlib, request = cycle_factory(deep=False)
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    assert sealer.capture(request).status == "sealed_partial"
+    replay = sealer.capture(request)
+    assert replay.status == "adopted"
+    assert replay.sealed_status == "sealed_partial"
+    assert replay.capability == "partial_replay_only"
+
+
+def test_foreign_manifest_command_cannot_fill_an_m1_to_m4_slot(cycle_factory):
+    root, qlib, request = cycle_factory()
+    path = root / request.post_trade_manifest
+    value = json.loads(path.read_text())
+    value["command"] = "ensemble_fusion"
+    path.write_text(json.dumps(value))
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(item["code"] == "manifest_command_mismatch" for item in result.problems)
+
+
+def test_missing_prediction_does_not_forge_ranking(cycle_factory):
+    root, qlib, request = cycle_factory(scores={"AAA": 1.0})
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    manifest = json.loads((root / result.bundle_path / "manifest.json").read_text())
+    rows = (root / result.bundle_path / "ranking.csv").read_text().splitlines()
+    assert result.status == "sealed_partial"
+    assert manifest["ranking"]["missing_count"] == 1
+    assert any("BBB" in row and "missing_prediction" in row for row in rows)
+
+
+def test_empty_prediction_creates_no_fake_ranking_rows(cycle_factory):
+    root, qlib, request = cycle_factory(scores={})
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert not (root / result.bundle_path / "ranking.csv").exists()
+    assert any(item["code"] == "ranking_unavailable" for item in result.problems)
+
+
+def test_invalid_m3_prediction_keeps_diagnostic_and_no_fake_ranking(cycle_factory):
+    root, qlib, request = cycle_factory()
+    path = root / request.ensemble_manifest
+    value = json.loads(path.read_text())
+    value["records"]["combos"][0]["output_evidence"]["artifact_path"] = "mlruns/missing"
+    path.write_text(json.dumps(value))
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert not (root / result.bundle_path / "ranking.csv").exists()
+    assert any(item["code"] == "ranking_unavailable" for item in result.problems)
+
+
+def test_local_recorder_evidence_loads_exact_pred_without_backend_initialization(cycle_factory):
+    import pandas as pd
+
+    root, qlib, request = cycle_factory()
+    artifact = root / "mlruns/ensemble"
+    frame = pd.DataFrame(
+        {"score": [2.0, 1.0]},
+        index=pd.MultiIndex.from_tuples(
+            [("AAA", "2099-01-02"), ("BBB", "2099-01-02")],
+            names=["instrument", "datetime"],
+        ),
+    )
+    frame.to_pickle(artifact / "pred.pkl")
+    path = root / request.ensemble_manifest
+    value = json.loads(path.read_text())
+    combo = value["records"]["combos"][0]
+    combo["pred_file"] = "ENSEMBLE_RECORDER_A"
+    combo["output_evidence"] = {
+        "artifact_path": "mlruns/ensemble", "contained": True,
+        "recorder_id": "ENSEMBLE_RECORDER_A",
+    }
+    path.write_text(json.dumps(value))
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_complete"
+    manifest = json.loads((root / result.bundle_path / "manifest.json").read_text())
+    assert manifest["ranking"]["scored_count"] == 2
+    assert manifest["ranking"]["prediction_digest"]["domain"] == "raw_bytes"
+
+
+def test_dirty_observed_and_fingerprinted_can_remain_complete(cycle_factory):
+    root, qlib, request = cycle_factory(dirty=True)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    manifest = json.loads((root / result.bundle_path / "manifest.json").read_text())
+    assert result.status == "sealed_complete"
+    assert manifest["workspace_identity"]["status"] == "dirty_observed_and_fingerprinted"
+    assert manifest["workspace_identity"]["status_inventory_digest"]["domain"] == "raw_bytes"
+
+
+def test_absent_decision_is_not_recorded_not_no_action(cycle_factory):
+    root, qlib, request = cycle_factory(decision=False)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    manifest = json.loads((root / result.bundle_path / "manifest.json").read_text())
+    assert result.status == "sealed_complete"
+    assert manifest["decision_state"] == {"status": "not_recorded", "as_of_capture": True}
+
+
+def test_foreign_cycle_decision_is_partial_and_never_recorded(cycle_factory):
+    root, qlib, request = cycle_factory()
+    path = root / request.decision_event
+    value = json.loads(path.read_text())
+    value["evidence_cycle_id"] = "2099-01-03"
+    path.write_text(json.dumps(value))
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    manifest = json.loads((root / result.bundle_path / "manifest.json").read_text())
+    assert result.status == "sealed_partial"
+    assert manifest["decision_state"]["status"] == "invalid"
+
+
+def test_valid_decision_retains_exact_event_and_distinct_raw_canonical_digests(cycle_factory):
+    root, qlib, request = cycle_factory()
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    decision = json.loads((root / result.bundle_path / "manifest.json").read_text())["decision_state"]
+    assert decision["status"] == "recorded"
+    assert decision["event"]["decision"] == "NO_ACTION"
+    assert decision["raw_digest"]["domain"] == "raw_bytes"
+    assert decision["canonical_digest"]["domain"] == "canonical_json"
+
+
+def test_model_recorder_chain_and_llm_trace_are_retained(cycle_factory):
+    root, qlib, request = cycle_factory()
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    manifest = json.loads((root / result.bundle_path / "manifest.json").read_text())
+    lineage = manifest["model_and_ensemble_lineage"]
+    assert lineage["source_models"][0]["recorder_id"] == "TRAIN_RECORDER_A"
+    assert lineage["source_models"][0]["source_recorder_id"] == "SOURCE_TRAINING_A"
+    assert lineage["combo"]["ensemble_recorder_id"] == "ENSEMBLE_RECORDER_A"
+    assert any(
+        item.get("role") == "source_training"
+        and item["recorder_id"] == "SOURCE_TRAINING_A"
+        and item["artifact_tree_digest"]["domain"] == "file_inventory"
+        for item in lineage["source_artifacts"]
+    )
+    deep = next(item for item in manifest["run_evidence"] if item["class"] == "deep_analysis")
+    assert deep["members"][0]["digest"]["domain"] == "raw_bytes"
+    assert deep["members"][0]["preservation_status"] == "embedded"
+
+
+def test_dry_run_has_zero_filesystem_write(cycle_factory):
+    root, qlib, request = cycle_factory()
+    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request, dry_run=True)
+    after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+    assert result.status == "sealed_complete"
+    assert result.did_write is False
+    assert result.capability == "none"
+    assert result.write_scope == "none"
+    assert before == after
+
+
+def test_source_mutation_before_publish_fails_without_final(cycle_factory):
+    root, qlib, request = cycle_factory()
+    path = root / request.order_manifest
+
+    def fault(point):
+        if point == "before_publish":
+            path.write_text(path.read_text() + " ")
+
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib, fault_hook=fault).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.write_scope == "staging_only"
+    assert result.capability == "none"
+    assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
+
+
+def test_qlib_mutation_before_publish_fails_without_final(cycle_factory):
+    root, qlib, request = cycle_factory()
+    calendar = qlib / "calendars/day.txt"
+
+    def fault(point):
+        if point == "before_publish":
+            calendar.write_text(calendar.read_text() + "2099-01-03\n")
+
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib, fault_hook=fault).capture(request)
+    assert result.status == "failed_no_final"
+    assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
+
+
+def test_process_interruption_propagates_and_claims_no_success(cycle_factory):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == "before_publish":
+            raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib, fault_hook=fault).capture(request)
+    assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
+
+
+def test_post_publish_parent_loss_is_uncertain_without_capability(cycle_factory):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == "after_publish":
+            cycles = root / "data/evidence/v1/cycles"
+            cycles.rename(root / "data/evidence/v1/displaced-cycles")
+
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib, fault_hook=fault).capture(request)
+    assert result.status == "uncertain"
+    assert result.seal_digest is None
+
+
+def test_post_publish_public_name_replacement_is_uncertain(cycle_factory):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == "after_publish":
+            final = root / "data/evidence/v1/cycles/2099-01-02"
+            displaced = final.with_name("displaced-bundle")
+            final.rename(displaced)
+            final.symlink_to(displaced, target_is_directory=True)
+
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib, fault_hook=fault).capture(request)
+    assert result.status == "uncertain"
+    assert result.capability == "none"
+
+
+def test_symlink_source_escape_is_blocked(cycle_factory, tmp_path):
+    root, qlib, request = cycle_factory()
+    outside = tmp_path / "foreign.json"
+    outside.write_text("{}")
+    alias = root / "foreign.json"
+    alias.symlink_to(outside)
+    request = replace(request, order_manifest="foreign.json")
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "blocked"
+    assert result.did_write is False
+
+
+def test_symlinked_evidence_parent_is_blocked_before_outside_write(cycle_factory, tmp_path):
+    root, qlib, request = cycle_factory()
+    outside = tmp_path / "outside-evidence"
+    outside.mkdir()
+    (root / "data/evidence").symlink_to(outside, target_is_directory=True)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "blocked"
+    assert list(outside.iterdir()) == []
+
+
+def test_foreign_existing_lock_is_blocked_and_never_removed(cycle_factory):
+    root, qlib, request = cycle_factory()
+    lock = root / "data/evidence/v1/.locks/2099-01-02.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("foreign-owner")
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "blocked"
+    assert lock.read_text() == "foreign-owner"
+
+
+def test_research_epoch_change_on_replay_conflicts(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    assert sealer.capture(request).status == "sealed_complete"
+    changed = replace(request, research_epoch_id="SYNTHETIC_V2")
+    assert sealer.capture(changed).status == "conflict"
+
+
+def test_workspace_git_mutation_during_capture_is_visible_and_partial(cycle_factory, monkeypatch):
+    root, qlib, request = cycle_factory()
+    original = ProductionCycleEvidenceSealer._ranking
+
+    def mutating(self, *args, **kwargs):
+        (root / "output/operator-race.txt").write_text("changed during observation\n")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ProductionCycleEvidenceSealer, "_ranking", mutating)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(item["code"] == "workspace_git_mutated" for item in result.problems)
