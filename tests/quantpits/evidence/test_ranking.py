@@ -3,7 +3,7 @@ import math
 import pytest
 
 from quantpits.evidence.contracts import ContractError
-from quantpits.evidence.ranking import canonical_full_ranking
+from quantpits.evidence.ranking import RankingResult, canonical_full_ranking
 
 
 def test_full_ranking_retains_eligible_unscored_members():
@@ -35,3 +35,22 @@ def test_foreign_and_non_finite_predictions_are_fail_closed():
     result = canonical_full_ranking(("AAA",), {"AAA": float("nan")})
     assert result.complete is False
     assert result.rows[0]["coverage_status"] == "invalid_prediction"
+    huge = canonical_full_ranking(("AAA",), {"AAA": 10 ** 10000})
+    assert huge.rows[0]["coverage_status"] == "invalid_prediction"
+
+
+def test_non_text_instrument_identity_is_not_silently_normalized():
+    with pytest.raises(ContractError):
+        canonical_full_ranking((1,), {1: 1.0})
+    with pytest.raises(ContractError):
+        canonical_full_ranking(("1",), {1: 1.0})
+
+
+def test_ranking_aggregate_revalidates_rows_counts_and_complete_claim():
+    valid = canonical_full_ranking(("AAA",), {"AAA": 1.0})
+    forged = dict(valid.rows[0])
+    forged["rank"] = 2
+    with pytest.raises(ContractError):
+        RankingResult((forged,), 1, 1, 0, True)
+    with pytest.raises(ContractError):
+        RankingResult(valid.rows, 1, 1, 0, False)

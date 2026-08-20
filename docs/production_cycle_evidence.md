@@ -4,6 +4,8 @@
 not train models, change portfolio state, promote configuration, submit orders,
 or modify an existing M1–M5 result. It reads exact run manifests and publishes
 one create-only bundle under `data/evidence/v1/cycles/<cycle-id>/`.
+Qlib data follows `QLIB_DATA_DIR` and otherwise uses the engine default
+`~/.qlib/qlib_data/cn_data`; `--qlib-data-dir` can bind an explicit location.
 
 Run it after the cycle has finished:
 
@@ -21,6 +23,8 @@ python -m quantpits.scripts.cycle_evidence capture \
 
 Use `--dry-run` to perform the same inspection and ranking in memory without
 creating lock, staging, output, MLflow, environment, or working-directory state.
+It returns `preview_complete` or `preview_partial`; previews include a
+non-authoritative candidate digest but never claim that a final bundle exists.
 
 `sealed_complete` means every Phase 37A-required fact was observed and sealed.
 `sealed_partial` preserves the observed facts and diagnostics but grants no

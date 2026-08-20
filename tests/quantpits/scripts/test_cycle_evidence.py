@@ -41,8 +41,9 @@ def test_cli_dry_run_creates_no_evidence_namespace(cycle_factory, capsys):
     root, qlib, request = cycle_factory()
     assert cycle_evidence.main(_args(root, qlib, request, dry=True)) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "sealed_complete"
+    assert payload["status"] == "preview_complete"
     assert payload["did_write"] is False
+    assert payload["bundle_path"] is None
     assert not (root / "data/evidence").exists()
 
 

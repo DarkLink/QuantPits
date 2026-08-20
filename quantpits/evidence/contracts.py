@@ -12,6 +12,8 @@ import math
 import re
 from dataclasses import InitVar, dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Any, Mapping, Optional, Tuple
 
 
@@ -33,7 +35,7 @@ PRESERVATION = frozenset({
 })
 STATUSES = frozenset({
     "sealed_complete", "sealed_partial", "adopted", "conflict", "blocked",
-    "failed_no_final", "uncertain",
+    "failed_no_final", "uncertain", "preview_complete", "preview_partial",
 })
 _RESULT_AUTHORITY = object()
 
@@ -66,7 +68,7 @@ class TypedDigest:
     def __post_init__(self) -> None:
         if self.algorithm != "sha256":
             raise ContractError("only sha256 digests are supported")
-        if self.domain not in DIGEST_DOMAINS:
+        if not isinstance(self.domain, str) or self.domain not in DIGEST_DOMAINS:
             raise ContractError("unknown digest domain")
         if isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int) or self.size_bytes < 0:
             raise ContractError("digest size_bytes must be a non-negative integer")
@@ -81,7 +83,7 @@ class TypedDigest:
 
     @classmethod
     def canonical(cls, value: Any, domain: str = "canonical_json") -> "TypedDigest":
-        if domain not in {"canonical_json", "file_inventory", "semantic_config"}:
+        if not isinstance(domain, str) or domain not in {"canonical_json", "file_inventory", "semantic_config"}:
             raise ContractError("invalid canonical digest domain")
         data = canonical_json_bytes(value)
         return cls("sha256", domain, hashlib.sha256(data).hexdigest(), len(data))
@@ -206,8 +208,10 @@ class CaptureResult:
             raise ContractError("invalid capture result status")
         if not isinstance(self.did_write, bool):
             raise ContractError("did_write must be boolean")
+        if self.seal_digest is not None and not isinstance(self.seal_digest, TypedDigest):
+            raise ContractError("seal_digest must be a typed digest or null")
         if not isinstance(self.problems, tuple) or any(
-            not isinstance(item, dict)
+            not isinstance(item, Mapping)
             or set(item) != {"code", "evidence_class", "detail", "blocks_complete"}
             or not isinstance(item.get("code"), str)
             or not item.get("code")
@@ -218,26 +222,46 @@ class CaptureResult:
             for item in self.problems
         ):
             raise ContractError("problems must be an exact inspector-owned inventory")
+        object.__setattr__(self, "problems", tuple(
+            MappingProxyType(dict(item)) for item in self.problems
+        ))
         if self.status in {"conflict", "blocked", "failed_no_final", "uncertain"} and self.seal_digest is not None:
             raise ContractError("failed outcomes cannot grant a seal capability")
         if self.status in {"conflict", "blocked"} and self.did_write:
             raise ContractError("conflict and blocked outcomes cannot claim a write")
         if self.status in {"failed_no_final", "uncertain"} and not self.did_write:
             raise ContractError("post-write failures must retain their write fact")
-        if self.status in {"conflict", "blocked", "failed_no_final", "uncertain"} and self.bundle_path is not None:
+        if self.status in {"conflict", "blocked", "failed_no_final", "uncertain", "preview_complete", "preview_partial"} and self.bundle_path is not None:
             raise ContractError("failed outcomes cannot expose a bundle capability path")
         if self.status in {"sealed_complete", "sealed_partial", "adopted"}:
             if not isinstance(self.bundle_path, str) or not self.bundle_path or self.seal_digest is None:
                 raise ContractError("successful outcome requires bundle and seal")
+            path = PurePosixPath(self.bundle_path)
+            if (
+                path.is_absolute() or path.as_posix() != self.bundle_path
+                or "\\" in self.bundle_path
+                or any(part in {"", ".", ".."} for part in path.parts)
+            ):
+                raise ContractError("bundle capability path must be canonical and relative")
+        if self.status in {"sealed_complete", "sealed_partial"} and not self.did_write:
+            raise ContractError("new sealed evidence must retain its final write fact")
+        if self.seal_digest is not None and self.seal_digest.domain != "raw_bytes":
+            raise ContractError("seal digest must identify raw canonical seal bytes")
         if self.status == "adopted" and self.did_write:
             raise ContractError("adopted cannot claim a write")
+        if self.status in {"preview_complete", "preview_partial"}:
+            if self.did_write or self.seal_digest is None:
+                raise ContractError("preview requires a non-authoritative digest and zero writes")
         expected_sealed = self.status if self.status in {"sealed_complete", "sealed_partial"} else None
         if self.status == "adopted":
             if self.sealed_status not in {"sealed_complete", "sealed_partial"}:
                 raise ContractError("adopted requires its verified existing seal status")
         elif self.sealed_status != expected_sealed:
             raise ContractError("sealed_status must derive from terminal status")
-        effective_status = self.sealed_status if self.status == "adopted" else self.status
+        effective_status = self.sealed_status if self.status == "adopted" else {
+            "preview_complete": "sealed_complete",
+            "preview_partial": "sealed_partial",
+        }.get(self.status, self.status)
         has_blocking_problem = any(item["blocks_complete"] for item in self.problems)
         if effective_status == "sealed_complete" and has_blocking_problem:
             raise ContractError("complete evidence cannot retain a blocking problem")
@@ -246,7 +270,7 @@ class CaptureResult:
 
     @property
     def capability(self) -> str:
-        if self.status != "adopted" and not self.did_write:
+        if self.status.startswith("preview_") or (self.status != "adopted" and not self.did_write):
             return "none"
         status = self.sealed_status
         if status == "sealed_complete":
@@ -270,7 +294,7 @@ class CaptureResult:
             "cycle_id": self.cycle_id, "status": self.status,
             "did_write": self.did_write, "bundle_path": self.bundle_path,
             "seal_digest": self.seal_digest.to_dict() if self.seal_digest else None,
-            "problems": list(self.problems),
+            "problems": [dict(item) for item in self.problems],
             "sealed_status": self.sealed_status,
             "capability": self.capability,
             "write_scope": self.write_scope,
@@ -278,4 +302,9 @@ class CaptureResult:
 
 
 def finite_number(value: Any) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False

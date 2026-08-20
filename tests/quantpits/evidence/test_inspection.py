@@ -67,6 +67,18 @@ def test_source_observer_detects_transient_move_away_and_back(tmp_path):
         assert observer.mutated() is True
 
 
+def test_source_observer_detects_transient_creation_under_missing_nested_path(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    with SourceMutationObserver(root, ("missing/nested/source",)) as observer:
+        if not observer.supported:
+            pytest.skip("inotify is unavailable")
+        nested = root / "missing"
+        nested.mkdir()
+        nested.rmdir()
+        assert observer.mutated() is True
+
+
 def test_git_observer_derives_clean_identity_and_raw_inventory_digests(tmp_path, monkeypatch):
     root = tmp_path / "workspace"
     root.mkdir()
@@ -107,6 +119,34 @@ def test_git_observer_failure_diagnostic_does_not_expose_absolute_path(
     assert result["status"] == "dirty_unresolved"
     assert str(root) not in result["detail"]
     assert result["detail"] == "OSError(errno=5)"
+
+
+def test_git_observer_rechecks_status_and_diff_for_one_observation(monkeypatch, tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    status_calls = 0
+
+    def changing_git(_repo, *args):
+        nonlocal status_calls
+        command = tuple(args)
+        if command == ("rev-parse", "--show-toplevel"):
+            return str(root).encode() + b"\n"
+        if command == ("rev-parse", "HEAD"):
+            return b"a" * 40 + b"\n"
+        if command == ("rev-parse", "HEAD^{tree}"):
+            return b"b" * 40 + b"\n"
+        if command[:2] == ("status", "--porcelain=v1"):
+            status_calls += 1
+            return b"" if status_calls == 1 else b"?? changed\0"
+        if command[:2] == ("diff", "--binary"):
+            return b""
+        raise RuntimeError("no upstream")
+
+    monkeypatch.setattr(inspection, "_git", changing_git)
+    assert inspection.inspect_git(root) == {
+        "status": "dirty_unresolved",
+        "detail": "Git identity changed during observation",
+    }
 
 
 def test_ordinary_member_failure_preserves_later_identity_order_and_cardinality(tmp_path, monkeypatch):

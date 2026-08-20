@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from quantpits.evidence import CaptureRequest, ContractError, ProductionCycleEvidenceSealer
+from quantpits.evidence.inspection import PathBoundaryError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,12 +59,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except Exception as exc:
+        if isinstance(exc, (ContractError, PathBoundaryError)):
+            message = str(exc)
+        else:
+            error_number = getattr(exc, "errno", None)
+            message = (
+                "%s(errno=%s)" % (type(exc).__name__, error_number)
+                if error_number is not None else type(exc).__name__
+            )
         print(json.dumps({
-            "status": "blocked", "error": {"type": type(exc).__name__, "message": str(exc)},
+            "status": "blocked", "error": {"type": type(exc).__name__, "message": message},
         }, sort_keys=True))
         return 2
     print(json.dumps(result.to_dict(), sort_keys=True, ensure_ascii=False))
-    return 0 if result.status in {"sealed_complete", "sealed_partial", "adopted"} else 2
+    return 0 if result.status in {
+        "sealed_complete", "sealed_partial", "adopted",
+        "preview_complete", "preview_partial",
+    } else 2
 
 
 if __name__ == "__main__":

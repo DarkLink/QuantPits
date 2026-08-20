@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from dataclasses import replace
 
 import pytest
@@ -7,6 +8,7 @@ import pandas as pd
 
 from quantpits.evidence import CaptureRequest, ContractError, ProductionCycleEvidenceSealer, TypedDigest
 import quantpits.evidence.sealing as sealing_module
+from quantpits.utils.workspace import fingerprint_value
 
 
 def _write_json(path, value):
@@ -29,8 +31,10 @@ def cycle_factory(tmp_path, monkeypatch):
         (root / "config").mkdir()
         _write_json(root / "config" / "prod_config.json", {
             "current_cash": 1000.0,
-            "current_holding": [{"instrument": "AAA", "amount": 10}],
+            "current_holding": [{"instrument": "AAA", "amount": 10, "value": 100}],
         })
+        model_config = {"market": "synthetic", "freq": "week"}
+        _write_json(root / "config" / "model_config.json", model_config)
         (root / "output").mkdir()
         (root / "output" / "post.txt").write_text("post\n")
         (root / "output" / "prediction.txt").write_text("prediction\n")
@@ -55,7 +59,12 @@ def cycle_factory(tmp_path, monkeypatch):
         manifests = root / "output" / "manifests"
         common = {"status": "success", "records": {"anchor_date": "2099-01-02"}}
         _write_json(manifests / "m1.json", {
-            **common, "run_id": "M1", "command": "post-trade",
+            "status": "success", "run_id": "M1", "command": "post-trade",
+            "records": {
+                "processed_date_count": 1,
+                "processed_date_from": "2099-01-02",
+                "processed_date_to": "2099-01-02",
+            },
             "outputs": [{"path": "output/post.txt"}],
         })
         _write_json(manifests / "m2.json", {
@@ -64,6 +73,9 @@ def cycle_factory(tmp_path, monkeypatch):
         })
         _write_json(manifests / "m3.json", {
             "status": "success", "run_id": "M3", "command": "ensemble_fusion",
+            "config_fingerprints": {
+                "config/model_config.json": fingerprint_value(model_config),
+            },
             "outputs": [{"path": "output/ensemble.csv"}],
             "records": {
                 "anchor_date": "2099-01-02", "expected_anchor": "2099-01-02",
@@ -191,6 +203,87 @@ def test_exact_replay_adopts_without_final_write(cycle_factory):
     assert (root / first.bundle_path / "seal.json").read_bytes() == before
 
 
+def test_exact_final_appearing_after_lock_is_verified_and_adopted(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    final = root / first.bundle_path
+    saved = final.with_name("saved-exact-final")
+    final.rename(saved)
+
+    def fault(point):
+        if point == "after_lock":
+            saved.rename(final)
+
+    replay = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert replay.status == "adopted"
+    assert replay.capability == "local_evidence_replay"
+    assert not (root / "data/evidence/v1/.locks/2099-01-02.lock").exists()
+
+
+def test_different_final_appearing_after_lock_is_conflict(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    final = root / first.bundle_path
+    saved = final.with_name("saved-different-final")
+    final.rename(saved)
+    source = root / request.order_manifest
+    source.write_text(source.read_text() + " ")
+
+    def fault(point):
+        if point == "after_lock":
+            saved.rename(final)
+
+    conflict = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert conflict.status == "conflict"
+    assert conflict.capability == "none"
+
+
+def test_exact_final_winning_atomic_publish_race_is_adopted(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    final = root / first.bundle_path
+    saved = final.with_name("saved-racing-final")
+    final.rename(saved)
+    original = sealing_module._rename_noreplace
+
+    def race(source_parent_fd, source_name, target_parent_fd, target_name):
+        saved.rename(final)
+        original(
+            source_parent_fd, source_name, target_parent_fd, target_name,
+        )
+
+    monkeypatch.setattr(sealing_module, "_rename_noreplace", race)
+    replay = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert replay.status == "adopted"
+    assert replay.capability == "local_evidence_replay"
+
+
+def test_stage_member_file_exists_is_failure_not_cycle_conflict(
+    cycle_factory,
+):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == "after_stage_created":
+            stage = next((root / "data/evidence/v1/.staging").iterdir())
+            (stage / "manifest.json").write_text("foreign\n")
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert any(item["code"] == "staging_member_conflict" for item in result.problems)
+
+
 def test_replay_source_mutation_during_existing_verification_denies_adoption(
     cycle_factory, monkeypatch,
 ):
@@ -206,6 +299,57 @@ def test_replay_source_mutation_during_existing_verification_denies_adoption(
         return result
 
     monkeypatch.setattr(ProductionCycleEvidenceSealer, "_existing", mutate_after_verify)
+    replay = sealer.capture(request)
+    assert replay.status == "blocked"
+    assert replay.capability == "none"
+
+
+def test_replay_final_replacement_during_existing_verification_denies_adoption(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    final = root / first.bundle_path
+    original = ProductionCycleEvidenceSealer._existing
+
+    def replace_after_verify(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        if args[0] == final:
+            displaced = final.with_name("displaced-final")
+            final.rename(displaced)
+            shutil.copytree(displaced, final)
+        return result
+
+    monkeypatch.setattr(
+        ProductionCycleEvidenceSealer, "_existing", replace_after_verify,
+    )
+    replay = sealer.capture(request)
+    assert replay.status == "blocked"
+    assert replay.capability == "none"
+
+
+def test_replay_member_tamper_after_first_verification_denies_adoption(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    final = root / first.bundle_path
+    original = ProductionCycleEvidenceSealer._existing
+    calls = 0
+
+    def tamper_after_first(self, *args, **kwargs):
+        nonlocal calls
+        result = original(self, *args, **kwargs)
+        calls += 1
+        if calls == 1:
+            (final / "ranking.csv").write_text("tampered\n")
+        return result
+
+    monkeypatch.setattr(
+        ProductionCycleEvidenceSealer, "_existing", tamper_after_first,
+    )
     replay = sealer.capture(request)
     assert replay.status == "blocked"
     assert replay.capability == "none"
@@ -264,6 +408,45 @@ def test_existing_extra_empty_object_directory_denies_adoption(cycle_factory):
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
     first = sealer.capture(request)
     (root / first.bundle_path / "objects" / "foreign").mkdir()
+
+    assert sealer.capture(request).status == "conflict"
+
+
+def test_resealed_bundle_cannot_omit_manifest_embedded_object(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    bundle = root / first.bundle_path
+    seal_path = bundle / "seal.json"
+    seal = json.loads(seal_path.read_text())
+    removed = seal["object_digests"].pop()
+    (bundle / "objects" / removed[:2] / removed).unlink()
+    prefix = bundle / "objects" / removed[:2]
+    if not any(prefix.iterdir()):
+        prefix.rmdir()
+    seal["artifact_root_digest"] = TypedDigest.canonical({
+        "objects": seal["object_digests"],
+        "named_files": seal["named_file_digests"],
+    }).to_dict()
+    seal_path.write_bytes(sealing_module.canonical_json_bytes(seal))
+
+    assert sealer.capture(request).status == "conflict"
+
+
+def test_resealed_bundle_cannot_omit_manifest_named_evidence(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    bundle = root / first.bundle_path
+    seal_path = bundle / "seal.json"
+    seal = json.loads(seal_path.read_text())
+    del seal["named_file_digests"]["ranking.csv"]
+    (bundle / "ranking.csv").unlink()
+    seal["artifact_root_digest"] = TypedDigest.canonical({
+        "objects": seal["object_digests"],
+        "named_files": seal["named_file_digests"],
+    }).to_dict()
+    seal_path.write_bytes(sealing_module.canonical_json_bytes(seal))
 
     assert sealer.capture(request).status == "conflict"
 
@@ -341,6 +524,31 @@ def test_missing_prediction_does_not_forge_ranking(cycle_factory):
     assert result.status == "sealed_partial"
     assert manifest["ranking"]["missing_count"] == 1
     assert any("BBB" in row and "missing_prediction" in row for row in rows)
+
+
+def test_missing_frozen_market_fingerprint_cannot_select_universe_by_filename_count(
+    cycle_factory,
+):
+    root, qlib, request = cycle_factory()
+    path = root / request.ensemble_manifest
+    value = json.loads(path.read_text())
+    del value["config_fingerprints"]
+    path.write_text(json.dumps(value))
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(
+        item["code"] == "market_config_fingerprint_missing"
+        for item in result.problems
+    )
+    assert not (root / result.bundle_path / "ranking.csv").exists()
+
+
+def test_malformed_universe_rows_cannot_manufacture_full_coverage(cycle_factory):
+    root, qlib, request = cycle_factory()
+    (qlib / "instruments/synthetic.txt").write_text("AAA\nBBB\n")
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(item["code"] == "ranking_unavailable" for item in result.problems)
 
 
 def test_empty_prediction_creates_no_fake_ranking_rows(cycle_factory):
@@ -455,11 +663,100 @@ def test_dry_run_has_zero_filesystem_write(cycle_factory):
     before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request, dry_run=True)
     after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
-    assert result.status == "sealed_complete"
+    assert result.status == "preview_complete"
     assert result.did_write is False
+    assert result.bundle_path is None
     assert result.capability == "none"
     assert result.write_scope == "none"
     assert before == after
+
+
+def test_dry_run_with_existing_bundle_remains_non_authoritative_preview(cycle_factory):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    assert sealer.capture(request).status == "sealed_complete"
+    preview = sealer.capture(request, dry_run=True)
+    assert preview.status == "preview_complete"
+    assert preview.capability == "none"
+    assert preview.bundle_path is None
+
+
+def test_duplicate_json_keys_make_source_visible_partial(cycle_factory):
+    root, qlib, request = cycle_factory()
+    path = root / request.order_manifest
+    path.write_text('{"status":"success","status":"failed"}\n')
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(
+        item["code"] == "manifest_invalid" and item["evidence_class"] == "order"
+        for item in result.problems
+    )
+
+
+def test_internal_qlib_symlink_is_incomparable_without_outside_read(cycle_factory, tmp_path):
+    root, qlib, request = cycle_factory()
+    instruments = qlib / "instruments"
+    outside = tmp_path / "outside-instruments"
+    outside.mkdir()
+    (outside / "synthetic.txt").write_text("SECRET\t2090-01-01\t2100-01-01\n")
+    instruments.rename(qlib / "displaced-instruments")
+    instruments.symlink_to(outside, target_is_directory=True)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "blocked"
+    assert any(item["code"] == "path_boundary" for item in result.problems)
+
+
+@pytest.mark.parametrize("fault_point,expected", [
+    ("before_publish", "failed_no_final"),
+    ("after_publish", "uncertain"),
+])
+def test_artifact_tree_member_addition_denies_capability(
+    cycle_factory, fault_point, expected,
+):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == fault_point:
+            (root / "mlruns/train/foreign.bin").write_bytes(b"foreign")
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == expected
+    assert result.capability == "none"
+
+
+def test_tampered_staging_is_rejected_before_irreversible_publish(cycle_factory):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == "before_publish":
+            stage = next((root / "data/evidence/v1/.staging").iterdir())
+            (stage / "ranking.csv").write_text("tampered\n")
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert any(item["code"] == "staging_verification_failed" for item in result.problems)
+    assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
+
+
+def test_staging_symlink_parent_cannot_write_outside_workspace(cycle_factory, tmp_path):
+    root, qlib, request = cycle_factory()
+    outside = tmp_path / "outside-stage"
+    outside.mkdir()
+
+    def fault(point):
+        if point == "after_stage_created":
+            stage = next((root / "data/evidence/v1/.staging").iterdir())
+            (stage / "objects").symlink_to(outside, target_is_directory=True)
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert list(outside.iterdir()) == []
 
 
 def test_source_mutation_before_publish_fails_without_final(cycle_factory):
@@ -501,6 +798,39 @@ def test_same_bytes_portfolio_replacement_breaks_identity_continuity(cycle_facto
             replacement = portfolio.with_suffix(".replacement")
             replacement.write_bytes(portfolio.read_bytes())
             os.replace(str(replacement), str(portfolio))
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+
+
+def test_transient_portfolio_move_away_and_back_is_not_erased(cycle_factory):
+    root, qlib, request = cycle_factory()
+    portfolio = root / "config/prod_config.json"
+
+    def fault(point):
+        if point == "before_publish":
+            displaced = portfolio.with_suffix(".displaced")
+            portfolio.rename(displaced)
+            displaced.rename(portfolio)
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+
+
+def test_transient_artifact_member_add_remove_is_not_erased(cycle_factory):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == "before_publish":
+            transient = root / "mlruns/train/transient.bin"
+            transient.write_bytes(b"transient")
+            transient.unlink()
 
     result = ProductionCycleEvidenceSealer(
         root, qlib_data_dir=qlib, fault_hook=fault,
@@ -635,6 +965,35 @@ def test_post_publish_sealed_member_tamper_is_uncertain(cycle_factory):
     )
 
 
+def test_member_tamper_after_first_post_publish_verification_is_uncertain(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    final = root / "data/evidence/v1/cycles/2099-01-02"
+    original = ProductionCycleEvidenceSealer._existing
+    final_calls = 0
+
+    def tamper_after_first_final(self, path, *args, **kwargs):
+        nonlocal final_calls
+        result = original(self, path, *args, **kwargs)
+        if path == final:
+            final_calls += 1
+            if final_calls == 1:
+                (final / "ranking.csv").write_text("tampered\n")
+        return result
+
+    monkeypatch.setattr(
+        ProductionCycleEvidenceSealer, "_existing", tamper_after_first_final,
+    )
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "uncertain"
+    assert result.capability == "none"
+    assert any(
+        item["code"] == "post_publish_confirmation_lost"
+        for item in result.problems
+    )
+
+
 def test_staging_public_name_replacement_before_publish_prevents_final(cycle_factory):
     root, qlib, request = cycle_factory()
     displaced = None
@@ -667,6 +1026,21 @@ def test_symlink_source_escape_is_blocked(cycle_factory, tmp_path):
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
     assert result.status == "blocked"
     assert result.did_write is False
+
+
+def test_ensemble_artifact_escape_is_blocked_without_final(cycle_factory, tmp_path):
+    root, qlib, request = cycle_factory()
+    outside = tmp_path / "foreign-recorder"
+    outside.mkdir()
+    (outside / "pred.pkl").write_bytes(b"foreign")
+    path = root / request.ensemble_manifest
+    value = json.loads(path.read_text())
+    value["records"]["combos"][0]["output_evidence"]["artifact_path"] = str(outside)
+    path.write_text(json.dumps(value))
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "blocked"
+    assert result.did_write is False
+    assert not (root / "data/evidence").exists()
 
 
 def test_symlinked_evidence_parent_is_blocked_before_outside_write(cycle_factory, tmp_path):
@@ -710,6 +1084,36 @@ def test_replaced_owned_lock_fails_closed_and_preserves_foreign_lock(
     assert result.status == expected_status
     assert result.capability == "none"
     assert lock.read_text() == "foreign-owner"
+
+
+def test_lock_cleanup_failure_after_publish_is_uncertain(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    monkeypatch.setattr(sealing_module, "_release_owned_lock", lambda *_args: False)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "uncertain"
+    assert result.capability == "none"
+    assert any(item["code"] == "lock_cleanup_failed" for item in result.problems)
+
+
+def test_publication_ancestor_symlink_replacement_fails_before_publish(cycle_factory):
+    root, qlib, request = cycle_factory()
+
+    def fault(point):
+        if point == "before_publish":
+            evidence = root / "data/evidence"
+            current = evidence / "v1"
+            displaced = evidence / "displaced-v1"
+            current.rename(displaced)
+            current.symlink_to(displaced, target_is_directory=True)
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+    assert not (root / "data/evidence/displaced-v1/cycles/2099-01-02").exists()
 
 
 def test_research_epoch_change_on_replay_conflicts(cycle_factory):

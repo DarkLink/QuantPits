@@ -77,3 +77,45 @@ def test_inspector_result_rejects_cross_field_status_and_problem_forgery():
         )
     with pytest.raises(ContractError, match="write"):
         _result("2099-01-02", "uncertain", False, None, None)
+
+
+def test_preview_is_distinct_from_published_authority():
+    preview = _result(
+        "2099-01-02", "preview_complete", False, None,
+        TypedDigest.raw(b"candidate"),
+    )
+    assert preview.capability == "none"
+    assert preview.bundle_path is None
+    with pytest.raises(ContractError, match="preview"):
+        _result(
+            "2099-01-02", "preview_complete", True, None,
+            TypedDigest.raw(b"candidate"),
+        )
+    with pytest.raises(ContractError, match="write fact"):
+        _result(
+            "2099-01-02", "sealed_complete", False, "bundle",
+            TypedDigest.raw(b"seal"),
+        )
+
+
+def test_result_diagnostics_and_bundle_capability_cannot_be_mutated_or_escaped():
+    problems = ({
+        "code": "missing", "evidence_class": "synthetic",
+        "detail": "missing", "blocks_complete": True,
+    },)
+    result = _result(
+        "2099-01-02", "preview_partial", False, None,
+        TypedDigest.raw(b"candidate"), problems,
+    )
+    with pytest.raises(TypeError):
+        result.problems[0]["blocks_complete"] = False
+    with pytest.raises(ContractError, match="canonical"):
+        _result(
+            "2099-01-02", "sealed_complete", True, "../outside",
+            TypedDigest.raw(b"seal"),
+        )
+
+
+def test_typed_digest_invalid_domain_container_raises_contract_error():
+    with pytest.raises(ContractError):
+        TypedDigest("sha256", [], "0" * 64, 0)

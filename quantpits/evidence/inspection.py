@@ -33,6 +33,7 @@ class SourceMutationObserver:
     _SELF_MASK = 0x00000002 | 0x00000004 | 0x00000008 | 0x00000400 | 0x00000800
     _PARENT_MASK = 0x00000040 | 0x00000080 | 0x00000100 | 0x00000200
     _BAD_GLOBAL = 0x00004000 | 0x00008000
+    _MASK_ADD = 0x20000000
 
     def __init__(self, root: Path, paths: Iterable[str]) -> None:
         self.root = root.resolve(strict=True)
@@ -54,18 +55,35 @@ class SourceMutationObserver:
             return
         self.supported = True
         self._add = add
+        self._watch(self.root, self._SELF_MASK, None, True)
+        self._watch(self.root.parent, self._PARENT_MASK, {self.root.name}, False)
+        self.add_paths(paths)
+
+    def add_paths(self, paths: Iterable[str]) -> None:
+        """Extend the observation window before reading newly discovered evidence."""
+        if self.fd < 0:
+            self.supported = False
+            return
         for logical in paths:
             if not logical:
                 continue
             try:
                 target = contained_path(self.root, logical)
             except FileNotFoundError:
-                try:
-                    raw = Path(logical)
-                    parent = contained_path(self.root, raw.parent.as_posix())
-                    self._watch(parent, self._PARENT_MASK, {raw.name}, False)
-                except Exception:
-                    continue
+                raw = Path(logical)
+                current = self.root
+                for index, part in enumerate(raw.parts):
+                    candidate = current / part
+                    try:
+                        info = os.lstat(str(candidate))
+                    except FileNotFoundError:
+                        self._watch(current, self._PARENT_MASK, {part}, False)
+                        break
+                    if stat.S_ISLNK(info.st_mode):
+                        raise PathBoundaryError("path contains a symlink alias")
+                    if index != len(raw.parts) - 1 and not stat.S_ISDIR(info.st_mode):
+                        raise PathBoundaryError("path parent is not a directory")
+                    current = candidate
                 continue
             if target.is_dir():
                 self._watch(target.parent, self._PARENT_MASK, {target.name}, False)
@@ -76,7 +94,7 @@ class SourceMutationObserver:
                 self._watch(target.parent, self._PARENT_MASK, {target.name}, False)
 
     def _watch(self, path: Path, mask: int, names, any_event: bool) -> None:
-        wd = self._add(self.fd, os.fsencode(str(path)), mask)
+        wd = self._add(self.fd, os.fsencode(str(path)), mask | self._MASK_ADD)
         if wd < 0:
             self.supported = False
             return
@@ -140,9 +158,8 @@ class FileSnapshot:
 
 
 def root_identity(root: Path) -> Tuple[int, int]:
-    observed = root.resolve(strict=True)
-    info = observed.stat()
-    if not stat.S_ISDIR(info.st_mode):
+    info = os.lstat(str(root))
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
         raise PathBoundaryError("workspace root is not a directory")
     return info.st_dev, info.st_ino
 
@@ -188,8 +205,18 @@ def inspect_file(root: Path, logical_path: str) -> FileSnapshot:
             return FileSnapshot(logical_path, "incomparable", None, None, None, "not a regular file")
         if before.st_nlink != 1:
             raise PathBoundaryError("hard-linked source has ambiguous physical ownership")
-        with path.open("rb") as handle:
+        flags = (
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
+        descriptor = os.open(str(path), flags)
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
             opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                return FileSnapshot(
+                    logical_path, "changed", None, None, None,
+                    "identity changed while opening",
+                )
             if opened.st_size <= 2 * 1024 * 1024:
                 data = handle.read()
                 digest = TypedDigest.raw(data)
@@ -260,14 +287,32 @@ def inspect_tree(root: Path, logical_path: str) -> Tuple[FileSnapshot, ...]:
     return tuple(members)
 
 
-def parse_json(snapshot: FileSnapshot) -> Optional[dict]:
-    if snapshot.status != "observed" or snapshot.data is None:
-        return None
+def strict_json_object(data: bytes) -> Optional[dict]:
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value):
+        raise ValueError("non-finite JSON number")
+
     try:
-        value = json.loads(snapshot.data.decode("utf-8"))
+        value = json.loads(
+            data.decode("utf-8"), object_pairs_hook=pairs,
+            parse_constant=reject_constant,
+        )
     except (UnicodeDecodeError, ValueError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def parse_json(snapshot: FileSnapshot) -> Optional[dict]:
+    if snapshot.status != "observed" or snapshot.data is None:
+        return None
+    return strict_json_object(snapshot.data)
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -276,6 +321,7 @@ def _git(repo: Path, *args: str) -> bytes:
     return subprocess.run(
         ["git", "-C", str(repo), *args], check=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
+        timeout=30,
     ).stdout
 
 
@@ -287,11 +333,13 @@ def inspect_git(start: Path) -> dict:
         status_bytes = _git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all")
         diff_bytes = _git(top, "diff", "--binary", "HEAD", "--")
         after = (_git(top, "rev-parse", "HEAD").decode().strip(), _git(top, "rev-parse", "HEAD^{tree}").decode().strip())
-        if before != after:
+        status_after = _git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+        diff_after = _git(top, "diff", "--binary", "HEAD", "--")
+        if before != after or status_bytes != status_after or diff_bytes != diff_after:
             return {"status": "dirty_unresolved", "detail": "Git identity changed during observation"}
         dirty = bool(status_bytes)
         status_inventory = [
-            item.decode("utf-8", "surrogateescape")
+            item.decode("utf-8", "backslashreplace")
             for item in status_bytes.split(b"\0") if item
         ]
         try:
