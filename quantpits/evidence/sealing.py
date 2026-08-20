@@ -9,7 +9,6 @@ import io
 import os
 import re
 import secrets
-import shutil
 import stat
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -96,14 +95,6 @@ def _exception_detail(exc: BaseException) -> str:
     detail = type(exc).__name__
     error_number = getattr(exc, "errno", None)
     return "%s(errno=%s)" % (detail, error_number) if error_number is not None else detail
-
-
-def _fsync_dir(path: Path) -> None:
-    descriptor = os.open(str(path), os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _stable_file_bytes(root: Path, path: Path) -> bytes:
@@ -216,17 +207,47 @@ def _release_owned_lock(
         return False
 
 
-def _stage_bytes(stage: Path, logical_path: str, data: bytes) -> None:
+def _open_directory_no_follow(root: Path, target: Path) -> int:
+    """Open a contained directory through a held no-follow descriptor chain."""
+    canonical_root = root.absolute()
+    try:
+        relative = target.absolute().relative_to(canonical_root)
+    except ValueError as exc:
+        raise PathBoundaryError("directory escapes its authority root") from exc
+    flags = (
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(str(canonical_root), flags)
+    try:
+        for part in relative.parts:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):
+            raise PathBoundaryError("opened authority member is not a directory")
+        return descriptor
+    except OSError as exc:
+        os.close(descriptor)
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise PathBoundaryError(
+                "directory chain contains a noncanonical alias"
+            ) from exc
+        raise
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _stage_bytes(stage_fd: int, logical_path: str, data: bytes) -> None:
     """Create a staged member through no-follow directory descriptors."""
     parts = Path(logical_path).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise PathBoundaryError("staged member path is not canonical")
     descriptors = []
     try:
-        current_fd = os.open(
-            str(stage), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
+        current_fd = os.dup(stage_fd)
         descriptors.append(current_fd)
         for part in parts[:-1]:
             try:
@@ -290,34 +311,48 @@ def _directory_chain(root: Path, targets: Sequence[Path]) -> Tuple[Tuple[str, in
     return ((".", root_info.st_dev, root_info.st_ino),) + tuple(identities)
 
 
-def _fsync_tree_directories(root: Path) -> None:
-    directories = [path for path in root.rglob("*") if path.is_dir() and not path.is_symlink()]
-    directories.sort(key=lambda path: len(path.parts), reverse=True)
-    for directory in directories:
-        _fsync_dir(directory)
-    _fsync_dir(root)
-
-
 def _safe_mkdirs(root: Path, target: Path) -> None:
-    canonical_root = root.resolve(strict=True)
+    """Create a contained directory chain without following mutable aliases."""
+    canonical_root = root.absolute()
     try:
         relative = target.absolute().relative_to(canonical_root)
     except ValueError as exc:
         raise PathBoundaryError("write parent is outside workspace") from exc
-    current = canonical_root
-    for part in relative.parts:
-        current = current / part
-        try:
-            os.lstat(str(current))
-            if not os.path.isdir(str(current)) or os.path.islink(str(current)):
+    flags = (
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(str(canonical_root), flags)
+    try:
+        for part in relative.parts:
+            try:
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    # A concurrent creator gets no authority: the member is
+                    # still opened and validated through this held parent.
+                    pass
+                os.fsync(descriptor)
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            info = os.fstat(next_descriptor)
+            if not stat.S_ISDIR(info.st_mode):
+                os.close(next_descriptor)
                 raise PathBoundaryError("write parent contains a non-directory alias")
-        except FileNotFoundError:
-            parent = current.parent
-            os.mkdir(str(current), 0o700)
-            os.lstat(str(current))
-            _fsync_dir(parent)
-        if current.resolve(strict=True).parent != current.parent.resolve(strict=True):
-            raise PathBoundaryError("write parent escaped during creation")
+            os.close(descriptor)
+            descriptor = next_descriptor
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise PathBoundaryError(
+                "write parent contains a non-directory alias"
+            ) from exc
+        raise
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
 
 
 def _rename_noreplace(
@@ -1639,6 +1674,7 @@ class ProductionCycleEvidenceSealer:
         lock_parent_fd = None
         final_parent_fd = None
         staging_parent_fd = None
+        stage_fd = None
         lock_parent_identity = None
         lock_identity = None
         lock_owned = False
@@ -1653,14 +1689,8 @@ class ProductionCycleEvidenceSealer:
             publication_directories = _directory_chain(
                 self.root, (lock.parent, final.parent, staging_parent),
             )
-            final_parent_fd = os.open(
-                str(final.parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-            )
-            staging_parent_fd = os.open(
-                str(staging_parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-            )
+            final_parent_fd = _open_directory_no_follow(self.root, final.parent)
+            staging_parent_fd = _open_directory_no_follow(self.root, staging_parent)
             final_parent_info = os.fstat(final_parent_fd)
             staging_parent_info = os.fstat(staging_parent_fd)
             parent_identity = (final_parent_info.st_dev, final_parent_info.st_ino)
@@ -1675,7 +1705,7 @@ class ProductionCycleEvidenceSealer:
                 ) != publication_directories
             ):
                 raise PathBoundaryError("publication parent changed while opening")
-            lock_parent_fd = os.open(str(lock.parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            lock_parent_fd = _open_directory_no_follow(self.root, lock.parent)
             parent_info = os.fstat(lock_parent_fd)
             lock_parent_identity = (parent_info.st_dev, parent_info.st_ino)
             lock_fd = os.open(lock.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=lock_parent_fd)
@@ -1771,7 +1801,13 @@ class ProductionCycleEvidenceSealer:
                 raise OSError(errno.EEXIST, "unable to allocate unique staging name")
             os.fsync(staging_parent_fd)
             stage = staging_parent / stage_name
-            stage_info = os.lstat(str(stage))
+            stage_fd = os.open(
+                stage_name,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=staging_parent_fd,
+            )
+            stage_info = os.fstat(stage_fd)
             stage_identity = (stage_info.st_dev, stage_info.st_ino)
             wrote_staging = True
             if (
@@ -1783,12 +1819,12 @@ class ProductionCycleEvidenceSealer:
                 raise PathBoundaryError("staging directory identity is invalid")
             self.fault_hook("after_stage_created")
             for digest, data in draft.objects.items():
-                _stage_bytes(stage, "objects/%s/%s" % (digest[:2], digest), data)
+                _stage_bytes(stage_fd, "objects/%s/%s" % (digest[:2], digest), data)
             for name, data in draft.named_files.items():
-                _stage_bytes(stage, name, data)
-            _stage_bytes(stage, "manifest.json", manifest_data)
-            _stage_bytes(stage, "seal.json", seal_data)
-            _fsync_tree_directories(stage)
+                _stage_bytes(stage_fd, name, data)
+            _stage_bytes(stage_fd, "manifest.json", manifest_data)
+            _stage_bytes(stage_fd, "seal.json", seal_data)
+            os.fsync(stage_fd)
             self.fault_hook("before_publish")
             if (
                 observer.mutated()
@@ -2067,16 +2103,10 @@ class ProductionCycleEvidenceSealer:
                 tuple(draft.problems + [_problem("publication_failed", "publication", _exception_detail(exc), blocking=True)]),
             )
         finally:
-            if stage is not None:
-                try:
-                    current = os.lstat(str(stage))
-                    stage.resolve(strict=True).relative_to(self.root)
-                    if stage_identity == (current.st_dev, current.st_ino):
-                        stage_parent = stage.parent
-                        shutil.rmtree(str(stage))
-                        _fsync_dir(stage_parent)
-                except (FileNotFoundError, ValueError, OSError):
-                    pass
+            # A public-name identity check followed by path-based recursive
+            # deletion has an unavoidable replacement race. Failed staging is
+            # retained for owner-controlled cleanup instead of risking deletion
+            # of a foreign replacement tree.
             try:
                 if lock_parent_fd is not None:
                     try:
@@ -2104,7 +2134,7 @@ class ProductionCycleEvidenceSealer:
                         os.close(lock_parent_fd)
             except OSError:
                 pass
-            for descriptor in (staging_parent_fd, final_parent_fd):
+            for descriptor in (stage_fd, staging_parent_fd, final_parent_fd):
                 if descriptor is not None:
                     try:
                         os.close(descriptor)

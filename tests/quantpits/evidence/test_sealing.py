@@ -768,6 +768,57 @@ def test_staging_symlink_parent_cannot_write_outside_workspace(cycle_factory, tm
     assert list(outside.iterdir()) == []
 
 
+def test_staging_public_replacement_during_write_is_never_modified(cycle_factory):
+    root, qlib, request = cycle_factory()
+    replacement = None
+    displaced = None
+
+    def fault(point):
+        nonlocal replacement, displaced
+        if point == "after_stage_created":
+            staging = root / "data/evidence/v1/.staging"
+            original = next(staging.iterdir())
+            displaced = original.with_name(original.name + ".displaced")
+            original.rename(displaced)
+            original.mkdir()
+            replacement = original
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+    assert replacement is not None and list(replacement.iterdir()) == []
+    assert displaced is not None and (displaced / "manifest.json").is_file()
+    assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
+
+
+def test_write_parent_creation_race_cannot_escape_workspace(
+    cycle_factory, tmp_path, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    outside = tmp_path / "outside-write-parent"
+    outside.mkdir()
+    displaced = root / "data-displaced"
+    real_mkdir = sealing_module.os.mkdir
+    replaced = False
+
+    def replace_parent_before_descriptor_relative_create(path, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if path == "evidence" and dir_fd is not None and not replaced:
+            replaced = True
+            (root / "data").rename(displaced)
+            (root / "data").symlink_to(outside, target_is_directory=True)
+        return real_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(sealing_module.os, "mkdir", replace_parent_before_descriptor_relative_create)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "blocked"
+    assert result.capability == "none"
+    assert list(outside.iterdir()) == []
+    assert (displaced / "evidence").is_dir()
+
+
 def test_source_mutation_before_publish_fails_without_final(cycle_factory):
     root, qlib, request = cycle_factory()
     path = root / request.order_manifest
