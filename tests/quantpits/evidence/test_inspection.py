@@ -3,7 +3,7 @@ import os
 
 import quantpits.evidence.inspection as inspection
 from quantpits.evidence.inspection import (
-    PathBoundaryError, SourceMutationObserver, inspect_file, inspect_many,
+    PathBoundaryError, SourceMutationObserver, git_control_specs, inspect_file, inspect_many,
     inspect_tree,
 )
 
@@ -133,6 +133,33 @@ def test_git_observer_derives_clean_identity_and_raw_inventory_digests(tmp_path,
     assert result["commit"] == "a" * 40
     assert result["status_inventory_digest"]["domain"] == "raw_bytes"
     assert result["remote_relation"] == "no_upstream"
+
+
+def test_git_control_specs_cover_worktree_and_common_identity(tmp_path, monkeypatch):
+    top = tmp_path / "worktree"
+    repository = tmp_path / "repository"
+    git_dir = repository / ".git" / "worktrees" / "synthetic"
+    common = repository / ".git"
+    top.mkdir()
+    (top / ".git").write_text("gitdir: synthetic\n")
+    git_dir.mkdir(parents=True)
+
+    def fake_git(_repo, *args):
+        command = tuple(args)
+        if command == ("rev-parse", "--show-toplevel"):
+            return (str(top) + "\n").encode()
+        if command == ("rev-parse", "--absolute-git-dir"):
+            return (str(git_dir) + "\n").encode()
+        if command == ("rev-parse", "--git-common-dir"):
+            return (str(common) + "\n").encode()
+        raise AssertionError(command)
+
+    monkeypatch.setattr(inspection, "_git", fake_git)
+    assert git_control_specs(top) == (
+        (common, ("packed-refs", "refs")),
+        (git_dir, ("HEAD", "index")),
+        (top, (".git",)),
+    )
 
 
 def test_git_observer_failure_diagnostic_does_not_expose_absolute_path(

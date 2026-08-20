@@ -21,6 +21,11 @@ def cycle_factory(tmp_path, monkeypatch):
     def build(*, deep=True, decision=True, scores=None, dirty=False):
         root = tmp_path / "workspace"
         root.mkdir()
+        git_control = root / ".synthetic-git-control"
+        (git_control / "refs" / "heads").mkdir(parents=True)
+        (git_control / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_control / "index").write_bytes(b"synthetic-index")
+        (git_control / "refs" / "heads" / "main").write_text("a" * 40 + "\n")
         qlib = tmp_path / "qlib"
         (qlib / "calendars").mkdir(parents=True)
         (qlib / "instruments").mkdir()
@@ -143,6 +148,10 @@ def cycle_factory(tmp_path, monkeypatch):
                 "repository_scope": "workspace", "remote_relation": "no_upstream",
             }
         monkeypatch.setattr(sealing_module, "inspect_git", synthetic_git)
+        monkeypatch.setattr(
+            sealing_module, "git_control_specs",
+            lambda _start: ((git_control, ("HEAD", "index", "packed-refs", "refs")),),
+        )
         return root, qlib, CaptureRequest(
             cycle_id="2099-01-02", research_epoch_id="SYNTHETIC_V1",
             post_trade_manifest="output/manifests/m1.json",
@@ -1136,3 +1145,24 @@ def test_workspace_git_mutation_during_capture_is_visible_and_partial(cycle_fact
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
     assert result.status == "sealed_partial"
     assert any(item["code"] == "workspace_git_mutated" for item in result.problems)
+
+
+def test_transient_git_head_mutation_before_publish_denies_capability(cycle_factory):
+    root, qlib, request = cycle_factory()
+    head = root / ".synthetic-git-control" / "HEAD"
+    original = head.read_bytes()
+
+    def fault(point):
+        if point == "before_publish":
+            head.write_bytes(b"ref: refs/heads/transient\n")
+            head.write_bytes(original)
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "failed_no_final"
+    assert result.capability == "none"
+    assert any(
+        item["code"] == "source_continuity_lost"
+        for item in result.problems
+    )

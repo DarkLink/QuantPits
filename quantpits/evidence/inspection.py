@@ -398,6 +398,36 @@ def _git(repo: Path, *args: str) -> bytes:
     ).stdout
 
 
+def git_control_specs(start: Path) -> Tuple[Tuple[Path, Tuple[str, ...]], ...]:
+    """Return private observer roots for transient Git identity mutations."""
+    top = Path(
+        _git(start, "rev-parse", "--show-toplevel").decode("utf-8").strip()
+    ).resolve(strict=True)
+    git_dir = Path(
+        _git(start, "rev-parse", "--absolute-git-dir").decode("utf-8").strip()
+    ).resolve(strict=True)
+    common_raw = Path(
+        _git(start, "rev-parse", "--git-common-dir").decode("utf-8").strip()
+    )
+    common_dir = (
+        common_raw if common_raw.is_absolute() else top / common_raw
+    ).resolve(strict=True)
+    members = {}
+    members.setdefault(git_dir, set()).update({"HEAD", "index"})
+    members.setdefault(common_dir, set()).update({"packed-refs", "refs"})
+    public_git_marker = top / ".git"
+    try:
+        marker_info = os.lstat(str(public_git_marker))
+    except FileNotFoundError:
+        marker_info = None
+    if marker_info is not None and not stat.S_ISDIR(marker_info.st_mode):
+        members.setdefault(top, set()).add(".git")
+    return tuple(
+        (root, tuple(sorted(paths)))
+        for root, paths in sorted(members.items(), key=lambda item: str(item[0]))
+    )
+
+
 def inspect_git(start: Path) -> dict:
     """Observe a containing Git repository without exposing its absolute path."""
     try:

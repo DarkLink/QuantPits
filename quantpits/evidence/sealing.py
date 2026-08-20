@@ -31,6 +31,7 @@ from quantpits.evidence.inspection import (
     FileSnapshot,
     PathBoundaryError,
     contained_path,
+    git_control_specs,
     inspect_file,
     inspect_git,
     inspect_many,
@@ -1134,11 +1135,16 @@ class ProductionCycleEvidenceSealer:
         self, request: CaptureRequest, observer: SourceMutationObserver,
         data_observer: Optional[SourceMutationObserver],
         engine_observer: SourceMutationObserver,
+        workspace_git_observers: Tuple[SourceMutationObserver, ...],
+        engine_git_observers: Tuple[SourceMutationObserver, ...],
     ) -> _BundleDraft:
         draft = _BundleDraft(
             {}, {}, {}, [], source_observations={}, continuity_observations={},
             tree_observations={}, mutation_observers=tuple(
-                item for item in (observer, engine_observer, data_observer)
+                item for item in (
+                    observer, engine_observer, data_observer,
+                    *workspace_git_observers, *engine_git_observers,
+                )
                 if item is not None
             ),
         )
@@ -1169,6 +1175,18 @@ class ProductionCycleEvidenceSealer:
             draft.problems.append(_problem("engine_git_unresolved", "engine", "engine Git identity is unresolved", blocking=True))
         if workspace_git.get("status") == "dirty_unresolved":
             draft.problems.append(_problem("workspace_git_unresolved", "workspace", "workspace Git identity is unresolved", blocking=True))
+        if any(not item.supported or item.mutated() for item in workspace_git_observers):
+            draft.problems.append(_problem(
+                "workspace_git_mutation_observed", "workspace",
+                "workspace Git control identity changed during capture",
+                blocking=True,
+            ))
+        if any(not item.supported or item.mutated() for item in engine_git_observers):
+            draft.problems.append(_problem(
+                "engine_git_control_mutation_observed", "engine",
+                "engine Git control identity changed during capture",
+                blocking=True,
+            ))
         market = self._frozen_market(manifests.get("ensemble"), draft)
         data_identity, universe = self._data_identity(anchor, market, draft)
         ranking = self._ranking(manifests.get("ensemble"), anchor, universe, draft)
@@ -1464,6 +1482,14 @@ class ProductionCycleEvidenceSealer:
                 engine_observer = stack.enter_context(SourceMutationObserver(
                     self.engine_root, ENGINE_SURFACE_MEMBERS,
                 ))
+                workspace_git_observers = tuple(
+                    stack.enter_context(SourceMutationObserver(root, members))
+                    for root, members in git_control_specs(self.root)
+                )
+                engine_git_observers = tuple(
+                    stack.enter_context(SourceMutationObserver(root, members))
+                    for root, members in git_control_specs(self.engine_root)
+                )
                 data_observer = None
                 if configured.is_dir():
                     data_observer = stack.enter_context(SourceMutationObserver(
@@ -1472,6 +1498,8 @@ class ProductionCycleEvidenceSealer:
                 return self._capture(
                     request, dry_run=dry_run, observer=observer,
                     data_observer=data_observer, engine_observer=engine_observer,
+                    workspace_git_observers=workspace_git_observers,
+                    engine_git_observers=engine_git_observers,
                 )
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
@@ -1491,6 +1519,8 @@ class ProductionCycleEvidenceSealer:
         observer: SourceMutationObserver,
         data_observer: Optional[SourceMutationObserver],
         engine_observer: SourceMutationObserver,
+        workspace_git_observers: Tuple[SourceMutationObserver, ...],
+        engine_git_observers: Tuple[SourceMutationObserver, ...],
     ) -> CaptureResult:
         root_before = root_identity(self.root)
         if root_before != self._root_public_identity:
@@ -1503,7 +1533,10 @@ class ProductionCycleEvidenceSealer:
                 ),),
             )
         try:
-            draft = self._build(request, observer, data_observer, engine_observer)
+            draft = self._build(
+                request, observer, data_observer, engine_observer,
+                workspace_git_observers, engine_git_observers,
+            )
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except PathBoundaryError as exc:
