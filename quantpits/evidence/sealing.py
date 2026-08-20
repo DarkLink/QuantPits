@@ -2103,6 +2103,16 @@ class ProductionCycleEvidenceSealer:
                     request.cycle_id, "blocked", False, None, None,
                     tuple(draft.problems),
                 )
+            if wrote_staging and final.exists():
+                return _result(
+                    request.cycle_id, "failed_no_final", True, None, None,
+                    tuple(draft.problems + [_problem(
+                        "concurrent_final_after_staging", "publication",
+                        "a final namespace appeared after staging was written; "
+                        "the retained staging write prevents zero-write adoption",
+                        blocking=True,
+                    )]),
+                )
             if final.exists():
                 if final_observer is None:
                     final_observer = SourceMutationObserver(

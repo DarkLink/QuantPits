@@ -38,3 +38,8 @@ Phase 37A bundle partial.
 Replaying byte-equivalent cycle inputs adopts the existing bundle. A changed
 input under the same cycle ID returns `conflict`; the existing namespace is
 never overwritten or repaired in place.
+
+A capture that has written staging but cannot publish returns
+`failed_no_final`. Its private `.staging` directory is retained for
+owner-controlled cleanup; the command does not recursively delete a mutable
+public path after failure.

@@ -253,7 +253,7 @@ def test_different_final_appearing_after_lock_is_conflict(cycle_factory):
     assert conflict.capability == "none"
 
 
-def test_exact_final_winning_atomic_publish_race_is_adopted(
+def test_exact_final_winning_atomic_publish_race_is_fail_closed_after_staging(
     cycle_factory, monkeypatch,
 ):
     root, qlib, request = cycle_factory()
@@ -262,6 +262,7 @@ def test_exact_final_winning_atomic_publish_race_is_adopted(
     final = root / first.bundle_path
     saved = final.with_name("saved-racing-final")
     final.rename(saved)
+    expected_seal = (saved / "seal.json").read_bytes()
     original = sealing_module._rename_noreplace
 
     def race(source_parent_fd, source_name, target_parent_fd, target_name):
@@ -272,8 +273,17 @@ def test_exact_final_winning_atomic_publish_race_is_adopted(
 
     monkeypatch.setattr(sealing_module, "_rename_noreplace", race)
     replay = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
-    assert replay.status == "adopted"
-    assert replay.capability == "local_evidence_replay"
+    assert replay.status == "failed_no_final"
+    assert replay.did_write is True
+    assert replay.write_scope == "staging_only"
+    assert replay.capability == "none"
+    assert final.is_dir()
+    assert (final / "seal.json").read_bytes() == expected_seal
+    assert any((root / "data/evidence/v1/.staging").iterdir())
+    assert any(
+        item["code"] == "concurrent_final_after_staging"
+        for item in replay.problems
+    )
 
 
 def test_stage_member_file_exists_is_failure_not_cycle_conflict(
