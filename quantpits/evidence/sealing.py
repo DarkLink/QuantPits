@@ -207,7 +207,7 @@ def _release_owned_lock(
         return False
 
 
-def _open_directory_no_follow(root: Path, target: Path) -> int:
+def _open_directory_no_follow(root: Path, root_fd: int, target: Path) -> int:
     """Open a contained directory through a held no-follow descriptor chain."""
     canonical_root = root.absolute()
     try:
@@ -218,7 +218,7 @@ def _open_directory_no_follow(root: Path, target: Path) -> int:
         os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     )
-    descriptor = os.open(str(canonical_root), flags)
+    descriptor = os.dup(root_fd)
     try:
         for part in relative.parts:
             next_descriptor = os.open(part, flags, dir_fd=descriptor)
@@ -311,7 +311,7 @@ def _directory_chain(root: Path, targets: Sequence[Path]) -> Tuple[Tuple[str, in
     return ((".", root_info.st_dev, root_info.st_ino),) + tuple(identities)
 
 
-def _safe_mkdirs(root: Path, target: Path) -> None:
+def _safe_mkdirs(root: Path, root_fd: int, target: Path) -> None:
     """Create a contained directory chain without following mutable aliases."""
     canonical_root = root.absolute()
     try:
@@ -322,7 +322,7 @@ def _safe_mkdirs(root: Path, target: Path) -> None:
         os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     )
-    descriptor = os.open(str(canonical_root), flags)
+    descriptor = os.dup(root_fd)
     try:
         for part in relative.parts:
             try:
@@ -1172,12 +1172,14 @@ class ProductionCycleEvidenceSealer:
         engine_observer: SourceMutationObserver,
         workspace_git_observers: Tuple[SourceMutationObserver, ...],
         engine_git_observers: Tuple[SourceMutationObserver, ...],
+        final_observer: Optional[SourceMutationObserver],
     ) -> _BundleDraft:
         draft = _BundleDraft(
             {}, {}, {}, [], source_observations={}, continuity_observations={},
             tree_observations={}, mutation_observers=tuple(
                 item for item in (
                     observer, engine_observer, data_observer,
+                    final_observer,
                     *workspace_git_observers, *engine_git_observers,
                 )
                 if item is not None
@@ -1251,6 +1253,15 @@ class ProductionCycleEvidenceSealer:
             draft.problems.append(_problem(
                 "engine_mutation_observed", "engine",
                 "engine surface continuity is unavailable or changed",
+                blocking=True,
+            ))
+        if final_observer is not None and (
+            not final_observer.supported or final_observer.mutated()
+        ):
+            draft.blocked = True
+            draft.problems.append(_problem(
+                "existing_final_mutation_observed", "publication",
+                "existing final namespace continuity is unavailable or changed",
                 blocking=True,
             ))
         if data_observer is not None and (not data_observer.supported or data_observer.mutated()):
@@ -1510,6 +1521,7 @@ class ProductionCycleEvidenceSealer:
             raise ContractError("dry_run must be boolean")
         paths = [path for _name, path, _required in request.source_paths() if path]
         paths.extend(("config/prod_config.json", "config/model_config.json"))
+        final_logical = "data/evidence/v1/cycles/%s" % request.cycle_id
         try:
             configured = self.qlib_data_dir
             with ExitStack() as stack:
@@ -1530,11 +1542,17 @@ class ProductionCycleEvidenceSealer:
                     data_observer = stack.enter_context(SourceMutationObserver(
                         configured, ("calendars/day.txt", "instruments"),
                     ))
+                final_observer = None
+                if os.path.lexists(str(self.root / final_logical)):
+                    final_observer = stack.enter_context(SourceMutationObserver(
+                        self.root, (final_logical,),
+                    ))
                 return self._capture(
                     request, dry_run=dry_run, observer=observer,
                     data_observer=data_observer, engine_observer=engine_observer,
                     workspace_git_observers=workspace_git_observers,
                     engine_git_observers=engine_git_observers,
+                    final_observer=final_observer,
                 )
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
@@ -1556,6 +1574,7 @@ class ProductionCycleEvidenceSealer:
         engine_observer: SourceMutationObserver,
         workspace_git_observers: Tuple[SourceMutationObserver, ...],
         engine_git_observers: Tuple[SourceMutationObserver, ...],
+        final_observer: Optional[SourceMutationObserver],
     ) -> CaptureResult:
         root_before = root_identity(self.root)
         if root_before != self._root_public_identity:
@@ -1570,7 +1589,7 @@ class ProductionCycleEvidenceSealer:
         try:
             draft = self._build(
                 request, observer, data_observer, engine_observer,
-                workspace_git_observers, engine_git_observers,
+                workspace_git_observers, engine_git_observers, final_observer,
             )
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
@@ -1617,6 +1636,9 @@ class ProductionCycleEvidenceSealer:
                     final_continuous = False
                 if (
                     final_continuous
+                    and final_observer is not None
+                    and final_observer.supported
+                    and not final_observer.mutated()
                     and root_identity(self.root) == root_before
                     and _directory_chain(self.root, (final.parent,)) == adoption_directories
                     and confirmed is not None
@@ -1675,6 +1697,7 @@ class ProductionCycleEvidenceSealer:
         final_parent_fd = None
         staging_parent_fd = None
         stage_fd = None
+        authority_root_fd = None
         lock_parent_identity = None
         lock_identity = None
         lock_owned = False
@@ -1682,15 +1705,33 @@ class ProductionCycleEvidenceSealer:
         wrote_staging = False
         published = False
         try:
-            _safe_mkdirs(self.root, lock.parent)
-            _safe_mkdirs(self.root, evidence_root / "cycles")
-            _safe_mkdirs(self.root, evidence_root / ".staging")
+            authority_root_fd = os.open(
+                str(self.root),
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            authority_root_info = os.fstat(authority_root_fd)
+            if (
+                not stat.S_ISDIR(authority_root_info.st_mode)
+                or (authority_root_info.st_dev, authority_root_info.st_ino) != root_before
+            ):
+                raise PathBoundaryError(
+                    "workspace root identity changed before publication writes"
+                )
+            self.fault_hook("before_write_parent_creation")
+            _safe_mkdirs(self.root, authority_root_fd, lock.parent)
+            _safe_mkdirs(self.root, authority_root_fd, evidence_root / "cycles")
+            _safe_mkdirs(self.root, authority_root_fd, evidence_root / ".staging")
             staging_parent = evidence_root / ".staging"
             publication_directories = _directory_chain(
                 self.root, (lock.parent, final.parent, staging_parent),
             )
-            final_parent_fd = _open_directory_no_follow(self.root, final.parent)
-            staging_parent_fd = _open_directory_no_follow(self.root, staging_parent)
+            final_parent_fd = _open_directory_no_follow(
+                self.root, authority_root_fd, final.parent,
+            )
+            staging_parent_fd = _open_directory_no_follow(
+                self.root, authority_root_fd, staging_parent,
+            )
             final_parent_info = os.fstat(final_parent_fd)
             staging_parent_info = os.fstat(staging_parent_fd)
             parent_identity = (final_parent_info.st_dev, final_parent_info.st_ino)
@@ -1705,7 +1746,9 @@ class ProductionCycleEvidenceSealer:
                 ) != publication_directories
             ):
                 raise PathBoundaryError("publication parent changed while opening")
-            lock_parent_fd = _open_directory_no_follow(self.root, lock.parent)
+            lock_parent_fd = _open_directory_no_follow(
+                self.root, authority_root_fd, lock.parent,
+            )
             parent_info = os.fstat(lock_parent_fd)
             lock_parent_identity = (parent_info.st_dev, parent_info.st_ino)
             lock_fd = os.open(lock.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=lock_parent_fd)
@@ -1725,6 +1768,19 @@ class ProductionCycleEvidenceSealer:
                     )]),
                 )
             if final.exists():
+                if final_observer is None:
+                    final_observer = SourceMutationObserver(
+                        self.root, (final.relative_to(self.root).as_posix(),),
+                    )
+                if not final_observer.supported:
+                    return _result(
+                        request.cycle_id, "blocked", False, None, None,
+                        tuple(draft.problems + [_problem(
+                            "existing_final_observer_unavailable", "publication",
+                            "concurrent final namespace continuity is unavailable",
+                            blocking=True,
+                        )]),
+                    )
                 final_before = os.lstat(str(final))
                 final_identity = (final_before.st_dev, final_before.st_ino)
                 existing = self._existing(final, request.cycle_id, request_digest)
@@ -1747,6 +1803,7 @@ class ProductionCycleEvidenceSealer:
                         final_continuous = False
                     if (
                         final_continuous
+                        and not final_observer.mutated()
                         and root_identity(self.root) == root_before
                         and _directory_chain(
                             self.root, (lock.parent, final.parent, staging_parent),
@@ -1907,6 +1964,19 @@ class ProductionCycleEvidenceSealer:
             )
             published = True
             stage = None
+            if final_observer is None:
+                final_observer = SourceMutationObserver(
+                    self.root, (final.relative_to(self.root).as_posix(),),
+                )
+            if not final_observer.supported:
+                return _result(
+                    request.cycle_id, "uncertain", True, None, None,
+                    tuple(draft.problems + [_problem(
+                        "final_observer_unavailable", "publication",
+                        "post-publish final namespace continuity is unavailable",
+                        blocking=True,
+                    )]),
+                )
             os.fsync(final_parent_fd)
             self.fault_hook("after_publish")
             try:
@@ -1982,6 +2052,7 @@ class ProductionCycleEvidenceSealer:
                     and confirmed.status == "adopted"
                     and confirmed.seal_digest == adopted.seal_digest
                     and confirmed.sealed_status == adopted.sealed_status
+                    and not final_observer.mutated()
                     and not observer.mutated()
                     and (data_observer is None or not data_observer.mutated())
                 )
@@ -2017,9 +2088,13 @@ class ProductionCycleEvidenceSealer:
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except PathBoundaryError as exc:
-            status = "failed_no_final" if wrote_staging else "blocked"
+            status = (
+                "uncertain" if published
+                else "failed_no_final" if wrote_staging
+                else "blocked"
+            )
             return _result(
-                request.cycle_id, status, wrote_staging, None, None,
+                request.cycle_id, status, published or wrote_staging, None, None,
                 tuple(draft.problems + [_problem("write_boundary", "publication", str(exc), blocking=True)]),
             )
         except FileExistsError:
@@ -2029,6 +2104,19 @@ class ProductionCycleEvidenceSealer:
                     tuple(draft.problems),
                 )
             if final.exists():
+                if final_observer is None:
+                    final_observer = SourceMutationObserver(
+                        self.root, (final.relative_to(self.root).as_posix(),),
+                    )
+                if not final_observer.supported:
+                    return _result(
+                        request.cycle_id, "blocked", False, None, None,
+                        tuple(draft.problems + [_problem(
+                            "existing_final_observer_unavailable", "publication",
+                            "concurrent final namespace continuity is unavailable",
+                            blocking=True,
+                        )]),
+                    )
                 existing = self._existing(final, request.cycle_id, request_digest)
                 sources_continuous = self._adoption_sources_continuous(
                     request, draft, observer, data_observer,
@@ -2044,7 +2132,8 @@ class ProductionCycleEvidenceSealer:
                     and confirmed.sealed_status == existing.sealed_status
                 )
                 if exact_existing and (
-                    root_identity(self.root) == root_before
+                    not final_observer.mutated()
+                    and root_identity(self.root) == root_before
                     and publication_directories is not None
                     and _directory_chain(
                         self.root, (lock.parent, final.parent, staging_parent),
@@ -2134,7 +2223,11 @@ class ProductionCycleEvidenceSealer:
                         os.close(lock_parent_fd)
             except OSError:
                 pass
-            for descriptor in (stage_fd, staging_parent_fd, final_parent_fd):
+            if final_observer is not None:
+                final_observer.close()
+            for descriptor in (
+                stage_fd, staging_parent_fd, final_parent_fd, authority_root_fd,
+            ):
                 if descriptor is not None:
                     try:
                         os.close(descriptor)

@@ -4,6 +4,8 @@
 not train models, change portfolio state, promote configuration, submit orders,
 or modify an existing M1–M5 result. It reads exact run manifests and publishes
 one create-only bundle under `data/evidence/v1/cycles/<cycle-id>/`.
+The workspace comes from `--workspace` or `QLIB_WORKSPACE_DIR`; one of them is
+required. Source the workspace `run_env.sh` before using the environment form.
 Qlib data follows `QLIB_DATA_DIR` and otherwise uses the engine default
 `~/.qlib/qlib_data/cn_data`; `--qlib-data-dir` can bind an explicit location.
 

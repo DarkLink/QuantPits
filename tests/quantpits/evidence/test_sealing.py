@@ -338,6 +338,39 @@ def test_replay_final_replacement_during_existing_verification_denies_adoption(
     assert replay.capability == "none"
 
 
+def test_transient_valid_final_cannot_mask_tampered_canonical_bundle(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
+    first = sealer.capture(request)
+    final = root / first.bundle_path
+    valid = final.with_name("valid-final")
+    tampered = final.with_name("tampered-final")
+    shutil.copytree(final, valid)
+    (final / "ranking.csv").write_text("tampered\n")
+    original = ProductionCycleEvidenceSealer._existing
+
+    def verify_transient_valid_copy(self, *args, **kwargs):
+        if args[0] != final:
+            return original(self, *args, **kwargs)
+        final.rename(tampered)
+        valid.rename(final)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            final.rename(valid)
+            tampered.rename(final)
+
+    monkeypatch.setattr(
+        ProductionCycleEvidenceSealer, "_existing", verify_transient_valid_copy,
+    )
+    replay = sealer.capture(request)
+    assert replay.status == "blocked"
+    assert replay.capability == "none"
+    assert (final / "ranking.csv").read_text() == "tampered\n"
+
+
 def test_replay_member_tamper_after_first_verification_denies_adoption(
     cycle_factory, monkeypatch,
 ):
@@ -819,6 +852,27 @@ def test_write_parent_creation_race_cannot_escape_workspace(
     assert (displaced / "evidence").is_dir()
 
 
+def test_workspace_root_replacement_before_parent_creation_is_never_modified(
+    cycle_factory,
+):
+    root, qlib, request = cycle_factory()
+    displaced = root.with_name(root.name + "-displaced")
+    replacement = root
+
+    def fault(point):
+        if point == "before_write_parent_creation":
+            root.rename(displaced)
+            replacement.mkdir()
+
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "blocked"
+    assert result.capability == "none"
+    assert list(replacement.iterdir()) == []
+    assert (displaced / "data/evidence").is_dir()
+
+
 def test_source_mutation_before_publish_fails_without_final(cycle_factory):
     root, qlib, request = cycle_factory()
     path = root / request.order_manifest
@@ -991,6 +1045,33 @@ def test_post_publish_parent_loss_is_uncertain_without_capability(cycle_factory)
     assert result.seal_digest is None
 
 
+def test_post_publish_path_boundary_exception_is_uncertain(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    original = sealing_module._directory_chain
+    after_publish = False
+
+    def fault(point):
+        nonlocal after_publish
+        if point == "after_publish":
+            after_publish = True
+
+    def fail_after_publish(*args, **kwargs):
+        if after_publish:
+            raise sealing_module.PathBoundaryError("post-publish boundary drift")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sealing_module, "_directory_chain", fail_after_publish)
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "uncertain"
+    assert result.did_write is True
+    assert result.write_scope == "final_uncertain"
+    assert result.capability == "none"
+
+
 def test_post_publish_public_name_replacement_is_uncertain(cycle_factory):
     root, qlib, request = cycle_factory()
 
@@ -1052,6 +1133,42 @@ def test_member_tamper_after_first_post_publish_verification_is_uncertain(
         item["code"] == "post_publish_confirmation_lost"
         for item in result.problems
     )
+
+
+def test_transient_valid_final_cannot_mask_tampered_post_publish_bundle(
+    cycle_factory, monkeypatch,
+):
+    root, qlib, request = cycle_factory()
+    final = root / "data/evidence/v1/cycles/2099-01-02"
+    valid = final.with_name("valid-final")
+    tampered = final.with_name("tampered-final")
+    original = ProductionCycleEvidenceSealer._existing
+
+    def fault(point):
+        if point == "after_publish":
+            shutil.copytree(final, valid)
+            (final / "ranking.csv").write_text("tampered\n")
+
+    def verify_transient_valid_copy(self, *args, **kwargs):
+        if args[0] != final or not valid.exists():
+            return original(self, *args, **kwargs)
+        final.rename(tampered)
+        valid.rename(final)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            final.rename(valid)
+            tampered.rename(final)
+
+    monkeypatch.setattr(
+        ProductionCycleEvidenceSealer, "_existing", verify_transient_valid_copy,
+    )
+    result = ProductionCycleEvidenceSealer(
+        root, qlib_data_dir=qlib, fault_hook=fault,
+    ).capture(request)
+    assert result.status == "uncertain"
+    assert result.capability == "none"
+    assert (final / "ranking.csv").read_text() == "tampered\n"
 
 
 def test_staging_public_name_replacement_before_publish_prevents_final(cycle_factory):
