@@ -6,6 +6,7 @@ import csv
 import io
 import math
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Tuple
 
 from quantpits.evidence.contracts import ContractError, finite_number
@@ -13,7 +14,7 @@ from quantpits.evidence.contracts import ContractError, finite_number
 
 @dataclass(frozen=True)
 class RankingResult:
-    rows: Tuple[dict, ...]
+    rows: Tuple[Mapping[str, Any], ...]
     eligible_count: int
     scored_count: int
     missing_count: int
@@ -31,10 +32,13 @@ class RankingResult:
         if not self.rows:
             raise ContractError("ranking rows must be non-empty")
         for row in self.rows:
-            if not isinstance(row, dict) or set(row) != expected_fields:
+            if not isinstance(row, Mapping) or set(row) != expected_fields:
                 raise ContractError("ranking row fields are not exact")
             instrument = row["instrument"]
-            if not isinstance(instrument, str) or not instrument:
+            if (
+                not isinstance(instrument, str) or not instrument
+                or instrument.strip() != instrument
+            ):
                 raise ContractError("ranking instrument must be non-empty text")
             if row["eligible"] is not True or not isinstance(row["scored"], bool):
                 raise ContractError("ranking eligibility flags are invalid")
@@ -54,6 +58,8 @@ class RankingResult:
                         raise ValueError
                 except (TypeError, ValueError, OverflowError) as exc:
                     raise ContractError("scored ranking values must be finite") from exc
+                if row["raw_score"] != format(float(row["raw_score"]), ".17g"):
+                    raise ContractError("ranking raw score is not canonical")
                 scored_rows.append(row)
             elif (
                 row["coverage_status"] not in {"missing_prediction", "invalid_prediction"}
@@ -63,6 +69,10 @@ class RankingResult:
                 raise ContractError("unscored ranking row is invalid")
         if len(set(instruments)) != len(instruments):
             raise ContractError("ranking instruments must be unique")
+        for name in ("eligible_count", "scored_count", "missing_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ContractError("ranking counts must be exact integers")
         if self.eligible_count != len(self.rows):
             raise ContractError("ranking count must derive from terminal rows")
         if self.scored_count != len(scored_rows) or self.missing_count != len(self.rows) - len(scored_rows):
@@ -95,6 +105,9 @@ class RankingResult:
         expected_complete = self.missing_count == 0
         if not isinstance(self.complete, bool) or self.complete != expected_complete:
             raise ContractError("ranking completeness must derive from terminal rows")
+        object.__setattr__(self, "rows", tuple(
+            MappingProxyType(dict(row)) for row in self.rows
+        ))
 
     def to_csv_bytes(self) -> bytes:
         stream = io.StringIO(newline="")

@@ -10,7 +10,7 @@ import subprocess
 import ctypes
 import struct
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable, Optional, Tuple
 
 from quantpits.evidence.contracts import TypedDigest
@@ -167,10 +167,18 @@ def root_identity(root: Path) -> Tuple[int, int]:
 def contained_path(root: Path, logical_path: str, *, must_exist: bool = True) -> Path:
     if not isinstance(logical_path, str) or not logical_path:
         raise PathBoundaryError("path must be non-empty workspace-relative text")
-    raw = Path(logical_path)
-    if raw.is_absolute() or any(part in {"", ".", ".."} for part in raw.parts):
+    pure = PurePosixPath(logical_path)
+    if (
+        "\\" in logical_path or "\0" in logical_path
+        or pure.is_absolute() or pure.as_posix() != logical_path
+        or any(part in {"", ".", ".."} for part in pure.parts)
+    ):
         raise PathBoundaryError("path must be canonical and workspace-relative")
-    canonical_root = root.resolve(strict=True)
+    raw = Path(*pure.parts)
+    canonical_root = root.absolute()
+    root_info = os.lstat(str(canonical_root))
+    if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
+        raise PathBoundaryError("authority root is not a canonical directory")
     candidate = canonical_root.joinpath(*raw.parts)
     current = canonical_root
     for index, part in enumerate(raw.parts):
@@ -196,6 +204,41 @@ def contained_path(root: Path, logical_path: str, *, must_exist: bool = True) ->
     return resolved
 
 
+def _open_no_follow(root: Path, logical_path: str, *, directory: bool = False) -> int:
+    """Open a file from its authority root without following parent aliases."""
+    raw = Path(logical_path)
+    descriptors = []
+    try:
+        current_fd = os.open(
+            str(root.absolute()),
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        descriptors.append(current_fd)
+        for part in raw.parts[:-1]:
+            current_fd = os.open(
+                part, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=current_fd,
+            )
+            descriptors.append(current_fd)
+        descriptor = os.open(
+            raw.parts[-1],
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            | (getattr(os, "O_DIRECTORY", 0) if directory else 0),
+            dir_fd=current_fd,
+        )
+        return descriptor
+    except OSError as exc:
+        if exc.errno in {getattr(os, "ELOOP", 40), getattr(os, "ENOTDIR", 20)}:
+            raise PathBoundaryError("path parent identity became noncanonical") from exc
+        raise
+    finally:
+        for current in reversed(descriptors):
+            os.close(current)
+
+
 def inspect_file(root: Path, logical_path: str) -> FileSnapshot:
     """Read one regular file and prove its public-name identity stayed stable."""
     try:
@@ -205,11 +248,7 @@ def inspect_file(root: Path, logical_path: str) -> FileSnapshot:
             return FileSnapshot(logical_path, "incomparable", None, None, None, "not a regular file")
         if before.st_nlink != 1:
             raise PathBoundaryError("hard-linked source has ambiguous physical ownership")
-        flags = (
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        )
-        descriptor = os.open(str(path), flags)
+        descriptor = _open_no_follow(root, logical_path)
         with os.fdopen(descriptor, "rb", closefd=True) as handle:
             opened = os.fstat(handle.fileno())
             if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
@@ -272,18 +311,52 @@ def inspect_tree(root: Path, logical_path: str) -> Tuple[FileSnapshot, ...]:
     if not base.is_dir() or base.is_symlink():
         return (FileSnapshot(logical_path, "incomparable", None, None, None, "not a regular tree"),)
     members = []
-    for path in sorted(base.rglob("*")):
-        if path.is_symlink():
-            relative = path.relative_to(root.resolve()).as_posix()
-            members.append(FileSnapshot(relative, "incomparable", None, None, None, "symlink is not evidence"))
-        elif path.is_file():
-            members.append(inspect_file(root, path.relative_to(root.resolve()).as_posix()))
-        elif not path.is_dir():
-            relative = path.relative_to(root.resolve()).as_posix()
-            members.append(FileSnapshot(
-                relative, "incomparable", None, None, None,
-                "special node is not evidence",
-            ))
+    root_fd = _open_no_follow(root, logical_path, directory=True)
+
+    def walk(directory_fd: int, parent: Path) -> None:
+        with os.scandir(directory_fd) as iterator:
+            entries = sorted(iterator, key=lambda item: item.name)
+        for entry in entries:
+            relative = (parent / entry.name).as_posix()
+            try:
+                if entry.is_symlink():
+                    members.append(FileSnapshot(
+                        relative, "incomparable", None, None, None,
+                        "symlink is not evidence",
+                    ))
+                elif entry.is_file(follow_symlinks=False):
+                    members.append(inspect_file(root, relative))
+                elif entry.is_dir(follow_symlinks=False):
+                    child_fd = os.open(
+                        entry.name,
+                        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_DIRECTORY", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        walk(child_fd, Path(relative))
+                    finally:
+                        os.close(child_fd)
+                else:
+                    members.append(FileSnapshot(
+                        relative, "incomparable", None, None, None,
+                        "special node is not evidence",
+                    ))
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except PathBoundaryError:
+                raise
+            except OSError as exc:
+                members.append(FileSnapshot(
+                    relative, "changed", None, None, None,
+                    _exception_detail(exc),
+                ))
+
+    try:
+        walk(root_fd, Path(logical_path))
+    finally:
+        os.close(root_fd)
     return tuple(members)
 
 

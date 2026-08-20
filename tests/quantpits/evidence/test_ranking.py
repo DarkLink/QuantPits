@@ -54,3 +54,19 @@ def test_ranking_aggregate_revalidates_rows_counts_and_complete_claim():
         RankingResult((forged,), 1, 1, 0, True)
     with pytest.raises(ContractError):
         RankingResult(valid.rows, 1, 1, 0, False)
+
+
+def test_ranking_aggregate_rejects_bool_counts_and_noncanonical_score_text():
+    valid = canonical_full_ranking(("AAA",), {"AAA": 1.0})
+    with pytest.raises(ContractError):
+        RankingResult(valid.rows, True, True, False, True)
+    forged = dict(valid.rows[0])
+    forged["raw_score"] = "1.0"
+    with pytest.raises(ContractError):
+        RankingResult((forged,), 1, 1, 0, True)
+
+
+def test_ranking_rows_are_deeply_immutable():
+    result = canonical_full_ranking(("AAA",), {"AAA": 1.0})
+    with pytest.raises(TypeError):
+        result.rows[0]["instrument"] = "FORGED"

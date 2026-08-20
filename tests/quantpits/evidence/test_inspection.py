@@ -18,6 +18,8 @@ def test_symlink_and_parent_escape_are_blocked(tmp_path):
         inspect_file(root, "alias")
     with pytest.raises(PathBoundaryError):
         inspect_file(root, "../outside.txt")
+    with pytest.raises(PathBoundaryError):
+        inspect_file(root, "nested//source")
 
 
 def test_internal_symlink_alias_is_blocked_even_when_target_is_contained(tmp_path):
@@ -29,6 +31,34 @@ def test_internal_symlink_alias_is_blocked_even_when_target_is_contained(tmp_pat
 
     with pytest.raises(PathBoundaryError, match="symlink"):
         inspect_file(root, "alias")
+
+
+def test_parent_replacement_during_open_cannot_redirect_source_read(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "workspace"
+    parent = root / "evidence"
+    parent.mkdir(parents=True)
+    (parent / "source.json").write_text("original")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "source.json").write_text("private-outside")
+    displaced = root / "displaced"
+    original_open = inspection.os.open
+    replaced = False
+
+    def replace_parent_before_final_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if path == "source.json" and dir_fd is not None and not replaced:
+            parent.rename(displaced)
+            parent.symlink_to(outside, target_is_directory=True)
+            replaced = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(inspection.os, "open", replace_parent_before_final_open)
+    with pytest.raises(PathBoundaryError):
+        inspect_file(root, "evidence/source.json")
+    assert replaced is True
 
 
 def test_tree_inventory_retains_special_nodes_as_incomparable(tmp_path):

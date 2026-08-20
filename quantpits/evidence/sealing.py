@@ -105,15 +105,40 @@ def _fsync_dir(path: Path) -> None:
         os.close(descriptor)
 
 
-def _stable_file_bytes(path: Path) -> bytes:
-    """Read one public regular file without accepting name replacement."""
-    before = os.lstat(str(path))
-    flags = (
-        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    )
-    descriptor = os.open(str(path), flags)
+def _stable_file_bytes(root: Path, path: Path) -> bytes:
+    """Read one public regular file through a no-follow directory chain."""
+    canonical_root = root.absolute()
+    root_info = os.lstat(str(canonical_root))
+    if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
+        raise PathBoundaryError("sealed authority root is not canonical")
     try:
+        relative = path.absolute().relative_to(canonical_root)
+    except ValueError as exc:
+        raise PathBoundaryError("sealed member escapes its authority root") from exc
+    if not relative.parts:
+        raise PathBoundaryError("sealed member path is empty")
+    before = os.lstat(str(path))
+    descriptors = []
+    try:
+        current_fd = os.open(
+            str(canonical_root), os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        descriptors.append(current_fd)
+        for part in relative.parts[:-1]:
+            current_fd = os.open(
+                part, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=current_fd,
+            )
+            descriptors.append(current_fd)
+        descriptor = os.open(
+            relative.parts[-1],
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=current_fd,
+        )
+        descriptors.append(descriptor)
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             raise ContractError("sealed member identity changed while opening")
@@ -123,8 +148,15 @@ def _stable_file_bytes(path: Path) -> bytes:
             if not chunk:
                 break
             chunks.append(chunk)
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise PathBoundaryError(
+                "sealed member parent identity became noncanonical"
+            ) from exc
+        raise
     finally:
-        os.close(descriptor)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
     after = os.lstat(str(path))
     identities = [
         (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
@@ -883,7 +915,7 @@ class ProductionCycleEvidenceSealer:
                 if snapshot.status != "observed":
                     raise ContractError("M3 output pred.pkl is incomparable")
                 prediction_data = _stable_file_bytes(
-                    contained_path(self.root, pred_relative),
+                    self.root, contained_path(self.root, pred_relative),
                 )
                 if TypedDigest.raw(prediction_data) != snapshot.digest:
                     raise ContractError("M3 output pred.pkl changed before parsing")
@@ -1277,8 +1309,8 @@ class ProductionCycleEvidenceSealer:
                 info = os.lstat(str(public_file))
                 if public_file.is_symlink() or not public_file.is_file() or info.st_nlink != 1:
                     raise ContractError("existing seal member is not a canonical regular file")
-            manifest_data = _stable_file_bytes(manifest_path)
-            seal_data = _stable_file_bytes(seal_path)
+            manifest_data = _stable_file_bytes(self.root, manifest_path)
+            seal_data = _stable_file_bytes(self.root, seal_path)
             manifest = strict_json_object(manifest_data)
             seal = strict_json_object(seal_data)
             expected_seal_fields = {
@@ -1383,7 +1415,7 @@ class ProductionCycleEvidenceSealer:
                 raise ContractError("existing object directory inventory differs")
             for digest in object_digests:
                 path = final / "objects" / digest[:2] / digest
-                if hashlib.sha256(_stable_file_bytes(path)).hexdigest() != digest:
+                if hashlib.sha256(_stable_file_bytes(self.root, path)).hexdigest() != digest:
                     raise ContractError("existing embedded object is invalid")
             expected_top = {"manifest.json", "seal.json", *named_digests}
             if object_digests:
@@ -1394,7 +1426,7 @@ class ProductionCycleEvidenceSealer:
             for name, digest in named_digests.items():
                 typed = TypedDigest(**digest)
                 path = final / name
-                if not path.is_file() or path.stat().st_nlink != 1 or TypedDigest.raw(_stable_file_bytes(path)) != typed:
+                if not path.is_file() or path.stat().st_nlink != 1 or TypedDigest.raw(_stable_file_bytes(self.root, path)) != typed:
                     raise ContractError("existing named evidence is invalid")
             artifact_root = TypedDigest.canonical({
                 "objects": object_digests, "named_files": named_digests,

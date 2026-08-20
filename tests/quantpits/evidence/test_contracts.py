@@ -24,6 +24,21 @@ def test_strict_research_epoch_rejects_closest_invalid_representations(value):
         request(research_epoch_id=value)
 
 
+@pytest.mark.parametrize("path", [
+    "/tmp/manifest.json", "../manifest.json", "runs//manifest.json",
+    "runs/./manifest.json", "runs\\manifest.json", "runs/manifest\0.json",
+])
+def test_capture_request_rejects_noncanonical_or_external_paths(path):
+    with pytest.raises(ContractError):
+        request(post_trade_manifest=path)
+
+
+@pytest.mark.parametrize("field", ["deep_analysis_run", "decision_event"])
+def test_capture_request_rejects_noncanonical_optional_paths(field):
+    with pytest.raises(ContractError):
+        request(**{field: "../outside"})
+
+
 def test_typed_digest_domains_are_not_interchangeable():
     raw = TypedDigest.raw(b"{}\n")
     semantic = TypedDigest.canonical({}, "semantic_config")

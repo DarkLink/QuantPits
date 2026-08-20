@@ -46,6 +46,18 @@ def strict_id(value: Any, name: str) -> str:
     return value
 
 
+def workspace_relative_path(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value or "\\" in value or "\0" in value:
+        raise ContractError("%s must be a canonical workspace-relative path" % name)
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute() or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ContractError("%s must be a canonical workspace-relative path" % name)
+    return value
+
+
 def canonical_json_bytes(value: Any) -> bytes:
     """Return deterministic UTF-8 JSON and reject non-finite numbers."""
     try:
@@ -170,13 +182,11 @@ class CaptureRequest:
             "post_trade_manifest", "prediction_manifest", "ensemble_manifest",
             "order_manifest",
         ):
-            value = getattr(self, name)
-            if not isinstance(value, str) or not value:
-                raise ContractError("%s must be a workspace-relative path" % name)
+            workspace_relative_path(getattr(self, name), name)
         for name in ("deep_analysis_run", "decision_event"):
             value = getattr(self, name)
-            if value is not None and (not isinstance(value, str) or not value):
-                raise ContractError("%s must be null or a workspace-relative path" % name)
+            if value is not None:
+                workspace_relative_path(value, name)
 
     def source_paths(self) -> Tuple[Tuple[str, str, bool], ...]:
         return (
