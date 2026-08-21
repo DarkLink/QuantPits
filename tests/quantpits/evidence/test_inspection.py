@@ -1,5 +1,7 @@
 import pytest
 import os
+import shutil
+import subprocess
 
 import quantpits.evidence.inspection as inspection
 from quantpits.evidence.inspection import (
@@ -159,6 +161,51 @@ def test_git_control_specs_cover_worktree_and_common_identity(tmp_path, monkeypa
         (common, ("packed-refs", "refs")),
         (git_dir, ("HEAD", "index")),
         (top, (".git",)),
+    )
+
+
+def test_git_control_specs_resolve_relative_common_dir_from_nested_command_root(
+    tmp_path, monkeypatch,
+):
+    top = tmp_path / "repository"
+    nested = top / "nested" / "workspace"
+    common = top / ".git"
+    nested.mkdir(parents=True)
+    common.mkdir()
+
+    def fake_git(repo, *args):
+        assert repo == nested
+        command = tuple(args)
+        if command == ("rev-parse", "--show-toplevel"):
+            return (str(top) + "\n").encode()
+        if command == ("rev-parse", "--absolute-git-dir"):
+            return (str(common) + "\n").encode()
+        if command == ("rev-parse", "--git-common-dir"):
+            return b"../../.git\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(inspection, "_git", fake_git)
+    assert git_control_specs(nested) == (
+        (common, ("HEAD", "index", "packed-refs", "refs")),
+    )
+
+
+@pytest.mark.skipif(
+    shutil.which("git") is None,
+    reason="real Git integration requires the git executable",
+)
+def test_real_git_nested_workspace_observes_parent_repository_common_dir(tmp_path):
+    top = tmp_path / "repository"
+    nested = top / "nested" / "workspace"
+    top.mkdir()
+    subprocess.run(
+        ["git", "init", "-q", str(top)], check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    nested.mkdir(parents=True)
+
+    assert git_control_specs(nested) == (
+        (top / ".git", ("HEAD", "index", "packed-refs", "refs")),
     )
 
 

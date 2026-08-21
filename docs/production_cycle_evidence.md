@@ -35,6 +35,26 @@ never inferred as `NO_ACTION`. Absence of a future Dolt-to-Qlib materialization
 receipt is recorded exactly as `unverified` and does not by itself make the
 Phase 37A bundle partial.
 
+Historical universe files may contain multiple non-overlapping membership
+intervals for one instrument. Eligibility is resolved at the exact evidence
+anchor; two active intervals for the same instrument are rejected. Portfolio
+cash, holding amount, and holding value accept strict finite decimal strings as
+well as JSON numbers and are sealed as normalized decimal text, without binary
+float conversion. Whitespace, exponent-form strings or JSON numbers,
+non-finite values, and negative holding amount/value remain invalid.
+
+Run-manifest references retain their `inputs`/`outputs` collection and `kind`.
+An absent M3 `outputs` reference of kind `record` is treated as a logical
+recorder locator only when the same exact recorder and its contained artifact
+tree were independently verified; every unproven or filesystem reference must
+still exist and be comparable.
+
+Deep Analysis remains an explicit optional source. Point
+`--deep-analysis-run` at one operator-created run capsule containing exactly
+the report, checkpoints, and trace directories for that M5 run. The collector
+does not guess a run from mutable “latest” files or change M5 output behavior;
+omitting the capsule produces an honest visible partial seal.
+
 Replaying byte-equivalent cycle inputs adopts the existing bundle. A changed
 input under the same cycle ID returns `conflict`; the existing namespace is
 never overwritten or repaired in place.

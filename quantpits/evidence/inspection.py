@@ -400,6 +400,7 @@ def _git(repo: Path, *args: str) -> bytes:
 
 def git_control_specs(start: Path) -> Tuple[Tuple[Path, Tuple[str, ...]], ...]:
     """Return private observer roots for transient Git identity mutations."""
+    command_root = start.resolve(strict=True)
     top = Path(
         _git(start, "rev-parse", "--show-toplevel").decode("utf-8").strip()
     ).resolve(strict=True)
@@ -410,7 +411,7 @@ def git_control_specs(start: Path) -> Tuple[Tuple[Path, Tuple[str, ...]], ...]:
         _git(start, "rev-parse", "--git-common-dir").decode("utf-8").strip()
     )
     common_dir = (
-        common_raw if common_raw.is_absolute() else top / common_raw
+        common_raw if common_raw.is_absolute() else command_root / common_raw
     ).resolve(strict=True)
     members = {}
     members.setdefault(git_dir, set()).update({"HEAD", "index"})

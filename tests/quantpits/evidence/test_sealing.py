@@ -575,6 +575,11 @@ def test_missing_prediction_does_not_forge_ranking(cycle_factory):
     rows = (root / result.bundle_path / "ranking.csv").read_text().splitlines()
     assert result.status == "sealed_partial"
     assert manifest["ranking"]["missing_count"] == 1
+    assert (
+        manifest["ranking"]["scored_count"]
+        + manifest["ranking"]["missing_count"]
+        == manifest["ranking"]["eligible_count"]
+    )
     assert any("BBB" in row and "missing_prediction" in row for row in rows)
 
 
@@ -601,6 +606,120 @@ def test_malformed_universe_rows_cannot_manufacture_full_coverage(cycle_factory)
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
     assert result.status == "sealed_partial"
     assert any(item["code"] == "ranking_unavailable" for item in result.problems)
+
+
+def test_disjoint_historical_universe_intervals_resolve_at_exact_anchor(cycle_factory):
+    root, qlib, request = cycle_factory()
+    (qlib / "instruments/synthetic.txt").write_text(
+        "AAA\t2080-01-01\t2085-12-31\n"
+        "AAA\t2090-01-01\t2100-01-01\n"
+        "BBB\t2090-01-01\t2100-01-01\n"
+    )
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    manifest = json.loads((root / result.bundle_path / "manifest.json").read_text())
+    assert result.status == "sealed_complete"
+    assert manifest["ranking"]["eligible_count"] == 2
+    assert manifest["ranking"]["scored_count"] == 2
+    assert manifest["ranking"]["missing_count"] == 0
+
+
+def test_overlapping_active_universe_intervals_cannot_forge_coverage(cycle_factory):
+    root, qlib, request = cycle_factory()
+    (qlib / "instruments/synthetic.txt").write_text(
+        "AAA\t2080-01-01\t2100-01-01\n"
+        "AAA\t2090-01-01\t2110-01-01\n"
+        "BBB\t2090-01-01\t2100-01-01\n"
+    )
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(
+        item["code"] == "ranking_unavailable"
+        and "overlapping active identities" in item["detail"]
+        for item in result.problems
+    )
+
+
+def test_portfolio_numeric_strings_are_canonicalized_without_binary_float(cycle_factory):
+    root, qlib, request = cycle_factory()
+    _write_json(root / "config/prod_config.json", {
+        "current_cash": "1000.00",
+        "current_holding": [{
+            "instrument": "AAA", "amount": "10.500", "value": "100.00",
+        }],
+    })
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    canonical = json.loads(
+        (root / result.bundle_path / "portfolio_state.json").read_text()
+    )
+    assert result.status == "sealed_complete"
+    assert canonical == {
+        "current_cash": "1000",
+        "current_holding": [{
+            "instrument": "AAA", "amount": "10.5", "value": "100",
+        }],
+    }
+
+
+@pytest.mark.parametrize("invalid", ["", " 1", "+1", "01", "1e2", "NaN", "Infinity", "-0.1"])
+def test_noncanonical_portfolio_numeric_strings_remain_visible_partial(
+    cycle_factory, invalid,
+):
+    root, qlib, request = cycle_factory()
+    _write_json(root / "config/prod_config.json", {
+        "current_cash": 1000,
+        "current_holding": [{
+            "instrument": "AAA", "amount": invalid, "value": "100",
+        }],
+    })
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(item["code"] == "portfolio_invalid" for item in result.problems)
+
+
+def test_exponent_form_json_portfolio_number_is_not_binary_float_canonicalized(
+    cycle_factory,
+):
+    root, qlib, request = cycle_factory()
+    (root / "config/prod_config.json").write_text(
+        '{"current_cash":1e3,"current_holding":'
+        '[{"instrument":"AAA","amount":10,"value":100}]}\n'
+    )
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(item["code"] == "portfolio_invalid" for item in result.problems)
+
+
+def test_proven_ensemble_recorder_output_is_not_misclassified_as_missing_file(
+    cycle_factory,
+):
+    root, qlib, request = cycle_factory()
+    path = root / request.ensemble_manifest
+    value = json.loads(path.read_text())
+    value["outputs"] = [{"path": "ENSEMBLE_RECORDER_A", "kind": "record"}]
+    _write_json(path, value)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    manifest = json.loads((root / result.bundle_path / "manifest.json").read_text())
+    assert result.status == "sealed_complete"
+    assert not any(item["code"] == "referenced_file_missing" for item in result.problems)
+    assert any(
+        item["evidence_class"] == "ensemble"
+        and item["collection"] == "outputs"
+        and item["kind"] == "record"
+        and item["locator"] == "ENSEMBLE_RECORDER_A"
+        and item["locator_type"] == "recorder"
+        for item in manifest["referenced_evidence"]
+    )
+
+
+def test_unproven_logical_output_remains_a_missing_required_file(cycle_factory):
+    root, qlib, request = cycle_factory()
+    path = root / request.ensemble_manifest
+    value = json.loads(path.read_text())
+    value["outputs"] = [{"path": "FOREIGN_RECORDER", "kind": "record"}]
+    _write_json(path, value)
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
+    assert result.status == "sealed_partial"
+    assert any(item["code"] == "referenced_file_missing" for item in result.problems)
 
 
 def test_empty_prediction_creates_no_fake_ranking_rows(cycle_factory):

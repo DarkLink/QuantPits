@@ -6,12 +6,14 @@ import errno
 import ctypes
 import hashlib
 import io
+import json
 import os
 import re
 import secrets
 import stat
 from contextlib import ExitStack
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
@@ -437,7 +439,7 @@ def _extract_anchor(manifest: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
-def _manifest_refs(manifest: Mapping[str, Any]) -> Tuple[str, ...]:
+def _manifest_refs(manifest: Mapping[str, Any]) -> Tuple[Tuple[str, str, str], ...]:
     refs = []
     for collection in ("inputs", "outputs"):
         values = manifest.get(collection, [])
@@ -446,8 +448,12 @@ def _manifest_refs(manifest: Mapping[str, Any]) -> Tuple[str, ...]:
         for item in values:
             if isinstance(item, Mapping) and isinstance(item.get("path"), str):
                 path = item["path"]
-                if "<" not in path and path not in refs:
-                    refs.append(path)
+                kind = item.get("kind", "other")
+                if not isinstance(kind, str):
+                    kind = "other"
+                identity = (collection, kind, path)
+                if "<" not in path and identity not in refs:
+                    refs.append(identity)
     return tuple(refs)
 
 
@@ -455,18 +461,18 @@ def _universe_from_file(data: bytes, anchor: Optional[str]) -> Tuple[str, ...]:
     if not isinstance(anchor, str):
         raise ContractError("eligible universe requires an exact anchor")
     try:
-        datetime.strptime(anchor, "%Y-%m-%d")
+        anchor_date = datetime.strptime(anchor, "%Y-%m-%d").date()
     except ValueError as exc:
         raise ContractError("eligible universe anchor must be YYYY-MM-DD") from exc
     text = data.decode("utf-8")
     members = []
-    declared = set()
+    active = set()
     for raw in text.splitlines():
         fields = raw.strip().replace(",", "\t").split()
         if not fields:
             continue
-        if len(fields) != 3 or not fields[0] or fields[0] in declared:
-            raise ContractError("eligible universe rows must have unique exact identities")
+        if len(fields) != 3 or not fields[0]:
+            raise ContractError("eligible universe rows must have exact identities and intervals")
         try:
             start = datetime.strptime(fields[1], "%Y-%m-%d").date()
             end = datetime.strptime(fields[2], "%Y-%m-%d").date()
@@ -474,10 +480,53 @@ def _universe_from_file(data: bytes, anchor: Optional[str]) -> Tuple[str, ...]:
             raise ContractError("eligible universe dates must be YYYY-MM-DD") from exc
         if start > end:
             raise ContractError("eligible universe interval is inverted")
-        declared.add(fields[0])
-        if fields[1] <= anchor <= fields[2]:
+        if start <= anchor_date <= end:
+            if fields[0] in active:
+                raise ContractError("eligible universe has overlapping active identities")
+            active.add(fields[0])
             members.append(fields[0])
     return tuple(members)
+
+
+_STRICT_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
+
+
+def _strict_decimal_json_object(data: bytes) -> Optional[dict]:
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value):
+        raise ValueError("non-finite JSON number")
+
+    try:
+        value = json.loads(
+            data.decode("utf-8"), object_pairs_hook=pairs,
+            parse_int=str, parse_float=str, parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _canonical_decimal(value: Any, name: str, *, non_negative: bool) -> str:
+    if not isinstance(value, str) or not _STRICT_DECIMAL.fullmatch(value):
+        raise ContractError("%s is not a canonical decimal number" % name)
+    try:
+        decimal_value = Decimal(value)
+    except InvalidOperation as exc:
+        raise ContractError("%s is not a canonical decimal number" % name) from exc
+    negative_representation = decimal_value < 0 or value.startswith("-")
+    if not decimal_value.is_finite() or (non_negative and negative_representation):
+        raise ContractError("%s is not a canonical decimal number" % name)
+    rendered = format(decimal_value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
 
 
 def _selected_combo(records: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
@@ -761,27 +810,40 @@ class ProductionCycleEvidenceSealer:
             draft.problems.append(_problem("portfolio_missing", "portfolio", snapshot.detail, blocking=True))
             return public
         try:
-            raw = strict_json_object(snapshot.data)
+            raw = _strict_decimal_json_object(snapshot.data)
             if raw is None:
                 raise ContractError("prod_config is not strict JSON")
             cash = raw.get("current_cash")
             holdings = raw.get("current_holding")
-            if not isinstance(holdings, list) or not finite_number(cash):
+            if not isinstance(holdings, list):
                 raise ContractError("prod_config lacks canonical cash/holding state")
+            canonical_cash = _canonical_decimal(
+                cash, "current_cash", non_negative=False,
+            )
             instruments = []
+            canonical_holdings = []
             for holding in holdings:
                 if not isinstance(holding, dict):
                     raise ContractError("portfolio holding is not an object")
                 instrument = holding.get("instrument")
                 if not isinstance(instrument, str) or not instrument:
                     raise ContractError("portfolio holding has no exact instrument")
+                canonical_holding = dict(holding)
                 for field in ("value", "amount"):
-                    if field not in holding or not finite_number(holding[field]) or holding[field] < 0:
+                    if field not in holding:
                         raise ContractError("portfolio holding amount/value is invalid")
+                    canonical_holding[field] = _canonical_decimal(
+                        holding[field], "portfolio holding %s" % field,
+                        non_negative=True,
+                    )
                 instruments.append(instrument)
+                canonical_holdings.append(canonical_holding)
             if len(set(instruments)) != len(instruments):
                 raise ContractError("portfolio holding identities are duplicated")
-            canonical = {"current_cash": cash, "current_holding": holdings}
+            canonical = {
+                "current_cash": canonical_cash,
+                "current_holding": canonical_holdings,
+            }
             data = canonical_json_bytes(canonical)
             draft.named_files["portfolio_state.json"] = data
             public["canonical_digest"] = TypedDigest.canonical(canonical, "semantic_config").to_dict()
@@ -1012,28 +1074,65 @@ class ProductionCycleEvidenceSealer:
             draft.problems.append(_problem("ranking_unavailable", "ranking", detail, blocking=True))
             return {"status": "unavailable", "detail": detail}
 
-    def _referenced_evidence(self, manifests: Mapping[str, Mapping[str, Any]], draft: _BundleDraft) -> list:
+    def _referenced_evidence(
+        self, manifests: Mapping[str, Mapping[str, Any]], draft: _BundleDraft,
+        lineage_artifacts: Sequence[Mapping[str, Any]],
+    ) -> list:
         observed = []
         seen = set()
+        proven_ensemble_recorders = {
+            item.get("recorder_id"): item.get("artifact_tree_digest")
+            for item in lineage_artifacts
+            if item.get("position") == "ensemble"
+            and isinstance(item.get("recorder_id"), str)
+            and isinstance(item.get("artifact_tree_digest"), Mapping)
+        }
         for evidence_class, manifest in manifests.items():
-            for ref in _manifest_refs(manifest):
+            for collection, kind, ref in _manifest_refs(manifest):
+                identity = (evidence_class, collection, kind, ref)
+                if identity in seen:
+                    continue
+                seen.add(identity)
                 try:
                     relative = _relative_existing(self.root, ref)
                 except FileNotFoundError:
-                    relative = ref if not Path(ref).is_absolute() else "<unavailable>"
-                    draft.problems.append(_problem("referenced_file_missing", evidence_class, "referenced output is missing", blocking=True))
+                    lineage_digest = (
+                        proven_ensemble_recorders.get(ref)
+                        if evidence_class == "ensemble"
+                        and collection == "outputs"
+                        and kind == "record"
+                        else None
+                    )
+                    if lineage_digest is not None:
+                        observed.append({
+                            "evidence_class": evidence_class,
+                            "collection": collection,
+                            "kind": kind,
+                            "locator": ref,
+                            "locator_type": "recorder",
+                            "artifact_tree_digest": lineage_digest,
+                        })
+                        continue
+                    draft.problems.append(_problem(
+                        "referenced_file_missing", evidence_class,
+                        "referenced filesystem evidence is missing", blocking=True,
+                    ))
                     continue
                 except PathBoundaryError as exc:
                     draft.problems.append(_problem("referenced_path_escape", evidence_class, str(exc), blocking=True))
                     draft.blocked = True
                     continue
-                if relative in seen:
-                    continue
-                seen.add(relative)
                 if draft.mutation_observers:
                     draft.mutation_observers[0].add_paths((relative,))
                 snapshot = inspect_file(self.root, relative)
-                observed.append(self._embed(draft, snapshot))
+                observed.append({
+                    "evidence_class": evidence_class,
+                    "collection": collection,
+                    "kind": kind,
+                    "locator": relative,
+                    "locator_type": "workspace_file",
+                    "observation": self._embed(draft, snapshot),
+                })
                 if snapshot.status != "observed":
                     draft.problems.append(_problem("referenced_file_incomparable", evidence_class, relative, blocking=True))
         return observed
@@ -1140,6 +1239,13 @@ class ProductionCycleEvidenceSealer:
         output = combo.get("output_evidence", {}) if combo else {}
         if isinstance(output, Mapping) and isinstance(output.get("artifact_path"), str):
             try:
+                if (
+                    not isinstance(combo.get("recorder_id"), str)
+                    or not combo.get("recorder_id")
+                    or output.get("contained") is not True
+                    or output.get("recorder_id") != combo.get("recorder_id")
+                ):
+                    raise ContractError("ensemble recorder/artifact identity is inconsistent")
                 relative = _relative_existing(self.root, output["artifact_path"])
                 self._track_tree(draft, relative)
                 members = inspect_tree(self.root, relative)
@@ -1230,7 +1336,7 @@ class ProductionCycleEvidenceSealer:
         lineage_artifacts = self._lineage_artifacts(manifests.get("ensemble"), anchor, draft)
         portfolio = self._portfolio(draft)
         decision = self._decision(request, snapshots.get("decision"), draft)
-        referenced = self._referenced_evidence(manifests, draft)
+        referenced = self._referenced_evidence(manifests, draft, lineage_artifacts)
         engine_git_after = inspect_git(self.engine_root)
         workspace_git_after = inspect_git(self.root)
         git_keys = ("commit", "tree", "status", "status_inventory_digest", "tracked_diff_digest")
