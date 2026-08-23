@@ -409,7 +409,7 @@ def _load_opinion_prediction(record_id, experiment_name):
 
 def default_order_execution_hooks():
     """Late-bind script compatibility hooks for the reusable order service."""
-    from quantpits.order.execution import LoadedOrderPrediction, OrderExecutionHooks
+    from quantpits.order.execution import LoadedOrderPrediction, OrderExecutionHooks, resolve_exact_universe
     from quantpits.order.opinions import build_model_opinions
     from quantpits.order.persistence import persist_order_artifacts
     from quantpits.utils import strategy
@@ -428,6 +428,7 @@ def default_order_execution_hooks():
         get_strategy_params=strategy.get_strategy_params,
         build_model_opinions=build_model_opinions,
         persist_artifacts=persist_order_artifacts,
+        resolve_universe=resolve_exact_universe,
     )
 
 

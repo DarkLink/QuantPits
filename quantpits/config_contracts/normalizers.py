@@ -16,6 +16,7 @@ def normalize_strategy_config(data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = deepcopy(data)
     strategy = normalized.setdefault("strategy", {})
     params = strategy.setdefault("params", {})
+    params.setdefault("sell_out_of_universe", True)
 
     if "topk" not in params and "TopK" in normalized:
         params["topk"] = normalized["TopK"]

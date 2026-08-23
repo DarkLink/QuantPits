@@ -120,6 +120,11 @@ def validate_strategy_config(data: Dict[str, Any], *, path: str = "config/strate
         messages.append(_msg("error", "invalid-drop-ratio", path, "strategy.params.n_drop cannot exceed topk."))
     if "buy_suggestion_factor" in params and not _is_positive_number(params["buy_suggestion_factor"]):
         messages.append(_msg("error", "invalid-buy-factor", path, "buy_suggestion_factor must be positive."))
+    if "sell_out_of_universe" in params and type(params["sell_out_of_universe"]) is not bool:
+        messages.append(_msg(
+            "error", "invalid-sell-out-of-universe", path,
+            "strategy.params.sell_out_of_universe must be a boolean.",
+        ))
     if not _is_number(backtest.get("account")):
         messages.append(_msg("error", "invalid-account", path, "backtest.account must be numeric."))
     exchange = backtest.get("exchange_kwargs")
@@ -155,6 +160,7 @@ def validate_prod_config(data: Dict[str, Any], *, path: str = "config/prod_confi
     if holdings is not None and not isinstance(holdings, list):
         messages.append(_msg("error", "invalid-holdings", path, "current_holding must be a list."))
     elif isinstance(holdings, list):
+        seen_instruments: Set[str] = set()
         for idx, holding in enumerate(holdings):
             item_path = f"{path}:current_holding[{idx}]"
             if not isinstance(holding, dict):
@@ -162,6 +168,10 @@ def validate_prod_config(data: Dict[str, Any], *, path: str = "config/prod_confi
                 continue
             if not holding.get("instrument") or not isinstance(holding.get("instrument"), str):
                 messages.append(_msg("error", "missing-instrument", item_path, "Holding instrument must be a non-empty string."))
+            elif holding["instrument"] in seen_instruments:
+                messages.append(_msg("error", "duplicate-holding", item_path, "Holding instrument must be unique."))
+            else:
+                seen_instruments.add(holding["instrument"])
             for field in ("value", "amount"):
                 if field not in holding:
                     messages.append(_msg("error", "missing-holding-field", item_path, f"Holding missing {field}."))

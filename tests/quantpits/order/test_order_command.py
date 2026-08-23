@@ -40,7 +40,7 @@ def run_config():
         strategy_config={
             "strategy": {
                 "name": "topk_dropout",
-                "params": {"topk": 20, "n_drop": 3, "buy_suggestion_factor": 2},
+                "params": {"topk": 20, "n_drop": 3, "buy_suggestion_factor": 2, "sell_out_of_universe": True},
             }
         },
         ensemble_config={},

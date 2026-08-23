@@ -100,6 +100,12 @@ class OrderRunSummary:
     estimated_buy_min: float | None = None
     estimated_buy_max: float | None = None
     actual_outputs: tuple[str, ...] = ()
+    account_holding_count_before: int = 0
+    remaining_after_sell: int = 0
+    planned_final_holding_count: int = 0
+    forced_exit_count: int = 0
+    forced_exit_pending_count: int = 0
+    normal_sell_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -423,6 +429,7 @@ def build_order_command_plan(
         "topk": params.get("topk", 20),
         "n_drop": params.get("n_drop", 3),
         "buy_suggestion_factor": params.get("buy_suggestion_factor", 2),
+        "sell_out_of_universe": params.get("sell_out_of_universe", True),
         "current_state_date": merged.get("current_date"),
         "holding_count": len(merged.get("current_holding", [])),
         "pending_cashflow_date_count": len(cashflows) if isinstance(cashflows, dict) else 0,
@@ -440,7 +447,9 @@ def build_order_command_plan(
             StateRef("mlflow", action="read", description="selected prediction recorder"),
             StateRef("qlib-calendar", action="read", description="trading calendar"),
             StateRef("qlib-market-data", action="read", description="price and price-limit data"),
-        ) + (() if options.dry_run else (
+        ) + ((
+            StateRef("qlib-universe", action="read", description="exact anchor-date market membership"),
+        ) if params.get("sell_out_of_universe", True) else ()) + (() if options.dry_run else (
             StateRef("data/operator_log.jsonl", action="write", description="operator execution log"),
         )),
         steps=_steps(options.dry_run, options.no_manifest),

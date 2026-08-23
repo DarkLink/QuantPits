@@ -12,6 +12,7 @@ from quantpits.order.execution import (
     OrderCalculationResult,
     OrderExecutionError,
     OrderExecutionHooks,
+    UniverseSnapshot,
     normalize_prediction_data,
 )
 from quantpits.order.opinions import ModelOpinionsRequest
@@ -55,7 +56,7 @@ def _manifest_self_ref(prepared: PreparedOrderRun) -> OutputRef:
 
 
 def _records(prepared: PreparedOrderRun, calculation: OrderCalculationResult, ledger: OrderArtifactLedger) -> dict:
-    return {
+    records = {
         "anchor_date": calculation.anchor_date,
         "trade_date": calculation.trade_date,
         "source": {
@@ -74,7 +75,28 @@ def _records(prepared: PreparedOrderRun, calculation: OrderCalculationResult, le
         "estimated_buy_max": calculation.estimated_buy_max,
         "opinion_source_count": len(calculation.opinions.source_summaries) if calculation.opinions else 0,
         "actual_output_count": len(ledger.outputs),
+        "sell_out_of_universe": calculation.sell_out_of_universe,
+        "account_holding_count_before": calculation.account_holding_count_before,
+        "eligible_holding_count": calculation.eligible_holding_count,
+        "out_of_universe_holding_count": calculation.out_of_universe_holding_count,
+        "eligible_unscored_holding_count": calculation.eligible_unscored_holding_count,
+        "forced_exit_count": calculation.forced_exit_count,
+        "forced_exit_pending_count": calculation.forced_exit_pending_count,
+        "normal_sell_count": calculation.normal_sell_count,
+        "executable_sell_count": calculation.executable_sell_count,
+        "remaining_after_sell": calculation.remaining_after_sell,
+        "planned_final_holding_count": calculation.planned_final_holding_count,
+        "universe_status": "observed" if calculation.universe is not None else "not_observed",
+        "sell_decisions": [dict(item) for item in calculation.sell_decisions],
     }
+    records["universe"] = None if calculation.universe is None else {
+        "market": calculation.universe.market,
+        "anchor_date": calculation.universe.anchor_date,
+        "instrument_count": calculation.universe.instrument_count,
+        "fingerprint_algorithm": calculation.universe.fingerprint_algorithm,
+        "fingerprint": calculation.universe.fingerprint,
+    }
+    return records
 
 
 class OrderGenerationService:
@@ -94,6 +116,9 @@ class OrderGenerationService:
         top_k = params.get("topk", 20)
         drop_n = params.get("n_drop", 3)
         factor = params.get("buy_suggestion_factor", 2)
+        sell_out_of_universe = params.get("sell_out_of_universe", True)
+        if type(sell_out_of_universe) is not bool:
+            raise OrderExecutionError("sell_out_of_universe must be a boolean")
         current_holding = config.get("current_holding", [])
         current_cash = float(config.get("current_cash", 0))
         print("\nStage 0: 配置加载")
@@ -104,17 +129,74 @@ class OrderGenerationService:
         print("\nStage 1: 加载预测数据")
         print(f"预测来源   : {loaded.description}")
         latest = predictions.index.get_level_values("datetime").max()
-        instruments = predictions.xs(latest, level="datetime").index.tolist()
-        prices = self.hooks.get_price_data(anchor_date, config.get("market", "csi300"), instruments=instruments)
+        prediction_instruments = predictions.xs(latest, level="datetime").index.tolist()
+        holding_instruments = [item["instrument"] for item in current_holding]
+        if any(not isinstance(item, str) or not item for item in holding_instruments):
+            raise OrderExecutionError("current_holding instruments must be non-empty strings")
+        if len(holding_instruments) != len(set(holding_instruments)):
+            raise OrderExecutionError("current_holding contains duplicate instruments")
+        instruments = sorted(set(str(item) for item in prediction_instruments) | set(holding_instruments))
+        market = config.get("market", "csi300")
+        universe = None
+        if sell_out_of_universe:
+            if self.hooks.resolve_universe is None:
+                raise OrderExecutionError("required exact-universe resolver is not configured")
+            universe = self.hooks.resolve_universe(market, anchor_date)
+            if not isinstance(universe, UniverseSnapshot):
+                raise OrderExecutionError("universe resolver returned an invalid snapshot")
+            if universe.market != market or universe.anchor_date != anchor_date:
+                raise OrderExecutionError("universe snapshot does not match the requested market and anchor date")
+        prices = self.hooks.get_price_data(anchor_date, market, instruments=instruments)
         trade_date = self.hooks.get_next_trade_date(anchor_date)
         print("\nStage 2: 获取价格数据")
         print(f"下一交易日 : {trade_date}")
-        hold, sell_candidates, buy_candidates, sorted_frame, target_buy_count = generator.analyze_positions(
-            predictions, prices, current_holding
+        analysis = generator.analyze_positions_with_universe(
+            predictions, prices, current_holding, universe
         )
+        holding_set = set(holding_instruments)
+        continuing_set = set(analysis.ranked_continuing_holdings.index)
+        normal_set = set(analysis.normal_sell_candidates.index)
+        forced_executable_set = set(analysis.forced_exit_candidates.index)
+        forced_pending_set = set(analysis.pending_forced_exit_instruments)
+        unscored_set = set(analysis.eligible_unscored_instruments)
+        classified_sets = (
+            continuing_set, normal_set, forced_executable_set,
+            forced_pending_set, unscored_set,
+        )
+        classified_union = set().union(*classified_sets)
+        classified_cardinality = sum(len(items) for items in classified_sets)
+        if classified_union != holding_set or classified_cardinality != len(holding_set):
+            raise OrderExecutionError("position analysis did not classify every account holding exactly once")
+        expected_forced = holding_set - set(universe.instruments) if universe is not None else set()
+        if forced_executable_set | forced_pending_set != expected_forced:
+            raise OrderExecutionError("position analysis forced-exit set does not match the exact universe")
+        if universe is None:
+            if analysis.eligible_holding_count is not None or analysis.out_of_universe_holding_count is not None:
+                raise OrderExecutionError("unobserved membership cannot produce membership counts")
+        else:
+            expected_eligible_count = len(holding_set & set(universe.instruments))
+            if (
+                analysis.eligible_holding_count != expected_eligible_count
+                or analysis.out_of_universe_holding_count != len(expected_forced)
+            ):
+                raise OrderExecutionError("position analysis membership counts do not match the exact universe")
+        if set(analysis.buy_candidates.index) & holding_set:
+            raise OrderExecutionError("buy candidates contain current holdings")
+        hold = analysis.ranked_continuing_holdings
+        sell_candidates = pd.concat([analysis.forced_exit_candidates, analysis.normal_sell_candidates])
+        buy_candidates = analysis.buy_candidates
+        sorted_frame = analysis.sorted_ranking
+        target_buy_count = analysis.target_buy_count
         print("\nStage 3: 排序与持仓分析")
         print(f"继续持有   : {len(hold)} 个")
         print(f"计划卖出   : {len(sell_candidates)} 个")
+        print(f"出池卖出   : {analysis.forced_exit_count} 个（待价格 {len(analysis.pending_forced_exit_instruments)}）")
+        print(f"卖后持仓   : {analysis.remaining_after_sell} 个")
+        print(f"主买数量   : {analysis.target_buy_count} 个")
+        if analysis.eligible_unscored_instruments:
+            print(f"⚠️  在池但无可用评分/价格，继续计入持仓: {', '.join(analysis.eligible_unscored_instruments)}")
+        if analysis.pending_forced_exit_instruments:
+            print(f"⚠️  出池但无可用价格，卖出待处理: {', '.join(analysis.pending_forced_exit_instruments)}")
         if options.verbose:
             print("\n--- 继续持有 ---")
             if len(hold):
@@ -143,6 +225,23 @@ class OrderGenerationService:
             for warning in opinions.warnings:
                 print(f"⚠️  Opinion source warning: {warning}")
         sell_orders, sell_amount = generator.generate_sell_orders(sell_candidates, current_holding, trade_date)
+        generated_sell_ids = {item["instrument"] for item in sell_orders}
+        expected_sell_ids = set(analysis.forced_exit_candidates.index) | set(analysis.normal_sell_candidates.index)
+        if generated_sell_ids != expected_sell_ids or len(generated_sell_ids) != len(sell_orders):
+            raise OrderExecutionError("generated sell orders do not match executable sell classifications")
+        sell_decisions = tuple(
+            {"instrument": instrument, "reason": "UNIVERSE_EXIT", "status": "ORDER_GENERATED"}
+            for instrument in analysis.forced_exit_candidates.index
+        ) + tuple(
+            {"instrument": instrument, "reason": "UNIVERSE_EXIT_PENDING_PRICE", "status": "PENDING"}
+            for instrument in analysis.pending_forced_exit_instruments
+        ) + tuple(
+            {"instrument": instrument, "reason": "RANK_DROPOUT", "status": "ORDER_GENERATED"}
+            for instrument in analysis.normal_sell_candidates.index
+        ) + tuple(
+            {"instrument": instrument, "reason": "ELIGIBLE_UNSCORED_RETAINED", "status": "RETAINED"}
+            for instrument in analysis.eligible_unscored_instruments
+        )
         cash = current_cash + float(sell_amount) + _cashflow_today(prepared.config.cashflow_config, anchor_date)
         buy_orders = generator.generate_buy_orders(buy_candidates, target_buy_count, cash, trade_date)
         sell_tuple = tuple(dict(item) for item in sell_orders)
@@ -172,6 +271,21 @@ class OrderGenerationService:
             estimated_buy_min=buy_min,
             estimated_buy_max=buy_max,
             opinions=opinions,
+            sell_out_of_universe=sell_out_of_universe,
+            universe=universe,
+            account_holding_count_before=analysis.account_holding_count_before,
+            eligible_holding_count=analysis.eligible_holding_count,
+            out_of_universe_holding_count=analysis.out_of_universe_holding_count,
+            eligible_unscored_holding_count=(
+                len(analysis.eligible_unscored_instruments) if universe is not None else None
+            ),
+            forced_exit_count=analysis.forced_exit_count,
+            forced_exit_pending_count=len(analysis.pending_forced_exit_instruments),
+            normal_sell_count=analysis.normal_sell_count,
+            executable_sell_count=analysis.executable_sell_count,
+            remaining_after_sell=analysis.remaining_after_sell,
+            planned_final_holding_count=analysis.planned_final_holding_count,
+            sell_decisions=sell_decisions,
         )
 
     @staticmethod
@@ -220,6 +334,12 @@ class OrderGenerationService:
             estimated_buy_min=calculation.estimated_buy_min,
             estimated_buy_max=calculation.estimated_buy_max,
             actual_outputs=tuple(item.path for item in ledger.outputs),
+            account_holding_count_before=calculation.account_holding_count_before,
+            remaining_after_sell=calculation.remaining_after_sell,
+            planned_final_holding_count=calculation.planned_final_holding_count,
+            forced_exit_count=calculation.forced_exit_count,
+            forced_exit_pending_count=calculation.forced_exit_pending_count,
+            normal_sell_count=calculation.normal_sell_count,
         )
 
     def _write_success_manifest(
@@ -235,7 +355,13 @@ class OrderGenerationService:
             finished_at=datetime.now().isoformat(),
             outputs=outputs,
             records=_records(prepared, calculation, ledger),
-            warnings=calculation.opinions.warnings if calculation.opinions else (),
+            warnings=(calculation.opinions.warnings if calculation.opinions else ()) + tuple(
+                f"eligible holding retained without usable score/price: {item['instrument']}"
+                for item in calculation.sell_decisions if item["reason"] == "ELIGIBLE_UNSCORED_RETAINED"
+            ) + tuple(
+                f"universe exit pending usable price: {item['instrument']}"
+                for item in calculation.sell_decisions if item["reason"] == "UNIVERSE_EXIT_PENDING_PRICE"
+            ),
         )
         try:
             return display_path(prepared.ctx, write_run_manifest(prepared.ctx, manifest_from_result(result)))

@@ -62,3 +62,8 @@ def test_fingerprint_is_stable_across_dict_key_order():
     right = json.loads('{"a": {"c": 3, "d": 4}, "b": 2}')
 
     assert fingerprint_value(left) == fingerprint_value(right)
+def test_strategy_normalizer_defaults_sell_out_of_universe_true():
+    from quantpits.config_contracts.normalizers import normalize_strategy_config
+
+    normalized = normalize_strategy_config({"strategy": {"params": {}}})
+    assert normalized["strategy"]["params"]["sell_out_of_universe"] is True

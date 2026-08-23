@@ -59,6 +59,7 @@ def test_init_workspace_strategy_yaml_generated(tmp_path):
     assert strategy_yaml.exists()
     content = yaml.safe_load(strategy_yaml.read_text())
     assert content["strategy"]["name"] == "topk_dropout"
+    assert content["strategy"]["params"]["sell_out_of_universe"] is True
 
 
 def test_init_workspace_source_missing(tmp_path, capsys):

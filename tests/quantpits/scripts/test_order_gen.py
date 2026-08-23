@@ -29,8 +29,15 @@ def mock_env(monkeypatch, mock_script_context, tmp_path):
     
     from quantpits.scripts import order_gen
     from quantpits.utils import strategy
+    from quantpits.order import execution
     importlib.reload(order_gen)
     importlib.reload(strategy)
+    monkeypatch.setattr(
+        execution, "resolve_exact_universe",
+        lambda market, anchor: execution.UniverseSnapshot.observe(
+            market, anchor, ["A", "B", "B1", "H1", "H2", "HOLD1", "000001", "000002", "000003", "000004", "000005", "000006"],
+        ),
+    )
     
     yield order_gen, strategy, workspace
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Order generation now observes exact anchor-date universe membership, prioritizes forced exits within the DropN policy, retains unscored holdings in account arithmetic, and records classification/count evidence in run manifests.
+
 ## [0.4.8-alpha] - 2026-07-14
 
 This release completes the **Phase 27 architecture baseline freeze**: post-trade settlement gains a fully deterministic state machine with recoverable transactions, and the static/CPCV training pipeline achieves crash-recoverable publication with exact receipt verification. Together with v0.4.4–v0.4.7, this closes the first-generation architecture transformation announced in v0.4.3.

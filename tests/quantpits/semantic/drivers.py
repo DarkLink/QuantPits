@@ -11,7 +11,9 @@ from quantpits.ensemble.persistence import PredictionSaveRequest, save_ensemble_
 from quantpits.ensemble.service import EnsembleFusionService
 from quantpits.ensemble.types import EnsembleExecutionHooks
 from quantpits.order.command import OrderRunOptions, load_order_run_config, prepare_order_run
-from quantpits.order.execution import LoadedOrderPrediction, OrderExecutionHooks
+from quantpits.order.execution import (
+    LoadedOrderPrediction, OrderExecutionHooks, PositionAnalysisResult, UniverseSnapshot,
+)
 from quantpits.order.persistence import persist_order_artifacts
 from quantpits.order.service import OrderGenerationService
 
@@ -157,12 +159,27 @@ class RecordingOrderGenerator:
         frame = pd.DataFrame({"score": [0.9], "current_close": [10.0]}, index=["AAA"])
         return frame.iloc[0:0], frame.iloc[0:0], frame, frame, 1
 
+    def analyze_positions_with_universe(self, predictions, prices, holdings, universe):
+        self.holdings_seen = tuple(dict(item) for item in holdings)
+        frame = pd.DataFrame(
+            {"score": [0.9], "current_close": [10.0], "possible_min": [9.0], "possible_max": [11.0]},
+            index=pd.Index(["AAA"], name="instrument"),
+        )
+        empty = frame.iloc[0:0]
+        holding_ids = tuple(item["instrument"] for item in holdings)
+        count = len(holding_ids)
+        target = max(1 - count, 0)
+        return PositionAnalysisResult(
+            empty, empty, empty, (), holding_ids, frame.head(target), frame,
+            count, count, 0, 0, 0, 0, count, target, count + target,
+        )
+
     def generate_sell_orders(self, candidates, holdings, trade_date):
         return [], 0.0
 
     def generate_buy_orders(self, candidates, count, cash, trade_date):
         self.cash_seen = cash
-        return [{"instrument": "AAA", "estimated_amount": min(float(cash), 100.0)}]
+        return ([{"instrument": "AAA", "estimated_amount": min(float(cash), 100.0)}] if count else [])
 
 
 def execute_order(workspace, *, run_id="order-semantic"):
@@ -178,11 +195,14 @@ def execute_order(workspace, *, run_id="order-semantic"):
         get_anchor_date=lambda: "2026-07-16",
         get_next_trade_date=lambda anchor: "2026-07-17",
         load_predictions=lambda source: loaded,
-        get_price_data=lambda *args, **kwargs: pd.DataFrame({"current_close": [10.0]}, index=["AAA"]),
+        get_price_data=lambda *args, **kwargs: pd.DataFrame(
+            {"current_close": [10.0], "possible_min": [9.0], "possible_max": [11.0]}, index=["AAA"]
+        ),
         create_order_generator=lambda config: generator,
         get_strategy_params=lambda config: {"topk": 1, "n_drop": 0, "buy_suggestion_factor": 1},
         build_model_opinions=lambda request: None,
         persist_artifacts=persist_order_artifacts,
+        resolve_universe=lambda market, anchor: UniverseSnapshot.observe(market, anchor, ["AAA", "BBB"]),
     )
     summary = OrderGenerationService(hooks).execute(prepared)
     return prepared, summary, generator

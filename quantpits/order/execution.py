@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Callable
 
 from quantpits.order.command import ResolvedOrderSource
@@ -24,6 +26,80 @@ class TradingCalendarError(OrderExecutionError):
     """A next trading date could not be resolved."""
 
 
+class UniverseObservationError(OrderExecutionError):
+    """The exact anchor-date universe could not be observed safely."""
+
+
+@dataclass(frozen=True, init=False)
+class UniverseSnapshot:
+    market: str
+    anchor_date: str
+    instruments: tuple[str, ...]
+    instrument_count: int
+    fingerprint_algorithm: str
+    fingerprint: str
+
+    def __init__(self, *args, **kwargs):
+        raise TypeError("use UniverseSnapshot.observe()")
+
+    @classmethod
+    def observe(cls, market: str, anchor_date: str, members: Any) -> "UniverseSnapshot":
+        if not isinstance(market, str) or not market.strip():
+            raise UniverseObservationError("universe market must be a non-empty string")
+        if isinstance(anchor_date, (date, datetime)):
+            anchor = anchor_date.strftime("%Y-%m-%d")
+        elif isinstance(anchor_date, str) and len(anchor_date) == 10:
+            try:
+                datetime.strptime(anchor_date, "%Y-%m-%d")
+            except ValueError as exc:
+                raise UniverseObservationError("universe anchor_date must be YYYY-MM-DD") from exc
+            anchor = anchor_date
+        else:
+            raise UniverseObservationError("universe anchor_date must be YYYY-MM-DD")
+        if isinstance(members, (str, bytes)):
+            raise UniverseObservationError("universe membership must be a collection")
+        try:
+            raw = list(members)
+        except (TypeError, ValueError) as exc:
+            raise UniverseObservationError("universe membership is not iterable") from exc
+        canonical: list[str] = []
+        for member in raw:
+            if not isinstance(member, str) or not member.strip() or member != member.strip():
+                raise UniverseObservationError("universe contains a malformed instrument")
+            canonical.append(member)
+        if not canonical:
+            raise UniverseObservationError("required universe membership is empty")
+        if len(canonical) != len(set(canonical)):
+            raise UniverseObservationError("universe contains duplicate instruments")
+        instruments = tuple(sorted(canonical))
+        digest = hashlib.sha256("\n".join(instruments).encode("utf-8")).hexdigest()
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "market", market)
+        object.__setattr__(instance, "anchor_date", anchor)
+        object.__setattr__(instance, "instruments", instruments)
+        object.__setattr__(instance, "instrument_count", len(instruments))
+        object.__setattr__(instance, "fingerprint_algorithm", "sha256")
+        object.__setattr__(instance, "fingerprint", digest)
+        return instance
+
+
+def resolve_exact_universe(market: str, anchor_date: str) -> UniverseSnapshot:
+    try:
+        from qlib.data import D
+
+        members = D.list_instruments(
+            D.instruments(market=market), start_time=anchor_date,
+            end_time=anchor_date, freq="day", as_list=True,
+        )
+        return UniverseSnapshot.observe(market, anchor_date, members)
+    except UniverseObservationError:
+        raise
+    except Exception as exc:
+        raise UniverseObservationError(
+            f"could not observe exact universe {market} at {anchor_date}: {exc}"
+        ) from exc
+
+
 @dataclass(frozen=True)
 class LoadedOrderPrediction:
     data: Any
@@ -42,6 +118,54 @@ class OrderExecutionHooks:
     get_strategy_params: Callable[[dict], dict]
     build_model_opinions: Callable[[Any], Any]
     persist_artifacts: Callable[[Any], Any]
+    resolve_universe: Callable[[str, str], UniverseSnapshot] | None = None
+
+
+@dataclass(frozen=True)
+class PositionAnalysisResult:
+    ranked_continuing_holdings: Any
+    normal_sell_candidates: Any
+    forced_exit_candidates: Any
+    pending_forced_exit_instruments: tuple[str, ...]
+    eligible_unscored_instruments: tuple[str, ...]
+    buy_candidates: Any
+    sorted_ranking: Any
+    account_holding_count_before: int
+    eligible_holding_count: int | None
+    out_of_universe_holding_count: int | None
+    forced_exit_count: int
+    normal_sell_count: int
+    executable_sell_count: int
+    remaining_after_sell: int
+    target_buy_count: int
+    planned_final_holding_count: int
+
+    def __post_init__(self) -> None:
+        forced_candidates = tuple(self.forced_exit_candidates.index)
+        normal_candidates = tuple(self.normal_sell_candidates.index)
+        if len(set(forced_candidates)) != len(forced_candidates) or len(set(normal_candidates)) != len(normal_candidates):
+            raise ValueError("sell candidate instruments must be unique")
+        if self.forced_exit_count != len(forced_candidates) + len(self.pending_forced_exit_instruments):
+            raise ValueError("forced exit count is inconsistent")
+        if self.normal_sell_count != len(normal_candidates):
+            raise ValueError("normal sell count is inconsistent")
+        if self.executable_sell_count != self.forced_exit_count - len(self.pending_forced_exit_instruments) + self.normal_sell_count:
+            raise ValueError("executable sell count is inconsistent")
+        if self.remaining_after_sell != self.account_holding_count_before - self.executable_sell_count:
+            raise ValueError("remaining holding count is inconsistent")
+        if self.planned_final_holding_count != self.remaining_after_sell + self.target_buy_count:
+            raise ValueError("planned final holding count is inconsistent")
+        forced = set(forced_candidates) | set(self.pending_forced_exit_instruments)
+        normal = set(normal_candidates)
+        if forced & normal:
+            raise ValueError("forced and normal sell classifications overlap")
+        if len(set(self.pending_forced_exit_instruments)) != len(self.pending_forced_exit_instruments):
+            raise ValueError("pending forced exits must be unique")
+        if self.eligible_holding_count is None:
+            if self.out_of_universe_holding_count is not None:
+                raise ValueError("membership-dependent counts must be observed together")
+        elif self.eligible_holding_count + (self.out_of_universe_holding_count or 0) != self.account_holding_count_before:
+            raise ValueError("observed membership counts do not cover account holdings")
 
 
 @dataclass(frozen=True)
@@ -58,6 +182,19 @@ class OrderCalculationResult:
     estimated_buy_min: float | None
     estimated_buy_max: float | None
     opinions: Any | None
+    sell_out_of_universe: bool
+    universe: UniverseSnapshot | None
+    account_holding_count_before: int
+    eligible_holding_count: int | None
+    out_of_universe_holding_count: int | None
+    eligible_unscored_holding_count: int | None
+    forced_exit_count: int
+    forced_exit_pending_count: int
+    normal_sell_count: int
+    executable_sell_count: int
+    remaining_after_sell: int
+    planned_final_holding_count: int
+    sell_decisions: tuple[dict, ...]
 
 
 def source_description(source: ResolvedOrderSource) -> str:

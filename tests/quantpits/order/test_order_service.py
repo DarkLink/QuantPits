@@ -8,7 +8,10 @@ import pytest
 from quantpits.order.command import (
     OrderRunConfig, OrderRunOptions, PreparedOrderRun, ResolvedOrderSource,
 )
-from quantpits.order.execution import LoadedOrderPrediction, OrderExecutionHooks, OrderSourceUnavailableError
+from quantpits.order.execution import (
+    LoadedOrderPrediction, OrderExecutionError, OrderExecutionHooks, OrderSourceUnavailableError,
+    PositionAnalysisResult, UniverseSnapshot,
+)
 from quantpits.order.persistence import OrderArtifactLedger, OrderPersistenceError
 from quantpits.order.service import OrderGenerationService
 from quantpits.runtime import CommandPlan, OutputRef
@@ -16,6 +19,17 @@ from quantpits.utils.workspace import WorkspaceContext
 
 
 class _Generator:
+    def analyze_positions_with_universe(self, predictions, prices, holdings, universe):
+        frame = pd.DataFrame(
+            {"score": [0.9], "current_close": [10.0], "possible_min": [9.0], "possible_max": [11.0]},
+            index=pd.Index(["A"], name="instrument"),
+        )
+        empty = frame.iloc[0:0]
+        return PositionAnalysisResult(
+            empty, empty, empty, (), (), frame, frame, 0, 0, 0,
+            0, 0, 0, 0, 1, 1,
+        )
+
     def analyze_positions(self, predictions, prices, holdings):
         frame = pd.DataFrame({"score": [0.9], "current_close": [10.0]}, index=["A"])
         return frame.iloc[0:0], frame.iloc[0:0], frame, frame, 1
@@ -62,9 +76,12 @@ def _hooks(persist_calls):
         init_qlib=lambda: None, get_anchor_date=lambda: "2026-01-01",
         get_next_trade_date=lambda _: "2026-01-02",
         load_predictions=lambda _: LoadedOrderPrediction(pd.DataFrame({"score": [0.5]}, index=index), source, "demo source"),
-        get_price_data=lambda *args, **kwargs: pd.DataFrame({"current_close": [10]}, index=["A"]),
+        get_price_data=lambda *args, **kwargs: pd.DataFrame(
+            {"current_close": [10], "possible_min": [9], "possible_max": [11]}, index=["A"]
+        ),
         create_order_generator=lambda _: _Generator(), get_strategy_params=lambda _: {"topk": 1, "n_drop": 1},
         build_model_opinions=lambda _: None, persist_artifacts=persist,
+        resolve_universe=lambda market, anchor: UniverseSnapshot.observe(market, anchor, ["A"]),
     )
 
 
@@ -103,6 +120,12 @@ def test_real_run_links_actual_outputs_manifest_and_operator_log(tmp_path):
     paths = [item["path"] for item in manifest["outputs"]]
     assert "output/planned-but-not-written.csv" not in paths
     assert manifest["records"]["source"]["record_id"] == "rid"
+    assert manifest["records"]["sell_out_of_universe"] is True
+    assert manifest["records"]["account_holding_count_before"] == 0
+    assert manifest["records"]["remaining_after_sell"] == 0
+    assert manifest["records"]["planned_final_holding_count"] == 1
+    assert manifest["records"]["universe"]["anchor_date"] == "2026-01-01"
+    assert manifest["records"]["universe_status"] == "observed"
     assert "raw_config" not in json.dumps(manifest)
 
 
@@ -157,3 +180,109 @@ def test_partial_persistence_failure_manifest_lists_only_committed_outputs(tmp_p
         "output/committed.csv",
         "output/manifests/order_gen/run-1.json",
     ]
+
+
+def test_service_requests_prediction_holding_union_and_reports_universe_exit(tmp_path):
+    from quantpits.utils.strategy import TopkDropoutOrderGenerator
+
+    prepared = _prepared(tmp_path, dry_run=True)
+    prepared = replace(prepared, config=replace(
+        prepared.config,
+        merged_config={
+            "current_cash": 1000,
+            "current_holding": [
+                {"instrument": "X", "value": 100},
+                {"instrument": "Z", "value": 100},
+            ],
+            "market": "demo",
+        },
+    ))
+    hooks = _hooks([])
+    index = pd.MultiIndex.from_tuples(
+        [(pd.Timestamp("2026-01-01"), "A"), (pd.Timestamp("2026-01-01"), "B")],
+        names=["datetime", "instrument"],
+    )
+    seen = []
+
+    def prices(*args, **kwargs):
+        seen.append(tuple(kwargs["instruments"]))
+        return pd.DataFrame({
+            "current_close": [10.0, 10.0, 10.0],
+            "possible_min": [9.0, 9.0, 9.0],
+            "possible_max": [11.0, 11.0, 11.0],
+        }, index=pd.Index(["A", "B", "X"], name="instrument"))
+
+    hooks = replace(
+        hooks,
+        load_predictions=lambda source: LoadedOrderPrediction(
+            pd.DataFrame({"score": [0.9, 0.8]}, index=index), source, "demo source",
+        ),
+        get_price_data=prices,
+        create_order_generator=lambda _: TopkDropoutOrderGenerator(2, 1, 1, True),
+        get_strategy_params=lambda _: {
+            "topk": 2, "n_drop": 1, "buy_suggestion_factor": 1,
+            "sell_out_of_universe": True,
+        },
+        resolve_universe=lambda market, anchor: UniverseSnapshot.observe(market, anchor, ["A", "B", "Z"]),
+    )
+    summary = OrderGenerationService(hooks).execute(prepared)
+    assert seen == [("A", "B", "X", "Z")]
+    assert summary.account_holding_count_before == 2
+    assert summary.forced_exit_count == 1
+    assert summary.remaining_after_sell == 1
+    assert summary.target_buy_count == 1
+    assert summary.planned_final_holding_count == 2
+
+
+def test_disabled_universe_skips_provider_and_counts_hidden_holding(tmp_path):
+    from quantpits.utils.strategy import TopkDropoutOrderGenerator
+
+    prepared = _prepared(tmp_path, dry_run=True)
+    prepared = replace(prepared, config=replace(
+        prepared.config,
+        merged_config={
+            "current_cash": 1000,
+            "current_holding": [{"instrument": "Z", "value": 100}],
+            "market": "demo",
+        },
+    ))
+    hooks = replace(
+        _hooks([]),
+        create_order_generator=lambda _: TopkDropoutOrderGenerator(1, 0, 1, False),
+        get_strategy_params=lambda _: {
+            "topk": 1, "n_drop": 0, "buy_suggestion_factor": 1,
+            "sell_out_of_universe": False,
+        },
+        resolve_universe=lambda *_: (_ for _ in ()).throw(AssertionError("must not observe universe")),
+    )
+    summary = OrderGenerationService(hooks).execute(prepared)
+    assert summary.account_holding_count_before == 1
+    assert summary.target_buy_count == 0
+    assert summary.remaining_after_sell == 1
+
+
+def test_enabled_universe_failure_denies_dry_run_outputs(tmp_path):
+    from quantpits.order.execution import UniverseObservationError
+
+    hooks = replace(
+        _hooks([]),
+        resolve_universe=lambda *_: (_ for _ in ()).throw(UniverseObservationError("provider failed")),
+    )
+    with pytest.raises(UniverseObservationError, match="provider failed"):
+        OrderGenerationService(hooks).execute(_prepared(tmp_path, dry_run=True))
+    assert not (tmp_path / "output").exists()
+    assert not (tmp_path / "data").exists()
+
+
+def test_service_rejects_forged_incomplete_position_analysis(tmp_path):
+    prepared = _prepared(tmp_path, dry_run=True)
+    prepared = replace(prepared, config=replace(
+        prepared.config,
+        merged_config={
+            "current_cash": 1000,
+            "current_holding": [{"instrument": "X", "value": 100}],
+            "market": "demo",
+        },
+    ))
+    with pytest.raises(OrderExecutionError, match="classify every account holding exactly once"):
+        OrderGenerationService(_hooks([])).execute(prepared)

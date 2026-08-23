@@ -94,9 +94,10 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 - **current_cash**: 当前可用现金余额。由 Post-Trade 脚本自动更新维护在 `prod_config.json` 中。
 - **current_holding**: 存量持仓状态 `[{"instrument": "...", "amount": "...", "value": "..."}, ...]`。由 Post-Trade 脚本自动更新维护在 `prod_config.json` 中。
 - **topk** / **n_drop** / **buy_suggestion_factor**: 订单生成策略参数。定义于 `strategy_config.yaml` 或兼容旧版由根配置管理。
+- **sell_out_of_universe**: 是否优先卖出锚点日已不属于 `market` 的持仓。缺省为 `true`，且只接受布尔值；设为 `false` 可停止强制出池卖出，但所有未排名持仓仍计入账户持仓数。
 
 > [!NOTE]
-> 脚本具备**自动容错**能力：即使 `market` 配置错误，也会根据预测文件中的标的列表自动获取对应的价格数据。
+> 启用 `sell_out_of_universe` 时，`market` 和锚点日成分是强制卖出的事实来源。精确成分查询失败会中止订单生成，不会用“预测缺失”推断出池。
 
 ---
 
@@ -140,11 +141,13 @@ flowchart TD
 
 ### 持仓分析逻辑
 
-1. 按 `score` 降序排名所有标的
-2. 取 TopK + DropN × 买入倍数 作为候选池
-3. 当前持仓在候选池内的 → **继续持有**
-4. 当前持仓不在候选池内的，取排名最低的 DropN 个 → **卖出**
-5. 候选池中不在持有列表里的 → **买入候选**
+1. 查询 `market` 在锚点日的精确成分，并将每个账户持仓唯一归为：可排名在池持仓、在池但无可用评分/价格、出池持仓。
+2. 出池持仓优先占用 DropN；若出池数量超过 DropN，仍全部提出卖出，普通排名卖出为零。
+3. 按 `score` 降序取 TopK + DropN × 买入倍数候选池，并用剩余 DropN 名额选择普通排名卖出。
+4. 缺少有效卖价的出池持仓标记为待处理，不生成数值订单，也不产生买入容量；在池但无评分/价格的持仓继续计数。
+5. `target_buy_count = max(topk - (账户持仓数 - 可生成卖单数), 0)`；买入候选排除全部当前持仓，避免同周期卖出后又买回。
+
+数量继续按现有算法使用当前现金、估算卖出金额和已声明现金流重新计算。卖出金额不是成交证据；实际提交买单时只能使用真实可用现金，未成交时应从候选尾部删减。
 
 ### 多模型判断表 (Stage 3.5)
 

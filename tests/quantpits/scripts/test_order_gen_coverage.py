@@ -37,8 +37,15 @@ def order_gen_env(monkeypatch, tmp_path):
 
     from quantpits.scripts import order_gen
     from quantpits.utils import strategy
+    from quantpits.order import execution
     importlib.reload(order_gen)
     importlib.reload(strategy)
+    monkeypatch.setattr(
+        execution, "resolve_exact_universe",
+        lambda market, anchor: execution.UniverseSnapshot.observe(
+            market, anchor, ["A", "B", "B1", "H1", "H2", "AAA"],
+        ),
+    )
 
     yield order_gen, strategy, workspace
 

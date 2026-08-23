@@ -94,10 +94,11 @@ python -m quantpits.tools.validate_workspace --workspace workspaces/Demo_Workspa
 - **benchmark**: (Recommended) Index metric boundaries (e.g., `SH000300`, `SH000852`). Built into `model_config.json`.
 - **current_cash**: Current liquid balance limits defining order sizes. Systematically maintained via Post-Trade executing upon `prod_config.json`.
 - **current_holding**: Active held component quantities arrays. Systematically maintained via Post-Trade executing upon `prod_config.json`.
-- **topk** / **n_drop** / **buy_suggestion_factor**: Operation positioning strategy boundaries natively registered executing inside `strategy_config.yaml`.
+- **topk** / **n_drop** / **buy_suggestion_factor**: Order-generation strategy parameters in `strategy_config.yaml`.
+- **sell_out_of_universe**: Prioritizes holdings that are not members of `market` on the exact anchor date. It defaults to `true` and accepts booleans only. Setting it to `false` disables forced exits, while every unranked holding still counts toward the account total.
 
 > [!NOTE]
-> The engine features **automatic resilience**: even if the `market` configuration is mismatched, it will dynamically fetch pricing for all assets identified in the prediction source.
+> When `sell_out_of_universe` is enabled, exact anchor-date membership is authoritative. A membership query failure stops order generation; missing predictions are never treated as proof of a universe exit.
 
 ---
 
@@ -141,11 +142,13 @@ The architecture automatically infers the **most recent previous trading day** a
 
 ### Position Reconciliation Formula
 
-1. Sort all active equities descending universally per `score`.
-2. Determine Candidate Pool bounds utilizing `TopK + DropN × Buy Suggestion Factor`.
-3. If natively held equities currently reside within the Candidate Pool → **HOLD**.
-4. If natively held equities reside *outside* the Candidate Pool, extract the absolute worst `DropN` subset bounds → **SELL**.
-5. Discovered equities residing within Candidate bounds currently unheld → **BUY (Candidate)**.
+1. Observe exact `market` membership at the anchor date and classify every account holding once as ranked eligible, eligible but unscored/unpriced, or out of universe.
+2. Universe exits consume the DropN budget first. If exits exceed DropN, all exits remain intended and no normal rank sell is selected.
+3. Build the existing `TopK + DropN × Buy Suggestion Factor` buffer and use any remaining DropN slots for the lowest-ranked eligible holdings outside it.
+4. A universe exit without a usable sell price remains pending and creates no buy capacity. Eligible unscored/unpriced holdings remain counted.
+5. `target_buy_count = max(topk - (account holdings - generatable sells), 0)`. Buy candidates exclude every current holding to prevent same-cycle sell/buy reversals.
+
+Sizing still uses current cash, estimated sell proceeds, and declared cash flow. Estimated proceeds are not fill evidence; operators must submit buys only against actual available cash and trim candidates from the tail when sells do not fill.
 
 ### Multi-Model Opinion Matrix (Stage 3.5)
 

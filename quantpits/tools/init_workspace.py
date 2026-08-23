@@ -46,6 +46,7 @@ strategy:
     n_drop: 3
     only_tradable: true
     buy_suggestion_factor: 2
+    sell_out_of_universe: true
 
 backtest:
   account: 100000000

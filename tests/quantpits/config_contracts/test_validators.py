@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from quantpits.config_contracts.normalizers import normalize_ensemble_config
 from quantpits.config_contracts.validators import (
     validate_ensemble_config,
@@ -45,6 +47,19 @@ def test_prod_holding_numeric_strings_are_valid():
     )
 
     assert not [message for message in messages if message.severity == "error"]
+
+
+def test_prod_duplicate_holding_is_rejected():
+    messages = validate_prod_config({
+        "current_date": "2026-01-01",
+        "last_processed_date": "2026-01-01",
+        "current_cash": 1000,
+        "current_holding": [
+            {"instrument": "A", "value": 100, "amount": 1000},
+            {"instrument": "A", "value": 200, "amount": 2000},
+        ],
+    })
+    assert "duplicate-holding" in _codes(messages)
 
 
 def test_manual_ensemble_requires_complete_weights():
@@ -102,3 +117,12 @@ def test_model_registry_missing_workflow_is_warning(tmp_path):
 
     assert "missing-workflow-yaml" in _codes(messages)
     assert all(message.severity == "warning" for message in messages)
+@pytest.mark.parametrize("value", [0, 1, None, "true", [], {}])
+def test_strategy_rejects_non_boolean_sell_out_of_universe(value):
+    config = {
+        "strategy": {"name": "topk_dropout", "params": {
+            "topk": 3, "n_drop": 1, "sell_out_of_universe": value,
+        }},
+        "backtest": {"account": 100000, "exchange_kwargs": {"deal_price": "close"}},
+    }
+    assert "invalid-sell-out-of-universe" in _codes(validate_strategy_config(config))

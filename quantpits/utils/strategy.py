@@ -43,7 +43,8 @@ def load_strategy_config(workspace_path=None):
                 "topk": 20,
                 "n_drop": 3,
                 "only_tradable": True,
-                "buy_suggestion_factor": 2
+                "buy_suggestion_factor": 2,
+                "sell_out_of_universe": True,
             }
         }),
         "backtest": full_config.get("backtest", {
@@ -65,6 +66,7 @@ def load_strategy_config(workspace_path=None):
         p["topk"] = full_config.get("topk", full_config.get("TopK", p.get("topk")))
         p["n_drop"] = full_config.get("n_drop", full_config.get("DropN", p.get("n_drop")))
         p["buy_suggestion_factor"] = full_config.get("buy_suggestion_factor", p.get("buy_suggestion_factor"))
+        p["sell_out_of_universe"] = p.get("sell_out_of_universe", True)
 
     return config
 
@@ -94,10 +96,112 @@ class OrderGenerator:
 class TopkDropoutOrderGenerator(OrderGenerator):
     """对应 TopkDropoutStrategy 的订单生成"""
     
-    def __init__(self, topk=20, n_drop=3, buy_suggestion_factor=3, **kwargs):
+    def __init__(self, topk=20, n_drop=3, buy_suggestion_factor=3, sell_out_of_universe=True, **kwargs):
         self.topk = topk
         self.drop_n = n_drop
         self.buy_suggestion_factor = buy_suggestion_factor
+        self.sell_out_of_universe = sell_out_of_universe
+
+    def analyze_positions_with_universe(self, pred_df, price_df, current_holding, universe_snapshot=None):
+        """Classify every account holding and calculate universe-aware turnover."""
+        from quantpits.order.execution import PositionAnalysisResult
+
+        latest_date = pred_df.index.get_level_values("datetime").max()
+        daily_pred = pred_df.xs(latest_date, level="datetime")
+        if "instrument" in daily_pred.columns:
+            pred_reset = daily_pred.copy()
+        else:
+            pred_reset = daily_pred.reset_index()
+        price_reset = price_df.reset_index()
+        if "instrument" not in price_reset.columns:
+            price_reset = price_reset.rename(columns={price_reset.columns[0]: "instrument"})
+        for column in ("current_close", "possible_min", "possible_max"):
+            if column not in price_reset.columns:
+                price_reset[column] = np.nan
+
+        holding_ids = [item["instrument"] for item in current_holding]
+        if len(holding_ids) != len(set(holding_ids)):
+            raise ValueError("current_holding contains duplicate instruments")
+        holding_set = set(holding_ids)
+        eligible = set(universe_snapshot.instruments) if universe_snapshot is not None else None
+
+        merged = pd.merge(pred_reset, price_reset, on="instrument", how="inner")
+        required = ("score", "current_close", "possible_min", "possible_max")
+        usable = pd.Series(True, index=merged.index)
+        for column in required:
+            usable &= pd.to_numeric(merged[column], errors="coerce").notna()
+            usable &= np.isfinite(pd.to_numeric(merged[column], errors="coerce"))
+        for column in ("current_close", "possible_min", "possible_max"):
+            usable &= pd.to_numeric(merged[column], errors="coerce") > 0
+        ranked = merged.loc[usable].copy()
+        if eligible is not None:
+            ranked = ranked[ranked["instrument"].isin(eligible)]
+        ranked = ranked.sort_values("score", ascending=False).set_index("instrument")
+
+        ranked_ids = set(ranked.index)
+        forced_ids = holding_set - eligible if eligible is not None else set()
+        ranked_holding_ids = holding_set & ranked_ids
+        unscored_ids = holding_set - forced_ids - ranked_holding_ids
+
+        price_by_instrument = price_reset.drop_duplicates("instrument").set_index("instrument")
+        forced_rows = []
+        pending_forced = []
+        for instrument in sorted(forced_ids):
+            if instrument not in price_by_instrument.index:
+                pending_forced.append(instrument)
+                continue
+            row = price_by_instrument.loc[instrument].copy()
+            valid = all(
+                pd.notna(pd.to_numeric(row.get(column), errors="coerce"))
+                and np.isfinite(float(row.get(column))) and float(row.get(column)) > 0
+                for column in ("current_close", "possible_min")
+            )
+            if not valid:
+                pending_forced.append(instrument)
+                continue
+            row["instrument"] = instrument
+            row["score"] = np.nan
+            forced_rows.append(row)
+        forced = pd.DataFrame(forced_rows)
+        if forced.empty:
+            forced = pd.DataFrame(columns=list(price_reset.columns) + ["score"])
+            forced.index = pd.Index([], name="instrument")
+        else:
+            forced = forced.set_index("instrument")
+
+        buffer = ranked.head(self.topk + self.drop_n * self.buy_suggestion_factor)
+        normal_slots = max(self.drop_n - len(forced_ids), 0)
+        ranked_holdings = ranked[ranked.index.isin(ranked_holding_ids)]
+        normal = ranked_holdings[~ranked_holdings.index.isin(buffer.index)].tail(normal_slots)
+        executable_ids = set(forced.index) | set(normal.index)
+        remaining = len(holding_ids) - len(executable_ids)
+        target_buy_count = max(self.topk - remaining, 0)
+        buy = buffer[~buffer.index.isin(holding_set)].head(
+            target_buy_count * self.buy_suggestion_factor
+        )
+        continuing = ranked_holdings[~ranked_holdings.index.isin(normal.index)]
+
+        partitions = ranked_holding_ids | unscored_ids | forced_ids
+        if partitions != holding_set or any((ranked_holding_ids & unscored_ids, ranked_holding_ids & forced_ids, unscored_ids & forced_ids)):
+            raise ValueError("holding classifications are not a disjoint complete partition")
+        return PositionAnalysisResult(
+            ranked_continuing_holdings=continuing,
+            normal_sell_candidates=normal,
+            forced_exit_candidates=forced,
+            pending_forced_exit_instruments=tuple(pending_forced),
+            eligible_unscored_instruments=tuple(sorted(unscored_ids)),
+            buy_candidates=buy,
+            sorted_ranking=ranked,
+            account_holding_count_before=len(holding_ids),
+            eligible_holding_count=(len(holding_set & eligible) if eligible is not None else None),
+            out_of_universe_holding_count=(len(forced_ids) if eligible is not None else None),
+            forced_exit_count=len(forced_ids),
+            normal_sell_count=len(normal),
+            executable_sell_count=len(executable_ids),
+            remaining_after_sell=remaining,
+            target_buy_count=target_buy_count,
+            planned_final_holding_count=remaining + target_buy_count,
+        )
     
     def analyze_positions(self, pred_df, price_df, current_holding):
         top_k = self.topk
@@ -163,7 +267,7 @@ class TopkDropoutOrderGenerator(OrderGenerator):
                     'datetime': next_trade_date_string,
                     'value': int(value),
                     'estimated_amount': round(amount, 2),
-                    'score': round(row['score'], 6),
+                    'score': round(row['score'], 6) if pd.notna(row.get('score')) else None,
                     'current_close': round(row['current_close'], 2),
                 })
 
@@ -245,6 +349,7 @@ def create_backtest_strategy(signal, config_dict=None):
         
     # 移除 order generator 专用的参数避免传给 Qlib 报错
     params.pop("buy_suggestion_factor", None)
+    params.pop("sell_out_of_universe", None)
     
     class_path = STRATEGY_REGISTRY[name]["backtest_class"]
     module_name, class_name = class_path.rsplit(".", 1)
@@ -268,6 +373,7 @@ def generate_port_analysis_config(config_dict=None, freq="day"):
     name = st_conf["name"]
     params = st_conf["params"].copy()
     params.pop("buy_suggestion_factor", None)
+    params.pop("sell_out_of_universe", None)
     
     if name not in STRATEGY_REGISTRY:
         raise ValueError(f"Strategy '{name}' not found in STRATEGY_REGISTRY")

@@ -69,6 +69,7 @@ def test_load_strategy_config_defaults(mock_env):
     config = strategy.load_strategy_config()
     assert config["strategy"]["name"] == "topk_dropout"
     assert config["strategy"]["params"]["topk"] == 20
+    assert config["strategy"]["params"]["sell_out_of_universe"] is True
     assert config["strategy"]["params"]["n_drop"] == 3
     assert config["backtest"]["account"] == 100_000_000
 
@@ -174,7 +175,7 @@ def test_generate_port_analysis_config(mock_env):
     config = {
         "strategy": {
             "name": "topk_dropout",
-            "params": {"topk": 20, "n_drop": 3, "buy_suggestion_factor": 2, "only_tradable": True}
+            "params": {"topk": 20, "n_drop": 3, "buy_suggestion_factor": 2, "sell_out_of_universe": True, "only_tradable": True}
         },
         "backtest": {
             "account": 100_000_000,
@@ -185,6 +186,7 @@ def test_generate_port_analysis_config(mock_env):
     assert pa["strategy"]["class"] == "TopkDropoutStrategy"
     assert pa["strategy"]["kwargs"]["topk"] == 20
     assert "buy_suggestion_factor" not in pa["strategy"]["kwargs"]
+    assert "sell_out_of_universe" not in pa["strategy"]["kwargs"]
     assert pa["executor"]["kwargs"]["time_per_step"] == "week"
     assert pa["backtest"]["account"] == 100_000_000
 
@@ -315,6 +317,90 @@ def test_generate_sell_orders(mock_env):
     assert amount == 9000.0
 
 
+def _universe_frames():
+    pred = pd.DataFrame({
+        "instrument": ["A", "B", "C", "D", "E", "F", "G"],
+        "datetime": ["2026-03-01"] * 7,
+        "score": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3],
+    }).set_index(["instrument", "datetime"])
+    prices = pd.DataFrame({
+        "instrument": ["A", "B", "C", "D", "E", "F", "G", "X", "Y"],
+        "current_close": [10.0] * 9,
+        "possible_max": [11.0] * 9,
+        "possible_min": [9.0] * 9,
+    }).set_index("instrument")
+    return pred, prices
+
+
+def test_universe_exits_consume_drop_budget_and_drive_exact_buy_count(mock_env):
+    strategy, _, _ = mock_env
+    from quantpits.order.execution import UniverseSnapshot
+
+    gen = strategy.TopkDropoutOrderGenerator(topk=3, n_drop=3, buy_suggestion_factor=1)
+    pred, prices = _universe_frames()
+    holdings = [{"instrument": item, "value": 100} for item in ("D", "G", "X", "Y")]
+    result = gen.analyze_positions_with_universe(
+        pred, prices, holdings, UniverseSnapshot.observe("demo", "2026-03-01", ["A", "B", "C", "D", "E", "F", "G"])
+    )
+    assert set(result.forced_exit_candidates.index) == {"X", "Y"}
+    assert result.normal_sell_candidates.index.tolist() == ["G"]
+    assert result.executable_sell_count == 3
+    assert result.remaining_after_sell == 1
+    assert result.target_buy_count == 2
+    assert set(result.buy_candidates.index).isdisjoint({"D", "G", "X", "Y"})
+    orders, _ = gen.generate_sell_orders(result.forced_exit_candidates, holdings, "2026-03-02")
+    assert {item["instrument"] for item in orders} == {"X", "Y"}
+    assert all(item["score"] is None for item in orders)
+
+
+def test_pending_forced_exit_and_unscored_holding_do_not_create_buy_capacity(mock_env):
+    strategy, _, _ = mock_env
+    from quantpits.order.execution import UniverseSnapshot
+
+    gen = strategy.TopkDropoutOrderGenerator(topk=2, n_drop=1, buy_suggestion_factor=1)
+    pred, prices = _universe_frames()
+    prices = prices.drop(index="X")
+    holdings = [{"instrument": "X", "value": 100}, {"instrument": "Z", "value": 100}]
+    result = gen.analyze_positions_with_universe(
+        pred, prices, holdings, UniverseSnapshot.observe("demo", "2026-03-01", ["A", "B", "C", "D", "E", "Z"])
+    )
+    assert result.pending_forced_exit_instruments == ("X",)
+    assert result.eligible_unscored_instruments == ("Z",)
+    assert result.executable_sell_count == 0
+    assert result.target_buy_count == 0
+
+
+def test_forced_exits_can_exceed_dropn_without_normal_sells(mock_env):
+    strategy, _, _ = mock_env
+    from quantpits.order.execution import UniverseSnapshot
+
+    gen = strategy.TopkDropoutOrderGenerator(topk=2, n_drop=1, buy_suggestion_factor=1)
+    pred, prices = _universe_frames()
+    holdings = [{"instrument": "X", "value": 100}, {"instrument": "Y", "value": 100}]
+    result = gen.analyze_positions_with_universe(
+        pred, prices, holdings,
+        UniverseSnapshot.observe("demo", "2026-03-01", ["A", "B", "C", "D", "E", "F", "G"]),
+    )
+    assert result.forced_exit_count == 2
+    assert result.normal_sell_count == 0
+    assert result.executable_sell_count == 2
+    assert result.target_buy_count == 2
+
+
+def test_disabled_universe_check_still_counts_unranked_holdings(mock_env):
+    strategy, _, _ = mock_env
+    gen = strategy.TopkDropoutOrderGenerator(
+        topk=2, n_drop=0, buy_suggestion_factor=1, sell_out_of_universe=False,
+    )
+    pred, prices = _universe_frames()
+    holdings = [{"instrument": "D", "value": 100}, {"instrument": "Z", "value": 100}]
+    result = gen.analyze_positions_with_universe(pred, prices, holdings, None)
+    assert result.forced_exit_count == 0
+    assert result.eligible_holding_count is None
+    assert result.eligible_unscored_instruments == ("Z",)
+    assert result.target_buy_count == 0
+
+
 # ── create_backtest_strategy ─────────────────────────────────────────────
 
 def test_create_backtest_strategy(mock_env, monkeypatch):
@@ -330,7 +416,7 @@ def test_create_backtest_strategy(mock_env, monkeypatch):
     config = {
         "strategy": {
             "name": "topk_dropout",
-            "params": {"topk": 20, "n_drop": 3, "buy_suggestion_factor": 2}
+            "params": {"topk": 20, "n_drop": 3, "buy_suggestion_factor": 2, "sell_out_of_universe": True}
         },
         "backtest": {}
     }
