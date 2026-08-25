@@ -795,7 +795,6 @@ class ResearchRankingReplay:
             raise ReplayContractError("window_size must be an integer from 4 through 6")
         weekly = self._weekly_candidates(start, end)
         inventory_rows = [self._inventory_date(date) for date in weekly]
-        complete_dates = [row["anchor"] for row in inventory_rows if row["status"] == "complete"]
         runs = []
         current_run = []
         for row in inventory_rows:
@@ -859,7 +858,11 @@ class ResearchRankingReplay:
             base["status"] = "blocked_inventory"
             base["result_digest"] = _canonical_digest({key: value for key, value in base.items() if key != "result_digest"})
             return ReplayResult(base, _RESULT_AUTHORITY)
-        if self.inputs.parity_anchor not in complete_dates:
+        inventory_by_anchor = {row["anchor"]: row for row in inventory_rows}
+        parity_inventory = inventory_by_anchor.get(self.inputs.parity_anchor)
+        if parity_inventory is None:
+            parity_inventory = self._inventory_date(self.inputs.parity_anchor)
+        if parity_inventory["status"] != "complete":
             base["status"] = "blocked_parity"
             base["parity"] = {"status": "failed", "reason": "sealed_anchor_is_not_complete"}
             base["result_digest"] = _canonical_digest({key: value for key, value in base.items() if key != "result_digest"})

@@ -228,6 +228,42 @@ def test_champion_parity_failure_prevents_challenger_results(tmp_path):
     assert result["comparisons"] == []
 
 
+def test_sealed_parity_anchor_outside_preferred_window_is_independently_observed(tmp_path):
+    workspace, qlib = _fixture(tmp_path)
+    inputs = load_sealed_replay_inputs(workspace, DATES[-1], qlib_data_dir=qlib)
+    result = ResearchRankingReplay(inputs, top_k=2).run(
+        preferred_start=DATES[0], preferred_end=DATES[-2], window_size=4,
+    )
+    repeated = ResearchRankingReplay(inputs, top_k=2).run(
+        preferred_start=DATES[0], preferred_end=DATES[-2], window_size=4,
+    )
+
+    assert result["status"] == "complete"
+    assert result["result_digest"] == repeated["result_digest"]
+    assert result["parity"]["status"] == "passed"
+    assert result["inventory"]["weekly_candidates"] == list(DATES[:-1])
+    assert result["inventory"]["selected_anchors"] == list(DATES[-5:-1])
+    assert all(row["anchor"] != DATES[-1] for row in result["inventory"]["dates"])
+    assert set(result["rankings"]) == set(DATES[-5:-1]) | {DATES[-1]}
+
+
+def test_incomplete_sealed_parity_anchor_outside_preferred_window_fails_closed(tmp_path):
+    missing = (DATES[-1], MODELS[1], "BBB")
+    workspace, qlib = _fixture(tmp_path, missing=missing)
+    inputs = load_sealed_replay_inputs(workspace, DATES[-1], qlib_data_dir=qlib)
+    result = ResearchRankingReplay(inputs, top_k=2).run(
+        preferred_start=DATES[0], preferred_end=DATES[-2], window_size=4,
+    )
+
+    assert result["status"] == "blocked_parity"
+    assert result["parity"] == {
+        "status": "failed", "reason": "sealed_anchor_is_not_complete",
+    }
+    assert result["inventory"]["selected_anchors"] == list(DATES[-5:-1])
+    assert result["rankings"] == {}
+    assert result["comparisons"] == []
+
+
 @pytest.mark.parametrize("target", ["manifest", "prediction", "universe"])
 def test_frozen_input_hash_mismatch_is_fail_closed(tmp_path, target):
     workspace, qlib = _fixture(tmp_path)

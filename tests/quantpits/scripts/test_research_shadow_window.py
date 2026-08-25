@@ -47,6 +47,17 @@ def test_cli_compact_stdout_matches_normalized_privacy_allow_list(tmp_path, caps
     assert str(profile._private_path) not in rendered
 
 
+def test_cli_runs_earlier_window_with_sealed_parity_anchor_outside_range(tmp_path, capsys):
+    _runner, _stage, _inputs, profile, workspace, qlib = build_window(tmp_path, 4)
+    argv = _argv(workspace, qlib, profile._private_path)
+    argv[argv.index("--preferred-end") + 1] = DATES[-2]
+
+    assert main(argv) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "complete"
+    assert payload["requested_cycle_count"] == 4
+
+
 def test_cli_blocked_exception_emits_only_type_and_reason_code(tmp_path, capsys):
     missing = tmp_path / "private-secret-profile.json"
     assert main(_argv(tmp_path, tmp_path, missing)) == 2
