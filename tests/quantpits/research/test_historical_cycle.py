@@ -27,7 +27,7 @@ from quantpits.research.historical_cycle import (
     write_historical_cycle_output,
 )
 from quantpits.research.intents import CurrentRuleShadowIntentPlanner
-from quantpits.research.accounting import ShadowPortfolioTransition
+from quantpits.research.accounting import ShadowPortfolioState, ShadowPortfolioTransition
 import quantpits.research.historical_cycle as historical_cycle_module
 from quantpits.research.replay import ResearchRankingReplay, load_sealed_replay_inputs
 from quantpits.scripts.research_shadow_cycle import main as shadow_cycle_main
@@ -207,6 +207,60 @@ def build_runner(tmp_path, profile=None):
         provider_root=qlib, anchor_date=ANCHOR, market="csi300",
     )
     return runner, workspace, qlib
+
+
+def test_optional_prior_states_none_preserves_exact_b2_terminal_payload(tmp_path):
+    runner, _workspace, _qlib = build_runner(tmp_path)
+    expected = runner.run()
+    close = runner._observer.observe_anchor_close(
+        anchor_date=ANCHOR,
+        requested_instruments=runner.requested_anchor_instruments_for(None),
+    )
+    prepared = runner.prepare_arms(close, prior_states=None)
+    receipts = {}
+    for item in prepared.terminal_arms:
+        requested = tuple(sorted(
+            {position.instrument for position in item["prior_state"].positions}
+            | {intent.instrument for intent in item["intent_planning_result"].intents.intents}
+        ))
+        receipts[item["arm_id"]] = runner._observer.observe_next_open(
+            trade_date=runner._trade_date, requested_instruments=requested,
+        )
+    actual = runner.settle_arms(prepared, receipts)
+    assert [runner._arm_payload(item) for item in actual] == expected["terminal_arms"]
+    assert [dict(runner._comparison(actual[0], item)) for item in actual[1:]] == expected["comparisons"]
+
+
+def test_optional_prior_states_use_current_holdings_for_close_request(tmp_path):
+    runner, _workspace, _qlib = build_runner(tmp_path)
+    states = {}
+    for arm in ARM_IDS:
+        base = runner._state(arm)
+        states[arm] = ShadowPortfolioState.from_dict({
+            "portfolio_id": base.portfolio_id, "as_of_date": base.as_of_date,
+            "cash": "10000",
+            "positions": [{"instrument": "SH999999", "quantity": 100, "book_cost": "1000"}],
+        })
+    requested = runner.requested_anchor_instruments_for(states)
+    assert "SH999999" in requested
+    assert requested == tuple(sorted({
+        row["instrument"] for ranking in runner._rankings.values()
+        for row in ranking.rows if row["scored"]
+    } | {"SH999999"}))
+
+
+def test_optional_prior_state_set_rejects_missing_extra_reordered_foreign_and_duplicate_portfolios(tmp_path):
+    runner, _workspace, _qlib = build_runner(tmp_path)
+    states = {arm: runner._state(arm) for arm in ARM_IDS}
+    invalid = [
+        {arm: states[arm] for arm in ARM_IDS[:-1]},
+        {**states, "FOREIGN": states[ARM_IDS[0]]},
+        {arm: states[arm] for arm in reversed(ARM_IDS)},
+        {arm: states[ARM_IDS[0]] if arm == ARM_IDS[1] else states[arm] for arm in ARM_IDS},
+    ]
+    for value in invalid:
+        with pytest.raises(HistoricalCycleContractError, match="prior[_ ]state"):
+            runner.requested_anchor_instruments_for(value)
 
 
 def test_strict_profile_preserves_private_path_and_exact_digests(tmp_path):

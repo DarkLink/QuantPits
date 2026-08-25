@@ -35,6 +35,12 @@ _EXPORT_MODULES = {
     "load_replay_profile": "quantpits.research.historical_cycle",
     "rounding_adjustment_within_bound": "quantpits.research.historical_cycle",
     "write_historical_cycle_output": "quantpits.research.historical_cycle",
+    "HistoricalShadowWindowReplay": "quantpits.research.historical_window",
+    "HistoricalWindowContractError": "quantpits.research.historical_window",
+    "HistoricalWindowInputError": "quantpits.research.historical_window",
+    "HistoricalWindowResult": "quantpits.research.historical_window",
+    "SequentialPriorStateSet": "quantpits.research.historical_window",
+    "compact_window_summary": "quantpits.research.historical_window",
 }
 
 
@@ -78,4 +84,10 @@ __all__ = [
     "load_replay_profile",
     "rounding_adjustment_within_bound",
     "write_historical_cycle_output",
+    "HistoricalShadowWindowReplay",
+    "HistoricalWindowContractError",
+    "HistoricalWindowInputError",
+    "HistoricalWindowResult",
+    "SequentialPriorStateSet",
+    "compact_window_summary",
 ]

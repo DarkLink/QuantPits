@@ -627,6 +627,7 @@ def _source_fingerprint(engine_root: Path) -> Mapping[str, Any]:
         "quantpits/research/replay.py", "quantpits/research/intents.py",
         "quantpits/research/accounting.py", "quantpits/utils/strategy.py",
         "quantpits/research/historical_cycle.py",
+        "quantpits/research/historical_window.py",
     )
     members = []
     for logical in files:
@@ -813,6 +814,7 @@ class HistoricalShadowCycleReplay:
         ):
             raise HistoricalCycleContractError("Stage A ranking bytes changed during revalidation")
         self._rankings = MappingProxyType(revalidated_rankings)
+        self._stage_a_snapshot = stage_a
         self._stage_a_result_digest = stage_a["result_digest"]
         self._stage_a_public = {
             "source_models": stage_a["source_models"],
@@ -840,13 +842,89 @@ class HistoricalShadowCycleReplay:
         self._source = _source_fingerprint(self._engine_root)
         self._environment = _environment_fingerprint()
 
+    def _window_step(self, anchor_date: str) -> "HistoricalShadowCycleReplay":
+        """Derive another anchor runner while preserving window observer authority."""
+        anchor = _date(anchor_date, "anchor_date")
+        selected = tuple(self._stage_a_snapshot["inventory"]["selected_anchors"])
+        if anchor not in selected:
+            raise HistoricalCycleContractError("anchor is not a Stage A selected anchor")
+        rankings = self._stage_a_snapshot["rankings"].get(anchor)
+        if not isinstance(rankings, Mapping) or tuple(rankings) != ARM_IDS:
+            raise HistoricalCycleContractError("Stage A anchor does not carry exact ordered five arms")
+        revalidated = {arm: _revalidate_ranking(rankings[arm]) for arm in ARM_IDS}
+        if any(revalidated[arm].to_csv_bytes() != rankings[arm].to_csv_bytes() for arm in ARM_IDS):
+            raise HistoricalCycleContractError("Stage A ranking bytes changed during revalidation")
+        position = self._inputs.calendar_dates.index(anchor)
+        if position + 1 >= len(self._inputs.calendar_dates):
+            raise HistoricalCycleContractError("anchor has no next trading session")
+        derived = object.__new__(type(self))
+        for name, value in (
+            ("_stage_a_snapshot", self._stage_a_snapshot),
+            ("_rankings", MappingProxyType(revalidated)),
+            ("_stage_a_result_digest", self._stage_a_result_digest),
+            ("_stage_a_public", self._stage_a_public), ("_inputs", self._inputs),
+            ("_profile", self._profile), ("_anchor", anchor), ("_market", self._market),
+            ("_trade_date", self._inputs.calendar_dates[position + 1]),
+            ("_observer", self._observer), ("_engine_root", self._engine_root),
+            ("_source", self._source), ("_environment", self._environment),
+        ):
+            object.__setattr__(derived, name, value)
+        return derived
+
     @property
     def requested_anchor_instruments(self) -> Tuple[str, ...]:
+        return self.requested_anchor_instruments_for()
+
+    def _validated_prior_states(
+        self, prior_states: Optional[Mapping[str, ShadowPortfolioState]],
+    ) -> Optional[Mapping[str, ShadowPortfolioState]]:
+        if prior_states is None:
+            return None
+        if not isinstance(prior_states, Mapping) or tuple(prior_states) != ARM_IDS:
+            raise HistoricalCycleContractError(
+                "prior_states must contain exact ordered five arms"
+            )
+        copied: Dict[str, ShadowPortfolioState] = {}
+        for arm in ARM_IDS:
+            state = prior_states[arm]
+            if type(state) is not ShadowPortfolioState:
+                raise HistoricalCycleContractError(
+                    "prior_states values must be canonical portfolio states"
+                )
+            try:
+                current = state._validated_copy()
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except Exception as exc:
+                raise HistoricalCycleContractError(
+                    "prior state failed canonical revalidation"
+                ) from exc
+            if current.digest != state.digest or current.as_of_date > self._anchor:
+                raise HistoricalCycleContractError(
+                    "prior state digest/date is invalid for this anchor"
+                )
+            copied[arm] = current
+        if len({state.portfolio_id for state in copied.values()}) != len(ARM_IDS):
+            raise HistoricalCycleContractError(
+                "prior state portfolio identities must be distinct"
+            )
+        return MappingProxyType(copied)
+
+    def requested_anchor_instruments_for(
+        self, prior_states: Optional[Mapping[str, ShadowPortfolioState]] = None,
+    ) -> Tuple[str, ...]:
+        validated = self._validated_prior_states(prior_states)
         ranked = {
             row["instrument"] for ranking in self._rankings.values()
             for row in ranking.rows if row["scored"]
         }
-        held = {item["instrument"] for item in self._profile.bootstrap["positions"]}
+        if validated is None:
+            held = {item["instrument"] for item in self._profile.bootstrap["positions"]}
+        else:
+            held = {
+                position.instrument for state in validated.values()
+                for position in state.positions
+            }
         return tuple(sorted(ranked | held))
 
     def _state(self, arm: str) -> ShadowPortfolioState:
@@ -868,16 +946,21 @@ class HistoricalShadowCycleReplay:
             "anchor": self._anchor, "trade_date": self._trade_date, "arm": arm,
         })
 
-    def prepare_arms(self, anchor_prices: CashPriceReceipt) -> PreparedCycle:
+    def prepare_arms(
+        self, anchor_prices: CashPriceReceipt, *,
+        prior_states: Optional[Mapping[str, ShadowPortfolioState]] = None,
+    ) -> PreparedCycle:
+        validated_priors = self._validated_prior_states(prior_states)
         if not isinstance(anchor_prices, CashPriceReceipt) or anchor_prices.observation_kind != "CASH_CLOSE":
             raise HistoricalCycleContractError("prepare_arms requires an anchor-close receipt")
         anchor_prices._validated_copy()
-        if anchor_prices.observation_date != self._anchor or anchor_prices.requested_instruments != self.requested_anchor_instruments:
+        requested_anchor = self.requested_anchor_instruments_for(validated_priors)
+        if anchor_prices.observation_date != self._anchor or anchor_prices.requested_instruments != requested_anchor:
             raise HistoricalCycleContractError("anchor receipt identity/requested set mismatch")
         terminal = []
         for arm in ARM_IDS:
             ranking = self._rankings[arm]
-            prior = self._state(arm)
+            prior = self._state(arm) if validated_priors is None else validated_priors[arm]
             cycle_id = self._cycle_id(arm)
             requested = tuple(sorted(
                 {row["instrument"] for row in ranking.rows if row["scored"]}
