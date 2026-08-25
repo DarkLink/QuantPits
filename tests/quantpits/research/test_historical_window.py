@@ -14,6 +14,7 @@ from quantpits.research.historical_window import (
     HistoricalWindowResult,
     SequentialPriorStateSet,
     compact_window_summary,
+    revalidate_historical_window_result,
     _WINDOW_AUTHORITY,
 )
 from quantpits.research.historical_cycle import _digest_payload
@@ -69,6 +70,18 @@ def build_window(tmp_path, window_size=4):
         provider_root=qlib, market="csi300", window_size=window_size,
     )
     return runner, stage_a, inputs, profile, workspace, qlib
+
+
+def test_public_result_revalidation_returns_independent_exact_snapshot_and_denies_foreign_payload(tmp_path):
+    result = build_window(tmp_path, 4)[0].run()
+    snapshot = revalidate_historical_window_result(result)
+    assert snapshot is not result
+    assert snapshot.to_canonical_json_bytes() == result.to_canonical_json_bytes()
+    with pytest.raises(HistoricalWindowContractError, match="replay-owned"):
+        revalidate_historical_window_result(result.to_dict())
+    result._payload["status"] = "BLOCKED"
+    with pytest.raises(HistoricalWindowContractError, match="current historical-window"):
+        revalidate_historical_window_result(result)
 
 
 def test_constructor_revalidates_stage_a_and_exact_selected_anchor_window(tmp_path):

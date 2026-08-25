@@ -41,6 +41,12 @@ _EXPORT_MODULES = {
     "HistoricalWindowResult": "quantpits.research.historical_window",
     "SequentialPriorStateSet": "quantpits.research.historical_window",
     "compact_window_summary": "quantpits.research.historical_window",
+    "revalidate_historical_window_result": "quantpits.research.historical_window",
+    "HistoricalWindowPublicationContractError": "quantpits.research.historical_window_publication",
+    "HistoricalWindowPublicationInputError": "quantpits.research.historical_window_publication",
+    "WindowPublicationReceipt": "quantpits.research.historical_window_publication",
+    "build_historical_window_artifacts": "quantpits.research.historical_window_publication",
+    "write_historical_window_output": "quantpits.research.historical_window_publication",
 }
 
 
@@ -90,4 +96,10 @@ __all__ = [
     "HistoricalWindowResult",
     "SequentialPriorStateSet",
     "compact_window_summary",
+    "revalidate_historical_window_result",
+    "HistoricalWindowPublicationContractError",
+    "HistoricalWindowPublicationInputError",
+    "WindowPublicationReceipt",
+    "build_historical_window_artifacts",
+    "write_historical_window_output",
 ]

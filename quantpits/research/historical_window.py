@@ -280,6 +280,29 @@ class HistoricalWindowResult(Mapping[str, Any]):
         return self._bytes
 
 
+def revalidate_historical_window_result(
+    result: HistoricalWindowResult,
+) -> HistoricalWindowResult:
+    """Return an independent snapshot after checking the current payload."""
+    if not isinstance(result, HistoricalWindowResult):
+        raise HistoricalWindowContractError(
+            "revalidation requires a replay-owned historical-window result"
+        )
+    try:
+        snapshot = HistoricalWindowResult(result._payload, _WINDOW_AUTHORITY)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except Exception as exc:
+        raise HistoricalWindowContractError(
+            "current historical-window result failed revalidation"
+        ) from exc
+    if snapshot.to_canonical_json_bytes() != result.to_canonical_json_bytes():
+        raise HistoricalWindowContractError(
+            "current historical-window result bytes are inconsistent"
+        )
+    return snapshot
+
+
 def _safe_error(exc: BaseException, reason: str) -> Dict[str, str]:
     return {"type": type(exc).__name__, "reason_code": reason}
 
@@ -761,4 +784,5 @@ __all__ = [
     "HistoricalShadowWindowReplay", "HistoricalWindowContractError",
     "HistoricalWindowInputError", "HistoricalWindowResult",
     "SequentialPriorStateSet", "compact_window_summary",
+    "revalidate_historical_window_result",
 ]
