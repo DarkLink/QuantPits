@@ -34,18 +34,41 @@ def test_cli_requires_exact_read_only_arguments_and_rejects_output_or_selection_
         parser.parse_args(_argv("/workspace", "/qlib", "/profile.json") + ["--best-arm", "DROP_1_3"])
 
 
-def test_cli_compact_stdout_matches_normalized_privacy_allow_list(
-    tmp_path, capsys, monkeypatch,
-):
+def test_cli_compact_stdout_matches_normalized_privacy_allow_list(tmp_path, capsys):
     _runner, _stage, _inputs, profile, workspace, qlib = build_window(tmp_path, 4)
-    monkeypatch.delitem(sys.modules, "quantpits.utils.strategy", raising=False)
-    monkeypatch.delitem(sys.modules, "quantpits.utils.env", raising=False)
-    environment_before = dict(os.environ)
-    assert main(_argv(workspace, qlib, profile._private_path)) == 0
-    captured = capsys.readouterr()
+    import quantpits.utils as utils_package
+
+    module_names = ("quantpits.utils.strategy", "quantpits.utils.env")
+    module_before = {name: sys.modules.get(name) for name in module_names}
+    attribute_before = {
+        name: (hasattr(utils_package, name), getattr(utils_package, name, None))
+        for name in ("strategy", "env")
+    }
+    try:
+        for name in module_names:
+            sys.modules.pop(name, None)
+        for name in attribute_before:
+            if hasattr(utils_package, name):
+                delattr(utils_package, name)
+        environment_before = dict(os.environ)
+        return_code = main(_argv(workspace, qlib, profile._private_path))
+        environment_after = dict(os.environ)
+        captured = capsys.readouterr()
+    finally:
+        for name in module_names:
+            sys.modules.pop(name, None)
+            if module_before[name] is not None:
+                sys.modules[name] = module_before[name]
+        for name, (existed, value) in attribute_before.items():
+            if hasattr(utils_package, name):
+                delattr(utils_package, name)
+            if existed:
+                setattr(utils_package, name, value)
+
+    assert return_code == 0
     assert captured.err == ""
     assert len(captured.out.splitlines()) == 1
-    assert dict(os.environ) == environment_before
+    assert environment_after == environment_before
     payload = json.loads(captured.out)
     assert set(payload) == {
         "status", "evidence_class", "warnings", "prospective_claim",
