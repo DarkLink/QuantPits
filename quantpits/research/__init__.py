@@ -16,6 +16,12 @@ _EXPORT_MODULES = {
     "ShadowPortfolioTransition": "quantpits.research.accounting",
     "ShadowQuoteSnapshot": "quantpits.research.accounting",
     "ShadowTransitionResult": "quantpits.research.accounting",
+    "AnchorPriceSnapshot": "quantpits.research.intents",
+    "CurrentRuleIntentDefinition": "quantpits.research.intents",
+    "CurrentRuleShadowIntentPlanner": "quantpits.research.intents",
+    "IntentPlanningContractError": "quantpits.research.intents",
+    "IntentPlanningParityError": "quantpits.research.intents",
+    "IntentPlanningResult": "quantpits.research.intents",
 }
 
 
@@ -40,4 +46,10 @@ __all__ = [
     "ShadowPortfolioTransition",
     "ShadowQuoteSnapshot",
     "ShadowTransitionResult",
+    "AnchorPriceSnapshot",
+    "CurrentRuleIntentDefinition",
+    "CurrentRuleShadowIntentPlanner",
+    "IntentPlanningContractError",
+    "IntentPlanningParityError",
+    "IntentPlanningResult",
 ]
