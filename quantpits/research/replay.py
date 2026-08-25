@@ -927,6 +927,14 @@ class ResearchRankingReplay:
 
 
 def _copy_result_value(value: Any) -> Any:
+    if isinstance(value, RankingResult):
+        return RankingResult(
+            tuple(dict(row) for row in value.rows),
+            value.eligible_count,
+            value.scored_count,
+            value.missing_count,
+            value.complete,
+        )
     if isinstance(value, Mapping):
         return {key: _copy_result_value(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -962,6 +970,18 @@ class ReplayResult(Mapping[str, Any]):
 
     def _trusted_payload(self) -> Mapping[str, Any]:
         return self._payload
+
+
+def revalidate_replay_result(result: ReplayResult) -> ReplayResult:
+    """Return a fresh truth-owner snapshot after rechecking the current payload."""
+    if not isinstance(result, ReplayResult):
+        raise ReplayContractError("revalidation requires a replay-owned result")
+    try:
+        return ReplayResult(result._trusted_payload(), _RESULT_AUTHORITY)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except Exception as exc:
+        raise ReplayContractError("current replay result failed revalidation") from exc
 
 
 def _public_result(result: Mapping[str, Any], *, include_digest: bool = True, include_csv: bool = False) -> dict:

@@ -35,7 +35,11 @@ from quantpits.research.intents import (
     CurrentRuleIntentDefinition,
     CurrentRuleShadowIntentPlanner,
 )
-from quantpits.research.replay import ReplayResult, SealedReplayInputs
+from quantpits.research.replay import (
+    ReplayResult,
+    SealedReplayInputs,
+    revalidate_replay_result,
+)
 
 
 ARM_IDS = ("CHAMPION_4", "DROP_1_3", "DROP_2_3", "DROP_3_3", "DROP_4_3")
@@ -172,6 +176,24 @@ def _try_root_identity(root: Path) -> Optional[Tuple[int, int, int, int, int]]:
         return _root_identity(root)
     except (OSError, HistoricalCycleInputError):
         return None
+
+
+def _directory_descriptor_identity(descriptor: int) -> Tuple[int, int, int, int, int]:
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode):
+        raise HistoricalCycleInputError("authority descriptor is not a directory")
+    return (info.st_dev, info.st_ino, info.st_mode, 0, 0)
+
+
+def _require_exact_directory_inventory(
+    descriptor: int, expected: Sequence[str], logical: str,
+) -> None:
+    observed = tuple(sorted(os.listdir(descriptor)))
+    required = tuple(sorted(expected))
+    if observed != required:
+        raise HistoricalCycleInputError(
+            "publication directory inventory is not exact: %s" % logical
+        )
 
 
 def _physical_file(root: Path, logical: str) -> Path:
@@ -763,28 +785,40 @@ class HistoricalShadowCycleReplay:
             raise HistoricalCycleContractError("Stage A inputs must be truth-owner contracts")
         if not isinstance(profile, ReplayProfileReceipt):
             raise HistoricalCycleContractError("profile must be an inspector-owned receipt")
-        if stage_a_result["status"] != "complete" or stage_a_result["parity"].get("status") != "passed":
+        try:
+            stage_a = revalidate_replay_result(stage_a_result)
+        except Exception as exc:
+            raise HistoricalCycleContractError(
+                "Stage A current payload failed result-digest revalidation"
+            ) from exc
+        if stage_a["status"] != "complete" or stage_a["parity"].get("status") != "passed":
             raise HistoricalCycleContractError("Stage A result is not complete with parity")
         anchor = _date(anchor_date, "anchor_date")
         if (
-            stage_a_result["calendar_identity"]["digest"] != dict(stage_a_inputs.calendar_digest)
-            or stage_a_result["universe_identity"]["digest"] != dict(stage_a_inputs.universe_digest)
-            or stage_a_result["source_to_materialization_relation"] != stage_a_inputs.source_to_materialization_relation
-            or stage_a_result["source_models"] != [item.public_identity() for item in stage_a_inputs.sources]
+            stage_a["calendar_identity"]["digest"] != dict(stage_a_inputs.calendar_digest)
+            or stage_a["universe_identity"]["digest"] != dict(stage_a_inputs.universe_digest)
+            or stage_a["source_to_materialization_relation"] != stage_a_inputs.source_to_materialization_relation
+            or stage_a["source_models"] != [item.public_identity() for item in stage_a_inputs.sources]
         ):
             raise HistoricalCycleContractError("Stage A result and sealed inputs have foreign identity")
-        if anchor not in tuple(stage_a_result["inventory"]["selected_anchors"]):
+        if anchor not in tuple(stage_a["inventory"]["selected_anchors"]):
             raise HistoricalCycleContractError("anchor is not a Stage A selected anchor")
-        rankings = stage_a_result["rankings"].get(anchor)
+        rankings = stage_a["rankings"].get(anchor)
         if not isinstance(rankings, Mapping) or tuple(rankings) != ARM_IDS:
             raise HistoricalCycleContractError("Stage A anchor does not carry exact ordered five arms")
-        self._rankings = MappingProxyType({arm: _revalidate_ranking(rankings[arm]) for arm in ARM_IDS})
-        self._stage_a_result_digest = stage_a_result["result_digest"]
+        revalidated_rankings = {arm: _revalidate_ranking(rankings[arm]) for arm in ARM_IDS}
+        if any(
+            revalidated_rankings[arm].to_csv_bytes() != rankings[arm].to_csv_bytes()
+            for arm in ARM_IDS
+        ):
+            raise HistoricalCycleContractError("Stage A ranking bytes changed during revalidation")
+        self._rankings = MappingProxyType(revalidated_rankings)
+        self._stage_a_result_digest = stage_a["result_digest"]
         self._stage_a_public = {
-            "source_models": stage_a_result["source_models"],
-            "universe_identity": stage_a_result["universe_identity"],
-            "calendar_identity": stage_a_result["calendar_identity"],
-            "source_to_materialization_relation": stage_a_result["source_to_materialization_relation"],
+            "source_models": stage_a["source_models"],
+            "universe_identity": stage_a["universe_identity"],
+            "calendar_identity": stage_a["calendar_identity"],
+            "source_to_materialization_relation": stage_a["source_to_materialization_relation"],
         }
         self._inputs = stage_a_inputs
         self._profile = profile
@@ -1237,65 +1271,82 @@ def write_historical_cycle_output(
         raise HistoricalCycleContractError("publication revalidation failed before write")
     root = Path(output_root)
     tmp = Path("/tmp").resolve(strict=True)
-    if not root.is_absolute() or root.parent.resolve(strict=True) != root.parent:
-        raise HistoricalCycleContractError("output root must use a canonical physical parent")
-    parent = root.parent.resolve(strict=True)
-    try:
-        parent.relative_to(tmp)
-    except ValueError as exc:
-        raise HistoricalCycleContractError("output root must be physically below /tmp") from exc
-    if root.parent / root.name != root or not root.name or root.name in (".", ".."):
-        raise HistoricalCycleContractError("output root must be a canonical direct path")
-    parent_before = _root_identity(parent)
-    if root.exists() or root.is_symlink():
-        return PublicationReceipt(
-            _authority=_AUTHORITY, operation_id=operation_id, status="CONFLICT", did_write=False,
-            result_digest=result["result_digest"], manifest_digest=None, member_count=0,
-            output_root_identity=None, root_parent_identity_before=parent_before,
-            root_parent_identity_after=_try_root_identity(parent),
+    if (
+        not root.is_absolute() or root.parent != tmp
+        or root.parent / root.name != root or not root.name or root.name in (".", "..")
+    ):
+        raise HistoricalCycleContractError(
+            "output root must be one direct child of physical /tmp"
         )
+    parent = tmp
     members = _artifact_members(runner, fresh)
     directory_fds = []
     did_write = False
     root_identity = None
     written_count = 0
+    parent_before = _root_identity(parent)
     try:
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        authority_parent_fd = os.open(str(parent), directory_flags)
+        directory_fds.append(authority_parent_fd)
+        if (
+            _directory_descriptor_identity(authority_parent_fd) != parent_before
+            or _root_identity(parent) != parent_before
+        ):
+            raise HistoricalCycleInputError("publication parent identity changed before create")
         try:
-            os.mkdir(str(root), 0o700)
+            os.mkdir(root.name, 0o700, dir_fd=authority_parent_fd)
         except FileExistsError:
+            parent_after = _try_root_identity(parent)
+            if (
+                parent_after != parent_before
+                or _directory_descriptor_identity(authority_parent_fd) != parent_before
+            ):
+                return PublicationReceipt(
+                    _authority=_AUTHORITY, operation_id=operation_id,
+                    status="UNCERTAIN", did_write=False,
+                    result_digest=result["result_digest"], manifest_digest=None,
+                    member_count=0, output_root_identity=None,
+                    root_parent_identity_before=parent_before,
+                    root_parent_identity_after=parent_after,
+                )
             return PublicationReceipt(
                 _authority=_AUTHORITY, operation_id=operation_id, status="CONFLICT", did_write=False,
                 result_digest=result["result_digest"], manifest_digest=None, member_count=0,
                 output_root_identity=None, root_parent_identity_before=parent_before,
-                root_parent_identity_after=_try_root_identity(parent),
+                root_parent_identity_after=parent_after,
             )
         did_write = True
-        root_identity = _root_identity(root)
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        root_fd = os.open(str(root), directory_flags)
+        root_fd = os.open(root.name, directory_flags, dir_fd=authority_parent_fd)
         directory_fds.append(root_fd)
+        root_identity = _directory_descriptor_identity(root_fd)
+        if _root_identity(root) != root_identity:
+            raise HistoricalCycleInputError("publication root identity changed after create")
         os.mkdir("arms", 0o700, dir_fd=root_fd)
         arms_fd = os.open("arms", directory_flags, dir_fd=root_fd)
         directory_fds.append(arms_fd)
         arm_fds = {}
-        directory_identities = {".": _root_identity(root), "arms": _root_identity(root / "arms")}
+        directory_identities = {
+            ".": root_identity,
+            "arms": _directory_descriptor_identity(arms_fd),
+        }
         for arm in ARM_IDS:
             os.mkdir(arm, 0o700, dir_fd=arms_fd)
             arm_fd = os.open(arm, directory_flags, dir_fd=arms_fd)
             directory_fds.append(arm_fd)
             arm_fds[arm] = arm_fd
-            directory_identities["arms/" + arm] = _root_identity(root / "arms" / arm)
+            directory_identities["arms/" + arm] = _directory_descriptor_identity(arm_fd)
         manifest_rows = []
         for logical, data in members.items():
             parts = Path(logical).parts
             if len(parts) == 1:
-                parent_fd, name = root_fd, parts[0]
+                target_fd, name = root_fd, parts[0]
             elif len(parts) == 3 and parts[0] == "arms" and parts[1] in arm_fds:
-                parent_fd, name = arm_fds[parts[1]], parts[2]
+                target_fd, name = arm_fds[parts[1]], parts[2]
             else:
                 raise HistoricalCycleContractError("publication member path is outside the frozen layout")
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-            file_fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
+            file_fd = os.open(name, flags, 0o600, dir_fd=target_fd)
             with os.fdopen(file_fd, "wb") as handle:
                 handle.write(data)
                 handle.flush()
@@ -1327,11 +1378,27 @@ def write_historical_cycle_output(
             data = _stable_read(root, item["logical_path"])
             if data is None or _digest_bytes(data) != item["digest"]:
                 raise HistoricalCycleInputError("final member verification failed")
+        root_names = {
+            Path(logical).name for logical in members if len(Path(logical).parts) == 1
+        } | {"arms", "output_manifest.json"}
+        _require_exact_directory_inventory(root_fd, tuple(root_names), ".")
+        _require_exact_directory_inventory(arms_fd, ARM_IDS, "arms")
+        for arm in ARM_IDS:
+            arm_names = tuple(
+                Path(logical).name for logical in members
+                if Path(logical).parts[:2] == ("arms", arm)
+            )
+            _require_exact_directory_inventory(arm_fds[arm], arm_names, "arms/" + arm)
         for logical, identity in directory_identities.items():
             path = root if logical == "." else root.joinpath(*Path(logical).parts)
             if _root_identity(path) != identity:
                 raise HistoricalCycleInputError("publication directory identity changed")
-        if _root_identity(root) != root_identity or _root_identity(parent) != parent_before:
+        if (
+            _directory_descriptor_identity(root_fd) != root_identity
+            or _directory_descriptor_identity(authority_parent_fd) != parent_before
+            or _root_identity(root) != root_identity
+            or _root_identity(parent) != parent_before
+        ):
             raise HistoricalCycleInputError("publication namespace identity changed")
         os.fsync(root_fd)
         return PublicationReceipt(

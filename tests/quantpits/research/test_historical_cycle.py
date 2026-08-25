@@ -402,7 +402,9 @@ def test_stage_a_arm_set_must_remain_exact_and_ordered(tmp_path, mutation):
     else:
         stage_a._payload["rankings"][ANCHOR] = {key: arms[key] for key in reversed(tuple(arms))}
     profile = load_replay_profile(write_profile(tmp_path))
-    with pytest.raises(HistoricalCycleContractError, match="five arms"):
+    with pytest.raises(
+        HistoricalCycleContractError, match="result-digest revalidation|five arms",
+    ):
         HistoricalShadowCycleReplay(
             stage_a_result=stage_a, stage_a_inputs=inputs, profile=profile,
             provider_root=qlib, anchor_date=ANCHOR, market="csi300",
@@ -603,6 +605,29 @@ def test_public_result_construction_and_existing_output_are_fail_closed(tmp_path
         output.rmdir()
 
 
+def test_stage_a_current_ranking_tamper_is_denied_before_runner_capability(tmp_path):
+    stage_a, inputs, _workspace, qlib = build_stage(tmp_path / "source")
+    profile = load_replay_profile(write_profile(tmp_path, profile_raw()))
+    carried = stage_a._trusted_payload()
+    current = carried["rankings"][ANCHOR]["DROP_1_3"]
+    changed_scores = {
+        row["instrument"]: float(row["raw_score"]) + (
+            0.25 if index == 0 else 0.0
+        )
+        for index, row in enumerate(current.rows) if row["scored"]
+    }
+    carried["rankings"][ANCHOR]["DROP_1_3"] = canonical_full_ranking(
+        tuple(row["instrument"] for row in current.rows), changed_scores,
+    )
+    output = Path("/tmp") / ("quantpits_b2_stage_a_tamper_%s" % tmp_path.name)
+    with pytest.raises(HistoricalCycleContractError, match="result-digest revalidation"):
+        HistoricalShadowCycleReplay(
+            stage_a_result=stage_a, stage_a_inputs=inputs, profile=profile,
+            provider_root=qlib, anchor_date=ANCHOR, market="csi300",
+        )
+    assert not output.exists()
+
+
 def test_publication_is_manifest_last_exact_and_recomputed(tmp_path):
     runner, workspace, qlib = build_runner(tmp_path / "source")
     result = runner.run()
@@ -618,7 +643,13 @@ def test_publication_is_manifest_last_exact_and_recomputed(tmp_path):
         for item in manifest["members"]:
             data = (output / item["logical_path"]).read_bytes()
             assert item["digest"] == digest(data)
-        assert {path.name for path in output.iterdir()} >= {"input_receipt.json", "result.json", "summary.csv", "report.md", "arms", "output_manifest.json"}
+        assert {path.name for path in output.iterdir()} == {"input_receipt.json", "result.json", "summary.csv", "report.md", "arms", "output_manifest.json"}
+        assert {path.name for path in (output / "arms").iterdir()} == set(ARM_IDS)
+        for arm in ARM_IDS:
+            assert {path.name for path in (output / "arms" / arm).iterdir()} == {
+                "ranking.csv", "intent_plan.json", "quotes.json",
+                "settlement.json", "after_state.json",
+            }
         assert workspace_before == sorted((path.relative_to(workspace).as_posix(), path.stat().st_size) for path in workspace.rglob("*") if path.is_file())
         assert qlib_before == sorted((path.relative_to(qlib).as_posix(), path.stat().st_size) for path in qlib.rglob("*") if path.is_file())
     finally:
@@ -643,12 +674,60 @@ def test_publication_rejects_symlink_parent_without_creating_target(tmp_path):
     real_parent.mkdir()
     alias.symlink_to(real_parent, target_is_directory=True)
     try:
-        with pytest.raises(HistoricalCycleContractError, match="canonical physical parent"):
+        with pytest.raises(HistoricalCycleContractError, match="direct child"):
             write_historical_cycle_output(runner, result, alias / "result")
         assert not (real_parent / "result").exists()
     finally:
         alias.unlink()
         real_parent.rmdir()
+
+
+def test_publication_rejects_nested_parent_before_and_after_replacement(tmp_path):
+    runner, _workspace, _qlib = build_runner(tmp_path / "source")
+    result = runner.run()
+    parent = Path("/tmp") / ("quantpits_b2_nested_%s" % tmp_path.name)
+    displaced = parent.with_name(parent.name + "_displaced")
+    target = parent.with_name(parent.name + "_target")
+    parent.mkdir()
+    target.mkdir()
+    try:
+        with pytest.raises(HistoricalCycleContractError, match="direct child"):
+            write_historical_cycle_output(runner, result, parent / "result")
+        assert not (parent / "result").exists()
+        parent.rename(displaced)
+        parent.symlink_to(target, target_is_directory=True)
+        with pytest.raises(HistoricalCycleContractError, match="direct child"):
+            write_historical_cycle_output(runner, result, parent / "result")
+        assert not (target / "result").exists()
+    finally:
+        if parent.is_symlink():
+            parent.unlink()
+        shutil.rmtree(parent, ignore_errors=True)
+        shutil.rmtree(displaced, ignore_errors=True)
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def test_publication_root_create_is_relative_to_observed_tmp_descriptor(tmp_path, monkeypatch):
+    runner, _workspace, _qlib = build_runner(tmp_path / "source")
+    result = runner.run()
+    output = Path("/tmp") / ("quantpits_b2_dirfd_%s" % tmp_path.name)
+    original = os.mkdir
+    observed = []
+
+    def recording(path, mode=0o777, *, dir_fd=None):
+        if path == output.name:
+            observed.append(dir_fd)
+            assert dir_fd is not None
+            assert historical_cycle_module._directory_descriptor_identity(dir_fd) == historical_cycle_module._root_identity(Path("/tmp"))
+        return original(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", recording)
+    try:
+        receipt = write_historical_cycle_output(runner, result, output)
+        assert receipt.status == "COMMITTED"
+        assert len(observed) == 1
+    finally:
+        shutil.rmtree(output, ignore_errors=True)
 
 
 def test_process_control_during_publication_propagates_and_manifest_is_absent(tmp_path, monkeypatch):
@@ -699,11 +778,120 @@ def test_canonical_root_replacement_yields_uncertain_not_committed(tmp_path, mon
         shutil.rmtree(displaced, ignore_errors=True)
 
 
+@pytest.mark.parametrize("foreign_kind", ["file", "directory", "symlink"])
+def test_foreign_final_namespace_member_yields_uncertain(tmp_path, monkeypatch, foreign_kind):
+    runner, _workspace, _qlib = build_runner(tmp_path / "source")
+    result = runner.run()
+    output = Path("/tmp") / ("quantpits_b2_foreign_%s_%s" % (foreign_kind, tmp_path.name))
+    original = historical_cycle_module._stable_read
+    injected = []
+
+    def injecting(root, logical, **kwargs):
+        data = original(root, logical, **kwargs)
+        if root == output and logical == "output_manifest.json" and not injected:
+            injected.append(True)
+            foreign = output / "foreign"
+            if foreign_kind == "file":
+                foreign.write_bytes(b"foreign")
+            elif foreign_kind == "directory":
+                foreign.mkdir()
+            else:
+                foreign.symlink_to(output / "result.json")
+        return data
+
+    monkeypatch.setattr(historical_cycle_module, "_stable_read", injecting)
+    try:
+        receipt = write_historical_cycle_output(runner, result, output)
+        assert receipt.status == "UNCERTAIN" and receipt.did_write is True
+        assert (output / "output_manifest.json").is_file()
+    finally:
+        shutil.rmtree(output, ignore_errors=True)
+
+
+def test_member_move_away_and_back_during_final_read_yields_uncertain(tmp_path, monkeypatch):
+    runner, _workspace, _qlib = build_runner(tmp_path / "source")
+    result = runner.run()
+    output = Path("/tmp") / ("quantpits_b2_member_move_%s" % tmp_path.name)
+    original = historical_cycle_module._stable_read
+    calls = []
+
+    def moving(root, logical, **kwargs):
+        if root == output and logical == "result.json":
+            calls.append(True)
+            if len(calls) == 2:
+                member = output / logical
+                displaced = output / "result.displaced"
+                member.rename(displaced)
+                try:
+                    return original(root, logical, **kwargs)
+                finally:
+                    displaced.rename(member)
+        return original(root, logical, **kwargs)
+
+    monkeypatch.setattr(historical_cycle_module, "_stable_read", moving)
+    try:
+        receipt = write_historical_cycle_output(runner, result, output)
+        assert receipt.status == "UNCERTAIN" and receipt.did_write is True
+        assert (output / "result.json").is_file()
+    finally:
+        shutil.rmtree(output, ignore_errors=True)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "symlink", "hardlink", "special"])
+def test_invalid_expected_member_after_manifest_yields_uncertain(tmp_path, monkeypatch, mutation):
+    runner, _workspace, _qlib = build_runner(tmp_path / "source")
+    result = runner.run()
+    output = Path("/tmp") / ("quantpits_b2_member_%s_%s" % (mutation, tmp_path.name))
+    original = historical_cycle_module._stable_read
+    injected = []
+
+    def mutating(root, logical, **kwargs):
+        data = original(root, logical, **kwargs)
+        if root == output and logical == "output_manifest.json" and not injected:
+            injected.append(True)
+            target = output / "result.json"
+            target.unlink()
+            if mutation == "symlink":
+                target.symlink_to(output / "input_receipt.json")
+            elif mutation == "hardlink":
+                os.link(str(output / "input_receipt.json"), str(target))
+            elif mutation == "special":
+                os.mkfifo(str(target))
+        return data
+
+    monkeypatch.setattr(historical_cycle_module, "_stable_read", mutating)
+    try:
+        receipt = write_historical_cycle_output(runner, result, output)
+        assert receipt.status == "UNCERTAIN" and receipt.did_write is True
+        assert (output / "output_manifest.json").is_file()
+    finally:
+        shutil.rmtree(output, ignore_errors=True)
+
+
+def test_process_control_after_manifest_write_propagates(tmp_path, monkeypatch):
+    runner, _workspace, _qlib = build_runner(tmp_path / "source")
+    result = runner.run()
+    output = Path("/tmp") / ("quantpits_b2_manifest_interrupt_%s" % tmp_path.name)
+
+    def interrupted(*_args, **_kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(
+        historical_cycle_module, "_require_exact_directory_inventory", interrupted,
+    )
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            write_historical_cycle_output(runner, result, output)
+        assert (output / "output_manifest.json").is_file()
+    finally:
+        shutil.rmtree(output, ignore_errors=True)
+
+
 def test_output_outside_tmp_is_rejected_before_write(tmp_path):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
     output = Path.cwd() / "forbidden-b2-output"
-    with pytest.raises(HistoricalCycleContractError, match="below /tmp"):
+    with pytest.raises(HistoricalCycleContractError, match="direct child"):
         write_historical_cycle_output(runner, result, output)
     assert not output.exists()
 
