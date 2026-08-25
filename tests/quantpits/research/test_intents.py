@@ -239,6 +239,42 @@ def test_sell_estimate_increases_cash_used_for_buy_sizing():
     assert buys and buys[0].quantity >= 100
 
 
+def test_multi_sell_parity_replays_production_left_to_right_float_accumulation():
+    prior = state(positions=(
+        ("SH999997", 100, "1000"),
+        ("SH999998", 100, "1000"),
+        ("SH999999", 100, "1000"),
+    ))
+    ranked = ranking()
+    closes = {
+        "SH999997": "135.22987986828883",
+        "SH999998": "847.58630320029556",
+        "SH999999": "764.01084435763732",
+    }
+    requested = tuple(sorted(
+        {row["instrument"] for row in ranked.rows if row["scored"]}
+        | {item.instrument for item in prior.positions}
+    ))
+    prices = AnchorPriceSnapshot.from_iterable(
+        anchor_date=ANCHOR,
+        requested_instruments=requested,
+        rows=tuple({
+            "instrument": instrument,
+            "anchor_date": ANCHOR,
+            "status": "OBSERVED",
+            "cash_close": closes.get(instrument, "10"),
+        } for instrument in requested),
+    )
+
+    result = plan(ranking_value=ranked, prior=prior, prices=prices)
+    assert result.status == "COMPLETE"
+    assert intent_facts(result)[:3] == (
+        ("SELL", "SH999997", 100),
+        ("SELL", "SH999998", 100),
+        ("SELL", "SH999999", 100),
+    )
+
+
 def test_book_cost_changes_proposal_facts_but_not_order_semantics():
     first = state(positions=(("SZ000004", 100, "500"),))
     second = state(positions=(("SZ000004", 100, "999"),))
@@ -502,6 +538,15 @@ def test_generated_sell_mismatch_and_buy_overlap_are_denied(monkeypatch):
 
     monkeypatch.setattr(module, "_production_generator_class", lambda: MissingSell)
     with pytest.raises(IntentPlanningParityError, match="generated sells"):
+        plan(prior=prior, prices=snapshot(ranking(), prior))
+
+    class BadSellAmount(original):
+        def generate_sell_orders(self, *args, **kwargs):
+            orders, amount = super().generate_sell_orders(*args, **kwargs)
+            return orders, amount + 0.01
+
+    monkeypatch.setattr(module, "_production_generator_class", lambda: BadSellAmount)
+    with pytest.raises(IntentPlanningParityError, match="estimated sell amount"):
         plan(prior=prior, prices=snapshot(ranking(), prior))
 
     class OverlapBuy(original):

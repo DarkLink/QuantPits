@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 
 import pytest
 
@@ -32,10 +34,19 @@ def test_cli_requires_exact_read_only_arguments_and_rejects_output_or_selection_
         parser.parse_args(_argv("/workspace", "/qlib", "/profile.json") + ["--best-arm", "DROP_1_3"])
 
 
-def test_cli_compact_stdout_matches_normalized_privacy_allow_list(tmp_path, capsys):
+def test_cli_compact_stdout_matches_normalized_privacy_allow_list(
+    tmp_path, capsys, monkeypatch,
+):
     _runner, _stage, _inputs, profile, workspace, qlib = build_window(tmp_path, 4)
+    monkeypatch.delitem(sys.modules, "quantpits.utils.strategy", raising=False)
+    monkeypatch.delitem(sys.modules, "quantpits.utils.env", raising=False)
+    environment_before = dict(os.environ)
     assert main(_argv(workspace, qlib, profile._private_path)) == 0
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert len(captured.out.splitlines()) == 1
+    assert dict(os.environ) == environment_before
+    payload = json.loads(captured.out)
     assert set(payload) == {
         "status", "evidence_class", "warnings", "prospective_claim",
         "promotion_capability", "window_digest", "requested_cycle_count",

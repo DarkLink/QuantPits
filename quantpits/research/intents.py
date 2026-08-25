@@ -676,11 +676,15 @@ class CurrentRuleShadowIntentPlanner:
             raise IntentPlanningParityError("estimated sell amount must be finite") from exc
         if not math.isfinite(estimated_sell_amount) or estimated_sell_amount < 0:
             raise IntentPlanningParityError("estimated sell amount must be finite and non-negative")
-        expected_sell_amount = sum(
-            float(holdings[holding_ids.index(instrument)]["value"])
-            * float(sell_candidates.loc[instrument, "possible_min"])
-            for instrument in forced_ids + normal_ids
-        )
+        # Replay the production primitive's scalar domain and left-to-right
+        # ``+=`` exactly.  Python 3.12's built-in float sum uses compensated
+        # summation and can differ by one ULP from the production loop.
+        expected_sell_amount = 0
+        for instrument in forced_ids + normal_ids:
+            quantity = float(holdings[holding_ids.index(instrument)]["value"])
+            expected_sell_amount += quantity * sell_candidates.loc[
+                instrument, "possible_min"
+            ]
         if estimated_sell_amount != expected_sell_amount:
             raise IntentPlanningParityError("estimated sell amount disagrees with proposal")
 
