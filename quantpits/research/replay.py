@@ -33,6 +33,7 @@ WARNING_LINES = (
     "Current-rule replay may differ from historical Production behavior.",
 )
 FUSION_DEFINITION = "cross_sectional_percentile_rank_average_ties_then_equal_mean_v1"
+PARITY_SCORE_TOLERANCE = 1e-12
 _OBSERVATION_AUTHORITY = object()
 _RESULT_AUTHORITY = object()
 
@@ -293,7 +294,9 @@ class SealedReplayInputs:
     calendar_dates: Tuple[str, ...]
     sealed_ranking: RankingResult
     sealed_ranking_digest: Mapping[str, Any]
+    source_to_materialization_relation: str
     price_coverage: Mapping[str, Mapping[str, Any]]
+    price_source_inventory: Tuple[Mapping[str, Any], ...]
     price_source_inventory_digest: Optional[Mapping[str, Any]]
     _authority: InitVar[object] = None
 
@@ -309,13 +312,53 @@ class SealedReplayInputs:
         _validate_digest(self.universe_digest, domain="raw_bytes", name="universe")
         _validate_digest(self.calendar_digest, domain="raw_bytes", name="calendar")
         _validate_digest(self.sealed_ranking_digest, domain="raw_bytes", name="sealed ranking")
+        if self.source_to_materialization_relation != "unverified":
+            raise ReplayContractError("source-to-materialization relation must remain unverified")
         if not isinstance(self.price_coverage, Mapping):
             raise ReplayContractError("price coverage must be an observed mapping")
-        if self.price_source_inventory_digest is not None:
-            _validate_digest(
+        if not isinstance(self.price_source_inventory, tuple):
+            raise ReplayContractError("price source inventory must be an exact tuple")
+        canonical_price_inventory = []
+        identities = []
+        for item in self.price_source_inventory:
+            if not isinstance(item, Mapping) or set(item) != {
+                "instrument", "field", "logical_path", "status", "digest",
+            }:
+                raise ReplayContractError("price source inventory member fields are not exact")
+            instrument = _strict_text(item["instrument"], "price instrument")
+            field = item["field"]
+            if field not in {"close", "open"}:
+                raise ReplayContractError("price field must be close or open")
+            expected_path = "features/%s/%s.day.bin" % (instrument.lower(), field)
+            if item["logical_path"] != expected_path:
+                raise ReplayContractError("price source logical path is not canonical")
+            if item["status"] == "observed":
+                digest = _validate_digest(
+                    item["digest"], domain="raw_bytes", name="price source",
+                )
+            elif item["status"] == "missing" and item["digest"] is None:
+                digest = None
+            else:
+                raise ReplayContractError("price source status and digest are inconsistent")
+            identities.append((instrument, field))
+            canonical_price_inventory.append({
+                "instrument": instrument,
+                "field": field,
+                "logical_path": expected_path,
+                "status": item["status"],
+                "digest": digest,
+            })
+        if len(identities) != len(set(identities)) or identities != sorted(identities):
+            raise ReplayContractError("price source inventory identities must be unique and ordered")
+        if canonical_price_inventory:
+            observed_digest = _validate_digest(
                 self.price_source_inventory_digest,
                 domain="canonical_json", name="price source inventory",
             )
+            if observed_digest != _canonical_digest(canonical_price_inventory):
+                raise ReplayContractError("price source inventory digest is inconsistent")
+        elif self.price_source_inventory_digest is not None:
+            raise ReplayContractError("empty price source inventory cannot carry a digest")
         if not isinstance(self.universe_intervals, tuple) or not isinstance(self.calendar_dates, tuple):
             raise ReplayContractError("provider inventories must be exact tuples")
         if not self.calendar_dates or tuple(sorted(set(self.calendar_dates))) != self.calendar_dates:
@@ -328,6 +371,9 @@ class SealedReplayInputs:
         object.__setattr__(self, "price_coverage", MappingProxyType({
             key: MappingProxyType(dict(value)) for key, value in self.price_coverage.items()
         }))
+        object.__setattr__(self, "price_source_inventory", tuple(
+            MappingProxyType(item) for item in canonical_price_inventory
+        ))
         if self.price_source_inventory_digest is not None:
             object.__setattr__(
                 self, "price_source_inventory_digest",
@@ -383,7 +429,7 @@ def _observe_price_coverage(
     calendar_dates: Sequence[str],
     start: str,
     end: str,
-) -> Tuple[Mapping[str, Mapping[str, Any]], Mapping[str, Any]]:
+) -> Tuple[Mapping[str, Mapping[str, Any]], Tuple[Mapping[str, Any], ...], Mapping[str, Any]]:
     selected = [date for date in calendar_dates if start <= date <= end]
     calendar_position = {date: position for position, date in enumerate(calendar_dates)}
     instruments = sorted({
@@ -405,6 +451,7 @@ def _observe_price_coverage(
             feature_data[(instrument, field)] = data
             inventory.append({
                 "instrument": instrument, "field": field,
+                "logical_path": logical,
                 "status": status, "digest": digest,
             })
     coverage = {}
@@ -432,7 +479,7 @@ def _observe_price_coverage(
         }
     return MappingProxyType({
         key: MappingProxyType(value) for key, value in coverage.items()
-    }), _canonical_digest(inventory)
+    }), tuple(inventory), _canonical_digest(inventory)
 
 
 def load_sealed_replay_inputs(
@@ -522,7 +569,13 @@ def load_sealed_replay_inputs(
         source_evidence.append(evidence)
     if any(item["status"] != "ready" for item in source_evidence):
         raise ReplayInputError("one or more requested source observations failed", source_evidence)
-    data_identity = manifest.get("data_identity", {}).get("qlib_materialization_identity", {})
+    data_root = manifest.get("data_identity")
+    if not isinstance(data_root, Mapping):
+        raise ReplayInputError("sealed data identity is invalid")
+    source_relation = data_root.get("source_to_materialization_relation")
+    if source_relation != "unverified":
+        raise ReplayInputError("sealed source-to-materialization relation must be unverified")
+    data_identity = data_root.get("qlib_materialization_identity", {})
     if data_identity.get("status") != "observed" or data_identity.get("calendar_cutoff") != cycle:
         raise ReplayInputError("sealed Qlib materialization is not comparable")
     universe_name = _strict_text(data_identity.get("universe_name"), "universe_name")
@@ -548,13 +601,14 @@ def load_sealed_replay_inputs(
     if (coverage_start is None) != (coverage_end is None):
         raise ReplayContractError("price coverage start and end must be supplied together")
     price_coverage = {}
+    price_inventory = ()
     price_inventory_digest = None
     if coverage_start is not None and coverage_end is not None:
         observed_start = _strict_date(coverage_start, "coverage_start")
         observed_end = _strict_date(coverage_end, "coverage_end")
         if observed_start > observed_end:
             raise ReplayContractError("price coverage window is inverted")
-        price_coverage, price_inventory_digest = _observe_price_coverage(
+        price_coverage, price_inventory, price_inventory_digest = _observe_price_coverage(
             provider, intervals, calendar_dates, observed_start, observed_end,
         )
     return SealedReplayInputs(
@@ -567,7 +621,9 @@ def load_sealed_replay_inputs(
         calendar_dates=calendar_dates,
         sealed_ranking=sealed_ranking,
         sealed_ranking_digest=_raw_digest(ranking_bytes),
+        source_to_materialization_relation=source_relation,
         price_coverage=price_coverage,
+        price_source_inventory=price_inventory,
         price_source_inventory_digest=price_inventory_digest,
         _authority=_OBSERVATION_AUTHORITY,
     )
@@ -649,16 +705,13 @@ def _compare(champion: RankingResult, challenger: RankingResult, top_k: int) -> 
 class ResearchRankingReplay:
     """Sole truth owner for Stage-A inventory, fusion, parity, and comparison."""
 
-    def __init__(self, inputs: SealedReplayInputs, *, top_k: int = 22, score_tolerance: float = 1e-12) -> None:
+    def __init__(self, inputs: SealedReplayInputs, *, top_k: int = 22) -> None:
         if not isinstance(inputs, SealedReplayInputs):
             raise ReplayContractError("inputs must be SealedReplayInputs")
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
             raise ReplayContractError("top_k must be a positive integer")
-        if isinstance(score_tolerance, bool) or not isinstance(score_tolerance, (int, float)) or not math.isfinite(score_tolerance) or score_tolerance < 0:
-            raise ReplayContractError("score_tolerance must be finite and non-negative")
         self.inputs = inputs
         self.top_k = top_k
-        self.score_tolerance = float(score_tolerance)
 
     def _inventory_date(self, anchor: str) -> dict:
         universe = _universe_at(self.inputs.universe_intervals, anchor)
@@ -774,7 +827,7 @@ class ResearchRankingReplay:
             "dates": inventory_rows,
         }
         base = {
-            "schema_version": 1,
+            "schema_version": 2,
             "evidence_class": "RETROSPECTIVE_TECHNICAL_REPLAY",
             "prospective_claim": False,
             "promotion_capability": False,
@@ -785,6 +838,14 @@ class ResearchRankingReplay:
                 "name": self.inputs.universe_name,
                 "digest": dict(self.inputs.universe_digest),
             },
+            "calendar_identity": {
+                "logical_path": "calendars/day.txt",
+                "digest": dict(self.inputs.calendar_digest),
+            },
+            "source_to_materialization_relation": self.inputs.source_to_materialization_relation,
+            "price_source_inventory": [
+                dict(item) for item in self.inputs.price_source_inventory
+            ],
             "price_source_inventory_digest": (
                 dict(self.inputs.price_source_inventory_digest)
                 if self.inputs.price_source_inventory_digest is not None else None
@@ -811,7 +872,7 @@ class ResearchRankingReplay:
         score_mismatches = []
         for instrument in sorted(set(champion_rows) & set(sealed_rows)):
             left, right = champion_rows[instrument], sealed_rows[instrument]
-            if left["scored"] and right["scored"] and abs(float(left["raw_score"]) - float(right["raw_score"])) > self.score_tolerance:
+            if left["scored"] and right["scored"] and abs(float(left["raw_score"]) - float(right["raw_score"])) > PARITY_SCORE_TOLERANCE:
                 score_mismatches.append(instrument)
         parity_facts = {
             "eligible_identity_equal": set(champion_rows) == set(sealed_rows),
@@ -819,7 +880,7 @@ class ResearchRankingReplay:
                 key for key, row in champion_rows.items() if row["scored"]
             } == {key for key, row in sealed_rows.items() if row["scored"]},
             "rank_order_equal": [row["instrument"] for row in champion.rows] == [row["instrument"] for row in sealed.rows],
-            "score_tolerance": format(self.score_tolerance, ".17g"),
+            "score_tolerance": format(PARITY_SCORE_TOLERANCE, ".17g"),
             "score_mismatches": score_mismatches,
             "universe_digest_equal": True,
             "sealed_ranking_digest": dict(self.inputs.sealed_ranking_digest),
@@ -964,6 +1025,9 @@ def _report_markdown(result: Mapping[str, Any]) -> bytes:
         "", "- Status: `%s`" % result["status"],
         "- Fusion: `%s`" % result["fusion_definition"],
         "- Parity: `%s`" % result["parity"]["status"],
+        "- Calendar SHA-256: `%s`" % result["calendar_identity"]["digest"]["value"],
+        "- Source-to-materialization relation: `%s`" % result["source_to_materialization_relation"],
+        "- Price source members: `%s`" % len(result["price_source_inventory"]),
         "- Selected anchors: `%s`" % ", ".join(result["inventory"]["selected_anchors"]),
         "", "## Arms", "",
     ])

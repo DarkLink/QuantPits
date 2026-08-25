@@ -24,11 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sealed-cycle", required=True, help="Phase 37A sealed Champion cycle")
     parser.add_argument("--output-dir", required=True, help="new disposable directory below /tmp")
     parser.add_argument("--qlib-data-dir", help="read-only Qlib provider; defaults to QLIB_DATA_DIR")
-    parser.add_argument("--preferred-start", default="2026-07-03")
-    parser.add_argument("--preferred-end", default="2026-08-21")
+    parser.add_argument("--preferred-start", required=True, help="first replay coverage date")
+    parser.add_argument("--preferred-end", required=True, help="last replay coverage date")
     parser.add_argument("--window-size", type=int, default=6, choices=[4, 5, 6])
-    parser.add_argument("--top-k", type=int, default=22)
-    parser.add_argument("--score-tolerance", type=float, default=1e-12)
+    parser.add_argument("--top-k", type=int, required=True, help="explicit comparison cutoff")
     return parser
 
 
@@ -45,9 +44,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             coverage_start=args.preferred_start,
             coverage_end=args.preferred_end,
         )
-        result = ResearchRankingReplay(
-            inputs, top_k=args.top_k, score_tolerance=args.score_tolerance,
-        ).run(
+        result = ResearchRankingReplay(inputs, top_k=args.top_k).run(
             preferred_start=args.preferred_start,
             preferred_end=args.preferred_end,
             window_size=args.window_size,

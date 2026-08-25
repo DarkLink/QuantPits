@@ -121,11 +121,14 @@ def _fixture(tmp_path, *, missing=None, duplicate=False, non_finite=None, foreig
     (cycle_root / "ranking.csv").write_bytes(ranking_bytes)
     manifest = {
         "cycle_identity": {"cycle_id": DATES[-1]},
-        "data_identity": {"qlib_materialization_identity": {
-            "status": "observed", "calendar_cutoff": DATES[-1],
-            "universe_name": "fixture", "universe_digest": _digest(universe),
-            "calendar_digest": _digest(calendar),
-        }},
+        "data_identity": {
+            "source_to_materialization_relation": "unverified",
+            "qlib_materialization_identity": {
+                "status": "observed", "calendar_cutoff": DATES[-1],
+                "universe_name": "fixture", "universe_digest": _digest(universe),
+                "calendar_digest": _digest(calendar),
+            },
+        },
         "model_and_ensemble_lineage": {
             "status": "complete", "source_models": source_models,
             "source_artifacts": source_artifacts + [{
@@ -142,6 +145,22 @@ def _fixture(tmp_path, *, missing=None, duplicate=False, non_finite=None, foreig
     }
     (cycle_root / "seal.json").write_bytes(canonical_json_bytes(seal))
     return workspace, qlib
+
+
+def _rewrite_source_relation(workspace, value):
+    cycle_root = workspace / "data/evidence/v1/cycles" / DATES[-1]
+    manifest_path = cycle_root / "manifest.json"
+    seal_path = cycle_root / "seal.json"
+    manifest = json.loads(manifest_path.read_text())
+    if value is None:
+        manifest["data_identity"].pop("source_to_materialization_relation")
+    else:
+        manifest["data_identity"]["source_to_materialization_relation"] = value
+    manifest_bytes = canonical_json_bytes(manifest)
+    manifest_path.write_bytes(manifest_bytes)
+    seal = json.loads(seal_path.read_text())
+    seal["manifest_digest"] = _digest(manifest_bytes)
+    seal_path.write_bytes(canonical_json_bytes(seal))
 
 
 def _run(tmp_path, **fixture_kwargs):
@@ -223,6 +242,14 @@ def test_frozen_input_hash_mismatch_is_fail_closed(tmp_path, target):
         load_sealed_replay_inputs(workspace, DATES[-1], qlib_data_dir=qlib)
 
 
+@pytest.mark.parametrize("relation", [None, "", "verified", False])
+def test_source_to_materialization_relation_is_observed_and_fail_closed(tmp_path, relation):
+    workspace, qlib = _fixture(tmp_path)
+    _rewrite_source_relation(workspace, relation)
+    with pytest.raises(ReplayInputError, match="source-to-materialization"):
+        load_sealed_replay_inputs(workspace, DATES[-1], qlib_data_dir=qlib)
+
+
 def test_one_source_failure_preserves_later_requested_identity_and_cardinality(tmp_path):
     workspace, qlib = _fixture(tmp_path)
     path = workspace / "mlruns/0/artifacts/pred.pkl"
@@ -297,7 +324,23 @@ def test_a0_observes_anchor_close_and_next_open_coverage_without_qlib_init(tmp_p
     assert last["price_availability"]["anchor_close_status"] == "complete"
     assert last["price_availability"]["next_session"] is None
     assert last["price_availability"]["next_open_missing"] == list(INSTRUMENTS)
+    assert result["calendar_identity"] == {
+        "logical_path": "calendars/day.txt", "digest": _digest(
+            ("\n".join(DATES) + "\n").encode()
+        ),
+    }
+    assert result["source_to_materialization_relation"] == "unverified"
+    assert len(result["price_source_inventory"]) == len(INSTRUMENTS) * 2
+    assert all(set(item) == {
+        "instrument", "field", "logical_path", "status", "digest",
+    } for item in result["price_source_inventory"])
     assert result["price_source_inventory_digest"]["domain"] == "canonical_json"
+    inventory_bytes = canonical_json_bytes(result["price_source_inventory"])
+    assert result["price_source_inventory_digest"] == {
+        "algorithm": "sha256", "domain": "canonical_json",
+        "value": hashlib.sha256(inventory_bytes).hexdigest(),
+        "size_bytes": len(inventory_bytes),
+    }
 
 
 def test_output_is_create_new_tmp_only_and_content_manifest_is_repeatable(tmp_path):
@@ -359,8 +402,8 @@ def test_strict_falsey_and_bool_contracts_are_distinct(tmp_path):
     inputs = load_sealed_replay_inputs(workspace, DATES[-1], qlib_data_dir=qlib)
     with pytest.raises(ReplayContractError):
         ResearchRankingReplay(inputs, top_k=True)
-    with pytest.raises(ReplayContractError):
-        ResearchRankingReplay(inputs, score_tolerance=True)
+    with pytest.raises(TypeError):
+        ResearchRankingReplay(inputs, score_tolerance=1e300)
     with pytest.raises(ReplayContractError):
         ResearchRankingReplay(inputs).run(
             preferred_start="", preferred_end=DATES[-1], window_size=4,
@@ -377,6 +420,22 @@ def test_public_replay_and_dataclass_replace_cannot_forge_observed_authority(tmp
         replace(inputs, parity_anchor=DATES[-2])
     with pytest.raises(ReplayContractError, match="truth-owner"):
         write_replay_output(dict(result), Path("/tmp") / ("forged_%s" % tmp_path.name))
+
+
+def test_price_inventory_aggregate_revalidates_member_and_digest(tmp_path):
+    workspace, qlib = _fixture(tmp_path)
+    inputs = load_sealed_replay_inputs(
+        workspace, DATES[-1], qlib_data_dir=qlib,
+        coverage_start=DATES[0], coverage_end=DATES[-1],
+    )
+    forged = dict(inputs.__dict__)
+    inventory = [dict(item) for item in inputs.price_source_inventory]
+    inventory[0]["logical_path"] = "features/foreign/close.day.bin"
+    forged["price_source_inventory"] = tuple(inventory)
+    with pytest.raises(ReplayContractError, match="logical path"):
+        replay.SealedReplayInputs(
+            **forged, _authority=replay._OBSERVATION_AUTHORITY
+        )
 
 
 def test_result_access_cannot_mutate_truth_owner_state(tmp_path):
@@ -405,10 +464,52 @@ def test_cli_executes_complete_replay_without_backend_initialization(tmp_path):
             "--sealed-cycle", DATES[-1],
             "--preferred-start", DATES[0],
             "--preferred-end", DATES[-1],
+            "--top-k", "2",
             "--output-dir", str(output),
         ])
         assert status == 0
-        assert json.loads((output / "result.json").read_text())["status"] == "complete"
+        payload = json.loads((output / "result.json").read_text())
+        assert payload["status"] == "complete"
+        assert payload["schema_version"] == 2
+        assert payload["source_to_materialization_relation"] == "unverified"
+        assert payload["calendar_identity"]["logical_path"] == "calendars/day.txt"
+        assert len(payload["price_source_inventory"]) == len(INSTRUMENTS) * 2
+        inventory_bytes = canonical_json_bytes(payload["price_source_inventory"])
+        assert payload["price_source_inventory_digest"]["value"] == hashlib.sha256(
+            inventory_bytes
+        ).hexdigest()
     finally:
         import shutil
         shutil.rmtree(output, ignore_errors=True)
+
+
+@pytest.mark.parametrize("omitted", ["--preferred-start", "--preferred-end", "--top-k"])
+def test_cli_requires_workspace_specific_replay_parameters(omitted):
+    from quantpits.scripts import research_replay
+
+    values = {
+        "--sealed-cycle": DATES[-1],
+        "--preferred-start": DATES[0],
+        "--preferred-end": DATES[-1],
+        "--top-k": "2",
+        "--output-dir": "/tmp/not_created_by_parser_test",
+    }
+    argv = [item for pair in values.items() if pair[0] != omitted for item in pair]
+    with pytest.raises(SystemExit) as caught:
+        research_replay.build_parser().parse_args(argv)
+    assert caught.value.code == 2
+
+
+def test_cli_has_no_score_tolerance_override():
+    from quantpits.scripts import research_replay
+
+    with pytest.raises(SystemExit) as caught:
+        research_replay.build_parser().parse_args([
+            "--sealed-cycle", DATES[-1],
+            "--preferred-start", DATES[0],
+            "--preferred-end", DATES[-1],
+            "--top-k", "2",
+            "--output-dir", "/tmp/not_created_by_parser_test",
+            "--score-tolerance", "1e300",
+        ])
+    assert caught.value.code == 2
