@@ -47,6 +47,13 @@ _EXPORT_MODULES = {
     "WindowPublicationReceipt": "quantpits.research.historical_window_publication",
     "build_historical_window_artifacts": "quantpits.research.historical_window_publication",
     "write_historical_window_output": "quantpits.research.historical_window_publication",
+    "CreateOnlyDefinitionBundleStore": "quantpits.research.definition_store",
+    "DefinitionBundleMember": "quantpits.research.definition_store",
+    "DefinitionBundleRequest": "quantpits.research.definition_store",
+    "DefinitionStoreContractError": "quantpits.research.definition_store",
+    "DefinitionStoreInputError": "quantpits.research.definition_store",
+    "DefinitionStoreReceipt": "quantpits.research.definition_store",
+    "revalidate_definition_bundle_request": "quantpits.research.definition_store",
 }
 
 
@@ -102,4 +109,11 @@ __all__ = [
     "WindowPublicationReceipt",
     "build_historical_window_artifacts",
     "write_historical_window_output",
+    "CreateOnlyDefinitionBundleStore",
+    "DefinitionBundleMember",
+    "DefinitionBundleRequest",
+    "DefinitionStoreContractError",
+    "DefinitionStoreInputError",
+    "DefinitionStoreReceipt",
+    "revalidate_definition_bundle_request",
 ]
