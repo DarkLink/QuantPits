@@ -180,7 +180,7 @@ def test_manifest_or_final_member_failure_is_uncertain_without_commit_capability
 
 
 @pytest.mark.parametrize("target", ["parent", "root", "rankings"])
-def test_parent_root_and_directory_replace_delete_recreate_move_away_back_are_uncertain(tmp_path, monkeypatch, target):
+def test_parent_identity_drift_and_root_or_directory_replacement_are_uncertain(tmp_path, monkeypatch, target):
     runner = build_window(tmp_path / "source", 4)[0]
     result = runner.run()
     root, displaced = _root(tmp_path), _root(tmp_path, "displaced")
