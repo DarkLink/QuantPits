@@ -62,6 +62,10 @@ _EXPORT_MODULES = {
     "ShadowStrategyDefinition": "quantpits.research.forward_definitions",
     "SourceMember": "quantpits.research.forward_definitions",
     "compile_shadow_forward_definitions": "quantpits.research.forward_definitions",
+    "ForwardObservationContractError": "quantpits.research.forward_observation",
+    "ForwardObservationInputError": "quantpits.research.forward_observation",
+    "ObservedForwardDefinitionCandidate": "quantpits.research.forward_observation",
+    "observe_shadow_forward_definition_candidate": "quantpits.research.forward_observation",
 }
 
 
@@ -132,4 +136,8 @@ __all__ = [
     "ShadowStrategyDefinition",
     "SourceMember",
     "compile_shadow_forward_definitions",
+    "ForwardObservationContractError",
+    "ForwardObservationInputError",
+    "ObservedForwardDefinitionCandidate",
+    "observe_shadow_forward_definition_candidate",
 ]
