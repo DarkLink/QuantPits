@@ -9,8 +9,17 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 
+class _PrivacySafeParseError(ValueError):
+    pass
+
+
+class _PrivacySafeArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        raise _PrivacySafeParseError("command line is invalid")
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _PrivacySafeArgumentParser(
         description="Observe one sealed engineering-only shadow definition candidate.",
     )
     parser.add_argument("--workspace", required=True, type=Path)
@@ -27,8 +36,8 @@ def _canonical_line(value) -> str:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = _parser().parse_args(argv)
     try:
+        args = _parser().parse_args(argv)
         from quantpits.research.forward_observation import (
             ForwardObservationContractError,
             ForwardObservationInputError,
@@ -45,6 +54,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         error_type = "ForwardObservationBlocked"
         reason_code = "OBSERVATION_FAILED"
         try:
+            if isinstance(exc, _PrivacySafeParseError):
+                error_type = "ForwardObservationArgumentError"
+                reason_code = "ARGUMENT_INVALID"
             if isinstance(exc, (ForwardObservationInputError, ForwardObservationContractError)):
                 error_type = type(exc).__name__
                 reason_code = exc.reason_code

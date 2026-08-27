@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+import weakref
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -27,6 +28,7 @@ from quantpits.evidence.inspection import SourceMutationObserver
 
 _PROCESS_CONTROL = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _AUTHORITY = object()
+_OBSERVED_BINDINGS: "weakref.WeakKeyDictionary[Any, Tuple[Any, ...]]" = weakref.WeakKeyDictionary()
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _ACTIVATION_LIMIT = 128 * 1024
@@ -339,6 +341,25 @@ def _attach_requested_sources(
     return exc
 
 
+def _authority_identity(value: Any) -> Tuple[Any, ...]:
+    """Freeze object identity recursively without trusting rendered equality."""
+    if isinstance(value, Mapping):
+        return (
+            "mapping", type(value), id(value),
+            tuple((id(key), key, _authority_identity(item)) for key, item in value.items()),
+        )
+    if isinstance(value, (tuple, list)):
+        return (
+            "sequence", type(value), id(value),
+            tuple(_authority_identity(item) for item in value),
+        )
+    try:
+        attributes = vars(value)
+    except TypeError:
+        return "atom", type(value), id(value)
+    return "object", type(value), id(value), _authority_identity(attributes)
+
+
 def _verify_bundle(
     root: Path, cycle_id: str,
 ) -> Tuple[Dict[str, Any], bytes, bytes, bool, Tuple[str, ...], Tuple[Dict[str, Any], ...], Tuple[int, ...]]:
@@ -350,7 +371,11 @@ def _verify_bundle(
     cycle_before = _directory_identity(cycle, private=True)
     seal_data, _ = _read_regular(cycle / "seal.json", maximum=_SEAL_LIMIT, sealed=True)
     seal = _strict_json(seal_data, "seal")
-    if set(seal) != _SEAL_FIELDS or seal.get("schema_version") != 1:
+    if (
+        set(seal) != _SEAL_FIELDS
+        or type(seal.get("schema_version")) is not int
+        or seal["schema_version"] != 1
+    ):
         raise _input("seal schema is invalid")
     manifest_digest = _typed_digest(seal.get("manifest_digest"), "manifest", "raw_bytes")
     manifest_data, _ = _read_regular(
@@ -359,7 +384,11 @@ def _verify_bundle(
     if TypedDigest.raw(manifest_data) != manifest_digest:
         raise _input("manifest bytes do not match the seal")
     manifest = _strict_json(manifest_data, "manifest")
-    if set(manifest) != _MANIFEST_FIELDS or manifest.get("schema_version") != 1:
+    if (
+        set(manifest) != _MANIFEST_FIELDS
+        or type(manifest.get("schema_version")) is not int
+        or manifest["schema_version"] != 1
+    ):
         raise _input("manifest schema is invalid")
     cycle_identity = manifest.get("cycle_identity")
     problems = manifest.get("problems")
@@ -508,29 +537,62 @@ def _verify_bundle(
         for position, row in enumerate(sources)
     ):
         raise _input("Champion source model order or readiness is invalid", sources=resolved)
-    reference_rows = []
-    all_embedded = True
-    for position, source_id in enumerate(resolved):
-        matches = [
-            row for row in artifacts
-            if type(row) is dict and row.get("position") == position
-            and row.get("role") == "source_training"
-        ]
-        if len(matches) != 1:
-            raise _input("source training relation is not one-to-one", sources=resolved)
-        artifact = matches[0]
-        if artifact.get("recorder_id") != sources[position].get("source_recorder_id"):
-            raise _input("source training recorder identity does not join", sources=resolved)
+    training_rows: Dict[int, Dict[str, Any]] = {}
+    prediction_rows: Dict[int, Dict[str, Any]] = {}
+    ensemble_rows = []
+    for artifact in artifacts:
+        if type(artifact) is not dict:
+            raise _input("source artifact remainder is malformed", sources=resolved)
+        position = artifact.get("position")
+        role_present = "role" in artifact
+        role = artifact.get("role")
+        if role_present and role == "source_training" and type(position) is int and position in range(4):
+            expected_fields = {
+                "position", "role", "recorder_id", "experiment_name",
+                "artifact_locator", "members", "artifact_tree_digest",
+            }
+            destination = training_rows
+        elif not role_present and type(position) is int and position in range(4):
+            expected_fields = {
+                "position", "recorder_id", "artifact_locator", "members",
+                "artifact_tree_digest",
+            }
+            destination = prediction_rows
+        elif not role_present and position == "ensemble":
+            expected_fields = {
+                "position", "recorder_id", "artifact_locator", "members",
+                "artifact_tree_digest",
+            }
+            destination = None
+        else:
+            raise _input("source artifact remainder is unassigned", sources=resolved)
+        if set(artifact) != expected_fields:
+            raise _input("source artifact fields are not exact", sources=resolved)
+        recorder_id = artifact.get("recorder_id")
+        locator = artifact.get("artifact_locator")
+        locator_path = PurePosixPath(locator) if type(locator) is str else None
+        if (
+            type(recorder_id) is not str or not recorder_id
+            or type(locator) is not str or not locator
+            or "\\" in locator or "\0" in locator or locator_path is None
+            or locator_path.is_absolute() or locator_path.as_posix() != locator
+            or any(part in {"", ".", ".."} for part in locator_path.parts)
+            or (
+                role_present
+                and (type(artifact.get("experiment_name")) is not str or not artifact["experiment_name"])
+            )
+        ):
+            raise _input("source artifact aggregate identity is invalid", sources=resolved)
         members = artifact.get("members")
         if type(members) is not list or not members:
-            raise _input("source training artifact inventory is empty", sources=resolved)
+            raise _input("source artifact inventory is empty", sources=resolved)
         inventory = []
         member_paths = set()
         for member in members:
             if type(member) is not dict or set(member) != {
                 "path", "status", "digest", "preservation_status", "detail",
             }:
-                raise _input("source training artifact row is invalid", sources=resolved)
+                raise _input("source artifact row is invalid", sources=resolved)
             path = member.get("path")
             pure_path = PurePosixPath(path) if type(path) is str else None
             if (
@@ -542,11 +604,10 @@ def _verify_bundle(
                 or member.get("preservation_status") not in {"embedded", "workspace_file"}
                 or type(member.get("detail")) is not str
             ):
-                raise _input("source training artifact identity is invalid", sources=resolved)
+                raise _input("source artifact identity is invalid", sources=resolved)
             member_paths.add(path)
             digest = _typed_digest(member.get("digest"), "source artifact", "raw_bytes")
             inventory.append({"path": path, "digest": digest.to_dict()})
-            all_embedded = all_embedded and member.get("preservation_status") == "embedded"
         inventory_bytes = canonical_json_bytes(inventory)
         tree = _typed_digest(
             artifact.get("artifact_tree_digest"), "source artifact tree", "file_inventory",
@@ -554,6 +615,45 @@ def _verify_bundle(
         rebuilt = TypedDigest.canonical(inventory, "file_inventory")
         if tree != rebuilt:
             raise _input("source artifact inventory digest is invalid", sources=resolved)
+        validated = {
+            "row": artifact,
+            "inventory_bytes": inventory_bytes,
+            "all_embedded": all(
+                member["preservation_status"] == "embedded" for member in members
+            ),
+        }
+        if destination is None:
+            ensemble_rows.append(validated)
+            if len(ensemble_rows) != 1:
+                raise _input("ensemble artifact relation is not unique", sources=resolved)
+        else:
+            if position in destination:
+                raise _input("source artifact relation is not unique", sources=resolved)
+            destination[position] = validated
+
+    if set(training_rows) != set(range(4)):
+        raise _input("source training relation is not one-to-one", sources=resolved)
+    if any(
+        row["row"]["recorder_id"] != sources[position]["recorder_id"]
+        for position, row in prediction_rows.items()
+    ):
+        raise _input("prediction artifact recorder identity does not join", sources=resolved)
+    combo_recorder = combo.get("recorder_id") if type(combo) is dict else None
+    if ensemble_rows and (
+        type(combo_recorder) is not str or not combo_recorder
+        or ensemble_rows[0]["row"]["recorder_id"] != combo_recorder
+    ):
+        raise _input("ensemble artifact recorder identity does not join", sources=resolved)
+
+    reference_rows = []
+    all_embedded = True
+    for position, source_id in enumerate(resolved):
+        validated = training_rows[position]
+        artifact = validated["row"]
+        if artifact["recorder_id"] != sources[position].get("source_recorder_id"):
+            raise _input("source training recorder identity does not join", sources=resolved)
+        inventory_bytes = validated["inventory_bytes"]
+        all_embedded = all_embedded and validated["all_embedded"]
         reference_rows.append({
             "position": position,
             "source_id": source_id,
@@ -563,17 +663,6 @@ def _verify_bundle(
                 "size_bytes": len(inventory_bytes),
             },
         })
-    if any(
-        type(row) is dict and (
-            ("role" in row and row.get("role") != "source_training")
-            or (
-                row.get("role") == "source_training"
-                and (type(row.get("position")) is not int or row.get("position") not in range(4))
-            )
-        )
-        for row in artifacts
-    ):
-        raise _input("foreign source training relation is present", sources=resolved)
     if _directory_identity(cycle, private=True) != cycle_before:
         raise _input("cycle directory identity changed during observation", sources=resolved)
     return (
@@ -779,6 +868,29 @@ class ObservedForwardDefinitionCandidate:
         object.__setattr__(self, "_reference_receipt_digest", MappingProxyType(dict(kwargs["reference_receipt_digest"])))
         object.__setattr__(self, "_authority", _AUTHORITY)
 
+    def _bind_original_observation(self) -> None:
+        if self in _OBSERVED_BINDINGS:
+            raise ForwardObservationContractError("candidate observation is already bound")
+        compiled_raw = self._compiled_raw()
+        _OBSERVED_BINDINGS[self] = (
+            _authority_identity(self.compiled_definitions),
+            canonical_json_bytes(compiled_raw),
+            _authority_identity(self._reference_receipt),
+            _authority_identity(self._reference_receipt_bytes),
+            _authority_identity(self._reference_receipt_digest),
+            self._reference_receipt_bytes,
+            canonical_json_bytes(dict(self._reference_receipt_digest)),
+        )
+
+    def _compiled_raw(self) -> Dict[str, Any]:
+        return {
+            "definition_set_id": self.compiled_definitions.definition_set_id,
+            "protocol": self.compiled_definitions.protocol.to_dict(),
+            "execution_assumption": self.compiled_definitions.execution_assumption.to_dict(),
+            "champion_strategy": self.compiled_definitions.champion.to_dict(),
+            "challenger_strategy": self.compiled_definitions.challenger.to_dict(),
+        }
+
     def _validated(self) -> Tuple[Any, Dict[str, Any]]:
         if type(self) is not ObservedForwardDefinitionCandidate or getattr(self, "_authority", None) is not _AUTHORITY:
             raise ForwardObservationContractError("candidate authority is absent")
@@ -787,13 +899,20 @@ class ObservedForwardDefinitionCandidate:
         )
         if type(self.compiled_definitions) is not CompiledShadowForwardDefinitions:
             raise ForwardObservationContractError("candidate contains foreign compiled definitions")
-        current_raw = {
-            "definition_set_id": self.compiled_definitions.definition_set_id,
-            "protocol": self.compiled_definitions.protocol.to_dict(),
-            "execution_assumption": self.compiled_definitions.execution_assumption.to_dict(),
-            "champion_strategy": self.compiled_definitions.champion.to_dict(),
-            "challenger_strategy": self.compiled_definitions.challenger.to_dict(),
-        }
+        binding = _OBSERVED_BINDINGS.get(self)
+        current_raw = self._compiled_raw()
+        if binding is None or (
+            _authority_identity(self.compiled_definitions) != binding[0]
+            or canonical_json_bytes(current_raw) != binding[1]
+            or _authority_identity(self._reference_receipt) != binding[2]
+            or _authority_identity(self._reference_receipt_bytes) != binding[3]
+            or _authority_identity(self._reference_receipt_digest) != binding[4]
+            or self._reference_receipt_bytes != binding[5]
+            or canonical_json_bytes(dict(self._reference_receipt_digest)) != binding[6]
+        ):
+            raise ForwardObservationContractError(
+                "candidate differs from its original inspector observation",
+            )
         try:
             fresh = compile_shadow_forward_definitions(current_raw)
         except _PROCESS_CONTROL:
@@ -1078,11 +1197,13 @@ def _observe_shadow_forward_definition_candidate(
         raise
     receipt_bytes = canonical_json_bytes(receipt)
     digest = TypedDigest.canonical(receipt).to_dict()
-    return ObservedForwardDefinitionCandidate(
+    candidate = ObservedForwardDefinitionCandidate(
         _authority=_AUTHORITY, compiled_definitions=compiled,
         reference_receipt=receipt, reference_receipt_bytes=receipt_bytes,
         reference_receipt_digest=digest,
     )
+    candidate._bind_original_observation()
+    return candidate
 
 
 def observe_shadow_forward_definition_candidate(

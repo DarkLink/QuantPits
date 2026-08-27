@@ -256,7 +256,11 @@ def test_activation_is_exact_private_canonical_and_cannot_carry_observer_owned_f
         observe_shadow_forward_definition_candidate(root, CYCLE, activation)
 
 
-@pytest.mark.parametrize("mutation", ["artifact", "manifest_digest", "noncanonical", "partial"])
+@pytest.mark.parametrize("mutation", [
+    "artifact", "manifest_digest", "noncanonical", "partial",
+    "seal_schema_bool", "seal_schema_null", "seal_schema_string",
+    "manifest_schema_bool", "manifest_schema_null", "manifest_schema_string",
+])
 def test_sealed_cycle_requires_canonical_complete_manifest_seal_and_exact_artifact_root(observed_workspace, mutation):
     root, activation, cycle = observed_workspace
     seal = json.loads((cycle / "seal.json").read_bytes())
@@ -268,7 +272,7 @@ def test_sealed_cycle_requires_canonical_complete_manifest_seal_and_exact_artifa
         _write(cycle / "seal.json", canonical_json_bytes(seal))
     elif mutation == "noncanonical":
         _write(cycle / "seal.json", json.dumps(seal, indent=2).encode())
-    else:
+    elif mutation == "partial":
         manifest = json.loads((cycle / "manifest.json").read_bytes())
         manifest["problems"] = [{
             "code": "synthetic", "evidence_class": "test", "detail": "blocked",
@@ -279,6 +283,21 @@ def test_sealed_cycle_requires_canonical_complete_manifest_seal_and_exact_artifa
         seal = json.loads((cycle / "seal.json").read_bytes())
         seal["status"] = "sealed_partial"
         _write(cycle / "seal.json", canonical_json_bytes(seal))
+    elif mutation.startswith("seal_schema_"):
+        seal["schema_version"] = {
+            "seal_schema_bool": True,
+            "seal_schema_null": None,
+            "seal_schema_string": "1",
+        }[mutation]
+        _write(cycle / "seal.json", canonical_json_bytes(seal))
+    else:
+        manifest = json.loads((cycle / "manifest.json").read_bytes())
+        manifest["schema_version"] = {
+            "manifest_schema_bool": True,
+            "manifest_schema_null": None,
+            "manifest_schema_string": "1",
+        }[mutation]
+        _rewrite_seal(cycle, manifest)
     with pytest.raises(ForwardObservationInputError):
         observe_shadow_forward_definition_candidate(root, CYCLE, activation)
 
@@ -319,6 +338,65 @@ def test_source_training_references_are_exactly_one_per_ordered_champion_member(
     with pytest.raises(ForwardObservationInputError) as caught:
         observe_shadow_forward_definition_candidate(root, CYCLE, activation)
     assert caught.value.requested_source_count == 4
+
+
+def _auxiliary_artifact(manifest, position):
+    template = copy.deepcopy(
+        manifest["model_and_ensemble_lineage"]["source_artifacts"][0],
+    )
+    template.pop("role")
+    template.pop("experiment_name")
+    template["position"] = position
+    if position == "ensemble":
+        template["recorder_id"] = "ENSEMBLE"
+    else:
+        template["recorder_id"] = manifest["model_and_ensemble_lineage"][
+            "source_models"
+        ][position]["recorder_id"]
+    return template
+
+
+def test_legal_prediction_and_ensemble_auxiliary_artifacts_are_fully_partitioned(observed_workspace):
+    root, activation, cycle = observed_workspace
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    lineage = manifest["model_and_ensemble_lineage"]
+    lineage["combo"]["recorder_id"] = "ENSEMBLE"
+    lineage["source_artifacts"].extend([
+        _auxiliary_artifact(manifest, 0),
+        _auxiliary_artifact(manifest, "ensemble"),
+    ])
+    _rewrite_seal(cycle, manifest)
+    assert observe_shadow_forward_definition_candidate(
+        root, CYCLE, activation,
+    ).sealed_reference_join_verified is True
+
+
+@pytest.mark.parametrize("mutation", [
+    "null", "unknown_role", "foreign_position", "duplicate_prediction",
+    "bad_auxiliary_tree",
+])
+def test_source_artifact_unassigned_or_malformed_remainder_denies_verified_capability(
+    observed_workspace, mutation,
+):
+    root, activation, cycle = observed_workspace
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    lineage = manifest["model_and_ensemble_lineage"]
+    if mutation == "null":
+        lineage["source_artifacts"].append(None)
+    else:
+        auxiliary = _auxiliary_artifact(manifest, 0)
+        if mutation == "unknown_role":
+            auxiliary["role"] = "prediction"
+        elif mutation == "foreign_position":
+            auxiliary["position"] = 4
+        elif mutation == "duplicate_prediction":
+            lineage["source_artifacts"].append(copy.deepcopy(auxiliary))
+        else:
+            auxiliary["artifact_tree_digest"]["value"] = "1" * 64
+        lineage["source_artifacts"].append(auxiliary)
+    _rewrite_seal(cycle, manifest)
+    with pytest.raises(ForwardObservationInputError):
+        observe_shadow_forward_definition_candidate(root, CYCLE, activation)
 
 
 def test_artifact_inventory_digest_is_rebuilt_from_exact_sealed_member_rows(observed_workspace):
@@ -368,6 +446,65 @@ def test_foreign_mutated_or_replayed_candidate_cannot_grant_verified_or_compiled
     object.__setattr__(candidate, "_reference_receipt_digest", {"value": "forged"})
     with pytest.raises(ForwardObservationContractError):
         _ = candidate.compiled_capability
+
+
+@pytest.mark.parametrize("replacement", [
+    "compiled", "compiled_nested_equal", "receipt", "receipt_nested_equal",
+    "coordinated",
+])
+def test_candidate_fields_cannot_replace_the_original_inspector_observation_binding(
+    observed_workspace, replacement,
+):
+    from quantpits.research.forward_definitions import compile_shadow_forward_definitions
+
+    candidate = _observe(observed_workspace)
+    receipt = dict(candidate.reference_receipt)
+    raw = {
+        "definition_set_id": candidate.compiled_definitions.definition_set_id,
+        "protocol": candidate.compiled_definitions.protocol.to_dict(),
+        "execution_assumption": candidate.compiled_definitions.execution_assumption.to_dict(),
+        "champion_strategy": candidate.compiled_definitions.champion.to_dict(),
+        "challenger_strategy": candidate.compiled_definitions.challenger.to_dict(),
+    }
+    raw["challenger_strategy"]["hypothesis"] += " Forged."
+    forged = compile_shadow_forward_definitions(raw)
+    if replacement in {"compiled", "coordinated"}:
+        object.__setattr__(candidate, "compiled_definitions", forged)
+    elif replacement == "compiled_nested_equal":
+        equal = compile_shadow_forward_definitions({
+            "definition_set_id": candidate.compiled_definitions.definition_set_id,
+            "protocol": candidate.compiled_definitions.protocol.to_dict(),
+            "execution_assumption": candidate.compiled_definitions.execution_assumption.to_dict(),
+            "champion_strategy": candidate.compiled_definitions.champion.to_dict(),
+            "challenger_strategy": candidate.compiled_definitions.challenger.to_dict(),
+        })
+        object.__setattr__(
+            candidate.compiled_definitions, "challenger", equal.challenger,
+        )
+    if replacement in {"receipt", "coordinated"}:
+        if replacement == "coordinated":
+            receipt["compiled_request_digest"] = dict(forged.request_digest)
+        receipt_bytes = canonical_json_bytes(receipt)
+        object.__setattr__(candidate, "_reference_receipt", receipt)
+        object.__setattr__(candidate, "_reference_receipt_bytes", receipt_bytes)
+        object.__setattr__(
+            candidate, "_reference_receipt_digest",
+            TypedDigest.canonical(receipt).to_dict(),
+        )
+    elif replacement == "receipt_nested_equal":
+        digest = candidate._reference_receipt["evidence_seal_digest"]
+        original_value = digest["value"]
+        equal_value = original_value.encode("ascii").decode("ascii")
+        assert equal_value == original_value and equal_value is not original_value
+        digest["value"] = equal_value
+    with pytest.raises(ForwardObservationContractError):
+        _ = candidate.sealed_reference_join_verified
+    with pytest.raises(ForwardObservationContractError):
+        _ = candidate.compiled_capability
+    with pytest.raises(ForwardObservationContractError):
+        candidate.to_store_request()
+    with pytest.raises(ForwardObservationContractError):
+        candidate.to_safe_summary_dict()
 
 
 def test_observation_reads_are_bounded_and_workspace_cycle_config_activation_drift_is_denied(observed_workspace, monkeypatch):

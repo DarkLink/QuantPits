@@ -7,10 +7,32 @@ import pytest
 from quantpits.scripts import observe_forward_definitions as cli
 
 
-def test_cli_requires_exact_workspace_cycle_and_activation_arguments():
-    with pytest.raises(SystemExit) as caught:
-        cli.main([])
-    assert caught.value.code == 2
+def test_cli_requires_exact_workspace_cycle_and_activation_arguments(capsys):
+    assert cli.main([]) == 2
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out) == {
+        "status": "blocked",
+        "error": {
+            "type": "ForwardObservationArgumentError",
+            "reason_code": "ARGUMENT_INVALID",
+        },
+    }
+
+
+def test_cli_unknown_arguments_never_echo_private_tokens(capsys):
+    private = "PRIVATE_TOKEN_123"
+    assert cli.main([
+        "--workspace", "/private/workspace", "--evidence-cycle", "2026-08-14",
+        "--activation", "/private/activation.json", "--unexpected", private,
+    ]) == 2
+    captured = capsys.readouterr()
+    assert private not in captured.out + captured.err
+    assert captured.err == ""
+    assert json.loads(captured.out)["error"] == {
+        "type": "ForwardObservationArgumentError",
+        "reason_code": "ARGUMENT_INVALID",
+    }
 
 
 def test_cli_success_prints_one_safe_machine_readable_summary_and_writes_nothing(monkeypatch, capsys):
