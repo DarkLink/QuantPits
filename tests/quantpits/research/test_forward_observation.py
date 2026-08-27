@@ -353,6 +353,9 @@ def _auxiliary_artifact(manifest, position):
         template["recorder_id"] = manifest["model_and_ensemble_lineage"][
             "source_models"
         ][position]["recorder_id"]
+        template["source_recorder_id"] = manifest["model_and_ensemble_lineage"][
+            "source_models"
+        ][position]["source_recorder_id"]
     return template
 
 
@@ -360,7 +363,7 @@ def test_legal_prediction_and_ensemble_auxiliary_artifacts_are_fully_partitioned
     root, activation, cycle = observed_workspace
     manifest = json.loads((cycle / "manifest.json").read_bytes())
     lineage = manifest["model_and_ensemble_lineage"]
-    lineage["combo"]["recorder_id"] = "ENSEMBLE"
+    lineage["combo"]["ensemble_recorder_id"] = "ENSEMBLE"
     lineage["source_artifacts"].extend([
         _auxiliary_artifact(manifest, 0),
         _auxiliary_artifact(manifest, "ensemble"),
@@ -373,7 +376,8 @@ def test_legal_prediction_and_ensemble_auxiliary_artifacts_are_fully_partitioned
 
 @pytest.mark.parametrize("mutation", [
     "null", "unknown_role", "foreign_position", "duplicate_prediction",
-    "bad_auxiliary_tree",
+    "bad_auxiliary_tree", "prediction_source_mismatch",
+    "ensemble_recorder_mismatch",
 ])
 def test_source_artifact_unassigned_or_malformed_remainder_denies_verified_capability(
     observed_workspace, mutation,
@@ -384,15 +388,20 @@ def test_source_artifact_unassigned_or_malformed_remainder_denies_verified_capab
     if mutation == "null":
         lineage["source_artifacts"].append(None)
     else:
-        auxiliary = _auxiliary_artifact(manifest, 0)
+        auxiliary_position = "ensemble" if mutation == "ensemble_recorder_mismatch" else 0
+        auxiliary = _auxiliary_artifact(manifest, auxiliary_position)
         if mutation == "unknown_role":
             auxiliary["role"] = "prediction"
         elif mutation == "foreign_position":
             auxiliary["position"] = 4
         elif mutation == "duplicate_prediction":
             lineage["source_artifacts"].append(copy.deepcopy(auxiliary))
-        else:
+        elif mutation == "bad_auxiliary_tree":
             auxiliary["artifact_tree_digest"]["value"] = "1" * 64
+        elif mutation == "prediction_source_mismatch":
+            auxiliary["source_recorder_id"] = "FOREIGN_SOURCE"
+        else:
+            lineage["combo"]["ensemble_recorder_id"] = "OTHER_ENSEMBLE"
         lineage["source_artifacts"].append(auxiliary)
     _rewrite_seal(cycle, manifest)
     with pytest.raises(ForwardObservationInputError):

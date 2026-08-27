@@ -554,8 +554,8 @@ def _verify_bundle(
             destination = training_rows
         elif not role_present and type(position) is int and position in range(4):
             expected_fields = {
-                "position", "recorder_id", "artifact_locator", "members",
-                "artifact_tree_digest",
+                "position", "recorder_id", "source_recorder_id",
+                "artifact_locator", "members", "artifact_tree_digest",
             }
             destination = prediction_rows
         elif not role_present and position == "ensemble":
@@ -635,10 +635,13 @@ def _verify_bundle(
         raise _input("source training relation is not one-to-one", sources=resolved)
     if any(
         row["row"]["recorder_id"] != sources[position]["recorder_id"]
+        or row["row"]["source_recorder_id"] != sources[position]["source_recorder_id"]
+        or type(row["row"]["source_recorder_id"]) is not str
+        or not row["row"]["source_recorder_id"]
         for position, row in prediction_rows.items()
     ):
         raise _input("prediction artifact recorder identity does not join", sources=resolved)
-    combo_recorder = combo.get("recorder_id") if type(combo) is dict else None
+    combo_recorder = combo.get("ensemble_recorder_id") if type(combo) is dict else None
     if ensemble_rows and (
         type(combo_recorder) is not str or not combo_recorder
         or ensemble_rows[0]["row"]["recorder_id"] != combo_recorder
