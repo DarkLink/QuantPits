@@ -298,7 +298,7 @@ def test_member_and_manifest_failure_are_uncertain_without_publication_capabilit
         original_read = definition_store._read_regular_at
         reads = {"protocol.json": 0}
 
-        def fail_read(descriptor, name, conflict=False):
+        def fail_read(descriptor, name, expected, conflict=False):
             if stage == "manifest_read" and name == MANIFEST_NAME:
                 raise OSError("injected")
             if stage == "final_member" and name == "protocol.json":
@@ -307,7 +307,7 @@ def test_member_and_manifest_failure_are_uncertain_without_publication_capabilit
                     target = root / "candidate-1" / name
                     target.write_bytes(b'{"changed":true}')
                     target.chmod(0o600)
-            return original_read(descriptor, name, conflict=conflict)
+            return original_read(descriptor, name, expected, conflict=conflict)
 
         monkeypatch.setattr(definition_store, "_read_regular_at", fail_read)
     if stage == "final_inventory":
@@ -344,7 +344,7 @@ def test_store_or_bundle_checkpoint_identity_drift_is_uncertain(tmp_path, monkey
         original_read = definition_store._read_regular_at
         changed = {"value": False}
 
-        def replace_namespace(descriptor, name, conflict=False):
+        def replace_namespace(descriptor, name, expected, conflict=False):
             if not changed["value"]:
                 changed["value"] = True
                 victim = root if node == "existing_store" else root / "candidate-1"
@@ -352,7 +352,7 @@ def test_store_or_bundle_checkpoint_identity_drift_is_uncertain(tmp_path, monkey
                 victim.rename(displaced)
                 victim.mkdir(mode=0o700)
                 victim.chmod(0o700)
-            return original_read(descriptor, name, conflict=conflict)
+            return original_read(descriptor, name, expected, conflict=conflict)
 
         monkeypatch.setattr(definition_store, "_read_regular_at", replace_namespace)
         receipt = store.publish(_request())
@@ -424,12 +424,12 @@ def test_process_control_propagates_from_validation_create_member_manifest_and_f
         original = definition_store._read_regular_at
         calls = {"protocol.json": 0}
 
-        def stop_final(descriptor, name, conflict=False):
+        def stop_final(descriptor, name, expected, conflict=False):
             if name == "protocol.json":
                 calls[name] += 1
                 if calls[name] == 2:
                     raise control()
-            return original(descriptor, name, conflict=conflict)
+            return original(descriptor, name, expected, conflict=conflict)
 
         monkeypatch.setattr(definition_store, "_read_regular_at", stop_final)
     with pytest.raises(control):
@@ -501,6 +501,266 @@ def test_two_store_roots_produce_exact_same_member_and_manifest_bytes(tmp_path):
     assert CreateOnlyDefinitionBundleStore(left).publish(request).status == "COMMITTED"
     assert CreateOnlyDefinitionBundleStore(right).publish(request).status == "COMMITTED"
     assert _files(left / "candidate-1") == _files(right / "candidate-1")
+
+
+def test_existing_member_and_manifest_reads_are_bounded_by_exact_expected_bytes(
+    tmp_path, monkeypatch,
+):
+    root = _root(tmp_path)
+    request = _request()
+    assert CreateOnlyDefinitionBundleStore(root).publish(request).status == "COMMITTED"
+    bundle_fd = os.open(str(root / "candidate-1"), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    original_read = definition_store.os.read
+    try:
+        expected_by_name = {
+            member.logical_path: member.canonical_json_bytes for member in request.members
+        }
+        expected_by_name[MANIFEST_NAME] = definition_store._manifest_bytes(request)
+        for name, expected in expected_by_name.items():
+            observed = []
+
+            def bounded_read(descriptor, size):
+                observed.append(size)
+                if size > len(expected) + 1:
+                    raise AssertionError("read request exceeded exact expected-byte budget")
+                return original_read(descriptor, size)
+
+            monkeypatch.setattr(definition_store.os, "read", bounded_read)
+            assert definition_store._read_regular_at(
+                bundle_fd, name, expected, conflict=True,
+            ) == expected
+            assert sum(observed) <= len(expected) + 1
+            assert max(observed) <= len(expected) + 1
+    finally:
+        os.close(bundle_fd)
+
+
+def test_oversized_existing_regular_member_is_classified_without_reading_to_eof(
+    tmp_path, monkeypatch,
+):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    assert store.publish(_request()).status == "COMMITTED"
+    target = root / "candidate-1" / "protocol.json"
+    with target.open("r+b") as stream:
+        stream.truncate(64 * 1024 * 1024)
+    before_size = target.stat().st_size
+    original_read = definition_store.os.read
+    read_bytes = {"value": 0}
+
+    def observe_read(descriptor, size):
+        data = original_read(descriptor, size)
+        read_bytes["value"] += len(data)
+        return data
+
+    monkeypatch.setattr(definition_store.os, "read", observe_read)
+    receipt = store.publish(_request())
+    assert receipt.status == "CONFLICT" and receipt.did_write is False
+    assert not receipt.publication_capability and target.stat().st_size == before_size
+    expected_small_reads = sum(
+        len(member.canonical_json_bytes)
+        for member in _request().members
+        if member.logical_path != "protocol.json"
+    )
+    assert read_bytes["value"] <= 2 * expected_small_reads
+
+
+def test_stable_exact_same_conflict_observation_remains_conflict(tmp_path):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    assert store.publish(_request()).status == "COMMITTED"
+    before = _files(root / "candidate-1")
+    receipt = store.publish(_request(changed={"protocol.json": b'{"label":"other"}'}))
+    assert receipt.status == "CONFLICT" and receipt.did_write is False
+    assert not receipt.publication_capability and _files(root / "candidate-1") == before
+
+
+def test_same_size_conflict_bytes_drifting_between_observations_are_uncertain(
+    tmp_path, monkeypatch,
+):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    assert store.publish(_request()).status == "COMMITTED"
+    target = root / "candidate-1" / "protocol.json"
+    original = definition_store.CreateOnlyDefinitionBundleStore._observe_existing
+    calls = {"count": 0}
+
+    def drift(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except definition_store._ExistingConflict:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                old = target.stat()
+                current = target.read_bytes()
+                replacement = _bytes("challengerxxx")
+                assert len(replacement) == len(current) and replacement != current
+                target.write_bytes(replacement)
+                target.chmod(0o600)
+                os.utime(target, ns=(old.st_atime_ns, old.st_mtime_ns))
+            raise
+
+    monkeypatch.setattr(
+        definition_store.CreateOnlyDefinitionBundleStore, "_observe_existing", staticmethod(drift),
+    )
+    receipt = store.publish(_request(changed={"protocol.json": _bytes("aaaaaaaaaaaaa")}))
+    assert calls["count"] == 2
+    assert receipt.status == "UNCERTAIN" and receipt.did_write is False
+    assert not receipt.publication_capability
+
+
+@pytest.mark.parametrize("mutation", ["exact", "class"])
+def test_conflict_becoming_exact_or_changing_decisive_class_is_uncertain(
+    tmp_path, monkeypatch, mutation,
+):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    assert store.publish(_request()).status == "COMMITTED"
+    requested = _request(changed={"protocol.json": b'{"label":"wanted"}'})
+    original = definition_store.CreateOnlyDefinitionBundleStore._observe_existing
+    calls = {"count": 0}
+
+    def mutate(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except definition_store._ExistingConflict:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                bundle = root / "candidate-1"
+                if mutation == "exact":
+                    (bundle / "protocol.json").write_bytes(requested.members[0].canonical_json_bytes)
+                    (bundle / "protocol.json").chmod(0o600)
+                    (bundle / MANIFEST_NAME).write_bytes(definition_store._manifest_bytes(requested))
+                    (bundle / MANIFEST_NAME).chmod(0o600)
+                else:
+                    (bundle / "foreign").write_bytes(b"x")
+                    (bundle / "foreign").chmod(0o600)
+            raise
+
+    monkeypatch.setattr(
+        definition_store.CreateOnlyDefinitionBundleStore, "_observe_existing", staticmethod(mutate),
+    )
+    receipt = store.publish(requested)
+    assert receipt.status == "UNCERTAIN" and receipt.did_write is False
+    assert not receipt.publication_capability
+
+
+def test_raw_inventory_drift_between_conflict_observations_is_uncertain(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    assert store.publish(_request()).status == "COMMITTED"
+    bundle = root / "candidate-1"
+    (bundle / "foreign-a").write_bytes(b"x")
+    (bundle / "foreign-a").chmod(0o600)
+    original = definition_store.CreateOnlyDefinitionBundleStore._observe_existing
+    calls = {"count": 0}
+
+    def drift(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except definition_store._ExistingConflict:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                (bundle / "foreign-a").rename(bundle / "foreign-b")
+            raise
+
+    monkeypatch.setattr(
+        definition_store.CreateOnlyDefinitionBundleStore, "_observe_existing", staticmethod(drift),
+    )
+    receipt = store.publish(_request())
+    assert receipt.status == "UNCERTAIN" and receipt.did_write is False
+    assert not receipt.publication_capability
+
+
+@pytest.mark.parametrize("control", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_primary_process_control_is_not_masked_by_secondary_close_failure(
+    tmp_path, monkeypatch, control,
+):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    assert store.publish(_request()).status == "COMMITTED"
+    primary = control()
+    monkeypatch.setattr(
+        definition_store.os, "read", lambda *_args: (_ for _ in ()).throw(primary),
+    )
+    monkeypatch.setattr(
+        definition_store.os, "close", lambda *_args: (_ for _ in ()).throw(OSError("close")),
+    )
+    with pytest.raises(control) as raised:
+        store.publish(_request())
+    assert raised.value is primary
+
+
+@pytest.mark.parametrize("control", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_process_control_from_descriptor_close_propagates(tmp_path, monkeypatch, control):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    assert store.publish(_request()).status == "COMMITTED"
+    primary = control()
+    original_close = definition_store.os.close
+    injected = {"value": False}
+
+    def close(descriptor):
+        if not injected["value"]:
+            injected["value"] = True
+            raise primary
+        return original_close(descriptor)
+
+    monkeypatch.setattr(definition_store.os, "close", close)
+    with pytest.raises(control) as raised:
+        store.publish(_request())
+    assert raised.value is primary
+
+
+@pytest.mark.parametrize("stage", ["read", "write", "close"])
+def test_ordinary_read_write_and_close_failures_remain_fail_closed(
+    tmp_path, monkeypatch, stage,
+):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    if stage != "write":
+        assert store.publish(_request()).status == "COMMITTED"
+    if stage == "read":
+        monkeypatch.setattr(
+            definition_store.os, "read",
+            lambda *_args: (_ for _ in ()).throw(OSError("read")),
+        )
+    elif stage == "write":
+        monkeypatch.setattr(
+            definition_store.os, "write",
+            lambda *_args: (_ for _ in ()).throw(OSError("write")),
+        )
+    else:
+        original_close = definition_store.os.close
+        injected = {"value": False}
+
+        def close(descriptor):
+            if not injected["value"]:
+                injected["value"] = True
+                raise OSError("close")
+            return original_close(descriptor)
+
+        monkeypatch.setattr(definition_store.os, "close", close)
+    receipt = store.publish(_request())
+    assert receipt.status == "UNCERTAIN" and not receipt.publication_capability
+    assert receipt.did_write is (stage == "write")
+
+
+def test_hardening_preserves_exact_committed_adopted_manifest_and_receipt_bytes(tmp_path):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    request = _request()
+    committed = store.publish(request)
+    before = _files(root / "candidate-1")
+    adopted = store.publish(request)
+    conflict = store.publish(_request(changed={"protocol.json": b'{"label":"other"}'}))
+    assert committed.status == "COMMITTED" and committed.did_write is True
+    assert adopted.status == "ADOPTED" and adopted.did_write is False
+    assert conflict.status == "CONFLICT" and conflict.did_write is False
+    assert committed.manifest_digest == adopted.manifest_digest
+    assert committed.request_digest == adopted.request_digest
+    assert committed.to_dict().keys() == adopted.to_dict().keys() == conflict.to_dict().keys()
+    assert _files(root / "candidate-1") == before
 
 
 def test_definition_store_import_preserves_environment_cwd_and_optional_dependency_state(monkeypatch):

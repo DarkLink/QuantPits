@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -38,8 +39,15 @@ class DefinitionStoreInputError(RuntimeError):
     """The requested physical store root cannot be observed safely."""
 
 
+@dataclass(frozen=True)
+class _ConflictObservation:
+    fingerprint: str
+
+
 class _ExistingConflict(Exception):
-    pass
+    def __init__(self, observation: _ConflictObservation) -> None:
+        super().__init__(observation.fingerprint)
+        self.observation = observation
 
 
 class _ObservationUncertain(Exception):
@@ -50,6 +58,34 @@ def _canonical_json(value: Any) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")
+
+
+def _conflict_observation(conflict_class: str, **facts: Any) -> _ConflictObservation:
+    payload = {
+        "domain": "C0_EXISTING_CONFLICT_OBSERVATION_V1",
+        "conflict_class": conflict_class,
+    }
+    payload.update(facts)
+    return _ConflictObservation(hashlib.sha256(_canonical_json(payload)).hexdigest())
+
+
+def _raise_conflict(conflict_class: str, **facts: Any) -> None:
+    raise _ExistingConflict(_conflict_observation(conflict_class, **facts))
+
+
+def _close_descriptor(descriptor: int, *, suppress_ordinary: bool) -> None:
+    """Close without allowing a secondary failure to mask active process control."""
+    active = sys.exc_info()[1]
+    try:
+        os.close(descriptor)
+    except _PROCESS_CONTROL:
+        if isinstance(active, _PROCESS_CONTROL):
+            return
+        raise
+    except OSError as exc:
+        if isinstance(active, _PROCESS_CONTROL) or suppress_ordinary:
+            return
+        raise _ObservationUncertain("descriptor cleanup failed") from exc
 
 
 def _digest(data: bytes, domain: str = "raw_bytes") -> Dict[str, Any]:
@@ -404,7 +440,7 @@ def _require_root(root: Any) -> Tuple[Path, int, Tuple[int, int, int, int, int]]
         if _fd_directory_identity(descriptor) != before or _path_directory_identity(path) != before:
             raise DefinitionStoreInputError("store root identity changed while opening")
     except BaseException:
-        os.close(descriptor)
+        _close_descriptor(descriptor, suppress_ordinary=True)
         raise
     return path, descriptor, before
 
@@ -413,15 +449,11 @@ def _file_identity(info: os.stat_result) -> Tuple[int, int, int, int, int]:
     return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns)
 
 
-def _entry_identity(descriptor: int, name: str) -> Optional[Tuple[int, int, int, int, int]]:
-    try:
-        return _file_identity(os.stat(name, dir_fd=descriptor, follow_symlinks=False))
-    except OSError:
-        return None
-
-
-def _read_regular_at(descriptor: int, name: str, *, conflict: bool) -> bytes:
-    error = _ExistingConflict if conflict else _ObservationUncertain
+def _read_regular_at(
+    descriptor: int, name: str, expected: bytes, *, conflict: bool,
+) -> bytes:
+    expected_size = len(expected)
+    expected_digest = hashlib.sha256(expected).hexdigest()
     try:
         before = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
         if (
@@ -430,31 +462,62 @@ def _read_regular_at(descriptor: int, name: str, *, conflict: bool) -> bytes:
             or before.st_nlink != 1
             or stat.S_IMODE(before.st_mode) != 0o600
         ):
-            raise error("definition member type or mode is invalid")
+            if conflict:
+                _raise_conflict(
+                    "MEMBER_METADATA_MISMATCH",
+                    decisive_logical_path=name,
+                    entry_identity=list(_file_identity(before)),
+                    entry_nlink=before.st_nlink,
+                    expected_size=expected_size,
+                    expected_digest=expected_digest,
+                )
+            raise _ObservationUncertain("definition member type or mode is invalid")
+        if before.st_size != expected_size:
+            if conflict:
+                _raise_conflict(
+                    "MEMBER_SIZE_MISMATCH",
+                    decisive_logical_path=name,
+                    entry_identity=list(_file_identity(before)),
+                    entry_nlink=before.st_nlink,
+                    expected_size=expected_size,
+                    expected_digest=expected_digest,
+                    observed_size=before.st_size,
+                )
+            raise _ObservationUncertain("definition member size differs")
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         file_fd = os.open(name, flags, dir_fd=descriptor)
         try:
             opened = os.fstat(file_fd)
+            if opened.st_size != expected_size:
+                raise _ObservationUncertain("definition member size changed while opening")
             chunks = []
-            while True:
-                chunk = os.read(file_fd, 64 * 1024)
+            remaining = expected_size
+            while remaining:
+                chunk = os.read(file_fd, min(64 * 1024, remaining))
                 if not chunk:
                     break
                 chunks.append(chunk)
+                remaining -= len(chunk)
+            trailing = os.read(file_fd, 1)
+            if trailing:
+                chunks.append(trailing)
             opened_after = os.fstat(file_fd)
         finally:
-            os.close(file_fd)
+            _close_descriptor(file_fd, suppress_ordinary=False)
         after = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
     except _PROCESS_CONTROL:
         raise
-    except error:
+    except (_ExistingConflict, _ObservationUncertain):
         raise
     except OSError as exc:
         raise _ObservationUncertain("definition member observation failed") from exc
     identities = tuple(_file_identity(item) for item in (before, opened, opened_after, after))
     if len(set(identities)) != 1:
         raise _ObservationUncertain("definition member identity changed")
-    return b"".join(chunks)
+    observed = b"".join(chunks)
+    if len(observed) != expected_size:
+        raise _ObservationUncertain("definition member bounded read was incomplete")
+    return observed
 
 
 def _write_exclusive(descriptor: int, name: str, data: bytes) -> None:
@@ -470,7 +533,7 @@ def _write_exclusive(descriptor: int, name: str, data: bytes) -> None:
             view = view[written:]
         os.fsync(file_fd)
     finally:
-        os.close(file_fd)
+        _close_descriptor(file_fd, suppress_ordinary=False)
 
 
 def _manifest_bytes(request: DefinitionBundleRequest) -> bytes:
@@ -581,13 +644,17 @@ class CreateOnlyDefinitionBundleStore:
                 }
                 for logical_path in sorted(DEFINITION_PATHS):
                     _write_exclusive(bundle_fd, logical_path, by_path[logical_path])
-                    if _read_regular_at(bundle_fd, logical_path, conflict=False) != by_path[logical_path]:
+                    if _read_regular_at(
+                        bundle_fd, logical_path, by_path[logical_path], conflict=False,
+                    ) != by_path[logical_path]:
                         raise _ObservationUncertain("created member bytes changed")
                     verified_prefix += 1
                 os.fsync(bundle_fd)
                 manifest = _manifest_bytes(snapshot)
                 _write_exclusive(bundle_fd, MANIFEST_NAME, manifest)
-                if _read_regular_at(bundle_fd, MANIFEST_NAME, conflict=False) != manifest:
+                if _read_regular_at(
+                    bundle_fd, MANIFEST_NAME, manifest, conflict=False,
+                ) != manifest:
                     raise _ObservationUncertain("created manifest bytes changed")
                 self._verify_complete(
                     snapshot, root, target, store_fd, bundle_fd, root_before,
@@ -615,14 +682,8 @@ class CreateOnlyDefinitionBundleStore:
                 )
         finally:
             if bundle_fd is not None:
-                try:
-                    os.close(bundle_fd)
-                except OSError:
-                    pass
-            try:
-                os.close(store_fd)
-            except OSError:
-                pass
+                _close_descriptor(bundle_fd, suppress_ordinary=True)
+            _close_descriptor(store_fd, suppress_ordinary=True)
 
     def _classify_existing(
         self,
@@ -633,97 +694,110 @@ class CreateOnlyDefinitionBundleStore:
         root_before: Tuple[int, int, int, int, int],
         operation_id: str,
     ) -> DefinitionStoreReceipt:
-        bundle_fd: Optional[int] = None
-        target_observed_identity: Optional[Tuple[int, int, int, int, int]] = None
         try:
+            manifest, target_identity = self._observe_existing(
+                request, root, target, store_fd, root_before,
+            )
+            return _receipt(
+                request, operation_id, "ADOPTED", False, len(DEFINITION_PATHS),
+                root_before, root_before, target_identity, manifest,
+            )
+        except _PROCESS_CONTROL:
+            raise
+        except _ExistingConflict as first:
             try:
-                if _fd_directory_identity(store_fd) != root_before or _path_directory_identity(root) != root_before:
-                    raise _ObservationUncertain("store identity changed before existing inspection")
-                target_info = os.stat(
-                    request.definition_set_id, dir_fd=store_fd, follow_symlinks=False,
-                )
-                target_observed_identity = _file_identity(target_info)
-                if not stat.S_ISDIR(target_info.st_mode) or stat.S_ISLNK(target_info.st_mode):
-                    raise _ExistingConflict("existing target is not a physical directory")
-                target_identity = _directory_identity(target_info)
-                if stat.S_IMODE(target_identity[2]) != 0o700:
-                    raise _ExistingConflict("existing bundle mode is invalid")
-                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-                bundle_fd = os.open(request.definition_set_id, flags, dir_fd=store_fd)
-                if (
-                    _fd_directory_identity(bundle_fd) != target_identity
-                    or _path_directory_identity(target) != target_identity
-                ):
-                    raise _ObservationUncertain("existing bundle identity changed")
-                manifest = self._verify_complete(
-                    request, root, target, store_fd, bundle_fd, root_before,
-                    target_identity, conflict=True,
-                )
-                if (
-                    _fd_directory_identity(store_fd) != root_before
-                    or _path_directory_identity(root) != root_before
-                    or _fd_directory_identity(bundle_fd) != target_identity
-                    or _path_directory_identity(target) != target_identity
-                ):
-                    raise _ObservationUncertain("existing final namespace changed")
-                return _receipt(
-                    request, operation_id, "ADOPTED", False, len(DEFINITION_PATHS),
-                    root_before, root_before, target_identity, manifest,
-                )
+                self._observe_existing(request, root, target, store_fd, root_before)
             except _PROCESS_CONTROL:
                 raise
-            except _ExistingConflict:
-                if bundle_fd is not None:
-                    try:
-                        self._verify_complete(
-                            request, root, target, store_fd, bundle_fd, root_before,
-                            target_identity, conflict=True,
-                        )
-                    except _PROCESS_CONTROL:
-                        raise
-                    except _ExistingConflict:
-                        pass
-                    except Exception:
-                        return _receipt(
-                            request, operation_id, "UNCERTAIN", False, 0,
-                            root_before, _try_path_directory_identity(root),
-                        )
-                    else:
-                        return _receipt(
-                            request, operation_id, "UNCERTAIN", False, 0,
-                            root_before, _try_path_directory_identity(root),
-                        )
-                stable = (
-                    _fd_directory_identity(store_fd) == root_before
-                    and _try_path_directory_identity(root) == root_before
-                    and target_observed_identity is not None
-                    and _entry_identity(store_fd, request.definition_set_id) == target_observed_identity
-                )
-                if bundle_fd is not None:
-                    try:
-                        stable = stable and _fd_directory_identity(bundle_fd) == _directory_identity(target_info)
-                    except (OSError, DefinitionStoreInputError):
-                        stable = False
-                if not stable:
+            except _ExistingConflict as second:
+                if first.observation.fingerprint != second.observation.fingerprint:
                     return _receipt(
                         request, operation_id, "UNCERTAIN", False, 0,
                         root_before, _try_path_directory_identity(root),
                     )
-                return _receipt(
-                    request, operation_id, "CONFLICT", False, 0,
-                    root_before, root_before,
-                )
             except Exception:
                 return _receipt(
                     request, operation_id, "UNCERTAIN", False, 0,
                     root_before, _try_path_directory_identity(root),
                 )
+            else:
+                return _receipt(
+                    request, operation_id, "UNCERTAIN", False, 0,
+                    root_before, _try_path_directory_identity(root),
+                )
+            if (
+                _fd_directory_identity(store_fd) != root_before
+                or _try_path_directory_identity(root) != root_before
+            ):
+                return _receipt(
+                    request, operation_id, "UNCERTAIN", False, 0,
+                    root_before, _try_path_directory_identity(root),
+                )
+            return _receipt(
+                request, operation_id, "CONFLICT", False, 0,
+                root_before, root_before,
+            )
+        except Exception:
+            return _receipt(
+                request, operation_id, "UNCERTAIN", False, 0,
+                root_before, _try_path_directory_identity(root),
+            )
+
+    @staticmethod
+    def _observe_existing(
+        request: DefinitionBundleRequest,
+        root: Path,
+        target: Path,
+        store_fd: int,
+        root_identity: Tuple[int, int, int, int, int],
+    ) -> Tuple[bytes, Tuple[int, int, int, int, int]]:
+        bundle_fd: Optional[int] = None
+        if _fd_directory_identity(store_fd) != root_identity or _path_directory_identity(root) != root_identity:
+            raise _ObservationUncertain("store identity changed before existing inspection")
+        target_info = os.stat(
+            request.definition_set_id, dir_fd=store_fd, follow_symlinks=False,
+        )
+        target_entry_identity = _file_identity(target_info)
+        if not stat.S_ISDIR(target_info.st_mode) or stat.S_ISLNK(target_info.st_mode):
+            _raise_conflict(
+                "TARGET_TYPE_MISMATCH",
+                decisive_logical_path=request.definition_set_id,
+                root_identity=list(root_identity),
+                target_identity=list(target_entry_identity),
+                target_nlink=target_info.st_nlink,
+            )
+        target_identity = _directory_identity(target_info)
+        if stat.S_IMODE(target_identity[2]) != 0o700:
+            _raise_conflict(
+                "TARGET_MODE_MISMATCH",
+                decisive_logical_path=request.definition_set_id,
+                root_identity=list(root_identity),
+                target_identity=list(target_entry_identity),
+                target_nlink=target_info.st_nlink,
+            )
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            bundle_fd = os.open(request.definition_set_id, flags, dir_fd=store_fd)
+            if (
+                _fd_directory_identity(bundle_fd) != target_identity
+                or _path_directory_identity(target) != target_identity
+            ):
+                raise _ObservationUncertain("existing bundle identity changed")
+            manifest = CreateOnlyDefinitionBundleStore._verify_complete(
+                request, root, target, store_fd, bundle_fd, root_identity,
+                target_identity, conflict=True,
+            )
+            if (
+                _fd_directory_identity(store_fd) != root_identity
+                or _path_directory_identity(root) != root_identity
+                or _fd_directory_identity(bundle_fd) != target_identity
+                or _path_directory_identity(target) != target_identity
+            ):
+                raise _ObservationUncertain("existing final namespace changed")
+            return manifest, target_identity
         finally:
             if bundle_fd is not None:
-                try:
-                    os.close(bundle_fd)
-                except OSError:
-                    pass
+                _close_descriptor(bundle_fd, suppress_ordinary=True)
 
     @staticmethod
     def _verify_complete(
@@ -751,19 +825,70 @@ class CreateOnlyDefinitionBundleStore:
             ):
                 raise _ObservationUncertain("namespace changed during inventory observation")
             if conflict:
-                raise _ExistingConflict("existing bundle inventory differs")
+                _raise_conflict(
+                    "INVENTORY_MISMATCH",
+                    decisive_logical_path=".",
+                    raw_inventory=list(inventory),
+                    root_identity=list(root_identity),
+                    target_identity=list(target_identity),
+                )
             raise _ObservationUncertain("created bundle inventory differs")
         by_path = {member.logical_path: member.canonical_json_bytes for member in request.members}
         for logical_path in sorted(DEFINITION_PATHS):
-            observed = _read_regular_at(bundle_fd, logical_path, conflict=conflict)
+            try:
+                observed = _read_regular_at(
+                    bundle_fd, logical_path, by_path[logical_path], conflict=conflict,
+                )
+            except _ExistingConflict as exc:
+                _raise_conflict(
+                    "MEMBER_OBSERVATION_MISMATCH",
+                    decisive_logical_path=logical_path,
+                    raw_inventory=list(inventory),
+                    root_identity=list(root_identity),
+                    target_identity=list(target_identity),
+                    member_observation=exc.observation.fingerprint,
+                )
             if observed != by_path[logical_path]:
                 if conflict:
-                    raise _ExistingConflict("existing definition bytes differ")
+                    _raise_conflict(
+                        "MEMBER_BYTES_MISMATCH",
+                        decisive_logical_path=logical_path,
+                        raw_inventory=list(inventory),
+                        root_identity=list(root_identity),
+                        target_identity=list(target_identity),
+                        expected_size=len(by_path[logical_path]),
+                        expected_digest=hashlib.sha256(by_path[logical_path]).hexdigest(),
+                        observed_size=len(observed),
+                        observed_digest=hashlib.sha256(observed).hexdigest(),
+                    )
                 raise _ObservationUncertain("created definition bytes differ")
-        manifest = _read_regular_at(bundle_fd, MANIFEST_NAME, conflict=conflict)
-        if manifest != _manifest_bytes(request):
+        expected_manifest = _manifest_bytes(request)
+        try:
+            manifest = _read_regular_at(
+                bundle_fd, MANIFEST_NAME, expected_manifest, conflict=conflict,
+            )
+        except _ExistingConflict as exc:
+            _raise_conflict(
+                "MEMBER_OBSERVATION_MISMATCH",
+                decisive_logical_path=MANIFEST_NAME,
+                raw_inventory=list(inventory),
+                root_identity=list(root_identity),
+                target_identity=list(target_identity),
+                member_observation=exc.observation.fingerprint,
+            )
+        if manifest != expected_manifest:
             if conflict:
-                raise _ExistingConflict("existing manifest differs")
+                _raise_conflict(
+                    "MEMBER_BYTES_MISMATCH",
+                    decisive_logical_path=MANIFEST_NAME,
+                    raw_inventory=list(inventory),
+                    root_identity=list(root_identity),
+                    target_identity=list(target_identity),
+                    expected_size=len(expected_manifest),
+                    expected_digest=hashlib.sha256(expected_manifest).hexdigest(),
+                    observed_size=len(manifest),
+                    observed_digest=hashlib.sha256(manifest).hexdigest(),
+                )
             raise _ObservationUncertain("created manifest differs")
         if (
             _fd_directory_identity(store_fd) != root_identity
