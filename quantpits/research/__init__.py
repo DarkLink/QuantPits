@@ -54,6 +54,14 @@ _EXPORT_MODULES = {
     "DefinitionStoreInputError": "quantpits.research.definition_store",
     "DefinitionStoreReceipt": "quantpits.research.definition_store",
     "revalidate_definition_bundle_request": "quantpits.research.definition_store",
+    "CompiledShadowForwardDefinitions": "quantpits.research.forward_definitions",
+    "DigestReference": "quantpits.research.forward_definitions",
+    "ForwardDefinitionContractError": "quantpits.research.forward_definitions",
+    "ShadowExecutionAssumption": "quantpits.research.forward_definitions",
+    "ShadowForwardProtocol": "quantpits.research.forward_definitions",
+    "ShadowStrategyDefinition": "quantpits.research.forward_definitions",
+    "SourceMember": "quantpits.research.forward_definitions",
+    "compile_shadow_forward_definitions": "quantpits.research.forward_definitions",
 }
 
 
@@ -116,4 +124,12 @@ __all__ = [
     "DefinitionStoreInputError",
     "DefinitionStoreReceipt",
     "revalidate_definition_bundle_request",
+    "CompiledShadowForwardDefinitions",
+    "DigestReference",
+    "ForwardDefinitionContractError",
+    "ShadowExecutionAssumption",
+    "ShadowForwardProtocol",
+    "ShadowStrategyDefinition",
+    "SourceMember",
+    "compile_shadow_forward_definitions",
 ]
