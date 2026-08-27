@@ -11,6 +11,7 @@ from quantpits.research.forward_observation import (
     ForwardObservationContractError,
     ForwardObservationInputError,
     ObservedForwardDefinitionCandidate,
+    observe_frozen_shadow_forward_definition_candidate,
     observe_shadow_forward_definition_candidate,
 )
 
@@ -61,7 +62,7 @@ def _write(path, data, mode=None):
         path.chmod(mode)
 
 
-def _bundle(root, *, omitted=1):
+def _bundle(root, *, omitted=1, frozen=False):
     config = (
         "strategy:\n"
         "  name: topk_dropout\n"
@@ -74,8 +75,24 @@ def _bundle(root, *, omitted=1):
         "  account: 99999999\n"
     ).encode()
     _write(root / "config" / "strategy_config.yaml", config)
-    activation_path = root / "private" / "activation.json"
-    _write(activation_path, canonical_json_bytes(_activation(omitted)), 0o600)
+    activation_raw = _activation(omitted)
+    if frozen:
+        activation_raw["purpose"] = "FROZEN_OBSERVATION"
+        activation_raw["definition_set_id"] = "shadow.frozen.c1b1a"
+        activation_raw["selection_decision"]["reason_code"] = "FROZEN_OBSERVATION"
+        activation_path = (
+            root / "research" / "shadow_v1" / "activations"
+            / "shadow.frozen.c1b1a.json"
+        )
+    else:
+        activation_path = root / "private" / "activation.json"
+    _write(activation_path, canonical_json_bytes(activation_raw), 0o600)
+    if frozen:
+        for directory in (
+            root / "research", root / "research" / "shadow_v1",
+            root / "research" / "shadow_v1" / "activations",
+        ):
+            directory.chmod(0o700)
     source_ids = ["MODEL_A", "MODEL_B", "MODEL_C", "MODEL_D"]
     artifact_rows = []
     objects = {}
@@ -217,6 +234,94 @@ def test_valid_engineering_activation_observes_exact_sealed_four_to_three_defini
     assert len(candidate.compiled_definitions.champion.to_dict()["source_members"]) == 4
     assert len(candidate.compiled_definitions.challenger.to_dict()["source_members"]) == 3
     assert candidate.publication_capability is False
+
+
+def test_engineering_and_frozen_observation_entries_enforce_disjoint_fixed_policies(tmp_path):
+    engineering = tmp_path / "engineering"
+    engineering.mkdir()
+    engineering_activation, _ = _bundle(engineering)
+    frozen = tmp_path / "frozen"
+    frozen.mkdir()
+    frozen_activation, _ = _bundle(frozen, frozen=True)
+    assert observe_shadow_forward_definition_candidate(
+        engineering, CYCLE, engineering_activation,
+    ).reference_receipt["purpose"] == "ENGINEERING_VALIDATION"
+    assert observe_frozen_shadow_forward_definition_candidate(
+        frozen, CYCLE, frozen_activation,
+    ).reference_receipt["purpose"] == "FROZEN_OBSERVATION"
+    with pytest.raises(ForwardObservationInputError):
+        observe_frozen_shadow_forward_definition_candidate(
+            engineering, CYCLE, engineering_activation,
+        )
+    with pytest.raises(ForwardObservationInputError):
+        observe_shadow_forward_definition_candidate(frozen, CYCLE, frozen_activation)
+
+
+def test_valid_frozen_activation_observes_a_new_formal_candidate_with_all_future_claims_false(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    activation, _ = _bundle(root, frozen=True)
+    candidate = observe_frozen_shadow_forward_definition_candidate(
+        root, CYCLE, activation,
+    )
+    summary = candidate.to_safe_summary_dict()
+    assert summary["definition_set_id"] == "shadow.frozen.c1b1a"
+    assert candidate.reference_receipt["purpose"] == "FROZEN_OBSERVATION"
+    assert summary["publication_capability"] is False
+    assert summary["epoch_started"] is False
+    assert summary["prospective_claim"] is False
+    assert summary["promotion_capability"] is False
+
+
+@pytest.mark.parametrize("mutation", ["reason", "decision", "target", "layout"])
+def test_frozen_activation_requires_approve_frozen_reason_exact_target_and_private_layout(tmp_path, mutation):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    activation, _ = _bundle(root, frozen=True)
+    raw = json.loads(activation.read_bytes())
+    if mutation == "reason":
+        raw["selection_decision"]["reason_code"] = "ENGINEERING_ONLY"
+    elif mutation == "decision":
+        raw["selection_decision"]["decision"] = "DEFER"
+    elif mutation == "target":
+        raw["selection_decision"]["target"] = raw["champion_strategy_id"]
+    else:
+        displaced = root / "private" / activation.name
+        _write(displaced, activation.read_bytes(), 0o600)
+        activation = displaced
+    if mutation != "layout":
+        _write(activation, canonical_json_bytes(raw), 0o600)
+    with pytest.raises(ForwardObservationInputError):
+        observe_frozen_shadow_forward_definition_candidate(root, CYCLE, activation)
+
+
+def test_frozen_candidate_mutation_replay_and_coordinated_replacement_deny_capability(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    activation, _ = _bundle(root, frozen=True)
+    candidate = observe_frozen_shadow_forward_definition_candidate(root, CYCLE, activation)
+    with pytest.raises(ForwardObservationContractError):
+        copy.copy(candidate)
+    receipt = dict(candidate.reference_receipt)
+    receipt["purpose"] = "ENGINEERING_VALIDATION"
+    object.__setattr__(candidate, "_reference_receipt", receipt)
+    object.__setattr__(candidate, "_reference_receipt_bytes", canonical_json_bytes(receipt))
+    object.__setattr__(
+        candidate, "_reference_receipt_digest", TypedDigest.canonical(receipt).to_dict(),
+    )
+    with pytest.raises(ForwardObservationContractError):
+        candidate.to_store_request()
+
+
+def test_frozen_observation_preserves_all_c1b0_seal_source_config_and_privacy_contracts(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    activation, cycle = _bundle(root, frozen=True)
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    manifest["model_and_ensemble_lineage"]["source_artifacts"].append(None)
+    _rewrite_seal(cycle, manifest)
+    with pytest.raises(ForwardObservationInputError):
+        observe_frozen_shadow_forward_definition_candidate(root, CYCLE, activation)
 
 
 def test_each_explicit_omitted_position_preserves_the_exact_remaining_source_order(tmp_path):

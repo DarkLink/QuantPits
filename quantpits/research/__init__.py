@@ -66,6 +66,14 @@ _EXPORT_MODULES = {
     "ForwardObservationInputError": "quantpits.research.forward_observation",
     "ObservedForwardDefinitionCandidate": "quantpits.research.forward_observation",
     "observe_shadow_forward_definition_candidate": "quantpits.research.forward_observation",
+    "observe_frozen_shadow_forward_definition_candidate": "quantpits.research.forward_observation",
+    "AUTHORIZATION_ACTION": "quantpits.research.forward_definition_publication",
+    "FrozenDefinitionPublicationContractError": "quantpits.research.forward_definition_publication",
+    "FrozenDefinitionPublicationInputError": "quantpits.research.forward_definition_publication",
+    "FrozenDefinitionPublicationPlan": "quantpits.research.forward_definition_publication",
+    "FrozenDefinitionBytePublicationResult": "quantpits.research.forward_definition_publication",
+    "prepare_frozen_shadow_forward_definition_publication": "quantpits.research.forward_definition_publication",
+    "publish_frozen_shadow_forward_definition_bundle": "quantpits.research.forward_definition_publication",
 }
 
 
@@ -140,4 +148,12 @@ __all__ = [
     "ForwardObservationInputError",
     "ObservedForwardDefinitionCandidate",
     "observe_shadow_forward_definition_candidate",
+    "observe_frozen_shadow_forward_definition_candidate",
+    "AUTHORIZATION_ACTION",
+    "FrozenDefinitionPublicationContractError",
+    "FrozenDefinitionPublicationInputError",
+    "FrozenDefinitionPublicationPlan",
+    "FrozenDefinitionBytePublicationResult",
+    "prepare_frozen_shadow_forward_definition_publication",
+    "publish_frozen_shadow_forward_definition_bundle",
 ]

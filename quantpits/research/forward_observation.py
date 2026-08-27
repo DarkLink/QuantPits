@@ -674,13 +674,15 @@ def _verify_bundle(
     )
 
 
-def _activation(data: bytes, cycle_id: str) -> Tuple[Dict[str, Any], DecisionEvent, Any]:
+def _activation(
+    data: bytes, cycle_id: str, *, purpose: str, reason_code: str,
+) -> Tuple[Dict[str, Any], DecisionEvent, Any]:
     raw = _strict_json(data, "activation")
     if set(raw) != set(_ACTIVATION_FIELDS):
         raise _input("activation fields are not exact")
     if type(raw.get("schema_version")) is not int or raw["schema_version"] != 1:
         raise _input("activation schema_version is invalid")
-    if raw.get("purpose") != "ENGINEERING_VALIDATION" or type(raw.get("purpose")) is not str:
+    if raw.get("purpose") != purpose or type(raw.get("purpose")) is not str:
         raise _input("activation purpose is invalid")
     if raw.get("evidence_cycle_id") != cycle_id:
         raise _input("activation evidence cycle does not match")
@@ -699,12 +701,12 @@ def _activation(data: bytes, cycle_id: str) -> Tuple[Dict[str, Any], DecisionEve
         raise _input("activation typed leaves are invalid") from exc
     if (
         decision.decision != "APPROVE"
-        or decision.reason_code != "ENGINEERING_ONLY"
+        or decision.reason_code != reason_code
         or decision.target != raw.get("challenger_strategy_id")
         or decision.evidence_cycle_id != cycle_id
         or assumption.assumption_id != raw.get("execution_assumption_id")
     ):
-        raise _input("activation engineering decision or assumption join is invalid")
+        raise _input("activation decision or assumption join is invalid")
     return raw, decision, assumption
 
 
@@ -935,6 +937,7 @@ class ObservedForwardDefinitionCandidate:
             raise ForwardObservationContractError("reference receipt digest changed")
         champion = fresh.champion.to_dict()
         challenger = fresh.challenger.to_dict()
+        decision_reason = fresh.protocol.to_dict()["selection_decision"]["reason_code"]
         champion_members = champion["source_members"]
         challenger_keys = tuple(
             (row["source_id"], row["model_artifact_digest"])
@@ -967,7 +970,11 @@ class ObservedForwardDefinitionCandidate:
         if (
             receipt["schema_version"] != 1 or type(receipt["schema_version"]) is not int
             or receipt["observation_claim"] != "SEALED_REFERENCE_JOIN_VERIFIED_V1"
-            or receipt["purpose"] != "ENGINEERING_VALIDATION"
+            or receipt["purpose"] not in {"ENGINEERING_VALIDATION", "FROZEN_OBSERVATION"}
+            or (receipt["purpose"], decision_reason) not in {
+                ("ENGINEERING_VALIDATION", "ENGINEERING_ONLY"),
+                ("FROZEN_OBSERVATION", "FROZEN_OBSERVATION"),
+            }
             or receipt["definition_set_id"] != fresh.definition_set_id
             or receipt["evidence_cycle_id"] != champion["evidence_cycle_id"]
             or receipt["evidence_seal_digest"] != champion["evidence_seal_digest"]
@@ -1087,8 +1094,9 @@ class ObservedForwardDefinitionCandidate:
 
 def _observe_shadow_forward_definition_candidate(
     workspace_root: Any, evidence_cycle_id: Any, activation_path: Any,
+    *, purpose: str, reason_code: str, formal_layout: bool,
 ) -> ObservedForwardDefinitionCandidate:
-    """Observe, join, and compile one engineering-only definition candidate."""
+    """Observe, join, and compile one candidate under a fixed private policy."""
     cycle_id = _calendar_date(evidence_cycle_id, "evidence_cycle_id")
     root = _physical_root(workspace_root)
     if type(activation_path) is not Path:
@@ -1129,7 +1137,14 @@ def _observe_shadow_forward_definition_candidate(
             activation_data, activation_identity = _read_regular(
                 activation_file, maximum=_ACTIVATION_LIMIT, private=True,
             )
-            activation, decision, assumption = _activation(activation_data, cycle_id)
+            activation, decision, assumption = _activation(
+                activation_data, cycle_id, purpose=purpose, reason_code=reason_code,
+            )
+            if formal_layout and activation_file != (
+                root / "research" / "shadow_v1" / "activations"
+                / (activation["definition_set_id"] + ".json")
+            ):
+                raise _input("frozen activation path is not the formal private layout")
             (
                 manifest, manifest_data, seal_data, all_embedded, source_ids,
                 references, _positions,
@@ -1158,7 +1173,7 @@ def _observe_shadow_forward_definition_candidate(
             receipt = {
                 "schema_version": 1,
                 "observation_claim": "SEALED_REFERENCE_JOIN_VERIFIED_V1",
-                "purpose": "ENGINEERING_VALIDATION",
+                "purpose": purpose,
                 "definition_set_id": activation["definition_set_id"],
                 "evidence_cycle_id": cycle_id,
                 "evidence_seal_digest": seal_raw,
@@ -1216,6 +1231,8 @@ def observe_shadow_forward_definition_candidate(
     try:
         return _observe_shadow_forward_definition_candidate(
             workspace_root, evidence_cycle_id, activation_path,
+            purpose="ENGINEERING_VALIDATION", reason_code="ENGINEERING_ONLY",
+            formal_layout=False,
         )
     except _PROCESS_CONTROL:
         raise
@@ -1225,7 +1242,26 @@ def observe_shadow_forward_definition_candidate(
         raise _input("observation failed closed") from exc
 
 
+def observe_frozen_shadow_forward_definition_candidate(
+    workspace_root: Any, evidence_cycle_id: Any, activation_path: Any,
+) -> ObservedForwardDefinitionCandidate:
+    """Observe one formal frozen candidate under the non-configurable policy."""
+    try:
+        return _observe_shadow_forward_definition_candidate(
+            workspace_root, evidence_cycle_id, activation_path,
+            purpose="FROZEN_OBSERVATION", reason_code="FROZEN_OBSERVATION",
+            formal_layout=True,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except ForwardObservationContractError:
+        raise
+    except Exception as exc:
+        raise _input("frozen observation failed closed") from exc
+
+
 __all__ = [
     "ForwardObservationContractError", "ForwardObservationInputError",
     "ObservedForwardDefinitionCandidate", "observe_shadow_forward_definition_candidate",
+    "observe_frozen_shadow_forward_definition_candidate",
 ]
