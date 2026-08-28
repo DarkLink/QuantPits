@@ -50,6 +50,18 @@ def _files(bundle):
     return {path.name: path.read_bytes() for path in bundle.iterdir() if path.is_file()}
 
 
+def _snapshot_tree(root):
+    rows = []
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        rows.append((
+            path.relative_to(root).as_posix(), info.st_dev, info.st_ino,
+            info.st_mode, info.st_size, info.st_mtime_ns,
+            path.read_bytes() if path.is_file() else None,
+        ))
+    return rows
+
+
 def test_request_revalidates_exact_four_canonical_json_members_and_digest():
     first = _request()
     second = _request()
@@ -178,6 +190,127 @@ def test_identical_replay_is_adopted_without_write_or_byte_change(tmp_path, monk
     assert receipt.status == "ADOPTED" and receipt.did_write is False
     assert receipt.publication_capability and receipt.member_count == 4
     assert _files(root / "candidate-1") == before
+
+
+def test_adopt_existing_exact_bundle_returns_adopted_without_any_write(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    request = _request()
+    store = CreateOnlyDefinitionBundleStore(root)
+    assert store.publish(request).status == "COMMITTED"
+    before = _snapshot_tree(root)
+    monkeypatch.setattr(
+        definition_store, "_write_exclusive",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("write called")),
+    )
+    monkeypatch.setattr(
+        definition_store.os, "mkdir",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("mkdir called")),
+    )
+    receipt = store.adopt_existing(request)
+    assert receipt.status == "ADOPTED" and receipt.did_write is False
+    assert receipt.member_count == 4 and receipt.publication_capability is True
+    assert _snapshot_tree(root) == before
+
+
+def test_adopt_existing_absent_target_is_typed_zero_write_precondition_miss(tmp_path):
+    root = _root(tmp_path)
+    before = _snapshot_tree(root)
+    with pytest.raises(DefinitionStoreInputError):
+        CreateOnlyDefinitionBundleStore(root).adopt_existing(_request())
+    assert _snapshot_tree(root) == before
+
+
+def test_adopt_existing_conflict_and_uncertain_never_call_create_or_write(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    target = root / "candidate-1"
+    target.mkdir(mode=0o700)
+    before = _snapshot_tree(root)
+    monkeypatch.setattr(
+        definition_store, "_write_exclusive",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("write called")),
+    )
+    conflict = CreateOnlyDefinitionBundleStore(root).adopt_existing(_request())
+    assert conflict.status == "CONFLICT" and conflict.did_write is False
+    assert _snapshot_tree(root) == before
+
+    original = CreateOnlyDefinitionBundleStore._observe_existing
+    monkeypatch.setattr(
+        CreateOnlyDefinitionBundleStore, "_observe_existing",
+        staticmethod(lambda *_args: (_ for _ in ()).throw(OSError("synthetic"))),
+    )
+    uncertain = CreateOnlyDefinitionBundleStore(root).adopt_existing(_request())
+    assert uncertain.status == "UNCERTAIN" and uncertain.did_write is False
+    monkeypatch.setattr(CreateOnlyDefinitionBundleStore, "_observe_existing", original)
+
+
+def test_adopt_existing_target_disappearing_during_verification_is_zero_write_uncertain(
+    tmp_path, monkeypatch,
+):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    request = _request()
+    assert store.publish(request).status == "COMMITTED"
+    target = root / request.definition_set_id
+    original = CreateOnlyDefinitionBundleStore._observe_existing
+
+    def disappear(*args):
+        for member in target.iterdir():
+            member.unlink()
+        target.rmdir()
+        return original(*args)
+
+    monkeypatch.setattr(
+        CreateOnlyDefinitionBundleStore, "_observe_existing", staticmethod(disappear),
+    )
+    receipt = store.adopt_existing(request)
+    assert receipt.status == "UNCERTAIN" and receipt.did_write is False
+    assert receipt.member_count == 0 and receipt.publication_capability is False
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("node", ["root", "member"])
+def test_adopt_existing_move_away_back_and_restored_member_bytes_are_uncertain(
+    tmp_path, monkeypatch, node,
+):
+    root = _root(tmp_path)
+    store = CreateOnlyDefinitionBundleStore(root)
+    request = _request()
+    assert store.publish(request).status == "COMMITTED"
+    target = root / request.definition_set_id
+    original = CreateOnlyDefinitionBundleStore._observe_existing
+
+    def transient(*args):
+        observed = original(*args)
+        if node == "root":
+            displaced = root.with_name(root.name + "-away")
+            root.rename(displaced)
+            displaced.rename(root)
+        else:
+            member = target / "protocol.json"
+            info = member.stat()
+            data = member.read_bytes()
+            member.write_bytes(data)
+            os.utime(member, ns=(info.st_atime_ns, info.st_mtime_ns))
+        return observed
+
+    monkeypatch.setattr(
+        CreateOnlyDefinitionBundleStore, "_observe_existing", staticmethod(transient),
+    )
+    receipt = store.adopt_existing(request)
+    assert receipt.status == "UNCERTAIN" and receipt.did_write is False
+    assert receipt.member_count == 0 and receipt.publication_capability is False
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_adopt_existing_preserves_process_control_contract(tmp_path, monkeypatch, exception):
+    root = _root(tmp_path)
+    (root / "candidate-1").mkdir(mode=0o700)
+    monkeypatch.setattr(
+        CreateOnlyDefinitionBundleStore, "_observe_existing",
+        staticmethod(lambda *_args: (_ for _ in ()).throw(exception())),
+    )
+    with pytest.raises(exception):
+        CreateOnlyDefinitionBundleStore(root).adopt_existing(_request())
 
 
 def test_same_id_different_bytes_is_conflict_and_existing_bundle_is_unchanged(tmp_path):

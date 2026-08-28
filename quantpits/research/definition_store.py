@@ -414,6 +414,25 @@ def _try_path_directory_identity(path: Path) -> Optional[Tuple[int, int, int, in
         return None
 
 
+def _continuity_snapshot(path: Path) -> Tuple[Any, ...]:
+    """Observe immediate namespace continuity without opening or mutating it."""
+    info = os.lstat(str(path))
+    entry = (
+        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+        info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+    )
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        return (entry,)
+    rows = []
+    for name in sorted(os.listdir(str(path))):
+        member = os.lstat(str(path / name))
+        rows.append((
+            name, member.st_dev, member.st_ino, member.st_mode, member.st_nlink,
+            member.st_size, member.st_mtime_ns, member.st_ctime_ns,
+        ))
+    return entry, tuple(rows)
+
+
 def _require_root(root: Any) -> Tuple[Path, int, Tuple[int, int, int, int, int]]:
     if isinstance(root, bool) or not isinstance(root, (str, os.PathLike)):
         raise DefinitionStoreContractError("store root must be an absolute physical path")
@@ -683,6 +702,81 @@ class CreateOnlyDefinitionBundleStore:
         finally:
             if bundle_fd is not None:
                 _close_descriptor(bundle_fd, suppress_ordinary=True)
+            _close_descriptor(store_fd, suppress_ordinary=True)
+
+    def adopt_existing(self, request: Any) -> DefinitionStoreReceipt:
+        """Verify one already-public bundle without crossing a write boundary."""
+        snapshot = revalidate_definition_bundle_request(request)
+        if isinstance(self._store_root, bool) or not isinstance(
+            self._store_root, (str, os.PathLike),
+        ):
+            raise DefinitionStoreContractError("store root must be an absolute physical path")
+        root_input = Path(self._store_root)
+        if not root_input.is_absolute():
+            raise DefinitionStoreContractError("store root must be absolute")
+        try:
+            if root_input.resolve(strict=True) != root_input:
+                raise DefinitionStoreInputError("store root must not use aliases or symlinks")
+            root_continuity = _continuity_snapshot(root_input)
+        except DefinitionStoreInputError:
+            raise
+        except _PROCESS_CONTROL:
+            raise
+        except OSError as exc:
+            raise DefinitionStoreInputError("store root must already exist") from exc
+        root, store_fd, root_before = _require_root(self._store_root)
+        operation_id = _operation_id(snapshot, root_before)
+        target = root / snapshot.definition_set_id
+        try:
+            try:
+                os.stat(
+                    snapshot.definition_set_id,
+                    dir_fd=store_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError as exc:
+                raise DefinitionStoreInputError(
+                    "definition bundle does not already exist",
+                ) from exc
+            except _PROCESS_CONTROL:
+                raise
+            except OSError:
+                return _receipt(
+                    snapshot, operation_id, "UNCERTAIN", False, 0,
+                    root_before, _try_path_directory_identity(root),
+                )
+            try:
+                if _continuity_snapshot(root) != root_continuity:
+                    raise _ObservationUncertain("store continuity changed while opening")
+                target_continuity = _continuity_snapshot(target)
+            except _PROCESS_CONTROL:
+                raise
+            except (OSError, _ObservationUncertain):
+                return _receipt(
+                    snapshot, operation_id, "UNCERTAIN", False, 0,
+                    root_before, _try_path_directory_identity(root),
+                )
+            receipt = self._classify_existing(
+                snapshot, root, target, store_fd, root_before, operation_id,
+            )
+            if receipt.status == "UNCERTAIN":
+                return receipt
+            try:
+                continuous = (
+                    _continuity_snapshot(root) == root_continuity
+                    and _continuity_snapshot(target) == target_continuity
+                )
+            except _PROCESS_CONTROL:
+                raise
+            except OSError:
+                continuous = False
+            if not continuous:
+                return _receipt(
+                    snapshot, operation_id, "UNCERTAIN", False, 0,
+                    root_before, _try_path_directory_identity(root),
+                )
+            return receipt
+        finally:
             _close_descriptor(store_fd, suppress_ordinary=True)
 
     def _classify_existing(

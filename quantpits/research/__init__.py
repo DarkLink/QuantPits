@@ -74,6 +74,14 @@ _EXPORT_MODULES = {
     "FrozenDefinitionBytePublicationResult": "quantpits.research.forward_definition_publication",
     "prepare_frozen_shadow_forward_definition_publication": "quantpits.research.forward_definition_publication",
     "publish_frozen_shadow_forward_definition_bundle": "quantpits.research.forward_definition_publication",
+    "FORWARD_EVIDENCE_AUTHORIZATION_ACTION": "quantpits.research.forward_definition_evidence",
+    "ForwardDefinitionEvidenceContractError": "quantpits.research.forward_definition_evidence",
+    "ForwardDefinitionEvidenceInputError": "quantpits.research.forward_definition_evidence",
+    "ForwardDefinitionEvidenceStoreReceipt": "quantpits.research.forward_definition_evidence",
+    "ForwardDefinitionEvidencePlan": "quantpits.research.forward_definition_evidence",
+    "ForwardDefinitionEvidenceResult": "quantpits.research.forward_definition_evidence",
+    "prepare_forward_definition_evidence": "quantpits.research.forward_definition_evidence",
+    "publish_forward_definition_evidence": "quantpits.research.forward_definition_evidence",
 }
 
 
@@ -156,4 +164,12 @@ __all__ = [
     "FrozenDefinitionBytePublicationResult",
     "prepare_frozen_shadow_forward_definition_publication",
     "publish_frozen_shadow_forward_definition_bundle",
+    "FORWARD_EVIDENCE_AUTHORIZATION_ACTION",
+    "ForwardDefinitionEvidenceContractError",
+    "ForwardDefinitionEvidenceInputError",
+    "ForwardDefinitionEvidenceStoreReceipt",
+    "ForwardDefinitionEvidencePlan",
+    "ForwardDefinitionEvidenceResult",
+    "prepare_forward_definition_evidence",
+    "publish_forward_definition_evidence",
 ]
