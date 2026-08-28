@@ -25,3 +25,13 @@ models:
   #   tags: [graph, ts]
   #   pretrain_source: demo_lstm
 
+  # --- 随机猴子基准 (Random Monkey Benchmark) ---
+  random_monkey_Alpha158:
+    algorithm: random
+    dataset: Alpha158
+    market: csi300
+    yaml_file: config/workflow_config_random.yaml
+    enabled: false
+    tags: [benchmark]
+    notes: "随机排序猴子基准 — 模型跑不赢猴子说明没有 alpha"
+
