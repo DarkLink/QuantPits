@@ -175,6 +175,36 @@ def test_workspace_research_ancestor_store_and_target_identity_drift_fail_closed
         _publish(publication_workspace)
 
 
+def test_workspace_root_move_away_and_back_after_c0_is_uncertain(publication_workspace, monkeypatch):
+    from quantpits.research import definition_store
+    original = definition_store.CreateOnlyDefinitionBundleStore.publish
+    root = publication_workspace[0]
+    displaced = root.with_name(root.name + "-away")
+    before = root.lstat()
+
+    def publish_then_move_workspace_away_and_back(store, request):
+        receipt = original(store, request)
+        root.rename(displaced)
+        displaced.rename(root)
+        return receipt
+
+    monkeypatch.setattr(
+        definition_store.CreateOnlyDefinitionBundleStore, "publish",
+        publish_then_move_workspace_away_and_back,
+    )
+    result = _publish(publication_workspace)
+    summary = result.to_safe_summary_dict()
+    after = root.lstat()
+    assert (after.st_dev, after.st_ino, after.st_mode) == (
+        before.st_dev, before.st_ino, before.st_mode,
+    )
+    assert after.st_ctime_ns != before.st_ctime_ns
+    assert summary["status"] == "UNCERTAIN"
+    assert summary["did_write"] is True
+    assert summary["store_member_count"] == 4
+    assert summary["definition_bytes_durable"] is False
+
+
 def test_engineering_activation_and_nonformal_paths_can_never_reach_c0_publish(tmp_path, monkeypatch):
     root = tmp_path / "workspace"
     root.mkdir()
@@ -237,8 +267,29 @@ def test_ordinary_failure_before_c0_is_zero_write_and_after_create_remains_uncer
         _publish(publication_workspace)
     assert _snapshot(publication_workspace[0]) == before
 
+    monkeypatch.undo()
+    plan = _prepared(publication_workspace)
+    original = module._same_identities
+    calls = {"count": 0}
 
-@pytest.mark.parametrize("seam", ["observation", "store", "result"])
+    def fail_post_c0_observation(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("synthetic post-C0 observation failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_same_identities", fail_post_c0_observation)
+    result = _publish(publication_workspace, plan)
+    summary = result.to_safe_summary_dict()
+    assert calls["count"] == 2
+    assert summary["status"] == "UNCERTAIN"
+    assert summary["did_write"] is True
+    assert summary["store_member_count"] == 4
+    assert summary["definition_bytes_durable"] is False
+    assert (publication_workspace[2] / summary["definition_set_id"]).is_dir()
+
+
+@pytest.mark.parametrize("seam", ["observation", "store", "post_observation", "result"])
 @pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])
 def test_process_control_propagates_from_observation_store_and_result_seams(publication_workspace, monkeypatch, seam, exception):
     import quantpits.research.forward_definition_publication as module
@@ -247,10 +298,22 @@ def test_process_control_propagates_from_observation_store_and_result_seams(publ
     elif seam == "store":
         from quantpits.research import definition_store
         monkeypatch.setattr(definition_store.CreateOnlyDefinitionBundleStore, "publish", lambda *_args: (_ for _ in ()).throw(exception()))
+    elif seam == "post_observation":
+        plan = _prepared(publication_workspace)
+        original = module._same_identities
+        calls = {"count": 0}
+
+        def interrupt_post_c0(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise exception()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(module, "_same_identities", interrupt_post_c0)
     else:
         monkeypatch.setattr(FrozenDefinitionBytePublicationResult, "__init__", lambda *_args, **_kwargs: (_ for _ in ()).throw(exception()))
     with pytest.raises(exception):
-        _publish(publication_workspace)
+        _publish(publication_workspace, plan if seam == "post_observation" else None)
 
 
 def test_safe_plan_and_result_exclude_private_sources_paths_actor_hypothesis_and_economics(publication_workspace):

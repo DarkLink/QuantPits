@@ -273,6 +273,7 @@ def _formal_inputs(
         raise _input("publication paths do not match the formal private layout")
     identities = {
         "workspace": _directory_identity(root),
+        "workspace_continuity": _directory_continuity(root),
         "research": _directory_identity(research, private=True),
         "shadow": _directory_identity(shadow, private=True),
         "activations": _directory_identity(activations, private=True),
@@ -293,6 +294,7 @@ def _same_identities(
     try:
         current = {
             "workspace": _directory_identity(root),
+            "workspace_continuity": _directory_continuity(root),
             "research": _directory_identity(root / "research", private=True),
             "shadow": _directory_identity(root / "research" / "shadow_v1", private=True),
             "activations": _directory_identity(activation.parent, private=True),
@@ -614,10 +616,17 @@ def _publish_frozen_shadow_forward_definition_bundle(
     )
     if not joined:
         raise FrozenDefinitionPublicationContractError("C0 receipt does not join the fresh request")
-    stable = (
-        _same_identities(root, activation, store, identities, after_write=True)
-        and _protected_inventory(store.parent, target) == protected_before
-    )
+    try:
+        stable = (
+            _same_identities(root, activation, store, identities, after_write=True)
+            and _protected_inventory(store.parent, target) == protected_before
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except Exception:
+        # C0 has crossed the irreversible namespace boundary.  A failed outer
+        # observation must retain its writer-owned receipt and write fact.
+        stable = False
     outer_uncertain = not stable and receipt.status != "UNCERTAIN"
     return FrozenDefinitionBytePublicationResult(
         _authority=_AUTHORITY, receipt=receipt,
