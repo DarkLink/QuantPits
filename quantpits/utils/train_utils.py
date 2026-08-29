@@ -19,6 +19,8 @@ import json
 import yaml
 import shutil
 import time
+import math
+import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from quantpits.utils.constants import TRADING_DAYS_PER_YEAR, TRADING_WEEKS_PER_YEAR, AVERAGE_CALENDAR_DAYS_PER_YEAR
@@ -1492,8 +1494,8 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
                 ic_std = ic_series.std()
                 ic_ir = ic_mean / ic_std if ic_std != 0 else None
                 performance = {
-                    "IC_Mean": float(ic_mean) if ic_mean else None,
-                    "ICIR": float(ic_ir) if ic_ir else None,
+                    "IC_Mean": float(ic_mean) if pd.notna(ic_mean) else None,
+                    "ICIR": float(ic_ir) if pd.notna(ic_ir) else None,
                     "record_id": recorder.info['id']
                 }
 
@@ -2955,8 +2957,8 @@ def predict_single_model(model_name, model_info, params, experiment_name,
                 ic_std = ic_series.std()
                 ic_ir = ic_mean / ic_std if ic_std != 0 else None
                 performance = {
-                    "IC_Mean": float(ic_mean) if ic_mean else None,
-                    "ICIR": float(ic_ir) if ic_ir else None,
+                    "IC_Mean": float(ic_mean) if pd.notna(ic_mean) else None,
+                    "ICIR": float(ic_ir) if pd.notna(ic_ir) else None,
                     "record_id": recorder.info['id'],
                 }
             except Exception as e:

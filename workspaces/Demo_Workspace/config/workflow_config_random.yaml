@@ -24,7 +24,7 @@ port_analysis_config: &port_analysis_config {}
 task:
     model:
         class: RandomModel
-        module_path: quantpits.utils.model_wrappers.custom.random_model
+        module_path: quantpits.utils.random_model
         kwargs:
             seed: null  # null=每次随机, 整数=固定种子
     dataset:
