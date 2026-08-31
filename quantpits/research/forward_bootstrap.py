@@ -90,6 +90,62 @@ def _close_guard(guard: SourceMutationObserver) -> None:
         raise
 
 
+def _accept_exact_target_create(
+    guard: SourceMutationObserver, identifier: str,
+) -> bool:
+    """Consume only the one CREATE event authorized for an absent target.
+
+    The guard starts before ``mkdir``.  Reading its event stream directly here
+    lets the store distinguish that authorized namespace edge from a create
+    followed by rename/delete/recreate before ``mkdir`` returns.  The same
+    guard remains live afterwards, so this does not replace continuity with a
+    fresh observation.
+    """
+    descriptor = getattr(guard, "fd", -1)
+    event_type = getattr(guard, "_EVENT", None)
+    watches = getattr(guard, "_watches", None)
+    bad_global = getattr(guard, "_BAD_GLOBAL", 0)
+    if (
+        not guard.supported or descriptor < 0
+        or event_type is None or type(watches) is not dict
+    ):
+        return False
+    accepted = 0
+    while True:
+        try:
+            data = os.read(descriptor, 64 * 1024)
+        except BlockingIOError:
+            break
+        except OSError:
+            return False
+        if not data:
+            break
+        offset = 0
+        while offset + event_type.size <= len(data):
+            watch, mask, _cookie, length = event_type.unpack_from(data, offset)
+            offset += event_type.size
+            if offset + length > len(data):
+                return False
+            name = data[offset:offset + length].split(b"\0", 1)[0].decode(
+                "utf-8", "surrogateescape",
+            )
+            offset += length
+            rule = watches.get(watch)
+            relevant = bool(
+                mask & bad_global
+                or rule and (rule["any"] or name in rule["names"])
+            )
+            if not relevant:
+                continue
+            # Linux reports mkdir in a watched parent as IN_CREATE|IN_ISDIR.
+            if name != identifier or mask != 0x40000100:
+                return False
+            accepted += 1
+        if offset != len(data):
+            return False
+    return accepted == 1
+
+
 def _write_all(descriptor: int, data: bytes) -> None:
     offset = 0
     while offset < len(data):
@@ -653,9 +709,11 @@ class _Store:
             try:
                 os.mkdir(request.bootstrap_set_id, 0o700, dir_fd=root_fd)
                 self._did_create = True
-                if self._entry_guard is not None:
-                    _close_guard(self._entry_guard)
-                    self._entry_guard = None
+                if (self._entry_guard is None
+                        or not _accept_exact_target_create(
+                            self._entry_guard, request.bootstrap_set_id,
+                        )):
+                    raise _Uncertain("bootstrap target create continuity uncertain")
             except FileExistsError:
                 existing_guard = self._entry_guard
                 self._entry_guard = None
@@ -714,8 +772,13 @@ class _Store:
                         or _namespace_identity(self.root / request.bootstrap_set_id) != identity):
                     raise _Uncertain("final namespace drift")
                 if (not continuity.supported or continuity.mutated()
+                        or self._entry_guard is None
+                        or not self._entry_guard.supported
+                        or self._entry_guard.mutated()
                         or not final_guard.supported or final_guard.mutated()):
                     raise _Uncertain("bootstrap root continuity uncertain")
+                _close_guard(self._entry_guard)
+                self._entry_guard = None
                 self._terminal_guard = final_guard
                 final_guard = None
                 return _receipt(request, "COMMITTED", True, 3, before, before, identity, manifest)

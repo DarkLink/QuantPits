@@ -300,6 +300,34 @@ def test_failure_before_create_is_typed_zero_write_and_partial_prefix_is_uncerta
     assert (bootstrap_workspace[-1] / plan.bootstrap_set_id).exists()
 
 
+@pytest.mark.parametrize("mutation", ["move_away_back", "delete_recreate"])
+def test_extra_target_namespace_event_inside_mkdir_is_uncertain_before_member_write(
+    bootstrap_workspace, monkeypatch, mutation,
+):
+    import quantpits.research.forward_bootstrap as module
+    plan = _prepare(bootstrap_workspace)
+    original = module.os.mkdir
+
+    def transient(path, mode=0o777, *, dir_fd=None):
+        original(path, mode, dir_fd=dir_fd)
+        target = bootstrap_workspace[-1] / path
+        if mutation == "move_away_back":
+            displaced = bootstrap_workspace[-1] / "bootstrap-displaced"
+            target.rename(displaced)
+            displaced.rename(target)
+        else:
+            target.rmdir()
+            original(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(module.os, "mkdir", transient)
+    result = _publish(bootstrap_workspace, plan)
+    assert result.status == "UNCERTAIN"
+    assert result.receipt.did_write is True
+    assert result.receipt.member_count == 0
+    assert result.portfolio_bootstrap_complete is False
+    assert tuple((bootstrap_workspace[-1] / plan.bootstrap_set_id).iterdir()) == ()
+
+
 def test_source_drift_is_uncertain_and_denies_capability(bootstrap_workspace, monkeypatch):
     import quantpits.research.forward_bootstrap as module
     original = module._Store.publish
