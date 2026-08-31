@@ -587,7 +587,7 @@ class CurrentRuleShadowIntentPlanner:
             planning_cash = float(prior.cash)
         except (ValueError, OverflowError) as exc:
             raise IntentPlanningContractError("prior cash cannot enter production arithmetic") from exc
-        if not math.isfinite(planning_cash) or planning_cash < 0:
+        if not math.isfinite(planning_cash):
             raise IntentPlanningContractError("prior cash cannot enter production arithmetic")
         if not isinstance(prices, AnchorPriceSnapshot):
             raise IntentPlanningContractError("prices must be AnchorPriceSnapshot")
@@ -689,8 +689,8 @@ class CurrentRuleShadowIntentPlanner:
             raise IntentPlanningParityError("estimated sell amount disagrees with proposal")
 
         available_cash = planning_cash + estimated_sell_amount
-        if not math.isfinite(available_cash) or available_cash < 0:
-            raise IntentPlanningParityError("planning cash after sells must be finite and non-negative")
+        if not math.isfinite(available_cash):
+            raise IntentPlanningParityError("planning cash after sells must be finite")
         raw_buys = generator.generate_buy_orders(
             analysis.buy_candidates, analysis.target_buy_count,
             available_cash, request["trade_date"],

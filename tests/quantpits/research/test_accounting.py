@@ -124,6 +124,60 @@ def test_empty_portfolio_and_empty_intents_is_exact_no_op():
     )
 
 
+def test_negative_opening_cash_is_exactly_represented_and_carried_by_empty_transition():
+    state = ShadowPortfolioState.from_dict(state_raw("-12.34"))
+    assert state.to_dict()["cash"] == "-12.34"
+    result = apply(cash="-12.34")
+    assert result.after_state.cash == Decimal("-12.34")
+    assert (result.nav_before, result.nav_after) == (Decimal("-12.34"), Decimal("-12.34"))
+
+
+def test_negative_cash_sell_can_improve_without_eliminating_opening_deficit():
+    result = apply(
+        cash="-2000",
+        prior_positions=(position(),),
+        intent_rows=(intent("sell-1", "SELL", "SH600001", 100),),
+    )
+    assert result.terminal_results[0].status == "FILLED"
+    assert result.after_state.cash == Decimal("-1019.90")
+
+
+def test_negative_cash_sell_can_cross_zero_and_fund_an_affordable_buy():
+    result = apply(
+        cash="-100",
+        prior_positions=(position(),),
+        intent_rows=(
+            intent("sell-1", "SELL", "SH600001", 100),
+            intent("buy-1", "BUY", "SZ000002", 100),
+        ),
+        quote_rows=(quote("SH600001", "10"), quote("SZ000002", "5")),
+    )
+    assert [item.status for item in result.terminal_results] == ["FILLED", "FILLED"]
+    assert result.after_state.cash == Decimal("365.00")
+
+
+def test_negative_cash_buy_is_no_fill_and_does_not_worsen_deficit():
+    result = apply(
+        cash="-1",
+        intent_rows=(intent("buy-1", "BUY", "SH600001", 100),),
+    )
+    assert result.terminal_results[0].status == "NO_FILL_INSUFFICIENT_CASH"
+    assert result.after_state.cash == Decimal("-1.00")
+
+
+def test_sell_with_fee_above_gross_fails_before_worsening_cash_or_positions():
+    values = build(
+        cash="-1",
+        prior_positions=(position(),),
+        intent_rows=(intent("sell-1", "SELL", "SH600001", 100),),
+        assumption_changes={"minimum_sell_fee": "1000"},
+    )
+    with pytest.raises(ShadowAccountingContractError, match="non-negative"):
+        ShadowPortfolioTransition.apply(
+            **dict(zip(("prior", "intents", "quotes", "assumption"), values))
+        )
+
+
 def test_full_sell_then_buy_has_exact_cash_cost_fee_slippage_and_nav():
     result = apply(
         prior_positions=(position(),),
@@ -674,7 +728,9 @@ def test_odd_lot_high_precision_reference_exposes_rounding_adjustment():
     )
 
 
-@pytest.mark.parametrize("cash,book_cost", [("1000.001", "0"), ("1000", "1.001")])
+@pytest.mark.parametrize(
+    "cash,book_cost", [("1000.001", "0"), ("-1000.001", "0"), ("1000", "1.001")],
+)
 def test_apply_rejects_prior_money_not_aligned_to_assumption_quantum(cash, book_cost):
     positions = () if book_cost == "0" else (position(book_cost=book_cost),)
     values = build(cash=cash, prior_positions=positions)

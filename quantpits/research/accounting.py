@@ -230,7 +230,7 @@ class ShadowPortfolioState:
             cls,
             portfolio_id=_strict_string(raw["portfolio_id"], "state.portfolio_id"),
             as_of_date=_strict_date(raw["as_of_date"], "state.as_of_date"),
-            cash=_strict_decimal(raw["cash"], "state.cash", minimum=_ZERO),
+            cash=_strict_decimal(raw["cash"], "state.cash"),
             positions=positions,
         )
 
@@ -768,11 +768,14 @@ class ShadowTransitionResult:
         }
         quote_map = {item.instrument: item for item in self.quotes.quotes}
         cash = self.prior_state.cash
+        cash_floor = min(cash, _ZERO)
         expected_terminals = []
         for intent in requested:
             expected, cash = ShadowPortfolioTransition._execute_intent(
                 intent, quote_map[intent.instrument], positions, cash, self.assumption
             )
+            if cash < cash_floor:
+                raise ShadowAccountingContractError("transition would worsen the opening deficit")
             expected_terminals.append(expected)
         if tuple(expected_terminals) != self.terminal_results:
             raise ShadowAccountingContractError("terminal accounting facts are inconsistent")
@@ -999,6 +1002,10 @@ class ShadowPortfolioTransition:
         gross = _money(execution_price * intent.quantity, assumption)
         fee = _money(max(assumption.minimum_sell_fee, gross * assumption.sell_fee_rate), assumption)
         effect = gross - fee
+        if effect < _ZERO:
+            raise ShadowAccountingContractError(
+                "SELL cash effect must be non-negative; negative cash would worsen the deficit"
+            )
         if intent.quantity == quantity:
             removed = cost
             del positions[intent.instrument]
@@ -1080,13 +1087,14 @@ class ShadowPortfolioTransition:
         }
         quote_map = {item.instrument: item for item in quotes.quotes}
         cash = prior.cash
+        cash_floor = min(cash, _ZERO)
         terminals = []
         for intent in intents.intents:
             terminal, cash = cls._execute_intent(
                 intent, quote_map[intent.instrument], positions, cash, assumption
             )
-            if cash < _ZERO:
-                raise ShadowAccountingContractError("transition would produce negative cash")
+            if cash < cash_floor:
+                raise ShadowAccountingContractError("transition would worsen the opening deficit")
             terminals.append(terminal)
 
         after = ShadowPortfolioState.from_dict({

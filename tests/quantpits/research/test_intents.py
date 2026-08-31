@@ -148,6 +148,49 @@ def test_all_topk_holdings_are_retained_without_turnover():
     assert result.intents.intents == ()
 
 
+def test_negative_cash_without_sell_proceeds_produces_no_buy_intents():
+    prior = state(cash="-1")
+    result = plan(prior=prior, prices=snapshot(ranking(), prior))
+    assert result.production_sell_proposal == ()
+    assert result.production_buy_suggestions == ()
+    assert result.selected_buy_instruments == ()
+    assert result.buy_intent_shortage == result.target_buy_count == 2
+    assert result.intents.intents == ()
+
+
+def test_signed_cash_and_sell_proceeds_enter_the_exact_production_buy_primitive():
+    ranked = ranking(
+        eligible=("SH000001", "SZ000002", "SH000003", "SZ000004", "SH000005"),
+        scores={
+            "SH000001": .9, "SZ000002": .8, "SH000003": .7,
+            "SZ000004": .6, "SH000005": .1,
+        },
+    )
+    prior = state(cash="-100", positions=(("SH000005", 1000, "8000"),))
+    result = plan(ranking_value=ranked, prior=prior, prices=snapshot(ranked, prior))
+    assert result.holding_classifications["normal_sell"] == ("SH000005",)
+    assert result.production_sell_proposal[0]["instrument"] == "SH000005"
+    assert result.selected_buy_instruments == ("SH000001", "SZ000002")
+    assert all(item.side == "SELL" for item in result.intents.intents[:1])
+    assert all(item.side == "BUY" for item in result.intents.intents[1:])
+
+
+def test_sell_proceeds_that_leave_cash_negative_preserve_sell_and_suppress_buys():
+    ranked = ranking(
+        eligible=("SH000001", "SZ000002", "SH000003", "SZ000004", "SH000005"),
+        scores={
+            "SH000001": .9, "SZ000002": .8, "SH000003": .7,
+            "SZ000004": .6, "SH000005": .1,
+        },
+    )
+    prior = state(cash="-10000", positions=(("SH000005", 100, "800"),))
+    result = plan(ranking_value=ranked, prior=prior, prices=snapshot(ranked, prior))
+    assert result.production_sell_proposal[0]["instrument"] == "SH000005"
+    assert result.production_buy_suggestions == ()
+    assert intent_facts(result) == (("SELL", "SH000005", 100),)
+    assert result.buy_intent_shortage == result.target_buy_count == 2
+
+
 def test_executable_universe_exit_is_before_normal_sell_and_buys():
     prior = state(positions=(("SH999999", 75, "500"), ("SZ000004", 100, "700")))
     prices = snapshot(ranking(), prior)
@@ -446,7 +489,7 @@ def test_forged_ranking_state_price_and_definition_are_revalidated():
     with pytest.raises(IntentPlanningContractError, match="revalidation"):
         plan(ranking_value=ranked, prior=prior, prices=prices, definition=definition)
     ranked = ranking()
-    object.__setattr__(prior, "cash", Decimal("-1"))
+    object.__setattr__(prior, "cash", Decimal("NaN"))
     with pytest.raises(ShadowAccountingContractError):
         plan(ranking_value=ranked, prior=prior, prices=snapshot(ranked, state()), definition=definition)
     prior = state()

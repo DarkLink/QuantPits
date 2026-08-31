@@ -82,6 +82,10 @@ _EXPORT_MODULES = {
     "ForwardDefinitionEvidenceResult": "quantpits.research.forward_definition_evidence",
     "prepare_forward_definition_evidence": "quantpits.research.forward_definition_evidence",
     "publish_forward_definition_evidence": "quantpits.research.forward_definition_evidence",
+    "ForwardPortfolioSourceContractError": "quantpits.research.forward_portfolio_source",
+    "ForwardPortfolioSourceInputError": "quantpits.research.forward_portfolio_source",
+    "ForwardPortfolioSourceObservation": "quantpits.research.forward_portfolio_source",
+    "observe_forward_portfolio_source": "quantpits.research.forward_portfolio_source",
 }
 
 
@@ -172,4 +176,8 @@ __all__ = [
     "ForwardDefinitionEvidenceResult",
     "prepare_forward_definition_evidence",
     "publish_forward_definition_evidence",
+    "ForwardPortfolioSourceContractError",
+    "ForwardPortfolioSourceInputError",
+    "ForwardPortfolioSourceObservation",
+    "observe_forward_portfolio_source",
 ]
