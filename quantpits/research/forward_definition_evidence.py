@@ -723,9 +723,12 @@ class _CreateOnlyEvidenceStore:
     def _classify_existing(
         self, request: _EvidenceRequest, root_fd: int,
         before: Tuple[int, int, int, int, int], operation: str,
+        *, strict_close: bool = False,
     ) -> ForwardDefinitionEvidenceStoreReceipt:
         try:
-            manifest, target_identity = self._observe_existing(request, root_fd, before)
+            manifest, target_identity = self._observe_existing(
+                request, root_fd, before, strict_close=strict_close,
+            )
             return _store_receipt(
                 request, operation, "ADOPTED", False, len(MEMBER_PATHS),
                 before, before, target_identity, manifest,
@@ -734,7 +737,9 @@ class _CreateOnlyEvidenceStore:
             raise
         except _ExistingConflict as first:
             try:
-                self._observe_existing(request, root_fd, before)
+                self._observe_existing(
+                    request, root_fd, before, strict_close=strict_close,
+                )
             except _PROCESS_CONTROL:
                 raise
             except _ExistingConflict as second:
@@ -758,6 +763,7 @@ class _CreateOnlyEvidenceStore:
     def _observe_existing(
         self, request: _EvidenceRequest, root_fd: int,
         before: Tuple[int, int, int, int, int],
+        *, strict_close: bool = False,
     ) -> Tuple[bytes, Tuple[int, int, int, int, int]]:
         bundle_fd: Optional[int] = None
         target = self.root / request.definition_set_id
@@ -787,7 +793,7 @@ class _CreateOnlyEvidenceStore:
             return manifest, identity
         finally:
             if bundle_fd is not None:
-                _close(bundle_fd, suppress=True)
+                _close(bundle_fd, suppress=not strict_close)
 
     @staticmethod
     def _verify_complete(request: _EvidenceRequest, descriptor: int, *, conflict: bool) -> bytes:
@@ -1378,6 +1384,81 @@ def _publish(
     )
 
 
+def _adopt(
+    workspace_root: Any, evidence_cycle_id: Any, activation_path: Any,
+    definition_store_root: Any, evidence_store_root: Any,
+) -> ForwardDefinitionEvidenceResult:
+    """Observe an already-published evidence record without crossing a write edge."""
+    cycle_id = _cycle(evidence_cycle_id)
+    root, activation, definitions, evidence, identities = _formal_inputs(
+        workspace_root, activation_path, definition_store_root, evidence_store_root,
+    )
+    excluded = evidence / activation.stem
+    before = _workspace_inventory(root, excluded)
+    from quantpits.evidence.inspection import SourceMutationObserver
+    guard = SourceMutationObserver(root, tuple(path.relative_to(root).as_posix() for path in (
+        activation, definitions / activation.stem, evidence / activation.stem,
+    )))
+    try:
+        candidate, definition_receipt, request = _fresh_join(root, cycle_id, activation, definitions)
+        if request.definition_set_id != activation.stem:
+            raise _input("activation and evidence target identities differ")
+        root_fd, root_identity = _open_root(evidence)
+        close_uncertain = False
+        try:
+            try:
+                os.stat(request.definition_set_id, dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise _input("evidence target is absent") from exc
+            receipt = _CreateOnlyEvidenceStore(evidence)._classify_existing(
+                request, root_fd, root_identity, _operation_id(request, root_identity),
+                strict_close=True,
+            )
+        finally:
+            try:
+                _close(root_fd, suppress=False)
+            except _PROCESS_CONTROL:
+                raise
+            except Exception:
+                close_uncertain = True
+        if close_uncertain:
+            receipt = _store_receipt(
+                request, _operation_id(request, root_identity), "UNCERTAIN", False, 0,
+                root_identity, _try_root_identity(evidence),
+            )
+        outer = _observe_outer(
+            root, activation, definitions, evidence, identities, before,
+            excluded, request, receipt,
+        )
+        if not guard.supported or guard.mutated():
+            receipt = _store_receipt(
+                request, _operation_id(request, root_identity), "UNCERTAIN", False, 0,
+                root_identity, _try_root_identity(evidence),
+            )
+            outer = _observe_outer(
+                root, activation, definitions, evidence, identities, before,
+                excluded, request, receipt,
+            )
+    finally:
+        active = sys.exc_info()[1]
+        try:
+            guard.close()
+        except _PROCESS_CONTROL:
+            if not isinstance(active, _PROCESS_CONTROL):
+                raise
+        except OSError:
+            if active is None:
+                raise
+    return ForwardDefinitionEvidenceResult(
+        _authority=_AUTHORITY, definition_receipt=definition_receipt,
+        evidence_receipt=receipt, evidence_cycle_id=request.evidence_cycle_id,
+        reference_receipt_digest=request.reference_receipt_digest,
+        definition_store_receipt_digest=_raw_digest(request.members[1][1]),
+        definition_manifest_digest=definition_receipt.manifest_digest,
+        evidence_request=request, outer_observation=outer,
+    )
+
+
 def prepare_forward_definition_evidence(
     workspace_root: Any, evidence_cycle_id: Any, activation_path: Any,
     definition_store_root: Any, evidence_store_root: Any,
@@ -1418,6 +1499,24 @@ def publish_forward_definition_evidence(
         raise _input("evidence publication failed closed") from exc
 
 
+def adopt_forward_definition_evidence(
+    workspace_root: Any, definition_evidence_cycle_id: Any, activation_path: Any,
+    definition_store_root: Any, evidence_store_root: Any,
+) -> ForwardDefinitionEvidenceResult:
+    """Freshly adopt one exact existing evidence record, strictly without writes."""
+    try:
+        return _adopt(
+            workspace_root, definition_evidence_cycle_id, activation_path,
+            definition_store_root, evidence_store_root,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except ForwardDefinitionEvidenceContractError:
+        raise
+    except Exception as exc:
+        raise _input("evidence adoption failed closed") from exc
+
+
 __all__ = [
     "AUTHORIZATION_ACTION", "FORWARD_EVIDENCE_AUTHORIZATION_ACTION",
     "EVIDENCE_KIND", "STORAGE_CLAIM", "MEMBER_PATHS",
@@ -1425,4 +1524,5 @@ __all__ = [
     "ForwardDefinitionEvidenceInputError", "ForwardDefinitionEvidenceStoreReceipt",
     "ForwardDefinitionEvidencePlan", "ForwardDefinitionEvidenceResult",
     "prepare_forward_definition_evidence", "publish_forward_definition_evidence",
+    "adopt_forward_definition_evidence",
 ]

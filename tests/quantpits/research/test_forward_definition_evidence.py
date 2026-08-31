@@ -16,6 +16,7 @@ from quantpits.research.forward_definition_evidence import (
     ForwardDefinitionEvidenceContractError,
     ForwardDefinitionEvidencePlan,
     ForwardDefinitionEvidenceStoreReceipt,
+    adopt_forward_definition_evidence,
     prepare_forward_definition_evidence,
     publish_forward_definition_evidence,
 )
@@ -228,6 +229,69 @@ def test_exact_replay_is_adopted_without_filesystem_change(evidence_workspace):
     assert replay.to_safe_summary_dict()["did_write"] is False
     assert replay.definition_evidence_complete is True
     assert _snapshot(evidence_workspace[0]) == before
+
+
+def test_adopt_forward_evidence_exact_target_is_adopted_and_strictly_zero_write(
+    evidence_workspace,
+):
+    assert _publish(evidence_workspace).status == "COMMITTED"
+    before = _snapshot(evidence_workspace[0])
+    result = adopt_forward_definition_evidence(
+        evidence_workspace[0], CYCLE, *evidence_workspace[1:],
+    )
+    assert result.status == "ADOPTED"
+    assert result.evidence_receipt.did_write is False
+    assert result.definition_evidence_complete is True
+    assert _snapshot(evidence_workspace[0]) == before
+
+
+def test_adopt_forward_evidence_absent_never_calls_publish_or_create(
+    evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_definition_evidence as module
+    called = []
+    monkeypatch.setattr(module._CreateOnlyEvidenceStore, "publish", lambda *_: called.append(True))
+    before = _snapshot(evidence_workspace[0])
+    with pytest.raises(ForwardDefinitionEvidenceContractError):
+        adopt_forward_definition_evidence(
+            evidence_workspace[0], CYCLE, *evidence_workspace[1:],
+        )
+    assert called == [] and _snapshot(evidence_workspace[0]) == before
+
+
+def test_adopt_forward_evidence_conflict_and_move_away_back_deny_capability(
+    evidence_workspace, monkeypatch,
+):
+    assert _publish(evidence_workspace).status == "COMMITTED"
+    exact = adopt_forward_definition_evidence(
+        evidence_workspace[0], CYCLE, *evidence_workspace[1:],
+    )
+    target = evidence_workspace[3] / exact.definition_receipt.definition_set_id
+    member = target / "reference_receipt.json"
+    member.write_bytes(member.read_bytes() + b"\n")
+    assert adopt_forward_definition_evidence(
+        evidence_workspace[0], CYCLE, *evidence_workspace[1:],
+    ).status == "CONFLICT"
+
+    member.write_bytes(exact.evidence_request.members[0][1])
+    import quantpits.research.forward_definition_evidence as module
+    original = module._CreateOnlyEvidenceStore._observe_existing
+    moved = []
+
+    def transient(store, *args):
+        if not moved:
+            displaced = target.with_name(target.name + ".displaced")
+            target.rename(displaced); displaced.rename(target)
+            moved.append(True)
+        return original(store, *args)
+
+    monkeypatch.setattr(module._CreateOnlyEvidenceStore, "_observe_existing", transient)
+    result = adopt_forward_definition_evidence(
+        evidence_workspace[0], CYCLE, *evidence_workspace[1:],
+    )
+    assert result.status == "UNCERTAIN"
+    assert result.evidence_receipt.did_write is False
+    assert result.definition_evidence_complete is False
 
 
 def test_definition_absent_and_conflict_never_reach_evidence_writer(evidence_workspace, monkeypatch):
