@@ -328,6 +328,98 @@ def test_extra_target_namespace_event_inside_mkdir_is_uncertain_before_member_wr
     assert tuple((bootstrap_workspace[-1] / plan.bootstrap_set_id).iterdir()) == ()
 
 
+@pytest.mark.parametrize("mutation", ["move_away_back", "delete_recreate"])
+def test_current_member_namespace_mutation_is_uncertain_with_zero_verified_prefix(
+    bootstrap_workspace, monkeypatch, mutation,
+):
+    import quantpits.research.forward_bootstrap as module
+    plan = _prepare(bootstrap_workspace)
+    original = module._write_all
+    calls = []
+
+    def transient(descriptor, data):
+        original(descriptor, data)
+        calls.append(True)
+        if len(calls) != 1:
+            return
+        member = bootstrap_workspace[-1] / plan.bootstrap_set_id / "source_receipt.json"
+        if mutation == "move_away_back":
+            displaced = member.with_name("source-receipt-displaced")
+            member.rename(displaced)
+            displaced.rename(member)
+        else:
+            member.unlink()
+            member.write_bytes(data)
+            member.chmod(0o600)
+
+    monkeypatch.setattr(module, "_write_all", transient)
+    result = _publish(bootstrap_workspace, plan)
+    assert result.status == "UNCERTAIN"
+    assert result.receipt.did_write is True
+    assert result.receipt.member_count == 0
+    assert result.portfolio_bootstrap_complete is False
+    target = bootstrap_workspace[-1] / plan.bootstrap_set_id
+    assert tuple(path.name for path in target.iterdir()) == ("source_receipt.json",)
+
+
+def test_completed_member_move_away_back_during_later_write_preserves_exact_prefix(
+    bootstrap_workspace, monkeypatch,
+):
+    import quantpits.research.forward_bootstrap as module
+    plan = _prepare(bootstrap_workspace)
+    original = module._write_all
+    calls = []
+
+    def transient(descriptor, data):
+        calls.append(True)
+        if len(calls) == 2:
+            member = bootstrap_workspace[-1] / plan.bootstrap_set_id / "source_receipt.json"
+            displaced = member.with_name("source-receipt-displaced")
+            member.rename(displaced)
+            displaced.rename(member)
+        original(descriptor, data)
+
+    monkeypatch.setattr(module, "_write_all", transient)
+    result = _publish(bootstrap_workspace, plan)
+    assert result.status == "UNCERTAIN"
+    assert result.receipt.did_write is True
+    assert result.receipt.member_count == 1
+    assert result.portfolio_bootstrap_complete is False
+    target = bootstrap_workspace[-1] / plan.bootstrap_set_id
+    assert tuple(sorted(path.name for path in target.iterdir())) == (
+        "champion_state.json", "source_receipt.json",
+    )
+
+
+def test_manifest_move_away_back_is_uncertain_with_three_member_prefix(
+    bootstrap_workspace, monkeypatch,
+):
+    import quantpits.research.forward_bootstrap as module
+    plan = _prepare(bootstrap_workspace)
+    original = module._write_all
+    calls = []
+
+    def transient(descriptor, data):
+        original(descriptor, data)
+        calls.append(True)
+        if len(calls) == 4:
+            manifest = bootstrap_workspace[-1] / plan.bootstrap_set_id / module.MANIFEST_NAME
+            displaced = manifest.with_name("manifest-displaced")
+            manifest.rename(displaced)
+            displaced.rename(manifest)
+
+    monkeypatch.setattr(module, "_write_all", transient)
+    result = _publish(bootstrap_workspace, plan)
+    assert result.status == "UNCERTAIN"
+    assert result.receipt.did_write is True
+    assert result.receipt.member_count == 3
+    assert result.portfolio_bootstrap_complete is False
+    target = bootstrap_workspace[-1] / plan.bootstrap_set_id
+    assert tuple(sorted(path.name for path in target.iterdir())) == tuple(sorted(
+        module.MEMBER_PATHS + (module.MANIFEST_NAME,)
+    ))
+
+
 def test_source_drift_is_uncertain_and_denies_capability(bootstrap_workspace, monkeypatch):
     import quantpits.research.forward_bootstrap as module
     original = module._Store.publish

@@ -90,14 +90,13 @@ def _close_guard(guard: SourceMutationObserver) -> None:
         raise
 
 
-def _accept_exact_target_create(
-    guard: SourceMutationObserver, identifier: str,
+def _accept_exact_create(
+    guard: SourceMutationObserver, identifier: str, *, directory: bool,
 ) -> bool:
-    """Consume only the one CREATE event authorized for an absent target.
+    """Consume only the one CREATE event authorized for an absent entry.
 
-    The guard starts before ``mkdir``.  Reading its event stream directly here
-    lets the store distinguish that authorized namespace edge from a create
-    followed by rename/delete/recreate before ``mkdir`` returns.  The same
+    Reading the event stream directly lets the store distinguish the authorized
+    create edge from a create followed by rename/delete/recreate.  The same
     guard remains live afterwards, so this does not replace continuity with a
     fresh observation.
     """
@@ -111,6 +110,7 @@ def _accept_exact_target_create(
     ):
         return False
     accepted = 0
+    file_state = "EXPECT_CREATE"
     while True:
         try:
             data = os.read(descriptor, 64 * 1024)
@@ -137,13 +137,56 @@ def _accept_exact_target_create(
             )
             if not relevant:
                 continue
-            # Linux reports mkdir in a watched parent as IN_CREATE|IN_ISDIR.
-            if name != identifier or mask != 0x40000100:
+            if name != identifier:
                 return False
-            accepted += 1
+            if directory:
+                if mask != 0x40000100:
+                    return False
+                accepted += 1
+                continue
+            if file_state == "EXPECT_CREATE" and mask == 0x00000100:
+                accepted += 1
+                file_state = "EXPECT_WRITE"
+            elif file_state in {"EXPECT_WRITE", "WRITING"} and mask == 0x00000002:
+                file_state = "WRITING"
+            elif file_state == "WRITING" and mask == 0x00000008:
+                file_state = "CLOSED"
+            else:
+                return False
         if offset != len(data):
             return False
-    return accepted == 1
+    return accepted == 1 and (directory or file_state == "CLOSED")
+
+
+def _accept_exact_target_create(
+    guard: SourceMutationObserver, identifier: str,
+) -> bool:
+    return _accept_exact_create(guard, identifier, directory=True)
+
+
+def _created_member_identity(descriptor: int) -> Tuple[int, int, int, int]:
+    info = os.fstat(descriptor)
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600):
+        raise _Uncertain("created member identity is invalid")
+    return info.st_dev, info.st_ino, info.st_mode, info.st_nlink
+
+
+def _verify_created_member(
+    root_fd: int, name: str, expected: bytes,
+    identity: Tuple[int, int, int, int],
+) -> None:
+    _read_exact(root_fd, name, expected, conflict=False)
+    _assert_created_member_identity(root_fd, name, identity)
+
+
+def _assert_created_member_identity(
+    root_fd: int, name: str, identity: Tuple[int, int, int, int],
+) -> None:
+    info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+    observed = info.st_dev, info.st_ino, info.st_mode, info.st_nlink
+    if observed != identity:
+        raise _Uncertain("created member identity drift")
 
 
 def _write_all(descriptor: int, data: bytes) -> None:
@@ -703,7 +746,9 @@ class _Store:
         root_fd: Optional[int] = os.open(str(self.root), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
         before = _dir_identity(self.root, private=True)
         bundle_fd = None
+        child_guard = None
         final_guard = None
+        created_identities = {}
         prefix = 0
         try:
             try:
@@ -742,26 +787,56 @@ class _Store:
             try:
                 root_continuity = _namespace_identity(self.root)
                 bundle_fd = os.open(request.bootstrap_set_id, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+                child_guard = SourceMutationObserver(
+                    self.root / request.bootstrap_set_id,
+                    MEMBER_PATHS + (MANIFEST_NAME,),
+                )
+                if (not child_guard.supported
+                        or tuple(os.listdir(bundle_fd)) != ()
+                        or child_guard.mutated()):
+                    raise _Uncertain("bootstrap member continuity unsupported")
                 for name, data in request.members:
                     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=bundle_fd)
                     try:
-                        _write_all(fd, data); os.fsync(fd)
-                        prefix += 1
-                        self._prefix = prefix
+                        created_identity = _created_member_identity(fd)
+                        _write_all(fd, data)
+                        os.fsync(fd)
                     finally:
                         _close_fd(fd, suppress=False)
+                    if not _accept_exact_create(child_guard, name, directory=False):
+                        raise _Uncertain("bootstrap member create continuity uncertain")
+                    _verify_created_member(
+                        bundle_fd, name, data, created_identity,
+                    )
+                    created_identities[name] = created_identity
+                    prefix += 1
+                    self._prefix = prefix
                 manifest = _manifest(request)
                 fd = os.open(MANIFEST_NAME, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=bundle_fd)
                 try:
-                    _write_all(fd, manifest); os.fsync(fd)
+                    manifest_identity = _created_member_identity(fd)
+                    _write_all(fd, manifest)
+                    os.fsync(fd)
                 finally:
                     _close_fd(fd, suppress=False)
+                if not _accept_exact_create(
+                    child_guard, MANIFEST_NAME, directory=False,
+                ):
+                    raise _Uncertain("bootstrap manifest create continuity uncertain")
+                _verify_created_member(
+                    bundle_fd, MANIFEST_NAME, manifest, manifest_identity,
+                )
+                created_identities[MANIFEST_NAME] = manifest_identity
                 final_guard = SourceMutationObserver(
                     self.root, (request.bootstrap_set_id,),
                 )
                 target_continuity = _namespace_identity(self.root / request.bootstrap_set_id)
                 identity = target_continuity
                 self._verify(request, bundle_fd, conflict=False)
+                for name in MEMBER_PATHS + (MANIFEST_NAME,):
+                    _assert_created_member_identity(
+                        bundle_fd, name, created_identities[name],
+                    )
                 os.fsync(bundle_fd); os.fsync(root_fd)
                 _close_fd(bundle_fd, suppress=False)
                 bundle_fd = None
@@ -775,10 +850,13 @@ class _Store:
                         or self._entry_guard is None
                         or not self._entry_guard.supported
                         or self._entry_guard.mutated()
+                        or not child_guard.supported or child_guard.mutated()
                         or not final_guard.supported or final_guard.mutated()):
                     raise _Uncertain("bootstrap root continuity uncertain")
                 _close_guard(self._entry_guard)
                 self._entry_guard = None
+                _close_guard(child_guard)
+                child_guard = None
                 self._terminal_guard = final_guard
                 final_guard = None
                 return _receipt(request, "COMMITTED", True, 3, before, before, identity, manifest)
@@ -793,6 +871,11 @@ class _Store:
                 _close_fd(bundle_fd, suppress=True)
             if root_fd is not None:
                 _close_fd(root_fd, suppress=True)
+            if child_guard is not None:
+                try:
+                    _close_guard(child_guard)
+                except OSError:
+                    pass
             if final_guard is not None:
                 try:
                     _close_guard(final_guard)
