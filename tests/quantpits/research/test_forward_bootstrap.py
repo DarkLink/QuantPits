@@ -127,6 +127,46 @@ def test_first_publish_commits_exact_three_members_and_manifest_last(bootstrap_w
         assert champion[key] == challenger[key]
     assert champion["cash"] == "-1.25"
     assert [row["instrument"] for row in champion["positions"]] == ["SH600001", "SZ000002"]
+    terminal_identity = result.receipt.to_dict()["bootstrap_bundle_root_identity"]
+    assert terminal_identity[3] >= 2 and terminal_identity[4] > 0
+
+
+@pytest.mark.parametrize("field", [
+    "definition_evidence_operation_id",
+    "phase37a_seal_digest",
+    "phase37a_manifest_digest",
+    "source_portfolio_semantic_digest",
+    "source_observation_status",
+    "source_cycle_status",
+    "source_problem_inventory_digest",
+    "source_portfolio_holding_count",
+    "portfolio_member_verified",
+])
+def test_bootstrap_set_id_binds_complete_definition_and_source_provenance(
+    bootstrap_workspace, monkeypatch, field,
+):
+    import quantpits.research.forward_bootstrap as module
+    original_plan = _prepare(bootstrap_workspace)
+    original = module._source_receipt
+
+    def drift(*args, **kwargs):
+        receipt = original(*args, **kwargs)
+        if field.endswith("_digest"):
+            receipt[field] = dict(receipt[field])
+            receipt[field]["value"] = "0" * 64
+        elif field == "definition_evidence_operation_id":
+            receipt[field] = "0" * 64
+        elif field == "source_portfolio_holding_count":
+            receipt[field] += 1
+        elif field == "portfolio_member_verified":
+            receipt[field] = False
+        else:
+            receipt[field] = "SYNTHETIC_PROVENANCE_DRIFT"
+        return receipt
+
+    monkeypatch.setattr(module, "_source_receipt", drift)
+    drifted_plan = _prepare(bootstrap_workspace)
+    assert drifted_plan.bootstrap_set_id != original_plan.bootstrap_set_id
 
 
 def test_exact_replay_is_adopted_without_filesystem_change(bootstrap_workspace):
@@ -203,6 +243,31 @@ def test_same_id_different_bytes_is_conflict_without_write(bootstrap_workspace):
     result = _publish(bootstrap_workspace, plan)
     assert result.status == "CONFLICT" and result.receipt.did_write is False
     assert result.portfolio_bootstrap_complete is False
+    assert _snapshot(bootstrap_workspace[0]) == before
+
+
+def test_existing_fifo_member_is_conflict_without_blocking_or_write(bootstrap_workspace):
+    plan = _prepare(bootstrap_workspace)
+    assert _publish(bootstrap_workspace, plan).status == "COMMITTED"
+    member = bootstrap_workspace[-1] / plan.bootstrap_set_id / "source_receipt.json"
+    member.unlink()
+    os.mkfifo(str(member), 0o600)
+    before = _snapshot(bootstrap_workspace[0])
+    result = _publish(bootstrap_workspace, plan)
+    assert result.status == "CONFLICT" and result.receipt.did_write is False
+    assert result.portfolio_bootstrap_complete is False
+    assert _snapshot(bootstrap_workspace[0]) == before
+
+
+def test_oversized_member_is_rejected_before_target_creation(
+    bootstrap_workspace, monkeypatch,
+):
+    import quantpits.research.forward_bootstrap as module
+    monkeypatch.setattr(module, "_MAX_MEMBER", 1)
+    before = _snapshot(bootstrap_workspace[0])
+    with pytest.raises(ForwardBootstrapContractError, match="size limit"):
+        _prepare(bootstrap_workspace)
+    assert tuple(bootstrap_workspace[-1].iterdir()) == ()
     assert _snapshot(bootstrap_workspace[0]) == before
 
 
@@ -304,6 +369,31 @@ def test_post_store_target_extra_member_and_public_observer_failure_are_uncertai
     monkeypatch.setattr(module._Store, "publish", extra_target)
     result = _publish(bootstrap_workspace)
     assert result.status == "UNCERTAIN" and result.receipt.did_write is True
+    assert result.portfolio_bootstrap_complete is False
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_store_to_outer_handoff_move_away_back_is_uncertain(
+    bootstrap_workspace, monkeypatch, existing,
+):
+    import quantpits.research.forward_bootstrap as module
+    plan = _prepare(bootstrap_workspace)
+    if existing:
+        assert _publish(bootstrap_workspace, plan).status == "COMMITTED"
+    original = module._Store.publish
+
+    def transient(store, request):
+        receipt = original(store, request)
+        target = store.root / request.bootstrap_set_id
+        displaced = store.root / "bootstrap-displaced"
+        target.rename(displaced)
+        displaced.rename(target)
+        return receipt
+
+    monkeypatch.setattr(module._Store, "publish", transient)
+    result = _publish(bootstrap_workspace, plan)
+    assert result.status == "UNCERTAIN"
+    assert result.receipt.did_write is (not existing)
     assert result.portfolio_bootstrap_complete is False
 
 

@@ -318,7 +318,16 @@ class _Request:
             "definition_request_digest": dict(evidence.definition_receipt.request_digest),
             "definition_evidence_request_digest": dict(evidence.evidence_receipt.request_digest),
             "definition_evidence_manifest_digest": dict(evidence.evidence_receipt.manifest_digest),
+            "definition_evidence_operation_id": source["definition_evidence_operation_id"],
+            "phase37a_seal_digest": source["phase37a_seal_digest"],
+            "phase37a_manifest_digest": source["phase37a_manifest_digest"],
             "source_portfolio_raw_digest": source["source_portfolio_raw_digest"],
+            "source_portfolio_semantic_digest": source["source_portfolio_semantic_digest"],
+            "source_observation_status": source["source_observation_status"],
+            "source_cycle_status": source["source_cycle_status"],
+            "source_problem_inventory_digest": source["source_problem_inventory_digest"],
+            "source_portfolio_holding_count": source["source_portfolio_holding_count"],
+            "portfolio_member_verified": source["portfolio_member_verified"],
             "roles": [dict(row) for row in self.roles],
             "economic_state_digest": dict(self.economic_state_digest),
         }
@@ -327,6 +336,8 @@ class _Request:
             (MEMBER_PATHS[0], self.source_bytes), (MEMBER_PATHS[1], self.champion_bytes),
             (MEMBER_PATHS[2], self.challenger_bytes),
         )
+        if any(len(data) > _MAX_MEMBER for _name, data in self.members):
+            raise ForwardBootstrapContractError("bootstrap member exceeds the size limit")
         payload = dict(identity)
         payload.update({"bootstrap_set_id": self.bootstrap_set_id,
                         "members": [_member_row(name, data) for name, data in self.members]})
@@ -387,11 +398,25 @@ def _read_exact(root_fd: int, name: str, expected: bytes, *, conflict: bool) -> 
         return hashlib.sha256(_canonical({"member": name, "kind": kind, "facts": dict(facts)})).hexdigest()
 
     try:
-        fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+        before = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
+                                  value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or stat.S_IMODE(before.st_mode) != 0o600 or before.st_size != len(expected)
+                or before.st_size > _MAX_MEMBER):
+            facts = {"identity": list(identity(before))}
+            if conflict:
+                raise _Conflict(fingerprint("METADATA_MISMATCH", facts))
+            raise _Uncertain("member metadata mismatch")
+        fd = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=root_fd,
+        )
         try:
             info = os.fstat(fd)
             chunks = []
-            remaining = _MAX_MEMBER + 1
+            remaining = len(expected) + 1
             while remaining:
                 chunk = os.read(fd, min(remaining, 1024 * 1024))
                 if not chunk:
@@ -402,11 +427,8 @@ def _read_exact(root_fd: int, name: str, expected: bytes, *, conflict: bool) -> 
         finally:
             _close_fd(fd, suppress=False)
         after = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-        identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
-                                  value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or stat.S_IMODE(info.st_mode) != 0o600 or data != expected
-                or identity(after) != identity(info)):
+        if (identity(info) != identity(before) or data != expected
+                or identity(after) != identity(before)):
             facts = {"identity": list(identity(after)), "raw_digest": _digest(data, "raw_bytes")}
             if conflict:
                 raise _Conflict(fingerprint("MISMATCH", facts))
@@ -518,6 +540,23 @@ class _Store:
         self.root = root
         self._did_create = False
         self._prefix = 0
+        self._entry_guard: Optional[SourceMutationObserver] = None
+        self._terminal_guard: Optional[SourceMutationObserver] = None
+
+    def begin_handoff(self, identifier: str) -> None:
+        if self._entry_guard is not None:
+            raise ForwardBootstrapContractError("store handoff is already active")
+        self._entry_guard = SourceMutationObserver(self.root, (identifier,))
+
+    def terminal_continuity(self) -> bool:
+        guard = self._terminal_guard
+        self._terminal_guard = None
+        if guard is None:
+            return False
+        try:
+            return guard.supported and not guard.mutated()
+        finally:
+            _close_guard(guard)
 
     def _verify(self, request: _Request, fd: int, *, conflict: bool) -> bytes:
         expected_names = tuple(sorted(MEMBER_PATHS + (MANIFEST_NAME,)))
@@ -546,15 +585,14 @@ class _Store:
                 info = os.stat(request.bootstrap_set_id, dir_fd=root_fd, follow_symlinks=False)
                 if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
                     raise _Conflict(hashlib.sha256(_canonical({"metadata": list((info.st_mode, info.st_nlink))})).hexdigest())
-                identity = (info.st_dev, info.st_ino, info.st_mode, 0, 0)
                 target_continuity = _namespace_identity(self.root / request.bootstrap_set_id)
+                identity = target_continuity
                 bundle_fd = os.open(request.bootstrap_set_id, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
                 manifest = self._verify(request, bundle_fd, conflict=True)
                 _close_fd(bundle_fd, suppress=False)
                 bundle_fd = None
-                if (_dir_identity(self.root / request.bootstrap_set_id, private=True) != identity
-                        or _namespace_identity(self.root) != root_continuity
-                        or _namespace_identity(self.root / request.bootstrap_set_id) != target_continuity):
+                if (_namespace_identity(self.root) != root_continuity
+                        or _namespace_identity(self.root / request.bootstrap_set_id) != identity):
                     raise _Uncertain("bundle namespace drift")
                 return _receipt(request, "ADOPTED", False, 3, before, before, identity, manifest)
             except _PROCESS_CONTROL:
@@ -578,7 +616,10 @@ class _Store:
         target = self.root / request.bootstrap_set_id
         existed = os.path.lexists(str(target))
         try:
-            return self._publish_impl(request)
+            if self._entry_guard is not None:
+                if not self._entry_guard.supported or self._entry_guard.mutated():
+                    raise ForwardBootstrapInputError("bootstrap store handoff is uncertain")
+            return self._publish_impl(request, existed=existed)
         except _PROCESS_CONTROL:
             raise
         except Exception as exc:
@@ -593,8 +634,14 @@ class _Store:
             except Exception:
                 after = None
             return _receipt(request, "UNCERTAIN", did_write, count, before, after)
+        finally:
+            if self._entry_guard is not None:
+                _close_guard(self._entry_guard)
+                self._entry_guard = None
 
-    def _publish_impl(self, request: _Request) -> MatchedForwardBootstrapStoreReceipt:
+    def _publish_impl(
+        self, request: _Request, *, existed: bool,
+    ) -> MatchedForwardBootstrapStoreReceipt:
         request.validate()
         continuity = SourceMutationObserver(self.root, ())
         root_fd: Optional[int] = os.open(str(self.root), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
@@ -606,14 +653,25 @@ class _Store:
             try:
                 os.mkdir(request.bootstrap_set_id, 0o700, dir_fd=root_fd)
                 self._did_create = True
+                if self._entry_guard is not None:
+                    _close_guard(self._entry_guard)
+                    self._entry_guard = None
             except FileExistsError:
-                existing_guard = SourceMutationObserver(self.root, (request.bootstrap_set_id,))
+                existing_guard = self._entry_guard
+                self._entry_guard = None
                 try:
-                    result = self._existing(request, root_fd, before)
-                    if not existing_guard.supported or existing_guard.mutated():
+                    if existing_guard is None or not existed:
                         result = _receipt(request, "UNCERTAIN", False, 0, before, None)
+                    else:
+                        result = self._existing(request, root_fd, before)
+                        if not existing_guard.supported or existing_guard.mutated():
+                            result = _receipt(request, "UNCERTAIN", False, 0, before, None)
+                        else:
+                            self._terminal_guard = existing_guard
+                            existing_guard = None
                 finally:
-                    _close_guard(existing_guard)
+                    if existing_guard is not None:
+                        _close_guard(existing_guard)
                 _close_fd(root_fd, suppress=False)
                 root_fd = None
                 if not continuity.supported or continuity.mutated():
@@ -624,8 +682,6 @@ class _Store:
             except OSError as exc:
                 raise ForwardBootstrapInputError("bootstrap target could not be created") from exc
             try:
-                info = os.stat(request.bootstrap_set_id, dir_fd=root_fd, follow_symlinks=False)
-                identity = (info.st_dev, info.st_ino, info.st_mode, 0, 0)
                 root_continuity = _namespace_identity(self.root)
                 bundle_fd = os.open(request.bootstrap_set_id, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
                 for name, data in request.members:
@@ -642,8 +698,11 @@ class _Store:
                     _write_all(fd, manifest); os.fsync(fd)
                 finally:
                     _close_fd(fd, suppress=False)
-                final_guard = SourceMutationObserver(self.root, (request.bootstrap_set_id,))
+                final_guard = SourceMutationObserver(
+                    self.root, (request.bootstrap_set_id,),
+                )
                 target_continuity = _namespace_identity(self.root / request.bootstrap_set_id)
+                identity = target_continuity
                 self._verify(request, bundle_fd, conflict=False)
                 os.fsync(bundle_fd); os.fsync(root_fd)
                 _close_fd(bundle_fd, suppress=False)
@@ -651,14 +710,13 @@ class _Store:
                 _close_fd(root_fd, suppress=False)
                 root_fd = None
                 if (_dir_identity(self.root, private=True) != before
-                        or _dir_identity(self.root / request.bootstrap_set_id, private=True) != identity
                         or _namespace_identity(self.root) != root_continuity
-                        or _namespace_identity(self.root / request.bootstrap_set_id) != target_continuity):
+                        or _namespace_identity(self.root / request.bootstrap_set_id) != identity):
                     raise _Uncertain("final namespace drift")
                 if (not continuity.supported or continuity.mutated()
                         or not final_guard.supported or final_guard.mutated()):
                     raise _Uncertain("bootstrap root continuity uncertain")
-                _close_guard(final_guard)
+                self._terminal_guard = final_guard
                 final_guard = None
                 return _receipt(request, "COMMITTED", True, 3, before, before, identity, manifest)
             except _PROCESS_CONTROL:
@@ -927,6 +985,7 @@ def _publish_matched_forward_bootstrap(workspace_root: Any, definition_evidence_
     )
     target_guard = SourceMutationObserver(bootstraps, (expected_id,))
     post_guard = None
+    store = None
     result = None
     stable = False
     try:
@@ -936,15 +995,18 @@ def _publish_matched_forward_bootstrap(workspace_root: Any, definition_evidence_
             raise ForwardBootstrapContractError("fresh bootstrap request does not match owner authorization")
         if not target_guard.supported or target_guard.mutated():
             raise ForwardBootstrapInputError("bootstrap target changed before publication")
+        store = _Store(bootstraps)
+        store.begin_handoff(request.bootstrap_set_id)
         _close_guard(target_guard)
         target_guard = None
-        receipt = _Store(bootstraps).publish(request)
+        receipt = store.publish(request)
         post_guard = SourceMutationObserver(bootstraps, (request.bootstrap_set_id,))
         # Revalidate both inspector-owned aggregates and require no protected namespace event.
         try:
             definition.to_store_request(); source.verified_portfolio()
             stable = (guard.supported and not guard.mutated()
                       and post_guard.supported and not post_guard.mutated()
+                      and store.terminal_continuity()
                       and _verify_public_bootstrap(bootstraps, request, receipt)
                       and _protected_inventory(root, bootstraps / request.bootstrap_set_id) == before)
         except _PROCESS_CONTROL:
@@ -959,6 +1021,13 @@ def _publish_matched_forward_bootstrap(workspace_root: Any, definition_evidence_
             try:
                 stable = stable and not post_guard.mutated()
                 _close_guard(post_guard)
+            except _PROCESS_CONTROL:
+                raise
+            except OSError:
+                stable = False
+        if store is not None and store._terminal_guard is not None:
+            try:
+                stable = stable and store.terminal_continuity()
             except _PROCESS_CONTROL:
                 raise
             except OSError:
