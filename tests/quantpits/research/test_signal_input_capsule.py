@@ -297,6 +297,27 @@ def test_publish_commits_exact_seven_files_manifest_last_and_adopts(tmp_path, mo
     assert tuple((path.name, path.stat().st_ino) for path in sorted(target.iterdir())) == before
 
 
+def test_publish_rejects_research_store_below_production_without_writing(tmp_path, monkeypatch):
+    production = tmp_path / "production"
+    research = production / "research-workspace"
+    store = research / "research" / "shadow_v1" / "signal_input_capsules"
+    store.mkdir(parents=True, mode=0o700)
+    store.chmod(0o700)
+    monkeypatch.setattr(
+        module, "_derive_request",
+        lambda *_args, **_kwargs: pytest.fail("source authority must not be read"),
+    )
+
+    request = _request()
+    with pytest.raises(module.SignalInputCapsuleContractError, match="isolated"):
+        module.publish_signal_input_capsule(
+            production, research, request.cycle_id, store, request.capsule_id,
+            request.request_digest, module.AUTHORIZATION_ACTION,
+        )
+
+    assert tuple(store.iterdir()) == ()
+
+
 def test_zero_length_signal_member_is_retained_as_exact_raw_bytes(tmp_path):
     _production, _research, store = _roots(tmp_path)
     request = _request()
@@ -423,6 +444,49 @@ def test_member_move_away_back_during_write_is_uncertain(tmp_path, monkeypatch):
     result = module._publish_store(store, request)
     assert result.status == "UNCERTAIN"
     assert result.did_write is True
+    assert result.critical_signal_retention_complete is False
+
+
+def test_existing_target_member_move_away_back_during_publish_is_uncertain(tmp_path, monkeypatch):
+    _production, _research, store = _roots(tmp_path)
+    request = _request()
+    assert module._publish_store(store, request).status == "COMMITTED"
+    original = module._verify_bundle
+
+    def move_after_verify(target, wanted, *, use_request_data):
+        manifest = original(target, wanted, use_request_data=use_request_data)
+        member = target / module.MEMBER_NAMES[0]
+        displaced = target / "displaced"
+        member.rename(displaced)
+        displaced.rename(member)
+        return manifest
+
+    monkeypatch.setattr(module, "_verify_bundle", move_after_verify)
+    result = module._publish_store(store, request)
+    assert result.status == "UNCERTAIN"
+    assert result.did_write is False
+    assert result.verified_count == 0
+    assert result.critical_signal_retention_complete is False
+
+
+def test_fresh_publication_mutation_during_final_verify_is_uncertain(tmp_path, monkeypatch):
+    _production, _research, store = _roots(tmp_path)
+    request = _request()
+    original = module._verify_bundle
+
+    def move_after_verify(target, wanted, *, use_request_data):
+        manifest = original(target, wanted, use_request_data=use_request_data)
+        member = target / module.MEMBER_NAMES[0]
+        displaced = target / "displaced"
+        member.rename(displaced)
+        displaced.rename(member)
+        return manifest
+
+    monkeypatch.setattr(module, "_verify_bundle", move_after_verify)
+    result = module._publish_store(store, request)
+    assert result.status == "UNCERTAIN"
+    assert result.did_write is True
+    assert result.verified_count == 7
     assert result.critical_signal_retention_complete is False
 
 

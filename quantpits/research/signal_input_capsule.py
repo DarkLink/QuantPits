@@ -848,11 +848,17 @@ def _publish_store(root: Path, request: _Request) -> SignalInputCapsuleResult:
                 raise _Uncertain("target create continuity failed")
         except FileExistsError:
             try:
+                child_guard = SourceMutationObserver(target, FINAL_NAMES)
+                if not child_guard.supported:
+                    raise _Uncertain("existing target continuity is unsupported")
+                target_before = _identity(target, private=True)
                 manifest = _verify_bundle(target, request, use_request_data=True)
                 if (
-                    entry_guard.mutated() or root_guard.mutated() or parent_guard.mutated()
-                    or _identity(root, private=True) != root_before
+                    _identity(root, private=True) != root_before
                     or _identity(root.parent) != parent_before
+                    or _identity(target, private=True) != target_before
+                    or entry_guard.mutated() or root_guard.mutated()
+                    or parent_guard.mutated() or child_guard.mutated()
                 ):
                     raise _Uncertain("existing target continuity failed")
                 return _result(request, "ADOPTED", False, 7, manifest)
@@ -911,6 +917,9 @@ def _publish_store(root: Path, request: _Request) -> SignalInputCapsuleResult:
         bundle_fd = -1
         _close_fd(root_fd, suppress=False)
         root_fd = -1
+        verified_manifest = _verify_bundle(target, request, use_request_data=True)
+        if verified_manifest != manifest:
+            raise _Uncertain("final manifest verification differs")
         if (
             _identity(root, private=True) != root_before or _identity(target, private=True) != target_identity
             or _identity(root.parent) != parent_before
@@ -918,7 +927,6 @@ def _publish_store(root: Path, request: _Request) -> SignalInputCapsuleResult:
             or parent_guard.mutated() or child_guard.mutated()
         ):
             raise _Uncertain("final namespace continuity failed")
-        _verify_bundle(target, request, use_request_data=True)
         return _result(request, "COMMITTED", True, 7, manifest)
     except _PROCESS_CONTROL:
         raise
@@ -993,6 +1001,10 @@ def _roots(production_root: Any, research_root: Any, store_root: Any) -> Tuple[P
     expected = research / "research" / "shadow_v1" / "signal_input_capsules"
     if store != expected or store.parent.resolve(strict=True) != expected.parent:
         raise SignalInputCapsuleContractError("capsule_store_root does not match the fixed Research layout")
+    if store == production or production in store.parents:
+        raise SignalInputCapsuleContractError(
+            "capsule_store_root must be physically isolated from Production",
+        )
     return production, research, store
 
 
