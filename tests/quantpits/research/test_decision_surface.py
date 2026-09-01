@@ -387,6 +387,27 @@ def test_combo_member_order_method_normalization_and_default_are_strict(tmp_path
         module._ensemble_projection(ambiguous_cycle, ambiguous_manifest)
 
 
+def test_sealed_run_manifest_accepts_strict_noncanonical_bytes_and_rejects_duplicates(
+    tmp_path,
+):
+    cycle, manifest = _ensemble_fixture(tmp_path)
+    raw = module._run_manifest(cycle, manifest, "ensemble")
+    noncanonical = json.dumps(raw, indent=2).encode()
+    observation = _embedded_object(cycle, noncanonical, raw=True)
+    manifest["run_evidence"] = [{"class": "ensemble", **observation}]
+    assert module._ensemble_projection(cycle, manifest)["method"] == "equal"
+
+    duplicate = noncanonical.replace(
+        b'"schema_version": 1,',
+        b'"schema_version": 1, "schema_version": 1,',
+        1,
+    )
+    observation = _embedded_object(cycle, duplicate, raw=True)
+    manifest["run_evidence"] = [{"class": "ensemble", **observation}]
+    with pytest.raises(module._ComponentIncomparable, match="JSON_INVALID"):
+        module._ensemble_projection(cycle, manifest)
+
+
 def test_intent_projection_uses_sealed_config_and_actual_ensemble_source(tmp_path):
     cycle, manifest = _intent_fixture(tmp_path)
     projection = module._intent_projection(cycle, manifest)
@@ -585,7 +606,9 @@ def _observer_layout(tmp_path):
     return research, production, engine, activation, definitions, evidence, bootstraps
 
 
-@pytest.mark.parametrize("outcome", ["same", "version", "incomparable"])
+@pytest.mark.parametrize(
+    "outcome", ["same", "version", "incomparable", "reference_intent_incomparable"],
+)
 def test_observer_is_strictly_zero_write_and_returns_exact_six_rows(
     tmp_path, monkeypatch, outcome,
 ):
@@ -651,10 +674,14 @@ def test_observer_is_strictly_zero_write_and_returns_exact_six_rows(
             raise module._ComponentIncomparable("MARKET_POLICY_INCOMPARABLE")
         return {"market": 1}
     monkeypatch.setattr(module, "_market_projection", market)
-    monkeypatch.setattr(module, "_intent_projection", lambda *_: {
-        **module._definition_intent_projection(_SyntheticDefinition()),
-        "resolved_combo": "CHAMPION_4",
-    })
+    def intent(path, _manifest):
+        if outcome == "reference_intent_incomparable" and path == reference_path:
+            raise module._ComponentIncomparable("STRATEGY_CONFIG_FALLBACK_REQUIRED")
+        return {
+            **module._definition_intent_projection(_SyntheticDefinition()),
+            "resolved_combo": "CHAMPION_4",
+        }
+    monkeypatch.setattr(module, "_intent_projection", intent)
     result = observe_production_decision_surface(
         research, production, engine, "2026-08-21", activation,
         definitions, evidence, bootstraps, "bootstrap.synthetic",
@@ -662,9 +689,12 @@ def test_observer_is_strictly_zero_write_and_returns_exact_six_rows(
     expected = {
         "same": "SAME_CHAMPION_SEGMENT", "version": "VERSION_BREAK",
         "incomparable": "INCOMPARABLE",
+        "reference_intent_incomparable": "INCOMPARABLE",
     }[outcome]
     assert result.status == expected
     assert len(result.components) == 6
+    if outcome == "reference_intent_incomparable":
+        assert result.components[-1].reason_code == "STRATEGY_CONFIG_FALLBACK_REQUIRED"
     assert module._selected_fingerprint((tmp_path,)) == before
 
 

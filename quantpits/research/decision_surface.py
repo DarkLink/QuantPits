@@ -509,7 +509,12 @@ def _manifest_object(cycle: Path, observation: Mapping[str, Any], name: str) -> 
     data, _identity = _read_regular(path, maximum=digest["size_bytes"])
     if _digest(data, "raw_bytes") != digest:
         raise _ComponentIncomparable(name.upper() + "_OBJECT_DIGEST_MISMATCH")
-    return _strict_json(data, name)
+    # Phase37A preserves the original run-manifest bytes.  Their raw digest is
+    # authoritative, but the producing CLI is not required to use our
+    # canonical JSON renderer.  Decode the sealed representation strictly
+    # (duplicate keys and non-finite values remain invalid) without inventing
+    # a canonical-byte requirement for an upstream artifact.
+    return _json_object_bytes(data, name)
 
 
 def _run_manifest(cycle: Path, manifest: Mapping[str, Any], evidence_class: str) -> Dict[str, Any]:
@@ -1404,13 +1409,19 @@ def _observe_production_decision_surface(
             reference_ensemble["protocol"]
             == definition.compiled_definitions.champion.to_dict()["fusion_definition"]
         )
+        intent_reference_reason = None
         try:
             reference_intent = _intent_projection(reference_path, reference_manifest)
             intent_reference_valid = _intent_matches_definition(reference_intent, definition)
         except _PROCESS_CONTROL:
             raise
+        except _ComponentIncomparable as exc:
+            intent_reference_valid = False
+            intent_reference_reason = exc.reason_code
+            reference_intent = _definition_intent_projection(definition)
         except Exception:
             intent_reference_valid = False
+            intent_reference_reason = "REFERENCE_INTENT_OBSERVATION_FAILED"
             reference_intent = _definition_intent_projection(definition)
         reference_commit = _engine_commit(reference_manifest)
         reference_code = _git_blob_projection(engine, reference_commit)
@@ -1476,7 +1487,7 @@ def _observe_production_decision_surface(
             ),
             _component(
                 COMPONENT_NAMES[5], reference_intent, None,
-                "REFERENCE_INTENT_DEFINITION_MISMATCH",
+                intent_reference_reason or "REFERENCE_INTENT_DEFINITION_MISMATCH",
             ) if not intent_reference_valid else _observe_component(
                 COMPONENT_NAMES[5], reference_intent,
                 lambda: _intent_projection(current_path, current_manifest),
