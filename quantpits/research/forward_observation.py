@@ -29,6 +29,7 @@ from quantpits.evidence.inspection import SourceMutationObserver
 _PROCESS_CONTROL = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _AUTHORITY = object()
 _OBSERVED_BINDINGS: "weakref.WeakKeyDictionary[Any, Tuple[Any, ...]]" = weakref.WeakKeyDictionary()
+_FRESH_BINDINGS: "weakref.WeakKeyDictionary[Any, Tuple[Any, ...]]" = weakref.WeakKeyDictionary()
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _ACTIVATION_LIMIT = 128 * 1024
@@ -62,6 +63,10 @@ _RECEIPT_FIELDS = (
     "publication_capability", "epoch_started", "prospective_claim",
     "promotion_capability",
 )
+_ALLOWED_PARTIAL = frozenset({
+    ("deep_analysis_missing", "deep_analysis", True),
+    ("deep_analysis_incomplete", "deep_analysis", True),
+})
 
 
 class ForwardObservationContractError(ValueError):
@@ -361,7 +366,7 @@ def _authority_identity(value: Any) -> Tuple[Any, ...]:
 
 
 def _verify_bundle(
-    root: Path, cycle_id: str,
+    root: Path, cycle_id: str, *, allow_scoped_partial: bool = False,
 ) -> Tuple[Dict[str, Any], bytes, bytes, bool, Tuple[str, ...], Tuple[Dict[str, Any], ...], Tuple[int, ...]]:
     cycle = root / "data" / "evidence" / "v1" / "cycles" / cycle_id
     try:
@@ -408,9 +413,20 @@ def _verify_bundle(
         )
     ):
         raise _input("sealed cycle identity or problem inventory is invalid")
+    identities = tuple(
+        (item["code"], item["evidence_class"], item["blocks_complete"])
+        for item in problems
+    )
+    if allow_scoped_partial and len(set(identities)) != len(identities):
+        raise _input("cycle problem inventory contains duplicates")
     derived = "sealed_partial" if any(item["blocks_complete"] for item in problems) else "sealed_complete"
-    if manifest.get("status") != derived or seal.get("status") != derived or derived != "sealed_complete":
-        raise _input("cycle is not sealed_complete")
+    admitted = derived == "sealed_complete" or (
+        allow_scoped_partial
+        and derived == "sealed_partial"
+        and {item for item in identities if item[2]}.issubset(_ALLOWED_PARTIAL)
+    )
+    if manifest.get("status") != derived or seal.get("status") != derived or not admitted:
+        raise _input("cycle status is not admitted")
     replay_core = {
         key: value for key, value in manifest.items()
         if key not in {"capture_time", "status", "request_content_digest", "workspace_identity"}
@@ -1092,47 +1108,202 @@ class ObservedForwardDefinitionCandidate:
         }
 
 
-def _observe_shadow_forward_definition_candidate(
-    workspace_root: Any, evidence_cycle_id: Any, activation_path: Any,
+class FreshChampionSegmentCandidate:
+    """Inspector-owned split-root candidate with no publication capability."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if args or kwargs.pop("_authority", None) is not _AUTHORITY:
+            raise ForwardObservationContractError("fresh candidates are inspector-owned")
+        if set(kwargs) != {"observed_candidate"}:
+            raise ForwardObservationContractError("fresh candidate fields are not exact")
+        candidate = kwargs["observed_candidate"]
+        if type(candidate) is not ObservedForwardDefinitionCandidate:
+            raise ForwardObservationContractError("fresh candidate contains foreign authority")
+        candidate._validated()
+        object.__setattr__(self, "_observed_candidate", candidate)
+        object.__setattr__(self, "_authority", _AUTHORITY)
+
+    def _bind_original_observation(self) -> None:
+        if self in _FRESH_BINDINGS:
+            raise ForwardObservationContractError("fresh candidate is already bound")
+        candidate = self._observed_candidate
+        _FRESH_BINDINGS[self] = (
+            _authority_identity(candidate),
+            canonical_json_bytes(candidate.to_safe_summary_dict()),
+        )
+
+    def _validated(self) -> ObservedForwardDefinitionCandidate:
+        if type(self) is not FreshChampionSegmentCandidate or getattr(self, "_authority", None) is not _AUTHORITY:
+            raise ForwardObservationContractError("fresh candidate authority is absent")
+        candidate = getattr(self, "_observed_candidate", None)
+        if type(candidate) is not ObservedForwardDefinitionCandidate:
+            raise ForwardObservationContractError("fresh candidate contains foreign authority")
+        binding = _FRESH_BINDINGS.get(self)
+        if binding is None or (
+            _authority_identity(candidate) != binding[0]
+            or canonical_json_bytes(candidate.to_safe_summary_dict()) != binding[1]
+        ):
+            raise ForwardObservationContractError(
+                "fresh candidate differs from its original inspector observation",
+            )
+        candidate._validated()
+        return candidate
+
+    def __copy__(self) -> Any:
+        raise ForwardObservationContractError("fresh candidate replay is not authoritative")
+
+    def __deepcopy__(self, _memo: Any) -> Any:
+        raise ForwardObservationContractError("fresh candidate replay is not authoritative")
+
+    def __reduce__(self) -> Any:
+        raise ForwardObservationContractError("fresh candidate replay is not authoritative")
+
+    @property
+    def compiled_definitions(self) -> Any:
+        return self._validated().compiled_definitions
+
+    @property
+    def definition_set_id(self) -> str:
+        return self._validated().definition_set_id
+
+    @property
+    def evidence_cycle_id(self) -> str:
+        return self._validated().evidence_cycle_id
+
+    @property
+    def selected_omitted_position(self) -> int:
+        return self._validated().selected_omitted_position
+
+    @property
+    def reference_receipt(self) -> Mapping[str, Any]:
+        return self._validated().reference_receipt
+
+    @property
+    def reference_receipt_digest(self) -> Mapping[str, Any]:
+        return self._validated().reference_receipt_digest
+
+    @property
+    def compiled_request_digest(self) -> Mapping[str, Any]:
+        return MappingProxyType(dict(self._validated().reference_receipt["compiled_request_digest"]))
+
+    @property
+    def fresh_segment_candidate_ready(self) -> bool:
+        self._validated()
+        return True
+
+    @property
+    def sealed_reference_join_verified(self) -> bool:
+        return self._validated().sealed_reference_join_verified
+
+    @property
+    def publication_capability(self) -> bool:
+        self._validated()
+        return False
+
+    @property
+    def definition_bound(self) -> bool:
+        self._validated()
+        return False
+
+    @property
+    def intent_capability(self) -> bool:
+        self._validated()
+        return False
+
+    @property
+    def epoch_started(self) -> bool:
+        self._validated()
+        return False
+
+    @property
+    def prospective_claim(self) -> bool:
+        self._validated()
+        return False
+
+    @property
+    def promotion_capability(self) -> bool:
+        self._validated()
+        return False
+
+    @property
+    def did_write(self) -> bool:
+        self._validated()
+        return False
+
+    def to_safe_summary_dict(self) -> Dict[str, Any]:
+        summary = self._validated().to_safe_summary_dict()
+        return {
+            **summary,
+            "status": "READY",
+            "fresh_segment_candidate_ready": True,
+            "sealed_reference_join_verified": True,
+            "publication_capability": False,
+            "definition_bound": False,
+            "intent_capability": False,
+            "epoch_started": False,
+            "prospective_claim": False,
+            "promotion_capability": False,
+            "did_write": False,
+        }
+
+
+def _observe_shadow_forward_definition_candidate_roots(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any,
     *, purpose: str, reason_code: str, formal_layout: bool,
+    require_split_roots: bool = False,
 ) -> ObservedForwardDefinitionCandidate:
     """Observe, join, and compile one candidate under a fixed private policy."""
     cycle_id = _calendar_date(evidence_cycle_id, "evidence_cycle_id")
-    root = _physical_root(workspace_root)
+    production_root = _physical_root(production_workspace_root)
+    research_root = _physical_root(research_workspace_root)
+    if require_split_roots and (
+        production_root == research_root
+        or production_root in research_root.parents
+        or research_root in production_root.parents
+    ):
+        raise _input("Production and Research roots must be physically separate")
     if type(activation_path) is not Path:
         try:
             activation_path = Path(activation_path)
         except Exception as exc:
             raise ForwardObservationContractError("activation_path must be a path") from exc
     try:
-        activation_logical = activation_path.relative_to(root).as_posix()
+        activation_logical = activation_path.relative_to(research_root).as_posix()
     except ValueError as exc:
         raise _input("activation is outside workspace") from exc
-    cycle_path = root / "data" / "evidence" / "v1" / "cycles" / cycle_id
+    cycle_path = production_root / "data" / "evidence" / "v1" / "cycles" / cycle_id
     cycles_path = cycle_path.parent
-    config_raw_path = root / "config" / "strategy_config.yaml"
-    watched = tuple(value for value in (
-        activation_logical,
-        Path(activation_logical).parent.as_posix(),
-        "config",
-        config_raw_path.relative_to(root).as_posix(),
-        cycles_path.relative_to(root).as_posix(),
-        cycle_path.relative_to(root).as_posix(),
+    config_raw_path = production_root / "config" / "strategy_config.yaml"
+    research_watched = tuple(value for value in (
+        activation_logical, Path(activation_logical).parent.as_posix(),
+    ) if value not in {"", "."})
+    production_watched = tuple(value for value in (
+        "config", config_raw_path.relative_to(production_root).as_posix(),
+        cycles_path.relative_to(production_root).as_posix(),
+        cycle_path.relative_to(production_root).as_posix(),
     ) if value not in {"", "."})
     try:
-        with _mutation_guard(root, watched) as observer:
-            if not observer.supported:
+        with _mutation_guard(production_root, production_watched) as production_observer, _mutation_guard(
+            research_root, research_watched,
+        ) as research_observer:
+            if not production_observer.supported or not research_observer.supported:
                 raise _input("source mutation observation is unavailable")
-            activation_file = _contained(root, activation_path, regular=True)
-            config_path = _contained(root, config_raw_path, regular=True)
-            cycles_physical = _contained(root, cycles_path)
-            cycle_physical = _contained(root, cycle_path)
-            authority_directories = tuple(dict.fromkeys((
-                root, activation_file.parent, config_path.parent,
-                cycles_physical, cycle_physical,
+            activation_file = _contained(research_root, activation_path, regular=True)
+            config_path = _contained(production_root, config_raw_path, regular=True)
+            cycles_physical = _contained(production_root, cycles_path)
+            cycle_physical = _contained(production_root, cycle_path)
+            production_directories = tuple(dict.fromkeys((
+                production_root, config_path.parent, cycles_physical, cycle_physical,
             )))
-            authority_before = {
-                path: _directory_identity(path) for path in authority_directories
+            research_directories = tuple(dict.fromkeys((
+                research_root, activation_file.parent,
+            )))
+            production_before = {
+                path: _directory_identity(path) for path in production_directories
+            }
+            research_before = {
+                path: _directory_identity(path) for path in research_directories
             }
             activation_data, activation_identity = _read_regular(
                 activation_file, maximum=_ACTIVATION_LIMIT, private=True,
@@ -1141,14 +1312,51 @@ def _observe_shadow_forward_definition_candidate(
                 activation_data, cycle_id, purpose=purpose, reason_code=reason_code,
             )
             if formal_layout and activation_file != (
-                root / "research" / "shadow_v1" / "activations"
+                research_root / "research" / "shadow_v1" / "activations"
                 / (activation["definition_set_id"] + ".json")
             ):
                 raise _input("frozen activation path is not the formal private layout")
             (
                 manifest, manifest_data, seal_data, all_embedded, source_ids,
                 references, _positions,
-            ) = _verify_bundle(root, cycle_id)
+            ) = (
+                _verify_bundle(
+                    production_root, cycle_id, allow_scoped_partial=True,
+                )
+                if require_split_roots
+                else _verify_bundle(production_root, cycle_id)
+            )
+            if require_split_roots:
+                try:
+                    from quantpits.research import decision_surface as surface
+                    observed_cycle, observed_manifest, _observed_seal = surface._cycle_authority(
+                        production_root, cycle_id,
+                    )
+                    source_projection = surface._source_projection(observed_manifest)
+                    ensemble_projection = surface._ensemble_projection(
+                        observed_cycle, observed_manifest,
+                    )
+                    surface._market_projection(observed_manifest)
+                except _PROCESS_CONTROL:
+                    raise
+                except Exception as exc:
+                    raise _input("fresh Production authority is incomparable", sources=source_ids) from exc
+                projected = tuple(
+                    (row["position"], row["source_id"], row["artifact_inventory_digest"])
+                    for row in source_projection["members"]
+                )
+                expected_projection = tuple(
+                    (row["position"], row["source_id"], row["model_artifact_digest"])
+                    for row in references
+                )
+                if (
+                    observed_manifest != manifest
+                    or projected != expected_projection
+                    or tuple(ensemble_projection["members"]) != source_ids
+                    or ensemble_projection["method"] != "equal"
+                    or ensemble_projection["normalization"] != "rank"
+                ):
+                    raise _input("fresh Production source semantics do not join", sources=source_ids)
             config_data, config_identity = _read_regular(config_path, maximum=_CONFIG_LIMIT)
             intent = _strategy_config(config_data, activation["intent_definition_id"])
             cutoff = manifest["data_identity"]["qlib_materialization_identity"]["calendar_cutoff"]
@@ -1196,7 +1404,6 @@ def _observe_shadow_forward_definition_candidate(
                 "prospective_claim": False,
                 "promotion_capability": False,
             }
-            # Re-observe the two caller-controlled files and every enclosing authority.
             _, activation_after = _read_regular(
                 activation_file, expected_size=len(activation_data), private=True,
             )
@@ -1206,9 +1413,14 @@ def _observe_shadow_forward_definition_candidate(
                 or config_after != config_identity
                 or any(
                     _directory_identity(path) != identity
-                    for path, identity in authority_before.items()
+                    for path, identity in production_before.items()
                 )
-                or observer.mutated()
+                or any(
+                    _directory_identity(path) != identity
+                    for path, identity in research_before.items()
+                )
+                or production_observer.mutated()
+                or research_observer.mutated()
             ):
                 raise _input("observation source continuity was lost", sources=source_ids)
     except _PROCESS_CONTROL:
@@ -1222,6 +1434,16 @@ def _observe_shadow_forward_definition_candidate(
     )
     candidate._bind_original_observation()
     return candidate
+
+
+def _observe_shadow_forward_definition_candidate(
+    workspace_root: Any, evidence_cycle_id: Any, activation_path: Any,
+    *, purpose: str, reason_code: str, formal_layout: bool,
+) -> ObservedForwardDefinitionCandidate:
+    return _observe_shadow_forward_definition_candidate_roots(
+        workspace_root, workspace_root, evidence_cycle_id, activation_path,
+        purpose=purpose, reason_code=reason_code, formal_layout=formal_layout,
+    )
 
 
 def observe_shadow_forward_definition_candidate(
@@ -1260,8 +1482,35 @@ def observe_frozen_shadow_forward_definition_candidate(
         raise _input("frozen observation failed closed") from exc
 
 
+def observe_fresh_champion_segment_candidate(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any,
+) -> FreshChampionSegmentCandidate:
+    """Observe one formal current Champion candidate across separated roots."""
+    try:
+        observed = _observe_shadow_forward_definition_candidate_roots(
+            production_workspace_root, research_workspace_root,
+            evidence_cycle_id, activation_path,
+            purpose="FROZEN_OBSERVATION", reason_code="FROZEN_OBSERVATION",
+            formal_layout=True, require_split_roots=True,
+        )
+        candidate = FreshChampionSegmentCandidate(
+            _authority=_AUTHORITY, observed_candidate=observed,
+        )
+        candidate._bind_original_observation()
+        return candidate
+    except _PROCESS_CONTROL:
+        raise
+    except ForwardObservationContractError:
+        raise
+    except Exception as exc:
+        raise _input("fresh Champion segment observation failed closed") from exc
+
+
 __all__ = [
     "ForwardObservationContractError", "ForwardObservationInputError",
-    "ObservedForwardDefinitionCandidate", "observe_shadow_forward_definition_candidate",
+    "ObservedForwardDefinitionCandidate", "FreshChampionSegmentCandidate",
+    "observe_shadow_forward_definition_candidate",
     "observe_frozen_shadow_forward_definition_candidate",
+    "observe_fresh_champion_segment_candidate",
 ]

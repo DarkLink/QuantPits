@@ -8,10 +8,12 @@ import pytest
 
 from quantpits.evidence.contracts import TypedDigest, canonical_json_bytes
 from quantpits.research.forward_observation import (
+    FreshChampionSegmentCandidate,
     ForwardObservationContractError,
     ForwardObservationInputError,
     ObservedForwardDefinitionCandidate,
     observe_frozen_shadow_forward_definition_candidate,
+    observe_fresh_champion_segment_candidate,
     observe_shadow_forward_definition_candidate,
 )
 
@@ -730,3 +732,415 @@ def test_forward_observation_import_preserves_environment_cwd_and_optional_depen
     assert dict(os.environ) == before_env
     assert os.getcwd() == before_cwd
     assert after == before
+
+
+def _reseal_fresh_cycle(cycle, manifest, extra_objects=()):
+    for data in extra_objects:
+        digest = TypedDigest.raw(data)
+        _write(cycle / "objects" / digest.value[:2] / digest.value, data, 0o600)
+        (cycle / "objects" / digest.value[:2]).chmod(0o700)
+    embedded = {}
+    for row in __import__(
+        "quantpits.research.forward_observation", fromlist=["_embedded_rows"],
+    )._embedded_rows(manifest):
+        digest = row["digest"]
+        embedded[digest["value"]] = digest["size_bytes"]
+    manifest["preservation"]["embedded_object_count"] = len(embedded)
+    replay = {
+        key: value for key, value in manifest.items()
+        if key not in {"capture_time", "status", "request_content_digest", "workspace_identity"}
+    }
+    manifest["request_content_digest"] = TypedDigest.canonical(replay).to_dict()
+    manifest_data = canonical_json_bytes(manifest)
+    old_seal = json.loads((cycle / "seal.json").read_bytes())
+    objects = sorted(embedded)
+    seal = {
+        **old_seal,
+        "status": manifest["status"],
+        "manifest_digest": TypedDigest.raw(manifest_data).to_dict(),
+        "object_digests": objects,
+    }
+    seal["artifact_root_digest"] = TypedDigest.canonical({
+        "objects": objects,
+        "named_files": seal["named_file_digests"],
+    }).to_dict()
+    _write(cycle / "manifest.json", manifest_data, 0o600)
+    _write(cycle / "seal.json", canonical_json_bytes(seal), 0o600)
+
+
+def _fresh_split_bundle(tmp_path):
+    production = tmp_path / "production"
+    research = tmp_path / "research"
+    production.mkdir()
+    research.mkdir()
+    production_activation, cycle = _bundle(production, frozen=True)
+    activation_raw = json.loads(production_activation.read_bytes())
+    activation_raw.update({
+        "definition_set_id": "shadow.fresh.segment.v1",
+        "protocol_id": "protocol.fresh.segment.v1",
+        "intent_definition_id": "intent.fresh.segment.v1",
+        "champion_strategy_id": "strategy.champion.fresh.v1",
+        "challenger_strategy_id": "strategy.challenger.fresh.v1",
+    })
+    activation_raw["selection_decision"].update({
+        "decision_id": "DECISION.FRESH.001",
+        "target": "strategy.challenger.fresh.v1",
+    })
+    fresh_production_activation = production_activation.with_name(
+        "shadow.fresh.segment.v1.json",
+    )
+    production_activation.rename(fresh_production_activation)
+    production_activation = fresh_production_activation
+    _write(production_activation, canonical_json_bytes(activation_raw), 0o600)
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    lineage = manifest["model_and_ensemble_lineage"]
+    members = lineage["combo"]["resolved_members"]
+    lineage["combo"].update({"method": "equal", "ensemble_recorder_id": "ENSEMBLE"})
+    auxiliaries = []
+    for position, model in enumerate(lineage["source_models"]):
+        model["operation"] = "predict_only"
+        source = lineage["source_artifacts"][position]
+        auxiliary = {
+            "position": position,
+            "recorder_id": model["recorder_id"],
+            "source_recorder_id": model["source_recorder_id"],
+            "artifact_locator": "mlruns/prediction-%d" % position,
+            "members": copy.deepcopy(source["members"]),
+            "artifact_tree_digest": copy.deepcopy(source["artifact_tree_digest"]),
+        }
+        auxiliaries.append(auxiliary)
+    ensemble_source = lineage["source_artifacts"][0]
+    auxiliaries.append({
+        "position": "ensemble", "recorder_id": "ENSEMBLE",
+        "artifact_locator": "mlruns/ensemble",
+        "members": copy.deepcopy(ensemble_source["members"]),
+        "artifact_tree_digest": copy.deepcopy(ensemble_source["artifact_tree_digest"]),
+    })
+    lineage["source_artifacts"].extend(auxiliaries)
+    manifest["data_identity"]["qlib_materialization_identity"].update({
+        "status": "observed", "universe_name": "csi300",
+    })
+    ensemble_run = canonical_json_bytes({
+        "schema_version": 1, "command": "ensemble_fusion", "status": "success",
+        "run_id": "FRESH", "args": ["--from-config"],
+        "records": {"combos": [{
+            "name": "CHAMPION_4", "method": "equal", "is_default": True,
+            "models": members, "resolved_models": members,
+        }]},
+    })
+    run_digest = TypedDigest.raw(ensemble_run)
+    manifest["run_evidence"] = [{
+        "class": "ensemble", "path": "run/ensemble.json", "status": "observed",
+        "digest": run_digest.to_dict(), "preservation_status": "embedded", "detail": "",
+    }]
+    _reseal_fresh_cycle(cycle, manifest, (ensemble_run,))
+    reference = observe_frozen_shadow_forward_definition_candidate(
+        production, CYCLE, production_activation,
+    )
+    activation = (
+        research / "research" / "shadow_v1" / "activations"
+        / "shadow.fresh.segment.v1.json"
+    )
+    _write(activation, production_activation.read_bytes(), 0o600)
+    for directory in (
+        research / "research", research / "research" / "shadow_v1",
+        research / "research" / "shadow_v1" / "activations",
+    ):
+        directory.chmod(0o700)
+    production_activation.unlink()
+    (production / "research" / "shadow_v1" / "activations").rmdir()
+    (production / "research" / "shadow_v1").rmdir()
+    (production / "research").rmdir()
+    return production, research, activation, cycle, reference
+
+
+def test_split_root_observer_builds_one_fresh_candidate_from_production_source_and_research_activation(tmp_path):
+    production, research, activation, _cycle, reference = _fresh_split_bundle(tmp_path)
+    candidate = observe_fresh_champion_segment_candidate(
+        production, research, CYCLE, activation,
+    )
+    assert candidate.fresh_segment_candidate_ready is True
+    assert dict(candidate.compiled_request_digest) == dict(reference.compiled_definitions.request_digest)
+    assert candidate.selected_omitted_position == 1
+    assert all(getattr(candidate, name) is False for name in (
+        "publication_capability", "definition_bound", "intent_capability",
+        "epoch_started", "prospective_claim", "promotion_capability",
+    ))
+
+
+def test_research_decoy_cycle_and_config_are_never_used_as_production_authority(tmp_path):
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    _write(research / "config" / "strategy_config.yaml", b"private: decoy\n")
+    _write(
+        research / "data" / "evidence" / "v1" / "cycles" / CYCLE / "seal.json",
+        b"decoy", 0o600,
+    )
+    before = tuple(sorted(path.relative_to(research).as_posix() for path in research.rglob("*")))
+    assert observe_fresh_champion_segment_candidate(
+        production, research, CYCLE, activation,
+    ).fresh_segment_candidate_ready is True
+    assert before == tuple(sorted(path.relative_to(research).as_posix() for path in research.rglob("*")))
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_complete_and_deep_analysis_only_partial_cycle_admission_are_exact(tmp_path, allowed):
+    production, research, activation, cycle, _reference = _fresh_split_bundle(tmp_path)
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    manifest["problems"] = [{
+        "code": "deep_analysis_missing" if allowed else "ranking_unavailable",
+        "evidence_class": "deep_analysis" if allowed else "ranking",
+        "detail": "scoped", "blocks_complete": True,
+    }]
+    manifest["status"] = "sealed_partial"
+    _reseal_fresh_cycle(cycle, manifest)
+    if allowed:
+        assert observe_fresh_champion_segment_candidate(
+            production, research, CYCLE, activation,
+        ).fresh_segment_candidate_ready is True
+    else:
+        with pytest.raises(ForwardObservationInputError):
+            observe_fresh_champion_segment_candidate(
+                production, research, CYCLE, activation,
+            )
+
+
+@pytest.mark.parametrize("mutation", ["method", "normalization", "universe", "prediction"])
+def test_fresh_source_fusion_market_and_prediction_relations_are_exact(tmp_path, mutation):
+    production, research, activation, cycle, _reference = _fresh_split_bundle(tmp_path)
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    if mutation == "method":
+        manifest["model_and_ensemble_lineage"]["combo"]["method"] = "weighted"
+    elif mutation == "universe":
+        manifest["data_identity"]["qlib_materialization_identity"].pop("universe_name")
+    elif mutation == "prediction":
+        rows = manifest["model_and_ensemble_lineage"]["source_artifacts"]
+        rows.pop(next(index for index, row in enumerate(rows) if row.get("position") == 2 and "role" not in row))
+    else:
+        observation = manifest["run_evidence"][0]
+        old = cycle / "objects" / observation["digest"]["value"][:2] / observation["digest"]["value"]
+        raw = json.loads(old.read_bytes())
+        raw["args"] = ["--from-config", "--norm-method", "zscore"]
+        data = canonical_json_bytes(raw)
+        observation["digest"] = TypedDigest.raw(data).to_dict()
+        _reseal_fresh_cycle(cycle, manifest, (data,))
+    if mutation != "normalization":
+        _reseal_fresh_cycle(cycle, manifest)
+    with pytest.raises(ForwardObservationInputError):
+        observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+
+
+def test_same_or_nested_roots_are_rejected_without_effects(tmp_path):
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    before = tuple(sorted(path.relative_to(production).as_posix() for path in production.rglob("*")))
+    with pytest.raises(ForwardObservationInputError):
+        observe_fresh_champion_segment_candidate(production, production, CYCLE, activation)
+    nested = production / "nested"
+    nested.mkdir()
+    with pytest.raises(ForwardObservationInputError):
+        observe_fresh_champion_segment_candidate(production, nested, CYCLE, activation)
+    assert before + ("nested",) == tuple(sorted(path.relative_to(production).as_posix() for path in production.rglob("*")))
+
+
+def test_fresh_candidate_replay_or_mutation_cannot_grant_ready_capability(tmp_path):
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    candidate = observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+    with pytest.raises(ForwardObservationContractError):
+        FreshChampionSegmentCandidate()
+    with pytest.raises(ForwardObservationContractError):
+        copy.copy(candidate)
+    object.__setattr__(candidate, "_observed_candidate", object())
+    with pytest.raises(ForwardObservationContractError):
+        _ = candidate.fresh_segment_candidate_ready
+
+
+def test_fresh_safe_summary_is_private_and_fixed_false(tmp_path):
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    summary = observe_fresh_champion_segment_candidate(
+        production, research, CYCLE, activation,
+    ).to_safe_summary_dict()
+    text = json.dumps(summary, sort_keys=True)
+    assert summary["status"] == "READY"
+    for private in ("MODEL_A", "PRIVATE_OWNER", str(production), str(research), "0.001"):
+        assert private not in text
+
+
+@pytest.mark.parametrize("source", ["production_cycle", "production_config", "research_activation"])
+def test_production_cycle_config_and_research_activation_mutation_fail_closed(
+    tmp_path, monkeypatch, source,
+):
+    import quantpits.research.forward_observation as module
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    if source in {"production_cycle", "production_config"}:
+        path = (
+            production / "data" / "evidence" / "v1" / "cycles" / CYCLE / "seal.json"
+            if source == "production_cycle"
+            else production / "config" / "strategy_config.yaml"
+        )
+        original = module._strategy_config
+
+        def mutate(data, definition_id):
+            before = path.stat()
+            path.write_bytes(path.read_bytes())
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+            return original(data, definition_id)
+
+        monkeypatch.setattr(module, "_strategy_config", mutate)
+    else:
+        original = module._verify_bundle
+
+        def mutate(root, cycle_id, **kwargs):
+            before = activation.stat()
+            activation.write_bytes(activation.read_bytes())
+            os.utime(activation, ns=(before.st_atime_ns, before.st_mtime_ns))
+            return original(root, cycle_id, **kwargs)
+
+        monkeypatch.setattr(module, "_verify_bundle", mutate)
+    with pytest.raises(ForwardObservationInputError):
+        observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_fresh_observer_process_control_propagates(tmp_path, monkeypatch, exception):
+    import quantpits.research.forward_observation as module
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    monkeypatch.setattr(
+        module, "_strategy_config",
+        lambda *_args: (_ for _ in ()).throw(exception()),
+    )
+    with pytest.raises(exception):
+        observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+
+
+def test_split_root_api_keeps_both_workspace_inventories_and_metadata_unchanged(tmp_path):
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+
+    def snapshot(root):
+        return tuple(sorted(
+            (
+                path.relative_to(root).as_posix(), path.stat().st_mode,
+                path.stat().st_size, path.stat().st_mtime_ns,
+            )
+            for path in root.rglob("*")
+        ))
+
+    before = snapshot(production), snapshot(research)
+    assert observe_fresh_champion_segment_candidate(
+        production, research, CYCLE, activation,
+    ).fresh_segment_candidate_ready is True
+    assert before == (snapshot(production), snapshot(research))
+
+
+def test_current_production_strategy_fields_build_the_existing_intent_contract(tmp_path):
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    candidate = observe_fresh_champion_segment_candidate(
+        production, research, CYCLE, activation,
+    )
+    intent = candidate.compiled_definitions.protocol.to_dict()["intent_definition"]
+    assert {
+        key: intent[key]
+        for key in ("strategy_name", "topk", "n_drop", "buy_suggestion_factor", "sell_out_of_universe")
+    } == {
+        "strategy_name": "topk_dropout", "topk": 22, "n_drop": 4,
+        "buy_suggestion_factor": 2, "sell_out_of_universe": True,
+    }
+
+
+@pytest.mark.parametrize("mutation", ["chronology", "target", "layout"])
+def test_frozen_activation_requires_exact_internal_ids_decision_chronology_and_formal_layout(
+    tmp_path, mutation,
+):
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    raw = json.loads(activation.read_bytes())
+    if mutation == "chronology":
+        raw["selection_decision"]["decision_time"] = "2026-08-28T13:00:00Z"
+        _write(activation, canonical_json_bytes(raw), 0o600)
+    elif mutation == "target":
+        raw["selection_decision"]["target"] = raw["champion_strategy_id"]
+        _write(activation, canonical_json_bytes(raw), 0o600)
+    else:
+        displaced = research / "private" / activation.name
+        _write(displaced, activation.read_bytes(), 0o600)
+        activation = displaced
+    with pytest.raises((ForwardObservationInputError, ForwardObservationContractError)):
+        observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+
+
+def test_ordinary_failure_denies_candidate_and_process_control_propagates(tmp_path, monkeypatch):
+    import quantpits.research.forward_observation as module
+    production, research, activation, cycle, _reference = _fresh_split_bundle(tmp_path)
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    digest = manifest["model_and_ensemble_lineage"]["source_artifacts"][2]["members"][0]["digest"]["value"]
+    original = module._read_regular
+
+    def fail_one(path, **kwargs):
+        if path.name == digest:
+            raise ForwardObservationInputError("synthetic ordinary failure")
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(module, "_read_regular", fail_one)
+    with pytest.raises(ForwardObservationInputError) as caught:
+        observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+    assert caught.value.requested_source_positions == (0, 1, 2, 3)
+
+
+def test_existing_single_root_observer_public_behavior_is_unchanged(tmp_path):
+    root = tmp_path / "single"
+    root.mkdir()
+    activation, _cycle = _bundle(root, frozen=True)
+    candidate = observe_frozen_shadow_forward_definition_candidate(root, CYCLE, activation)
+    assert candidate.to_safe_summary_dict()["status"] == "complete"
+    assert "fresh_segment_candidate_ready" not in candidate.to_safe_summary_dict()
+    assert not hasattr(candidate, "definition_bound")
+
+
+def test_any_other_blocking_problem_denies_fresh_segment_candidate(tmp_path):
+    production, research, activation, cycle, _reference = _fresh_split_bundle(tmp_path)
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    manifest["problems"] = [{
+        "code": "portfolio_incomplete", "evidence_class": "portfolio",
+        "detail": "not admitted", "blocks_complete": True,
+    }]
+    manifest["status"] = "sealed_partial"
+    _reseal_fresh_cycle(cycle, manifest)
+    with pytest.raises(ForwardObservationInputError):
+        observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+
+
+@pytest.mark.parametrize("relation", ["training", "prediction", "ensemble"])
+def test_exact_four_training_prediction_and_ensemble_relations_are_required(tmp_path, relation):
+    production, research, activation, cycle, _reference = _fresh_split_bundle(tmp_path)
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    rows = manifest["model_and_ensemble_lineage"]["source_artifacts"]
+    if relation == "training":
+        rows.pop(next(index for index, row in enumerate(rows) if row.get("role") == "source_training"))
+    elif relation == "prediction":
+        rows.pop(next(index for index, row in enumerate(rows) if row.get("position") == 1 and "role" not in row))
+    else:
+        rows.pop(next(index for index, row in enumerate(rows) if row.get("position") == "ensemble"))
+    _reseal_fresh_cycle(cycle, manifest)
+    with pytest.raises(ForwardObservationInputError):
+        observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+
+
+@pytest.mark.parametrize("fact", ["method", "normalization", "universe", "cutoff"])
+def test_current_equal_rank_fusion_and_universe_cutoff_are_joined(tmp_path, fact):
+    production, research, activation, cycle, _reference = _fresh_split_bundle(tmp_path)
+    manifest = json.loads((cycle / "manifest.json").read_bytes())
+    if fact == "method":
+        manifest["model_and_ensemble_lineage"]["combo"]["method"] = "weighted"
+    elif fact == "universe":
+        manifest["data_identity"]["qlib_materialization_identity"]["universe_name"] = ""
+    elif fact == "cutoff":
+        manifest["data_identity"]["qlib_materialization_identity"]["calendar_cutoff"] = "2026-08-13"
+    else:
+        observation = manifest["run_evidence"][0]
+        old = cycle / "objects" / observation["digest"]["value"][:2] / observation["digest"]["value"]
+        raw = json.loads(old.read_bytes())
+        raw["args"] = ["--from-config", "--norm-method", "zscore"]
+        data = canonical_json_bytes(raw)
+        observation["digest"] = TypedDigest.raw(data).to_dict()
+        _reseal_fresh_cycle(cycle, manifest, (data,))
+    if fact != "normalization":
+        _reseal_fresh_cycle(cycle, manifest)
+    with pytest.raises(ForwardObservationInputError):
+        observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
