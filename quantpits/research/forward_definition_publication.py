@@ -17,10 +17,14 @@ from quantpits.evidence.contracts import TypedDigest
 
 
 AUTHORIZATION_ACTION = "PUBLISH_ONE_FROZEN_DEFINITION_BUNDLE_V1"
+FRESH_AUTHORIZATION_ACTION = (
+    "PUBLISH_ONE_FRESH_CHAMPION_SEGMENT_DEFINITION_BUNDLE_V1"
+)
 _PROCESS_CONTROL = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _AUTHORITY = object()
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,95}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_FRESH_PROTECTED_BYTE_BUDGET = 64 * 1024 * 1024
 _PLAN_BINDINGS: "weakref.WeakKeyDictionary[Any, Tuple[Any, ...]]" = weakref.WeakKeyDictionary()
 _RESULT_BINDINGS: "weakref.WeakKeyDictionary[Any, Tuple[Any, ...]]" = weakref.WeakKeyDictionary()
 
@@ -316,12 +320,67 @@ def _same_identities(
     return current == comparable
 
 
-def _protected_inventory(shadow: Path, target: Path) -> Tuple[Tuple[Any, ...], ...]:
+def _split_formal_inputs(
+    production_workspace_root: Any, research_workspace_root: Any,
+    activation_path: Any, definition_store_root: Any,
+) -> Tuple[Path, Path, Path, Path, Dict[str, Tuple[int, ...]]]:
+    """Freeze two physically separate roots and the formal Research layout."""
+    production = _path(production_workspace_root, "production_workspace_root")
+    research, activation, store, research_identities = _formal_inputs(
+        research_workspace_root, activation_path, definition_store_root,
+    )
+    if (
+        production == research
+        or production in research.parents
+        or research in production.parents
+    ):
+        raise _input("Production and Research roots must be physically separate")
+    identities = {
+        "production_workspace": _directory_identity(production),
+        "production_workspace_continuity": _directory_continuity(production),
+    }
+    identities.update({"research_" + key: value for key, value in research_identities.items()})
+    return production, research, activation, store, identities
+
+
+def _same_split_identities(
+    production: Path, research: Path, activation: Path, store: Path,
+    expected: Mapping[str, Tuple[int, ...]], *, after_write: bool = False,
+) -> bool:
+    try:
+        production_current = {
+            "production_workspace": _directory_identity(production),
+            "production_workspace_continuity": _directory_continuity(production),
+        }
+    except _PROCESS_CONTROL:
+        raise
+    except (FrozenDefinitionPublicationContractError, OSError):
+        return False
+    research_expected = {
+        key[len("research_"):]: value
+        for key, value in expected.items()
+        if key.startswith("research_")
+    }
+    return (
+        production_current == {
+            key: value for key, value in expected.items()
+            if key.startswith("production_")
+        }
+        and _same_identities(
+            research, activation, store, research_expected,
+            after_write=after_write,
+        )
+    )
+
+
+def _protected_inventory(
+    shadow: Path, target: Path, *, mutable_parent: Optional[Path] = None,
+    byte_budget: int = 16 * 1024 * 1024,
+) -> Tuple[Tuple[Any, ...], ...]:
     """Observe every non-target Research member with bounded byte fingerprints."""
     rows = []
-    byte_budget = 16 * 1024 * 1024
     member_budget = 4096
-    definitions = shadow / "definitions"
+    definitions = shadow / "definitions" if mutable_parent is None else mutable_parent
     for path in sorted(shadow.rglob("*")):
         if path == target or target in path.parents:
             continue
@@ -534,6 +593,133 @@ def _fresh_candidate(
     )
 
 
+def _fresh_segment_candidate(
+    production: Path, research: Path, evidence_cycle_id: Any, activation: Path,
+) -> Any:
+    from quantpits.research.forward_observation import (
+        observe_fresh_champion_segment_candidate,
+    )
+    return observe_fresh_champion_segment_candidate(
+        production, research, evidence_cycle_id, activation,
+    )
+
+
+def _fresh_segment_request(candidate: Any) -> Any:
+    """Rebuild and join the inspector-owned candidate to one exact C0 request."""
+    from quantpits.research.forward_observation import FreshChampionSegmentCandidate
+    if type(candidate) is not FreshChampionSegmentCandidate:
+        raise FrozenDefinitionPublicationContractError(
+            "fresh observation returned foreign candidate authority",
+        )
+    if (
+        candidate.fresh_segment_candidate_ready is not True
+        or candidate.sealed_reference_join_verified is not True
+        or candidate.publication_capability is not False
+        or candidate.definition_bound is not False
+        or candidate.intent_capability is not False
+        or candidate.epoch_started is not False
+        or candidate.prospective_claim is not False
+        or candidate.promotion_capability is not False
+        or candidate.did_write is not False
+    ):
+        raise FrozenDefinitionPublicationContractError(
+            "fresh candidate authority claims are invalid",
+        )
+    request = candidate.compiled_definitions.to_store_request()
+    if (
+        request.definition_set_id != candidate.definition_set_id
+        or dict(request.request_digest) != dict(candidate.compiled_request_digest)
+    ):
+        raise FrozenDefinitionPublicationContractError(
+            "fresh candidate and C0 request do not join",
+        )
+    return request
+
+
+def _public_target_exact(store: Path, request: Any, receipt: Any) -> bool:
+    """Re-establish positive C0 bytes through the canonical public target name."""
+    from quantpits.research.definition_store import (
+        DEFINITION_PATHS, MANIFEST_NAME, _manifest_bytes,
+    )
+    target = store / request.definition_set_id
+    target_info = os.lstat(str(target))
+    target_continuity = (
+        target_info.st_dev, target_info.st_ino, target_info.st_mode,
+        target_info.st_nlink, target_info.st_ctime_ns,
+    )
+    target_identity = (
+        target_info.st_dev, target_info.st_ino, target_info.st_mode, 0, 0,
+    )
+    if (
+        stat.S_ISLNK(target_info.st_mode)
+        or not stat.S_ISDIR(target_info.st_mode)
+        or stat.S_IMODE(target_info.st_mode) != 0o700
+        or target_identity != receipt.bundle_root_identity
+    ):
+        return False
+    expected = {
+        member.logical_path: member.canonical_json_bytes
+        for member in request.members
+    }
+    expected[MANIFEST_NAME] = _manifest_bytes(request)
+    if tuple(sorted(os.listdir(str(target)))) != tuple(sorted(expected)):
+        return False
+    flags = (
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    for name in tuple(DEFINITION_PATHS) + (MANIFEST_NAME,):
+        path = target / name
+        before = os.lstat(str(path))
+        data = expected[name]
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size != len(data)
+        ):
+            return False
+        descriptor = os.open(str(path), flags)
+        try:
+            opened = os.fstat(descriptor)
+            chunks = []
+            remaining = len(data)
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            trailing = os.read(descriptor, 1)
+            opened_after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        after = os.lstat(str(path))
+        identity = lambda info: (
+            info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+        )
+        if (
+            identity(before) != identity(opened)
+            or identity(opened) != identity(opened_after)
+            or identity(opened_after) != identity(after)
+            or b"".join(chunks) != data
+            or trailing
+        ):
+            return False
+    target_after = os.lstat(str(target))
+    manifest = expected[MANIFEST_NAME]
+    return (
+        target_continuity == (
+            target_after.st_dev, target_after.st_ino, target_after.st_mode,
+            target_after.st_nlink, target_after.st_ctime_ns,
+        )
+        and TypedDigest.raw(manifest).to_dict() == dict(receipt.manifest_digest)
+        and _directory_identity(store, private=True) == receipt.store_root_identity_after
+    )
+
+
 def _target_state(store: Path, definition_set_id: str) -> str:
     target = store / definition_set_id
     try:
@@ -674,10 +860,192 @@ def publish_frozen_shadow_forward_definition_bundle(
         raise _input("definition publication failed closed") from exc
 
 
+def _prepare_fresh_champion_segment_definition_publication(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any, definition_store_root: Any,
+) -> FrozenDefinitionPublicationPlan:
+    production, research, activation, store, identities = _split_formal_inputs(
+        production_workspace_root, research_workspace_root,
+        activation_path, definition_store_root,
+    )
+    target = store / activation.stem
+    protected_before = _protected_inventory(
+        research, target, mutable_parent=store,
+        byte_budget=_FRESH_PROTECTED_BYTE_BUDGET,
+    )
+    candidate = _fresh_segment_candidate(
+        production, research, evidence_cycle_id, activation,
+    )
+    request = _fresh_segment_request(candidate)
+    if activation.name != request.definition_set_id + ".json":
+        raise _input("activation public name does not match the fresh definition set")
+    state = _target_state(store, request.definition_set_id)
+    if (
+        not _same_split_identities(
+            production, research, activation, store, identities,
+        )
+        or _protected_inventory(
+            research, target, mutable_parent=store,
+            byte_budget=_FRESH_PROTECTED_BYTE_BUDGET,
+        ) != protected_before
+    ):
+        raise _input("fresh publication inputs changed during preflight")
+    return FrozenDefinitionPublicationPlan(
+        _authority=_AUTHORITY,
+        definition_set_id=request.definition_set_id,
+        evidence_cycle_id=candidate.evidence_cycle_id,
+        request_digest=request.request_digest,
+        reference_receipt_digest=candidate.reference_receipt_digest,
+        target_state=state,
+    )
+
+
+def _publish_fresh_champion_segment_definition_bundle(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any, definition_store_root: Any,
+    expected_definition_set_id: Any, expected_request_digest: Any,
+    authorization_action: Any,
+) -> FrozenDefinitionBytePublicationResult:
+    if (
+        type(authorization_action) is not str
+        or authorization_action != FRESH_AUTHORIZATION_ACTION
+    ):
+        raise FrozenDefinitionPublicationContractError(
+            "fresh publication authorization is invalid",
+        )
+    expected_id = _definition_id(expected_definition_set_id)
+    expected_digest = _typed_request_digest(expected_request_digest)
+    production, research, activation, store, identities = _split_formal_inputs(
+        production_workspace_root, research_workspace_root,
+        activation_path, definition_store_root,
+    )
+    target = store / expected_id
+    protected_before = _protected_inventory(
+        research, target, mutable_parent=store,
+        byte_budget=_FRESH_PROTECTED_BYTE_BUDGET,
+    )
+    candidate = _fresh_segment_candidate(
+        production, research, evidence_cycle_id, activation,
+    )
+    request = _fresh_segment_request(candidate)
+    if (
+        request.definition_set_id != expected_id
+        or candidate.definition_set_id != expected_id
+        or activation.name != expected_id + ".json"
+        or dict(candidate.compiled_request_digest) != expected_digest
+        or dict(request.request_digest) != expected_digest
+    ):
+        raise FrozenDefinitionPublicationContractError(
+            "fresh publication request does not match owner authorization",
+        )
+    if (
+        not _same_split_identities(
+            production, research, activation, store, identities,
+        )
+        or _protected_inventory(
+            research, target, mutable_parent=store,
+            byte_budget=_FRESH_PROTECTED_BYTE_BUDGET,
+        ) != protected_before
+    ):
+        raise _input("fresh publication inputs changed before C0")
+    from quantpits.research.definition_store import CreateOnlyDefinitionBundleStore
+    receipt = CreateOnlyDefinitionBundleStore(store).publish(request)
+    joined = (
+        receipt.definition_set_id == candidate.definition_set_id == request.definition_set_id
+        and dict(candidate.compiled_request_digest) == dict(request.request_digest)
+        and dict(receipt.request_digest) == dict(request.request_digest)
+        and receipt.store_root_identity_before == identities["research_store"]
+    )
+    if not joined:
+        raise FrozenDefinitionPublicationContractError(
+            "C0 receipt does not join the fresh split-root request",
+        )
+    try:
+        _revalidate_store_receipt(receipt)
+        stable = (
+            _same_split_identities(
+                production, research, activation, store, identities,
+                after_write=receipt.did_write,
+            )
+            and _protected_inventory(
+                research, target, mutable_parent=store,
+                byte_budget=_FRESH_PROTECTED_BYTE_BUDGET,
+            ) == protected_before
+            and (
+                receipt.status not in {"COMMITTED", "ADOPTED"}
+                or _public_target_exact(store, request, receipt)
+            )
+            and _same_split_identities(
+                production, research, activation, store, identities,
+                after_write=receipt.did_write,
+            )
+            and _protected_inventory(
+                research, target, mutable_parent=store,
+                byte_budget=_FRESH_PROTECTED_BYTE_BUDGET,
+            ) == protected_before
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except Exception:
+        # C0 may already have crossed its irreversible namespace edge.  Keep
+        # the writer-owned receipt and expose only an outer UNCERTAIN result.
+        stable = False
+    outer_uncertain = not stable and receipt.status != "UNCERTAIN"
+    return FrozenDefinitionBytePublicationResult(
+        _authority=_AUTHORITY, receipt=receipt,
+        evidence_cycle_id=candidate.evidence_cycle_id,
+        reference_receipt_digest=candidate.reference_receipt_digest,
+        outer_uncertain=outer_uncertain,
+    )
+
+
+def prepare_fresh_champion_segment_definition_publication(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any, definition_store_root: Any,
+) -> FrozenDefinitionPublicationPlan:
+    """Prepare one split-root fresh publication without any write capability."""
+    try:
+        return _prepare_fresh_champion_segment_definition_publication(
+            production_workspace_root, research_workspace_root,
+            evidence_cycle_id, activation_path, definition_store_root,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except FrozenDefinitionPublicationContractError:
+        raise
+    except Exception as exc:
+        raise _input("fresh publication preflight failed closed") from exc
+
+
+def publish_fresh_champion_segment_definition_bundle(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any, definition_store_root: Any,
+    expected_definition_set_id: Any, expected_request_digest: Any,
+    authorization_action: Any,
+) -> FrozenDefinitionBytePublicationResult:
+    """Freshly observe and create/adopt one authorized split-root C0 bundle."""
+    try:
+        return _publish_fresh_champion_segment_definition_bundle(
+            production_workspace_root, research_workspace_root,
+            evidence_cycle_id, activation_path, definition_store_root,
+            expected_definition_set_id, expected_request_digest,
+            authorization_action,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except FrozenDefinitionPublicationContractError:
+        raise
+    except Exception as exc:
+        raise _input("fresh definition publication failed closed") from exc
+
+
 __all__ = [
-    "AUTHORIZATION_ACTION", "FrozenDefinitionPublicationContractError",
+    "AUTHORIZATION_ACTION", "FRESH_AUTHORIZATION_ACTION",
+    "FrozenDefinitionPublicationContractError",
     "FrozenDefinitionPublicationInputError", "FrozenDefinitionPublicationPlan",
     "FrozenDefinitionBytePublicationResult",
     "prepare_frozen_shadow_forward_definition_publication",
     "publish_frozen_shadow_forward_definition_bundle",
+    "prepare_fresh_champion_segment_definition_publication",
+    "publish_fresh_champion_segment_definition_bundle",
 ]
