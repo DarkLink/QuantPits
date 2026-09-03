@@ -89,6 +89,7 @@ _EXPORT_MODULES = {
     "prepare_forward_definition_evidence": "quantpits.research.forward_definition_evidence",
     "publish_forward_definition_evidence": "quantpits.research.forward_definition_evidence",
     "adopt_forward_definition_evidence": "quantpits.research.forward_definition_evidence",
+    "adopt_fresh_champion_segment_definition_evidence": "quantpits.research.forward_definition_evidence",
     "prepare_fresh_champion_segment_definition_evidence": "quantpits.research.forward_definition_evidence",
     "publish_fresh_champion_segment_definition_evidence": "quantpits.research.forward_definition_evidence",
     "ForwardPortfolioSourceContractError": "quantpits.research.forward_portfolio_source",
@@ -102,6 +103,9 @@ _EXPORT_MODULES = {
     "MatchedForwardBootstrapResult": "quantpits.research.forward_bootstrap",
     "prepare_matched_forward_bootstrap": "quantpits.research.forward_bootstrap",
     "publish_matched_forward_bootstrap": "quantpits.research.forward_bootstrap",
+    "FRESH_BOOTSTRAP_AUTHORIZATION_ACTION": "quantpits.research.forward_bootstrap",
+    "prepare_fresh_champion_segment_matched_bootstrap": "quantpits.research.forward_bootstrap",
+    "publish_fresh_champion_segment_matched_bootstrap": "quantpits.research.forward_bootstrap",
 }
 
 
@@ -199,6 +203,7 @@ __all__ = [
     "prepare_forward_definition_evidence",
     "publish_forward_definition_evidence",
     "adopt_forward_definition_evidence",
+    "adopt_fresh_champion_segment_definition_evidence",
     "prepare_fresh_champion_segment_definition_evidence",
     "publish_fresh_champion_segment_definition_evidence",
     "ForwardPortfolioSourceContractError",
@@ -212,4 +217,7 @@ __all__ = [
     "MatchedForwardBootstrapResult",
     "prepare_matched_forward_bootstrap",
     "publish_matched_forward_bootstrap",
+    "FRESH_BOOTSTRAP_AUTHORIZATION_ACTION",
+    "prepare_fresh_champion_segment_matched_bootstrap",
+    "publish_fresh_champion_segment_matched_bootstrap",
 ]

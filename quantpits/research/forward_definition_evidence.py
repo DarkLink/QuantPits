@@ -1752,6 +1752,110 @@ def _adopt(
     )
 
 
+def _adopt_fresh_champion_segment_definition_evidence(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any,
+    definition_store_root: Any, evidence_store_root: Any,
+) -> ForwardDefinitionEvidenceResult:
+    """Observe an existing split-root evidence record without a write path."""
+    cycle_id = _cycle(evidence_cycle_id)
+    (
+        production, research, activation, definitions, evidence, identities,
+    ) = _split_formal_inputs(
+        production_workspace_root, research_workspace_root, activation_path,
+        definition_store_root, evidence_store_root,
+    )
+    excluded = evidence / activation.stem
+    from quantpits.evidence.inspection import SourceMutationObserver
+    production_guard = SourceMutationObserver(
+        production, (
+            "config/strategy_config.yaml",
+            "data/evidence/v1/cycles/%s" % cycle_id,
+        ),
+    )
+    research_guard = SourceMutationObserver(
+        research, tuple(path.relative_to(research).as_posix() for path in (
+            activation, definitions / activation.stem,
+            evidence / activation.stem,
+        )),
+    )
+    try:
+        before = _workspace_inventory(
+            research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+        )
+        candidate, definition_receipt, request = _fresh_segment_join(
+            production, research, cycle_id, activation, definitions,
+        )
+        if request.definition_set_id != activation.stem:
+            raise _input("activation and evidence target identities differ")
+        root_fd, root_identity = _open_root(evidence)
+        close_uncertain = False
+        try:
+            try:
+                os.stat(request.definition_set_id, dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise _input("evidence target is absent") from exc
+            receipt = _CreateOnlyEvidenceStore(evidence)._classify_existing(
+                request, root_fd, root_identity,
+                _operation_id(request, root_identity), strict_close=True,
+            )
+        finally:
+            try:
+                _close(root_fd, suppress=False)
+            except _PROCESS_CONTROL:
+                raise
+            except Exception:
+                close_uncertain = True
+        if close_uncertain:
+            receipt = _store_receipt(
+                request, _operation_id(request, root_identity),
+                "UNCERTAIN", False, 0, root_identity,
+                _try_root_identity(evidence),
+            )
+        outer = _observe_fresh_outer(
+            production, research, activation, definitions, evidence,
+            identities, before, excluded, request, receipt,
+        )
+        if (
+            not production_guard.supported or production_guard.mutated()
+            or not research_guard.supported or research_guard.mutated()
+        ):
+            receipt = _store_receipt(
+                request, _operation_id(request, root_identity),
+                "UNCERTAIN", False, 0, root_identity,
+                _try_root_identity(evidence),
+            )
+            outer = _observe_fresh_outer(
+                production, research, activation, definitions, evidence,
+                identities, before, excluded, request, receipt,
+            )
+    finally:
+        active = sys.exc_info()[1]
+        for guard in (research_guard, production_guard):
+            try:
+                guard.close()
+            except _PROCESS_CONTROL:
+                if not isinstance(active, _PROCESS_CONTROL):
+                    raise
+            except OSError:
+                if active is None:
+                    raise
+    result = ForwardDefinitionEvidenceResult(
+        _authority=_AUTHORITY, definition_receipt=definition_receipt,
+        evidence_receipt=receipt, evidence_cycle_id=request.evidence_cycle_id,
+        reference_receipt_digest=request.reference_receipt_digest,
+        definition_store_receipt_digest=_raw_digest(request.members[1][1]),
+        definition_manifest_digest=definition_receipt.manifest_digest,
+        evidence_request=request, outer_observation=outer,
+    )
+    if (
+        result.status != "ADOPTED" or result.evidence_receipt.did_write
+        or not result.definition_evidence_complete
+    ):
+        raise _input("fresh definition evidence was not adopted exactly")
+    return result
+
+
 def prepare_forward_definition_evidence(
     workspace_root: Any, evidence_cycle_id: Any, activation_path: Any,
     definition_store_root: Any, evidence_store_root: Any,
@@ -1810,6 +1914,26 @@ def adopt_forward_definition_evidence(
         raise _input("evidence adoption failed closed") from exc
 
 
+def adopt_fresh_champion_segment_definition_evidence(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any,
+    definition_store_root: Any, evidence_store_root: Any,
+) -> ForwardDefinitionEvidenceResult:
+    """Freshly adopt exact split-root evidence, strictly without writes."""
+    try:
+        return _adopt_fresh_champion_segment_definition_evidence(
+            production_workspace_root, research_workspace_root,
+            evidence_cycle_id, activation_path, definition_store_root,
+            evidence_store_root,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except ForwardDefinitionEvidenceContractError:
+        raise
+    except Exception as exc:
+        raise _input("fresh evidence adoption failed closed") from exc
+
+
 def prepare_fresh_champion_segment_definition_evidence(
     production_workspace_root: Any, research_workspace_root: Any,
     evidence_cycle_id: Any, activation_path: Any,
@@ -1863,6 +1987,7 @@ __all__ = [
     "ForwardDefinitionEvidencePlan", "ForwardDefinitionEvidenceResult",
     "prepare_forward_definition_evidence", "publish_forward_definition_evidence",
     "adopt_forward_definition_evidence",
+    "adopt_fresh_champion_segment_definition_evidence",
     "prepare_fresh_champion_segment_definition_evidence",
     "publish_fresh_champion_segment_definition_evidence",
 ]

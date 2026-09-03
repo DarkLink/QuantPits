@@ -20,6 +20,7 @@ from quantpits.research.forward_definition_evidence import (
     ForwardDefinitionEvidencePlan,
     ForwardDefinitionEvidenceStoreReceipt,
     adopt_forward_definition_evidence,
+    adopt_fresh_champion_segment_definition_evidence,
     prepare_forward_definition_evidence,
     prepare_fresh_champion_segment_definition_evidence,
     publish_forward_definition_evidence,
@@ -125,6 +126,58 @@ def _fresh_publish(value, plan=None, **changed):
         values["definition_digest"], values["evidence_digest"],
         values["action"],
     )
+
+
+def _fresh_adopt(value):
+    return adopt_fresh_champion_segment_definition_evidence(
+        value[0], value[1], CYCLE, *value[2:],
+    )
+
+
+def test_fresh_evidence_adopter_is_exact_and_strictly_zero_write(
+    fresh_evidence_workspace,
+):
+    assert _fresh_publish(fresh_evidence_workspace).status == "COMMITTED"
+    before = (
+        _snapshot(fresh_evidence_workspace[0]),
+        _snapshot(fresh_evidence_workspace[1]),
+    )
+    result = _fresh_adopt(fresh_evidence_workspace)
+    assert result.status == "ADOPTED"
+    assert result.evidence_receipt.did_write is False
+    assert result.definition_evidence_complete is True
+    assert before == (
+        _snapshot(fresh_evidence_workspace[0]),
+        _snapshot(fresh_evidence_workspace[1]),
+    )
+
+
+def test_fresh_evidence_adopter_cannot_create_absent_or_upgrade_conflict(
+    fresh_evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_definition_evidence as module
+    calls = []
+    monkeypatch.setattr(
+        module._CreateOnlyEvidenceStore, "publish",
+        lambda *_args: calls.append(True),
+    )
+    before = _snapshot(fresh_evidence_workspace[1])
+    with pytest.raises(ForwardDefinitionEvidenceContractError):
+        _fresh_adopt(fresh_evidence_workspace)
+    assert calls == [] and _snapshot(fresh_evidence_workspace[1]) == before
+
+    monkeypatch.undo()
+    assert _fresh_publish(fresh_evidence_workspace).status == "COMMITTED"
+    target = (
+        fresh_evidence_workspace[4]
+        / "shadow.fresh.segment.v1" / "reference_receipt.json"
+    )
+    target.write_bytes(b"{}")
+    target.chmod(0o600)
+    before = _snapshot(fresh_evidence_workspace[1])
+    with pytest.raises(ForwardDefinitionEvidenceContractError):
+        _fresh_adopt(fresh_evidence_workspace)
+    assert _snapshot(fresh_evidence_workspace[1]) == before
 
 
 def test_fresh_evidence_preflight_uses_production_source_and_research_definition_without_writes(

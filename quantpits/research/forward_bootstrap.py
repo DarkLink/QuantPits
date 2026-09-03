@@ -20,6 +20,9 @@ from quantpits.evidence.inspection import SourceMutationObserver
 
 
 AUTHORIZATION_ACTION = "PUBLISH_ONE_MATCHED_FORWARD_BOOTSTRAP_V1"
+FRESH_BOOTSTRAP_AUTHORIZATION_ACTION = (
+    "PUBLISH_ONE_FRESH_CHAMPION_SEGMENT_MATCHED_BOOTSTRAP_V1"
+)
 BOOTSTRAP_KIND = "MATCHED_FORWARD_BOOTSTRAP_V1"
 STORAGE_CLAIM = "CREATE_ONLY_EXACT_BYTES"
 MEMBER_PATHS = ("source_receipt.json", "champion_state.json", "challenger_state.json")
@@ -292,6 +295,64 @@ def _formal_paths(workspace_root: Any, activation_path: Any, definition_store_ro
             or stat.S_IMODE(info.st_mode) != 0o600):
         raise ForwardBootstrapInputError("activation must be a private single-link file")
     return root, activation, definitions, evidence, bootstraps
+
+
+def _fresh_formal_paths(
+    production_workspace_root: Any, research_workspace_root: Any,
+    activation_path: Any, definition_store_root: Any,
+    evidence_store_root: Any, bootstrap_store_root: Any,
+) -> Tuple[Path, ...]:
+    production = _path(production_workspace_root, "production_workspace_root")
+    research_paths = _formal_paths(
+        research_workspace_root, activation_path, definition_store_root,
+        evidence_store_root, bootstrap_store_root,
+    )
+    research = research_paths[0]
+    if (
+        production == research or production in research.parents
+        or research in production.parents
+    ):
+        raise ForwardBootstrapInputError(
+            "Production and Research roots must be physically separate",
+        )
+    _dir_identity(production)
+    return (production,) + research_paths
+
+
+def _fresh_outer_identities(paths: Tuple[Path, ...]) -> Dict[str, Tuple[int, ...]]:
+    production, research, activation, definitions, evidence, bootstraps = paths
+    shadow = research / "research" / "shadow_v1"
+    return {
+        "production_parent": _namespace_identity(production.parent),
+        "production": _namespace_identity(production),
+        "research_parent": _namespace_identity(research.parent),
+        "research": _namespace_identity(research),
+        "research_root": _namespace_identity(research / "research"),
+        "shadow": _namespace_identity(shadow),
+        "activations": _namespace_identity(activation.parent),
+        "definitions": _namespace_identity(definitions),
+        "evidence": _namespace_identity(evidence),
+        # The bootstrap root ctime changes on the authorized target CREATE.
+        "bootstraps": _dir_identity(bootstraps, private=True),
+    }
+
+
+def _fresh_source_guards(
+    paths: Tuple[Path, ...], definition_cycle: str, source_cycle: str,
+) -> Tuple[SourceMutationObserver, SourceMutationObserver]:
+    production, research, activation, definitions, evidence, _bootstraps = paths
+    production_names = (
+        "config/strategy_config.yaml",
+        "data/evidence/v1/cycles/%s" % definition_cycle,
+        "data/evidence/v1/cycles/%s" % source_cycle,
+    )
+    research_names = tuple(path.relative_to(research).as_posix() for path in (
+        activation, definitions / activation.stem, evidence / activation.stem,
+    ))
+    return (
+        SourceMutationObserver(production, production_names),
+        SourceMutationObserver(research, research_names),
+    )
 
 
 def _source_paths(root: Path, activation: Path, definitions: Path, evidence: Path,
@@ -978,6 +1039,78 @@ def _fresh_request(paths: Tuple[Path, ...], definition_cycle: str, source_cycle:
                     definition=definition, evidence=evidence), definition, source
 
 
+def _fresh_segment_request(
+    paths: Tuple[Path, ...], definition_cycle: str, source_cycle: str,
+) -> Tuple[_Request, Any, Any, Any]:
+    production, research, activation, definitions, evidence_root, _bootstraps = paths
+    from quantpits.research.forward_definition_evidence import (
+        adopt_fresh_champion_segment_definition_evidence,
+    )
+    evidence = adopt_fresh_champion_segment_definition_evidence(
+        production, research, definition_cycle, activation, definitions,
+        evidence_root,
+    )
+    if (
+        evidence.status != "ADOPTED" or evidence.evidence_receipt.did_write
+        or not evidence.definition_evidence_complete
+    ):
+        raise ForwardBootstrapInputError(
+            "fresh definition evidence was not adopted exactly",
+        )
+    from quantpits.research.forward_observation import (
+        FreshChampionSegmentCandidate,
+        observe_fresh_champion_segment_candidate,
+    )
+    definition = observe_fresh_champion_segment_candidate(
+        production, research, definition_cycle, activation,
+    )
+    if type(definition) is not FreshChampionSegmentCandidate:
+        raise ForwardBootstrapContractError(
+            "fresh definition observation returned foreign authority",
+        )
+    definition_request = definition.compiled_definitions.to_store_request()
+    if (
+        definition.definition_set_id != evidence.definition_receipt.definition_set_id
+        or definition.evidence_cycle_id != evidence.evidence_cycle_id
+        or dict(definition.compiled_request_digest)
+        != dict(evidence.definition_receipt.request_digest)
+        or dict(definition_request.request_digest)
+        != dict(evidence.definition_receipt.request_digest)
+    ):
+        raise ForwardBootstrapInputError(
+            "fresh definition observation does not join evidence",
+        )
+    champion = definition.compiled_definitions.champion.to_dict()
+    challenger = definition.compiled_definitions.challenger.to_dict()
+    cutoff = max(champion["data_cutoff"], challenger["data_cutoff"])
+    if max(
+        date.fromisoformat(cutoff), date.fromisoformat(definition_cycle),
+    ) > date.fromisoformat(source_cycle):
+        raise ForwardBootstrapInputError(
+            "bootstrap source predates definition cutoff",
+        )
+    from quantpits.research.forward_portfolio_source import (
+        observe_forward_portfolio_source,
+    )
+    source = observe_forward_portfolio_source(production, source_cycle)
+    if not source.bootstrap_source_capability:
+        raise ForwardBootstrapInputError(
+            "portfolio source has no bootstrap capability",
+        )
+    champion_state, challenger_state, _assumption = _build_states(
+        source, definition,
+    )
+    receipt = _source_receipt(
+        evidence, source, definition_cycle, source_cycle,
+    )
+    request = _Request(
+        _authority=_AUTHORITY, source_receipt=receipt,
+        champion=champion_state, challenger=challenger_state,
+        definition=definition, evidence=evidence,
+    )
+    return request, definition, source, evidence
+
+
 class MatchedForwardBootstrapPlan:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         if args or kwargs.pop("_authority", None) is not _AUTHORITY or set(kwargs) != {"request", "target_state"}:
@@ -1192,6 +1325,198 @@ def _publish_matched_forward_bootstrap(workspace_root: Any, definition_evidence_
     )
 
 
+def _prepare_fresh_champion_segment_matched_bootstrap(
+    production_workspace_root: Any, research_workspace_root: Any,
+    definition_evidence_cycle_id: Any, bootstrap_source_cycle_id: Any,
+    activation_path: Any, definition_store_root: Any,
+    evidence_store_root: Any, bootstrap_store_root: Any,
+) -> MatchedForwardBootstrapPlan:
+    definition_cycle = _cycle(
+        definition_evidence_cycle_id, "definition_evidence_cycle_id",
+    )
+    source_cycle = _cycle(bootstrap_source_cycle_id, "bootstrap_source_cycle_id")
+    paths = _fresh_formal_paths(
+        production_workspace_root, research_workspace_root, activation_path,
+        definition_store_root, evidence_store_root, bootstrap_store_root,
+    )
+    production, research, _activation, _definitions, _evidence, bootstraps = paths
+    production_guard, research_guard = _fresh_source_guards(
+        paths, definition_cycle, source_cycle,
+    )
+    bootstrap_guard = SourceMutationObserver(bootstraps, ())
+    try:
+        identities = _fresh_outer_identities(paths)
+        production_before = _protected_inventory(production, None)
+        research_before = _protected_inventory(research, None)
+        first, _definition, _source, _evidence_result = _fresh_segment_request(
+            paths, definition_cycle, source_cycle,
+        )
+        bootstrap_guard.add_paths((first.bootstrap_set_id,))
+        request, definition, source, evidence_result = _fresh_segment_request(
+            paths, definition_cycle, source_cycle,
+        )
+        if (
+            request.bootstrap_set_id != first.bootstrap_set_id
+            or dict(request.request_digest) != dict(first.request_digest)
+        ):
+            raise ForwardBootstrapInputError(
+                "preflight source observations are inconsistent",
+            )
+        state = _target_state(bootstraps, request.bootstrap_set_id)
+        definition.compiled_definitions.to_store_request()
+        source.verified_portfolio()
+        evidence_result.to_safe_summary_dict()
+        request.validate()
+        if (
+            not production_guard.supported or production_guard.mutated()
+            or not research_guard.supported or research_guard.mutated()
+            or not bootstrap_guard.supported or bootstrap_guard.mutated()
+            or _fresh_outer_identities(paths) != identities
+            or _protected_inventory(production, None) != production_before
+            or _protected_inventory(research, None) != research_before
+        ):
+            raise ForwardBootstrapInputError(
+                "fresh bootstrap preflight continuity is uncertain",
+            )
+        return MatchedForwardBootstrapPlan(
+            _authority=_AUTHORITY, request=request, target_state=state,
+        )
+    finally:
+        _close_guard(bootstrap_guard)
+        _close_guard(research_guard)
+        _close_guard(production_guard)
+
+
+def _publish_fresh_champion_segment_matched_bootstrap(
+    production_workspace_root: Any, research_workspace_root: Any,
+    definition_evidence_cycle_id: Any, bootstrap_source_cycle_id: Any,
+    activation_path: Any, definition_store_root: Any,
+    evidence_store_root: Any, bootstrap_store_root: Any,
+    expected_bootstrap_set_id: Any,
+    expected_bootstrap_request_digest: Any,
+    authorization_action: Any,
+) -> MatchedForwardBootstrapResult:
+    expected_id = _id(expected_bootstrap_set_id, "expected_bootstrap_set_id")
+    expected_digest = _typed_digest(
+        expected_bootstrap_request_digest,
+        "expected_bootstrap_request_digest", "canonical_json",
+    )
+    if (
+        type(authorization_action) is not str
+        or authorization_action != FRESH_BOOTSTRAP_AUTHORIZATION_ACTION
+    ):
+        raise ForwardBootstrapContractError(
+            "fresh bootstrap authorization is invalid",
+        )
+    definition_cycle = _cycle(
+        definition_evidence_cycle_id, "definition_evidence_cycle_id",
+    )
+    source_cycle = _cycle(bootstrap_source_cycle_id, "bootstrap_source_cycle_id")
+    paths = _fresh_formal_paths(
+        production_workspace_root, research_workspace_root, activation_path,
+        definition_store_root, evidence_store_root, bootstrap_store_root,
+    )
+    production, research, _activation, _definitions, _evidence, bootstraps = paths
+    target = bootstraps / expected_id
+    production_guard, research_guard = _fresh_source_guards(
+        paths, definition_cycle, source_cycle,
+    )
+    target_guard: Optional[SourceMutationObserver] = SourceMutationObserver(
+        bootstraps, (expected_id,),
+    )
+    post_guard: Optional[SourceMutationObserver] = None
+    store: Optional[_Store] = None
+    result = None
+    stable = False
+    try:
+        identities = _fresh_outer_identities(paths)
+        production_before = _protected_inventory(production, None)
+        research_before = _protected_inventory(research, target)
+        request, definition, source, evidence_result = _fresh_segment_request(
+            paths, definition_cycle, source_cycle,
+        )
+        if (
+            request.bootstrap_set_id != expected_id
+            or dict(request.request_digest) != expected_digest
+        ):
+            raise ForwardBootstrapContractError(
+                "fresh bootstrap request does not match owner authorization",
+            )
+        if (
+            not target_guard.supported or target_guard.mutated()
+            or not production_guard.supported or production_guard.mutated()
+            or not research_guard.supported or research_guard.mutated()
+            or _fresh_outer_identities(paths) != identities
+            or _protected_inventory(production, None) != production_before
+            or _protected_inventory(research, target) != research_before
+        ):
+            raise ForwardBootstrapInputError(
+                "fresh bootstrap sources changed before publication",
+            )
+        store = _Store(bootstraps)
+        store.begin_handoff(request.bootstrap_set_id)
+        _close_guard(target_guard)
+        target_guard = None
+        receipt = store.publish(request)
+        result = request, receipt
+        try:
+            post_guard = SourceMutationObserver(
+                bootstraps, (request.bootstrap_set_id,),
+            )
+            definition.compiled_definitions.to_store_request()
+            source.verified_portfolio()
+            evidence_result.to_safe_summary_dict()
+            request.validate()
+            stable = (
+                production_guard.supported and not production_guard.mutated()
+                and research_guard.supported and not research_guard.mutated()
+                and post_guard.supported and not post_guard.mutated()
+                and store.terminal_continuity()
+                and _verify_public_bootstrap(bootstraps, request, receipt)
+                and _protected_inventory(production, None) == production_before
+                and _protected_inventory(research, target) == research_before
+                and _fresh_outer_identities(paths) == identities
+            )
+        except _PROCESS_CONTROL:
+            raise
+        except Exception:
+            stable = False
+    finally:
+        if target_guard is not None:
+            _close_guard(target_guard)
+        if post_guard is not None:
+            try:
+                stable = stable and not post_guard.mutated()
+                _close_guard(post_guard)
+            except _PROCESS_CONTROL:
+                raise
+            except OSError:
+                stable = False
+        if store is not None and store._terminal_guard is not None:
+            try:
+                stable = stable and store.terminal_continuity()
+            except _PROCESS_CONTROL:
+                raise
+            except OSError:
+                stable = False
+        for guard in (research_guard, production_guard):
+            try:
+                stable = stable and guard.supported and not guard.mutated()
+                _close_guard(guard)
+            except _PROCESS_CONTROL:
+                raise
+            except OSError:
+                stable = False
+    if result is None:
+        raise ForwardBootstrapInputError(
+            "fresh bootstrap publication did not produce a result",
+        )
+    return MatchedForwardBootstrapResult(
+        _authority=_AUTHORITY, request=result[0], receipt=result[1],
+        sources_stable=stable,
+    )
+
+
 def prepare_matched_forward_bootstrap(
     workspace_root: Any, definition_evidence_cycle_id: Any,
     bootstrap_source_cycle_id: Any, activation_path: Any,
@@ -1234,9 +1559,64 @@ def publish_matched_forward_bootstrap(
         raise ForwardBootstrapInputError("bootstrap publication failed closed") from exc
 
 
+def prepare_fresh_champion_segment_matched_bootstrap(
+    production_workspace_root: Any, research_workspace_root: Any,
+    definition_evidence_cycle_id: Any, bootstrap_source_cycle_id: Any,
+    activation_path: Any, definition_store_root: Any,
+    evidence_store_root: Any, bootstrap_store_root: Any,
+) -> MatchedForwardBootstrapPlan:
+    """Prepare a split-root matched bootstrap with exact zero writes."""
+    try:
+        return _prepare_fresh_champion_segment_matched_bootstrap(
+            production_workspace_root, research_workspace_root,
+            definition_evidence_cycle_id, bootstrap_source_cycle_id,
+            activation_path, definition_store_root, evidence_store_root,
+            bootstrap_store_root,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except ForwardBootstrapContractError:
+        raise
+    except Exception as exc:
+        raise ForwardBootstrapInputError(
+            "fresh bootstrap preflight failed closed",
+        ) from exc
+
+
+def publish_fresh_champion_segment_matched_bootstrap(
+    production_workspace_root: Any, research_workspace_root: Any,
+    definition_evidence_cycle_id: Any, bootstrap_source_cycle_id: Any,
+    activation_path: Any, definition_store_root: Any,
+    evidence_store_root: Any, bootstrap_store_root: Any,
+    expected_bootstrap_set_id: Any,
+    expected_bootstrap_request_digest: Any,
+    authorization_action: Any,
+) -> MatchedForwardBootstrapResult:
+    """Create or adopt one exact split-root matched bootstrap bundle."""
+    try:
+        return _publish_fresh_champion_segment_matched_bootstrap(
+            production_workspace_root, research_workspace_root,
+            definition_evidence_cycle_id, bootstrap_source_cycle_id,
+            activation_path, definition_store_root, evidence_store_root,
+            bootstrap_store_root, expected_bootstrap_set_id,
+            expected_bootstrap_request_digest, authorization_action,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except ForwardBootstrapContractError:
+        raise
+    except Exception as exc:
+        raise ForwardBootstrapInputError(
+            "fresh bootstrap publication failed closed",
+        ) from exc
+
+
 __all__ = [
-    "AUTHORIZATION_ACTION", "BOOTSTRAP_KIND", "STORAGE_CLAIM", "MEMBER_PATHS", "MANIFEST_NAME",
+    "AUTHORIZATION_ACTION", "FRESH_BOOTSTRAP_AUTHORIZATION_ACTION",
+    "BOOTSTRAP_KIND", "STORAGE_CLAIM", "MEMBER_PATHS", "MANIFEST_NAME",
     "ForwardBootstrapContractError", "ForwardBootstrapInputError", "MatchedForwardBootstrapStoreReceipt",
     "MatchedForwardBootstrapPlan", "MatchedForwardBootstrapResult", "prepare_matched_forward_bootstrap",
     "publish_matched_forward_bootstrap",
+    "prepare_fresh_champion_segment_matched_bootstrap",
+    "publish_fresh_champion_segment_matched_bootstrap",
 ]
