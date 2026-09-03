@@ -7,18 +7,23 @@ import stat
 
 import pytest
 
-from tests.quantpits.research.test_forward_observation import CYCLE, _bundle
+from tests.quantpits.research.test_forward_observation import (
+    CYCLE, _bundle, _fresh_split_bundle,
+)
 from quantpits.research.forward_observation import (
     observe_frozen_shadow_forward_definition_candidate,
 )
 from quantpits.research.forward_definition_evidence import (
     AUTHORIZATION_ACTION,
+    FRESH_EVIDENCE_AUTHORIZATION_ACTION,
     ForwardDefinitionEvidenceContractError,
     ForwardDefinitionEvidencePlan,
     ForwardDefinitionEvidenceStoreReceipt,
     adopt_forward_definition_evidence,
     prepare_forward_definition_evidence,
+    prepare_fresh_champion_segment_definition_evidence,
     publish_forward_definition_evidence,
+    publish_fresh_champion_segment_definition_evidence,
 )
 
 
@@ -40,6 +45,31 @@ def evidence_workspace(tmp_path):
     evidence.mkdir(mode=0o700)
     evidence.chmod(0o700)
     return root, activation, definitions, evidence
+
+
+@pytest.fixture
+def fresh_evidence_workspace(tmp_path):
+    production, research, activation, _cycle, _reference = _fresh_split_bundle(tmp_path)
+    shadow = research / "research" / "shadow_v1"
+    definitions = shadow / "definitions"
+    definitions.mkdir(mode=0o700)
+    evidence = shadow / "definition_evidence"
+    evidence.mkdir(mode=0o700)
+    from quantpits.research.forward_definition_publication import (
+        FRESH_AUTHORIZATION_ACTION,
+        prepare_fresh_champion_segment_definition_publication,
+        publish_fresh_champion_segment_definition_bundle,
+    )
+    plan = prepare_fresh_champion_segment_definition_publication(
+        production, research, CYCLE, activation, definitions,
+    )
+    result = publish_fresh_champion_segment_definition_bundle(
+        production, research, CYCLE, activation, definitions,
+        plan.definition_set_id, dict(plan.request_digest),
+        FRESH_AUTHORIZATION_ACTION,
+    )
+    assert result.status == "COMMITTED"
+    return production, research, activation, definitions, evidence
 
 
 def _snapshot(root):
@@ -73,6 +103,303 @@ def _publish(value, plan=None, **changed):
         values["identifier"], values["definition_digest"],
         values["evidence_digest"], values["action"],
     )
+
+
+def _fresh_prepare(value):
+    return prepare_fresh_champion_segment_definition_evidence(
+        value[0], value[1], CYCLE, *value[2:],
+    )
+
+
+def _fresh_publish(value, plan=None, **changed):
+    plan = _fresh_prepare(value) if plan is None else plan
+    values = {
+        "identifier": plan.definition_set_id,
+        "definition_digest": dict(plan.definition_request_digest),
+        "evidence_digest": dict(plan.evidence_request_digest),
+        "action": FRESH_EVIDENCE_AUTHORIZATION_ACTION,
+    }
+    values.update(changed)
+    return publish_fresh_champion_segment_definition_evidence(
+        value[0], value[1], CYCLE, *value[2:], values["identifier"],
+        values["definition_digest"], values["evidence_digest"],
+        values["action"],
+    )
+
+
+def test_fresh_evidence_preflight_uses_production_source_and_research_definition_without_writes(
+    fresh_evidence_workspace,
+):
+    production, research, _activation, _definitions, _evidence = fresh_evidence_workspace
+    before = _snapshot(production), _snapshot(research)
+    plan = _fresh_prepare(fresh_evidence_workspace)
+    summary = plan.to_safe_summary_dict()
+    assert summary["status"] == "PREPARED"
+    assert summary["definition_store_status"] == "ADOPTED"
+    assert summary["definition_store_did_write"] is False
+    assert summary["target_state"] == "ABSENT"
+    assert plan.publication_capability is False
+    assert before == (_snapshot(production), _snapshot(research))
+
+
+def test_fresh_evidence_publish_reobserves_and_calls_adopter_and_writer_once(
+    fresh_evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_observation as observation
+    import quantpits.research.forward_definition_evidence as module
+    from quantpits.research import definition_store
+    plan = _fresh_prepare(fresh_evidence_workspace)
+    observed, adopted, written = [], [], []
+    original_observe = observation.observe_fresh_champion_segment_candidate
+    original_adopt = definition_store.CreateOnlyDefinitionBundleStore.adopt_existing
+    original_write = module._CreateOnlyEvidenceStore.publish
+
+    def observe(*args):
+        observed.append(args)
+        return original_observe(*args)
+
+    def adopt(store, request):
+        adopted.append(request)
+        return original_adopt(store, request)
+
+    def write(store, request):
+        written.append(request)
+        return original_write(store, request)
+
+    monkeypatch.setattr(observation, "observe_fresh_champion_segment_candidate", observe)
+    monkeypatch.setattr(definition_store.CreateOnlyDefinitionBundleStore, "adopt_existing", adopt)
+    monkeypatch.setattr(module._CreateOnlyEvidenceStore, "publish", write)
+    assert _fresh_publish(fresh_evidence_workspace, plan).status == "COMMITTED"
+    assert len(observed) == len(adopted) == len(written) == 1
+    assert dict(adopted[0].request_digest) == dict(plan.definition_request_digest)
+    assert dict(written[0].request_digest) == dict(plan.evidence_request_digest)
+
+
+@pytest.mark.parametrize("relation", ["same", "production_parent", "research_parent"])
+def test_fresh_evidence_requires_physically_separate_roots_and_exact_research_layout(
+    fresh_evidence_workspace, relation,
+):
+    production, research, activation, definitions, evidence = fresh_evidence_workspace
+    if relation == "same":
+        production = research
+    elif relation == "production_parent":
+        production = research.parent
+    else:
+        production = research / "nested-production"
+        production.mkdir()
+    with pytest.raises(ForwardDefinitionEvidenceContractError):
+        prepare_fresh_champion_segment_definition_evidence(
+            production, research, CYCLE, activation, definitions, evidence,
+        )
+
+
+@pytest.mark.parametrize("field", ["id", "definition", "evidence", "action", "bool"])
+def test_fresh_candidate_request_receipt_and_owner_digests_must_join(
+    fresh_evidence_workspace, field,
+):
+    plan = _fresh_prepare(fresh_evidence_workspace)
+    changed = {}
+    if field == "id":
+        changed["identifier"] = "foreign.definition"
+    elif field == "definition":
+        digest = dict(plan.definition_request_digest)
+        digest["value"] = "0" * 64
+        changed["definition_digest"] = digest
+    elif field == "evidence":
+        digest = dict(plan.evidence_request_digest)
+        digest["size_bytes"] += 1
+        changed["evidence_digest"] = digest
+    elif field == "action":
+        changed["action"] = AUTHORIZATION_ACTION
+    else:
+        digest = dict(plan.evidence_request_digest)
+        digest["size_bytes"] = True
+        changed["evidence_digest"] = digest
+    before = _snapshot(fresh_evidence_workspace[1])
+    with pytest.raises(ForwardDefinitionEvidenceContractError):
+        _fresh_publish(fresh_evidence_workspace, plan, **changed)
+    assert _snapshot(fresh_evidence_workspace[1]) == before
+
+
+def test_first_fresh_evidence_publish_commits_exact_receipts_and_replay_adopts(
+    fresh_evidence_workspace,
+):
+    production, research, _activation, _definitions, evidence = fresh_evidence_workspace
+    production_before = _snapshot(production)
+    first = _fresh_publish(fresh_evidence_workspace)
+    summary = first.to_safe_summary_dict()
+    assert summary["status"] == "COMMITTED" and summary["did_write"] is True
+    assert summary["definition_bundle_adopted_verified"] is True
+    assert summary["durable_reference_recorded"] is True
+    assert summary["definition_evidence_complete"] is True
+    assert summary["original_commit_receipt_recorded"] is False
+    target = evidence / summary["definition_set_id"]
+    assert {path.name for path in target.iterdir()} == {
+        "reference_receipt.json", "definition_store_receipt.json",
+        "evidence_manifest.json",
+    }
+    assert _snapshot(production) == production_before
+    before = _snapshot(research)
+    replay = _fresh_publish(fresh_evidence_workspace)
+    assert replay.status == "ADOPTED"
+    assert replay.to_safe_summary_dict()["did_write"] is False
+    assert replay.definition_evidence_complete is True
+    assert _snapshot(research) == before
+
+
+def test_definition_conflict_never_reaches_fresh_evidence_writer(
+    fresh_evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_definition_evidence as module
+    target = fresh_evidence_workspace[3] / "shadow.fresh.segment.v1"
+    (target / "protocol.json").write_bytes(b"foreign")
+    called = []
+    monkeypatch.setattr(
+        module._CreateOnlyEvidenceStore, "publish",
+        lambda *_args: called.append(True),
+    )
+    with pytest.raises(ForwardDefinitionEvidenceContractError):
+        _fresh_prepare(fresh_evidence_workspace)
+    assert called == []
+
+
+def test_fresh_definition_store_is_never_a_write_domain(
+    fresh_evidence_workspace, monkeypatch,
+):
+    from quantpits.research import definition_store
+    monkeypatch.setattr(
+        definition_store.CreateOnlyDefinitionBundleStore, "publish",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("definition publish called")),
+    )
+    plan = _fresh_prepare(fresh_evidence_workspace)
+    assert _fresh_publish(fresh_evidence_workspace, plan).status == "COMMITTED"
+
+
+def test_fresh_evidence_conflict_denies_complete_capability(
+    fresh_evidence_workspace,
+):
+    plan = _fresh_prepare(fresh_evidence_workspace)
+    target = fresh_evidence_workspace[4] / plan.definition_set_id
+    target.mkdir(mode=0o700)
+    before = _snapshot(fresh_evidence_workspace[0])
+    result = _fresh_publish(fresh_evidence_workspace, plan)
+    assert result.status == "CONFLICT"
+    assert result.to_safe_summary_dict()["did_write"] is False
+    assert result.definition_evidence_complete is False
+    assert _snapshot(fresh_evidence_workspace[0]) == before
+
+
+def test_fresh_extra_research_write_after_writer_is_uncertain_and_preserves_write_fact(
+    fresh_evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_definition_evidence as module
+    production, research, _activation, _definitions, _evidence = fresh_evidence_workspace
+    production_before = _snapshot(production)
+    original = module._CreateOnlyEvidenceStore.publish
+
+    def publish_with_extra(store, request):
+        receipt = original(store, request)
+        (research / "foreign.txt").write_text("foreign")
+        return receipt
+
+    monkeypatch.setattr(module._CreateOnlyEvidenceStore, "publish", publish_with_extra)
+    result = _fresh_publish(fresh_evidence_workspace)
+    assert result.status == "UNCERTAIN"
+    assert result.to_safe_summary_dict()["did_write"] is True
+    assert result.definition_evidence_complete is False
+    assert _snapshot(production) == production_before
+
+
+def test_fresh_final_public_verification_failure_is_uncertain(
+    fresh_evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_definition_evidence as module
+    monkeypatch.setattr(
+        module, "_verify_public_evidence",
+        lambda *_args: (_ for _ in ()).throw(OSError("synthetic")),
+    )
+    result = _fresh_publish(fresh_evidence_workspace)
+    assert result.status == "UNCERTAIN"
+    assert result.to_safe_summary_dict()["did_write"] is True
+    assert result.definition_evidence_complete is False
+
+
+def test_fresh_non_target_mutation_during_final_verification_is_uncertain(
+    fresh_evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_definition_evidence as module
+    research = fresh_evidence_workspace[1]
+    original = module._verify_public_evidence
+
+    def verify_then_mutate(*args):
+        exact = original(*args)
+        (research / "research" / "shadow_v1" / "late.txt").write_text("late")
+        return exact
+
+    monkeypatch.setattr(module, "_verify_public_evidence", verify_then_mutate)
+    result = _fresh_publish(fresh_evidence_workspace)
+    assert result.status == "UNCERTAIN"
+    assert result.to_safe_summary_dict()["did_write"] is True
+    assert result.definition_evidence_complete is False
+
+
+def test_fresh_production_root_move_away_back_after_writer_is_uncertain(
+    fresh_evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_definition_evidence as module
+    production = fresh_evidence_workspace[0]
+    displaced = production.with_name(production.name + "-away")
+    original = module._CreateOnlyEvidenceStore.publish
+
+    def publish_then_move(store, request):
+        receipt = original(store, request)
+        production.rename(displaced)
+        displaced.rename(production)
+        return receipt
+
+    monkeypatch.setattr(module._CreateOnlyEvidenceStore, "publish", publish_then_move)
+    result = _fresh_publish(fresh_evidence_workspace)
+    assert result.status == "UNCERTAIN"
+    assert result.to_safe_summary_dict()["did_write"] is True
+    assert result.definition_evidence_complete is False
+
+
+@pytest.mark.parametrize("seam", ["observation", "adopter", "writer", "postcondition", "result"])
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_fresh_process_control_propagates_at_all_evidence_seams(
+    fresh_evidence_workspace, monkeypatch, seam, exception,
+):
+    import quantpits.research.forward_definition_evidence as module
+    plan = _fresh_prepare(fresh_evidence_workspace)
+    if seam == "observation":
+        import quantpits.research.forward_observation as observation
+        monkeypatch.setattr(
+            observation, "observe_fresh_champion_segment_candidate",
+            lambda *_args: (_ for _ in ()).throw(exception()),
+        )
+    elif seam == "adopter":
+        from quantpits.research import definition_store
+        monkeypatch.setattr(
+            definition_store.CreateOnlyDefinitionBundleStore, "adopt_existing",
+            lambda *_args: (_ for _ in ()).throw(exception()),
+        )
+    elif seam == "writer":
+        monkeypatch.setattr(
+            module._CreateOnlyEvidenceStore, "publish",
+            lambda *_args: (_ for _ in ()).throw(exception()),
+        )
+    elif seam == "postcondition":
+        monkeypatch.setattr(
+            module, "_verify_public_evidence",
+            lambda *_args: (_ for _ in ()).throw(exception()),
+        )
+    else:
+        monkeypatch.setattr(
+            module.ForwardDefinitionEvidenceResult, "__init__",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(exception()),
+        )
+    with pytest.raises(exception):
+        _fresh_publish(fresh_evidence_workspace, plan)
 
 
 def test_preflight_freshly_rebuilds_receipts_and_is_strictly_zero_write(evidence_workspace):

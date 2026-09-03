@@ -19,6 +19,9 @@ from quantpits.evidence.contracts import TypedDigest, canonical_json_bytes
 
 AUTHORIZATION_ACTION = "PUBLISH_ONE_FORWARD_DEFINITION_EVIDENCE_RECORD_V1"
 FORWARD_EVIDENCE_AUTHORIZATION_ACTION = AUTHORIZATION_ACTION
+FRESH_EVIDENCE_AUTHORIZATION_ACTION = (
+    "PUBLISH_ONE_FRESH_CHAMPION_SEGMENT_DEFINITION_EVIDENCE_RECORD_V1"
+)
 EVIDENCE_KIND = "FORWARD_DEFINITION_EVIDENCE_V1"
 STORAGE_CLAIM = "CREATE_ONLY_EXACT_BYTES"
 MEMBER_PATHS = ("reference_receipt.json", "definition_store_receipt.json")
@@ -35,6 +38,7 @@ _OUTER_BINDINGS: "weakref.WeakKeyDictionary[Any, bytes]" = weakref.WeakKeyDictio
 _MAX_MEMBER_BYTES = 1024 * 1024
 _MAX_INVENTORY_MEMBERS = 200000
 _MAX_INVENTORY_BYTES = 256 * 1024 * 1024
+_FRESH_MAX_INVENTORY_BYTES = 64 * 1024 * 1024
 
 
 class ForwardDefinitionEvidenceContractError(ValueError):
@@ -216,9 +220,11 @@ def _same_identities(
     return before == current
 
 
-def _workspace_inventory(root: Path, excluded: Path) -> Tuple[Tuple[Any, ...], ...]:
+def _workspace_inventory(
+    root: Path, excluded: Path, *, byte_budget: Optional[int] = None,
+) -> Tuple[Tuple[Any, ...], ...]:
     rows = []
-    remaining = _MAX_INVENTORY_BYTES
+    remaining = _MAX_INVENTORY_BYTES if byte_budget is None else byte_budget
     for path in sorted(root.rglob("*")):
         if path == excluded or excluded in path.parents:
             continue
@@ -291,6 +297,67 @@ def _workspace_inventory(root: Path, excluded: Path) -> Tuple[Tuple[Any, ...], .
         else:
             rows.append((logical, "special", info.st_dev, info.st_ino, info.st_mode))
     return tuple(rows)
+
+
+def _split_formal_inputs(
+    production_workspace_root: Any, research_workspace_root: Any,
+    activation_path: Any, definition_store_root: Any, evidence_store_root: Any,
+) -> Tuple[Path, Path, Path, Path, Path, Dict[str, Tuple[int, ...]]]:
+    """Freeze physically separated Production and formal Research roots."""
+    production = _path(production_workspace_root, "production_workspace_root")
+    research, activation, definitions, evidence, research_identities = _formal_inputs(
+        research_workspace_root, activation_path, definition_store_root,
+        evidence_store_root,
+    )
+    if (
+        production == research
+        or production in research.parents
+        or research in production.parents
+    ):
+        raise _input("Production and Research roots must be physically separate")
+    identities = {
+        "production_workspace": _directory_identity(production),
+        "production_workspace_continuity": _continuity(production),
+        "production_parent_continuity": _continuity(production.parent),
+    }
+    identities.update({
+        "research_" + name: identity
+        for name, identity in research_identities.items()
+    })
+    return production, research, activation, definitions, evidence, identities
+
+
+def _same_split_identities(
+    production: Path, research: Path, activation: Path, definitions: Path,
+    evidence: Path, expected: Mapping[str, Tuple[int, ...]],
+    *, evidence_did_write: bool = False,
+) -> bool:
+    try:
+        production_current = {
+            "production_workspace": _directory_identity(production),
+            "production_workspace_continuity": _continuity(production),
+            "production_parent_continuity": _continuity(production.parent),
+        }
+    except _PROCESS_CONTROL:
+        raise
+    except (OSError, ForwardDefinitionEvidenceContractError):
+        return False
+    production_expected = {
+        name: identity for name, identity in expected.items()
+        if name.startswith("production_")
+    }
+    research_expected = {
+        name[len("research_"):]: identity
+        for name, identity in expected.items()
+        if name.startswith("research_")
+    }
+    return (
+        production_current == production_expected
+        and _same_identities(
+            research, activation, definitions, evidence, research_expected,
+            evidence_did_write=evidence_did_write,
+        )
+    )
 
 
 def _close(descriptor: int, *, suppress: bool) -> None:
@@ -927,6 +994,71 @@ def _fresh_join(
     return candidate, receipt, evidence_request
 
 
+def _fresh_segment_join(
+    production: Path, research: Path, cycle_id: str, activation: Path,
+    definitions: Path,
+) -> Tuple[Any, Any, _EvidenceRequest]:
+    """Join one inspector-owned split-root candidate to an actual C0 adoption."""
+    from quantpits.research.forward_observation import (
+        FreshChampionSegmentCandidate,
+        observe_fresh_champion_segment_candidate,
+    )
+    candidate = observe_fresh_champion_segment_candidate(
+        production, research, cycle_id, activation,
+    )
+    if type(candidate) is not FreshChampionSegmentCandidate:
+        raise ForwardDefinitionEvidenceContractError(
+            "fresh observation returned foreign candidate authority",
+        )
+    if (
+        candidate.fresh_segment_candidate_ready is not True
+        or candidate.sealed_reference_join_verified is not True
+        or candidate.publication_capability is not False
+        or candidate.definition_bound is not False
+        or candidate.intent_capability is not False
+        or candidate.epoch_started is not False
+        or candidate.prospective_claim is not False
+        or candidate.promotion_capability is not False
+        or candidate.did_write is not False
+    ):
+        raise ForwardDefinitionEvidenceContractError(
+            "fresh candidate authority claims are invalid",
+        )
+    request = candidate.compiled_definitions.to_store_request()
+    if (
+        activation.name != request.definition_set_id + ".json"
+        or request.definition_set_id != candidate.definition_set_id
+        or dict(request.request_digest) != dict(candidate.compiled_request_digest)
+    ):
+        raise ForwardDefinitionEvidenceContractError(
+            "fresh candidate and C0 request do not join",
+        )
+    from quantpits.research.definition_store import CreateOnlyDefinitionBundleStore
+    receipt = CreateOnlyDefinitionBundleStore(definitions).adopt_existing(request)
+    receipt_bytes = _definition_receipt_bytes(receipt)
+    if (
+        receipt.definition_set_id != request.definition_set_id
+        or dict(receipt.request_digest) != dict(request.request_digest)
+    ):
+        raise ForwardDefinitionEvidenceContractError(
+            "definition receipt does not join fresh split-root request",
+        )
+    reference = dict(candidate.reference_receipt)
+    reference_bytes = _canonical(reference)
+    if TypedDigest.canonical(reference).to_dict() != dict(
+        candidate.reference_receipt_digest
+    ):
+        raise ForwardDefinitionEvidenceContractError(
+            "fresh reference receipt is not stable",
+        )
+    evidence_request = _EvidenceRequest(
+        request.definition_set_id, candidate.evidence_cycle_id,
+        reference_bytes, receipt_bytes, candidate.reference_receipt_digest,
+        request.request_digest, receipt.manifest_digest, receipt.operation_id,
+    )
+    return candidate, receipt, evidence_request
+
+
 class ForwardDefinitionEvidencePlan:
     """Inspector-owned zero-capability preflight result."""
 
@@ -1092,6 +1224,8 @@ class _OuterObservation:
         if self.evidence_did_write:
             before.pop("evidence_continuity", None)
             after.pop("evidence_continuity", None)
+            before.pop("research_evidence_continuity", None)
+            after.pop("research_evidence_continuity", None)
         return (
             before == after
             and dict(self.inventory_before_digest) == dict(self.inventory_after_digest)
@@ -1131,6 +1265,49 @@ def _observe_outer(
         )
         inventory_after = _workspace_inventory(root, excluded)
         public_exact = _verify_public_evidence(evidence, request, receipt)
+    except _PROCESS_CONTROL:
+        raise
+    except Exception:
+        identities_after = None
+        inventory_after = None
+        public_exact = False
+    return _OuterObservation(
+        _authority=_AUTHORITY, identities_before=identities_before,
+        identities_after=identities_after, inventory_before=inventory_before,
+        inventory_after=inventory_after, evidence_did_write=receipt.did_write,
+        requires_public_exact=receipt.status in {"COMMITTED", "ADOPTED"},
+        public_exact=public_exact,
+    )
+
+
+def _observe_fresh_outer(
+    production: Path, research: Path, activation: Path, definitions: Path,
+    evidence: Path, identities_before: Mapping[str, Tuple[int, ...]],
+    inventory_before: Sequence[Tuple[Any, ...]], excluded: Path,
+    request: _EvidenceRequest, receipt: ForwardDefinitionEvidenceStoreReceipt,
+) -> _OuterObservation:
+    identities_after = None
+    inventory_after = None
+    public_exact = False
+    try:
+        (
+            _production, _research, _activation, _definitions, _evidence,
+            identities_after,
+        ) = _split_formal_inputs(
+            production, research, activation, definitions, evidence,
+        )
+        inventory_after = _workspace_inventory(
+            research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+        )
+        public_exact = _verify_public_evidence(evidence, request, receipt)
+        inventory_after = _workspace_inventory(
+            research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+        )
+        if not _same_split_identities(
+            production, research, activation, definitions, evidence,
+            identities_before, evidence_did_write=receipt.did_write,
+        ):
+            identities_after = None
     except _PROCESS_CONTROL:
         raise
     except Exception:
@@ -1384,6 +1561,122 @@ def _publish(
     )
 
 
+def _prepare_fresh_champion_segment_definition_evidence(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any,
+    definition_store_root: Any, evidence_store_root: Any,
+) -> ForwardDefinitionEvidencePlan:
+    cycle_id = _cycle(evidence_cycle_id)
+    (
+        production, research, activation, definitions, evidence, identities,
+    ) = _split_formal_inputs(
+        production_workspace_root, research_workspace_root, activation_path,
+        definition_store_root, evidence_store_root,
+    )
+    excluded = evidence / activation.stem
+    before = _workspace_inventory(
+        research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+    )
+    _candidate, definition_receipt, request = _fresh_segment_join(
+        production, research, cycle_id, activation, definitions,
+    )
+    if request.definition_set_id != activation.stem:
+        raise _input("activation and evidence target identities differ")
+    state = _target_state(evidence, request.definition_set_id)
+    if (
+        not _same_split_identities(
+            production, research, activation, definitions, evidence, identities,
+        )
+        or _workspace_inventory(
+            research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+        ) != before
+    ):
+        raise _input("fresh evidence inputs changed during preflight")
+    return ForwardDefinitionEvidencePlan(
+        _authority=_AUTHORITY, definition_set_id=request.definition_set_id,
+        evidence_cycle_id=request.evidence_cycle_id,
+        definition_request_digest=definition_receipt.request_digest,
+        reference_receipt_digest=request.reference_receipt_digest,
+        definition_store_receipt_digest=_raw_digest(request.members[1][1]),
+        definition_manifest_digest=definition_receipt.manifest_digest,
+        definition_store_operation_id=definition_receipt.operation_id,
+        evidence_request_digest=request.request_digest, target_state=state,
+    )
+
+
+def _publish_fresh_champion_segment_definition_evidence(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any,
+    definition_store_root: Any, evidence_store_root: Any,
+    expected_definition_set_id: Any, expected_definition_request_digest: Any,
+    expected_evidence_request_digest: Any, authorization_action: Any,
+) -> ForwardDefinitionEvidenceResult:
+    if (
+        type(authorization_action) is not str
+        or authorization_action != FRESH_EVIDENCE_AUTHORIZATION_ACTION
+    ):
+        raise ForwardDefinitionEvidenceContractError(
+            "fresh evidence authorization is invalid",
+        )
+    expected_id = _definition_id(expected_definition_set_id)
+    expected_definition = _typed_digest(
+        expected_definition_request_digest,
+        "expected_definition_request_digest", "canonical_json",
+    )
+    expected_evidence = _typed_digest(
+        expected_evidence_request_digest,
+        "expected_evidence_request_digest", "canonical_json",
+    )
+    cycle_id = _cycle(evidence_cycle_id)
+    (
+        production, research, activation, definitions, evidence, identities,
+    ) = _split_formal_inputs(
+        production_workspace_root, research_workspace_root, activation_path,
+        definition_store_root, evidence_store_root,
+    )
+    excluded = evidence / expected_id
+    before = _workspace_inventory(
+        research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+    )
+    candidate, definition_receipt, request = _fresh_segment_join(
+        production, research, cycle_id, activation, definitions,
+    )
+    if (
+        request.definition_set_id != expected_id
+        or candidate.definition_set_id != expected_id
+        or activation.stem != expected_id
+        or dict(candidate.compiled_request_digest) != expected_definition
+        or dict(definition_receipt.request_digest) != expected_definition
+        or dict(request.request_digest) != expected_evidence
+    ):
+        raise ForwardDefinitionEvidenceContractError(
+            "fresh evidence request does not match owner authorization",
+        )
+    if (
+        not _same_split_identities(
+            production, research, activation, definitions, evidence, identities,
+        )
+        or _workspace_inventory(
+            research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+        ) != before
+    ):
+        raise _input("fresh evidence inputs changed before publication")
+    evidence_receipt = _CreateOnlyEvidenceStore(evidence).publish(request)
+    outer_observation = _observe_fresh_outer(
+        production, research, activation, definitions, evidence, identities,
+        before, excluded, request, evidence_receipt,
+    )
+    return ForwardDefinitionEvidenceResult(
+        _authority=_AUTHORITY, definition_receipt=definition_receipt,
+        evidence_receipt=evidence_receipt,
+        evidence_cycle_id=request.evidence_cycle_id,
+        reference_receipt_digest=request.reference_receipt_digest,
+        definition_store_receipt_digest=_raw_digest(request.members[1][1]),
+        definition_manifest_digest=definition_receipt.manifest_digest,
+        evidence_request=request, outer_observation=outer_observation,
+    )
+
+
 def _adopt(
     workspace_root: Any, evidence_cycle_id: Any, activation_path: Any,
     definition_store_root: Any, evidence_store_root: Any,
@@ -1517,12 +1810,59 @@ def adopt_forward_definition_evidence(
         raise _input("evidence adoption failed closed") from exc
 
 
+def prepare_fresh_champion_segment_definition_evidence(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any,
+    definition_store_root: Any, evidence_store_root: Any,
+) -> ForwardDefinitionEvidencePlan:
+    """Prepare split-root fresh evidence without writing or granting capability."""
+    try:
+        return _prepare_fresh_champion_segment_definition_evidence(
+            production_workspace_root, research_workspace_root,
+            evidence_cycle_id, activation_path, definition_store_root,
+            evidence_store_root,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except ForwardDefinitionEvidenceContractError:
+        raise
+    except Exception as exc:
+        raise _input("fresh evidence preflight failed closed") from exc
+
+
+def publish_fresh_champion_segment_definition_evidence(
+    production_workspace_root: Any, research_workspace_root: Any,
+    evidence_cycle_id: Any, activation_path: Any,
+    definition_store_root: Any, evidence_store_root: Any,
+    expected_definition_set_id: Any, expected_definition_request_digest: Any,
+    expected_evidence_request_digest: Any, authorization_action: Any,
+) -> ForwardDefinitionEvidenceResult:
+    """Freshly verify and create/adopt one split-root evidence record."""
+    try:
+        return _publish_fresh_champion_segment_definition_evidence(
+            production_workspace_root, research_workspace_root,
+            evidence_cycle_id, activation_path, definition_store_root,
+            evidence_store_root, expected_definition_set_id,
+            expected_definition_request_digest, expected_evidence_request_digest,
+            authorization_action,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except ForwardDefinitionEvidenceContractError:
+        raise
+    except Exception as exc:
+        raise _input("fresh evidence publication failed closed") from exc
+
+
 __all__ = [
     "AUTHORIZATION_ACTION", "FORWARD_EVIDENCE_AUTHORIZATION_ACTION",
+    "FRESH_EVIDENCE_AUTHORIZATION_ACTION",
     "EVIDENCE_KIND", "STORAGE_CLAIM", "MEMBER_PATHS",
     "MANIFEST_NAME", "ForwardDefinitionEvidenceContractError",
     "ForwardDefinitionEvidenceInputError", "ForwardDefinitionEvidenceStoreReceipt",
     "ForwardDefinitionEvidencePlan", "ForwardDefinitionEvidenceResult",
     "prepare_forward_definition_evidence", "publish_forward_definition_evidence",
     "adopt_forward_definition_evidence",
+    "prepare_fresh_champion_segment_definition_evidence",
+    "publish_fresh_champion_segment_definition_evidence",
 ]
