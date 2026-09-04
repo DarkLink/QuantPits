@@ -67,6 +67,7 @@ def _request():
         "evidence_cycle_id": "2026-08-28",
         **authority,
         "phase37a_status": "sealed_complete",
+        "phase37a_problems": [],
         "phase37a_seal_digest": digest,
         "phase37a_manifest_digest": digest,
         "source_partition": {
@@ -164,6 +165,7 @@ def test_phase37_partition_is_exact_and_challenger_is_not_caller_controlled(monk
         "artifact_tree_digest": digest,
     })
     manifest = {"model_and_ensemble_lineage": {
+        "status": "complete",
         "combo": {"resolved_members": ["A", "B", "C", "D"]},
         "source_models": models, "source_artifacts": rows,
     }}
@@ -177,6 +179,34 @@ def test_phase37_partition_is_exact_and_challenger_is_not_caller_controlled(monk
     invalid["model_and_ensemble_lineage"]["source_artifacts"].append(None)
     with pytest.raises(module._Blocked, match="PARTITION"):
         module._partition(invalid, authority)
+    invalid = copy.deepcopy(manifest)
+    invalid["model_and_ensemble_lineage"]["status"] = "partial"
+    with pytest.raises(module._Blocked, match="PARTITION"):
+        module._partition(invalid, authority)
+
+
+def test_phase37_partial_is_scoped_to_deep_analysis_and_preserved_as_partial():
+    allowed = [{
+        "code": "deep_analysis_missing",
+        "evidence_class": "deep_analysis",
+        "detail": "no Deep Analysis run was provided",
+        "blocks_complete": True,
+    }]
+    module._validate_phase37a_status("sealed_partial", allowed)
+    for status, problems in (
+        ("sealed_complete", allowed),
+        ("sealed_partial", [{
+            "code": "model_lineage_missing",
+            "evidence_class": "model_lineage",
+            "detail": "model lineage is absent",
+            "blocks_complete": True,
+        }]),
+        ("sealed_partial", allowed + allowed),
+        (True, []),
+        ([], []),
+    ):
+        with pytest.raises(module.ModelArtifactCapsuleContractError, match="Phase37A"):
+            module._validate_phase37a_status(status, problems)
 
 
 def test_selected_configuration_is_embedded_deduplicated_and_conflict_visible():

@@ -41,6 +41,10 @@ _ID_RE = re.compile(r"^modelcapsule\.[0-9a-f]{64}$")
 _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _BINDINGS: "weakref.WeakKeyDictionary[Any, bytes]" = weakref.WeakKeyDictionary()
 _REQUEST_BINDINGS: "weakref.WeakKeyDictionary[Any, bytes]" = weakref.WeakKeyDictionary()
+_MODEL_RETENTION_ALLOWED_PARTIAL = frozenset({
+    ("deep_analysis_missing", "deep_analysis", True),
+    ("deep_analysis_incomplete", "deep_analysis", True),
+})
 
 
 class ModelArtifactCapsuleContractError(ValueError):
@@ -437,7 +441,8 @@ def _partition(manifest: Mapping[str, Any], authority: Mapping[str, Any]) -> Dic
     models = lineage.get("source_models") if type(lineage) is dict else None
     resolved = combo.get("resolved_members") if type(combo) is dict else None
     if (
-        type(artifacts) is not list or type(models) is not list
+        type(lineage) is not dict or lineage.get("status") != "complete"
+        or type(artifacts) is not list or type(models) is not list
         or resolved != authority["champion_source_ids"]
         or len(artifacts) != 9 or len(models) != 4
         or [row.get("source_id") for row in projection.get("members", ())]
@@ -852,7 +857,8 @@ _RECEIPT_FIELDS = {
     "definition_request_digest", "definition_evidence_request_digest",
     "definition_evidence_manifest_digest", "definition_evidence_operation_id",
     "champion_source_ids", "challenger_source_ids", "omitted_champion_position",
-    "phase37a_status", "phase37a_seal_digest", "phase37a_manifest_digest",
+    "phase37a_status", "phase37a_problems", "phase37a_seal_digest",
+    "phase37a_manifest_digest",
     "source_partition", "source_training_tree_digests", "prediction_tree_digests",
     "ensemble_tree_digest", "source_run_metadata_inventory_digests",
     "run_metadata_claims", "raw_member_count",
@@ -861,17 +867,53 @@ _RECEIPT_FIELDS = {
 }
 
 
+def _validate_phase37a_status(status: Any, problems: Any) -> None:
+    if (
+        type(status) is not str
+        or status not in {"sealed_complete", "sealed_partial"}
+        or type(problems) is not list
+    ):
+        raise ModelArtifactCapsuleContractError("Phase37A status is invalid")
+    identities = set()
+    for row in problems:
+        if (
+            type(row) is not dict
+            or set(row) != {"code", "evidence_class", "detail", "blocks_complete"}
+            or type(row["code"]) is not str or not row["code"]
+            or type(row["evidence_class"]) is not str or not row["evidence_class"]
+            or type(row["detail"]) is not str
+            or type(row["blocks_complete"]) is not bool
+        ):
+            raise ModelArtifactCapsuleContractError(
+                "Phase37A problem inventory is invalid",
+            )
+        identity = row["code"], row["evidence_class"], row["blocks_complete"]
+        if identity in identities:
+            raise ModelArtifactCapsuleContractError(
+                "Phase37A problem inventory is duplicated",
+            )
+        identities.add(identity)
+    blocking = {identity for identity in identities if identity[2]}
+    derived = "sealed_partial" if blocking else "sealed_complete"
+    if derived != status or not blocking.issubset(_MODEL_RETENTION_ALLOWED_PARTIAL):
+        raise ModelArtifactCapsuleContractError(
+            "Phase37A partial status is not admitted",
+        )
+
+
 def _validate_receipt(
     receipt: Mapping[str, Any], authority: Mapping[str, Any], payload_data: bytes,
     payload: Mapping[str, Any], cycle_id: str,
 ) -> None:
     if type(receipt) is not dict or set(receipt) != _RECEIPT_FIELDS:
         raise ModelArtifactCapsuleContractError("source receipt fields are invalid")
+    _validate_phase37a_status(
+        receipt["phase37a_status"], receipt["phase37a_problems"],
+    )
     if (
         type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1
         or receipt["source_claim"] != "EXACT_DEFINITION_BOUND_PHASE37A_MODEL_SOURCES_V1"
         or receipt["evidence_cycle_id"] != cycle_id
-        or receipt["phase37a_status"] != "sealed_complete"
         or receipt["definition_bound"] is not True
         or receipt["source_observation_complete"] is not True
         or receipt["did_write"] is not False
@@ -1115,6 +1157,7 @@ def _assemble_live(
         "evidence_cycle_id": cycle_id,
         **authority,
         "phase37a_status": manifest.get("status"),
+        "phase37a_problems": manifest.get("problems"),
         "phase37a_seal_digest": _raw_digest(seal_data),
         "phase37a_manifest_digest": _raw_digest(manifest_data),
         "source_partition": {
@@ -1539,7 +1582,8 @@ def _request_from_target(
             "definition_request_digest", "definition_evidence_request_digest",
             "definition_evidence_manifest_digest", "definition_evidence_operation_id",
             "champion_source_ids", "challenger_source_ids", "omitted_champion_position",
-            "phase37a_status", "phase37a_seal_digest", "phase37a_manifest_digest",
+            "phase37a_status", "phase37a_problems", "phase37a_seal_digest",
+            "phase37a_manifest_digest",
             "source_partition", "source_training_tree_digests", "prediction_tree_digests",
             "ensemble_tree_digest", "source_run_metadata_inventory_digests",
             "run_metadata_claims", "raw_member_count",
@@ -1554,6 +1598,7 @@ def _request_from_target(
         if (
             receipt["evidence_cycle_id"] != cycle_id
             or receipt["phase37a_status"] != manifest.get("status")
+            or receipt["phase37a_problems"] != manifest.get("problems")
             or receipt["phase37a_seal_digest"] != _raw_digest(seal_data)
             or receipt["phase37a_manifest_digest"] != _raw_digest(manifest_data)
             or receipt["source_training_tree_digests"]
