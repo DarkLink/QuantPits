@@ -183,6 +183,15 @@
       color: var(--text-primary);
     }
 
+    .nav__arena-link {
+      color: var(--accent-green) !important;
+    }
+
+    .nav__arena-link:hover {
+      color: #6ee7b7 !important;
+      text-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
+    }
+
     .nav__lang {
       background: rgba(56, 189, 248, 0.1);
       border: 1px solid rgba(56, 189, 248, 0.2);
@@ -338,6 +347,12 @@
       color: var(--text-primary);
     }
 
+    .hero__arena-link:hover {
+      background: rgba(56, 189, 248, 0.2) !important;
+      border-color: rgba(56, 189, 248, 0.65) !important;
+      box-shadow: 0 8px 28px rgba(56, 189, 248, 0.2);
+    }
+
     .hero__stats {
       display: flex;
       gap: 3rem;
@@ -470,6 +485,11 @@
       font-size: 0.9rem;
       color: var(--text-secondary);
       line-height: 1.7;
+    }
+
+    .feature-card__link:hover {
+      color: #7dd3fc !important;
+      transform: translateX(3px);
     }
 
     /* ===== ARCHITECTURE ===== */
@@ -737,6 +757,7 @@
 
     .footer__links {
       display: flex;
+      flex-wrap: wrap;
       gap: 2rem;
       justify-content: center;
       margin-bottom: 1rem;
@@ -787,6 +808,12 @@
         padding: 1.5rem 2rem;
         border-bottom: 1px solid var(--border-glow);
         backdrop-filter: blur(20px);
+        max-height: calc(100vh - 64px);
+        overflow-y: auto;
+      }
+
+      .nav__links.open .nav__arena-link {
+        justify-content: center;
       }
 
       .hero__stats {
@@ -852,6 +879,14 @@
       <a href="https://arxiv.org/abs/2604.11477" target="_blank">
         <span class="en">Paper</span><span class="zh">论文</span>
       </a>
+      <a href="https://arena.quantpits.com" target="_blank" rel="noopener" class="nav__arena-link"
+        style="display: inline-flex; align-items: center; gap: 6px;">
+        <span
+          style="width: 6px; height: 6px; border-radius: 50%; background: #34d399; box-shadow: 0 0 8px #34d399;"></span>
+        <span class="en">Arena</span>
+        <span class="zh">竞技场</span>
+        <span style="font-size: 10px; opacity: 0.7;">↗</span>
+      </a>
       <a href="https://github.com/DarkLink/QuantPits" target="_blank">GitHub</a>
       <button class="nav__lang" id="langToggle" onclick="toggleLang()">中文</button>
     </div>
@@ -885,6 +920,13 @@
       </a>
       <a href="https://arxiv.org/abs/2604.11477" target="_blank" class="btn btn--secondary">
         📄 <span class="en">Read Paper</span><span class="zh">阅读论文</span>
+      </a>
+      <a href="https://arena.quantpits.com" target="_blank" rel="noopener"
+        class="btn btn--secondary hero__arena-link"
+        style="border-color: rgba(56, 189, 248, 0.4); background: rgba(56, 189, 248, 0.12);">
+        <span>⚔️</span>
+        <span class="en">Live Arena &amp; Zoo →</span>
+        <span class="zh">实盘竞技场与动物园 →</span>
       </a>
       <a href="#quickstart" class="btn btn--secondary">
         <span class="en">Quick Start →</span><span class="zh">快速开始 →</span>
@@ -978,6 +1020,27 @@
             with AI-driven feedback for continuous optimization.</span>
           <span class="zh">模块化的流水线步骤——训练、预测、融合、盘后处理、订单生成——加上 AI 驱动的深度分析与反馈闭环，实现持续优化。</span>
         </p>
+      </div>
+      <!-- Card 5 -->
+      <div class="feature-card">
+        <div class="feature-card__icon feature-card__icon--cyan"
+          style="background: rgba(167, 139, 250, 0.15); color: #a78bfa;">
+          ⚔️
+        </div>
+        <h3 class="feature-card__title">
+          <span class="en">Empirical Strategy Arena</span>
+          <span class="zh">实盘对决竞技场与基准动物园</span>
+        </h3>
+        <p class="feature-card__desc">
+          <span class="en">Prospective multi-model tournament stress-testing strategies against 28 execution animals
+            and 11,000 parametric random monkeys with full decision archaeology.</span>
+          <span class="zh">严苛的前瞻性多模型对决测试台：将策略置于 28 种执行摩擦动物与 11,000 只参数化随机猴子零假设中进行极限压力测试与历史决策考古。</span>
+        </p>
+        <a href="https://arena.quantpits.com" target="_blank" rel="noopener" class="feature-card__link"
+          style="font-size: 0.85rem; font-weight: 600; color: var(--accent-cyan); display: inline-flex; align-items: center; gap: 4px; margin-top: 1rem; transition: all 0.2s ease;">
+          <span class="en">Enter Arena Platform →</span>
+          <span class="zh">进入竞技场平台 →</span>
+        </a>
       </div>
     </div>
   </section>
@@ -1203,6 +1266,9 @@
       </a>
       <a href="https://github.com/DarkLink/QuantPits/tree/main/docs" target="_blank">
         <span class="en">Documentation</span><span class="zh">文档</span>
+      </a>
+      <a href="https://arena.quantpits.com" target="_blank" rel="noopener">
+        <span class="en">Arena Testbed</span><span class="zh">竞技场</span>
       </a>
       <a href="https://github.com/microsoft/qlib" target="_blank">
         <span class="en">Powered by Qlib</span><span class="zh">基于 Qlib 构建</span>

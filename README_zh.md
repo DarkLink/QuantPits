@@ -6,10 +6,13 @@
 [![Unit Tests](https://github.com/DarkLink/QuantPits/actions/workflows/pytest.yml/badge.svg)](https://github.com/DarkLink/QuantPits/actions/workflows/pytest.yml)
 [![codecov](https://codecov.io/github/DarkLink/QuantPits/graph/badge.svg?token=QSTRWOI4LN)](https://codecov.io/github/DarkLink/QuantPits)
 [![Paper](https://img.shields.io/badge/arXiv-2604.11477-b31b1b.svg)](https://arxiv.org/abs/2604.11477)
+[![QuantPits Arena](https://img.shields.io/badge/QuantPits-Arena-34d399.svg)](https://arena.quantpits.com)
 
 基于 [Microsoft Qlib](https://github.com/microsoft/qlib) 构建的先进、生产级别的量化交易系统。本系统提供了一个用于支持周频及日频交易的完整端到端流水道，核心特点包括高度模块化架构、多实例隔离运行（Workspace 机制）、模型融合（Ensemble）、执行归因分析以及全交互式的可视化数据面板。
 
 📄 **阅读我们的论文:** [arXiv:2604.11477](https://arxiv.org/abs/2604.11477)
+
+⚔️ **进入 [QuantPits Arena](https://arena.quantpits.com)：** 我们的实盘策略对决竞技场与基准动物园，将前瞻性多模型策略置于 28 种执行摩擦动物及 11,000 只参数化随机猴子零假设下进行压力测试，并完整保留历史决策考古记录。
 
 🌐 [English Version (README.md)](./README.md)
 
@@ -26,6 +29,7 @@
 * **全息化监测面板**：系统内置两大原生交互式 `streamlit` 数据看板，分别用于追踪“宏观资产组合表现”与“微观滚动策略健康状态监控”。
 * **高可用基础设施**：自动历史备份检查点、由原生 JSON 承载的模型注册表状态追踪、完整规范的日内/周频执行日志。
 * **OOM-RL 智能反馈闭环**：多 Agent 深度分析 + LLM Critic 决策 + Playground 沙箱自动执行，实现从分析到优化的自动化闭环。
+* **实盘对决竞技场与基准动物园**：以前瞻性多模型锦标赛检验策略在执行摩擦及参数化随机基准下的稳健性。访问 [arena.quantpits.com](https://arena.quantpits.com)。
 
 ## 📂 架构总览
 

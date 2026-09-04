@@ -6,10 +6,13 @@
 [![Unit Tests](https://github.com/DarkLink/QuantPits/actions/workflows/pytest.yml/badge.svg)](https://github.com/DarkLink/QuantPits/actions/workflows/pytest.yml)
 [![codecov](https://codecov.io/github/DarkLink/QuantPits/graph/badge.svg?token=QSTRWOI4LN)](https://codecov.io/github/DarkLink/QuantPits)
 [![Paper](https://img.shields.io/badge/arXiv-2604.11477-b31b1b.svg)](https://arxiv.org/abs/2604.11477)
+[![QuantPits Arena](https://img.shields.io/badge/QuantPits-Arena-34d399.svg)](https://arena.quantpits.com)
 
 An advanced, production-ready quantitative trading system built on top of [Microsoft Qlib](https://github.com/microsoft/qlib). This system provides a complete end-to-end pipeline for weekly and daily frequency trading, featuring modular architecture, multi-instance isolation (Workspaces), ensemble modeling, execution analytics, and interactive dashboards.
 
 📄 **Read our paper:** [arXiv:2604.11477](https://arxiv.org/abs/2604.11477)
+
+⚔️ **Enter [QuantPits Arena](https://arena.quantpits.com):** Our empirical strategy tournament and benchmark zoo, where prospective multi-model strategies are stress-tested against 28 execution animals and 11,000 parametric random monkeys—with full decision archaeology.
 
 🌐 [中文版本 (README_zh.md)](./README_zh.md)
 
@@ -26,6 +29,7 @@ An advanced, production-ready quantitative trading system built on top of [Micro
 * **Rich Observability**: Two interactive `streamlit` dashboards for macro portfolio performance and micro rolling health monitoring.
 * **Resilient Infrastructure**: Automatic checkpoints, JSON tracking for model registries, and daily/weekly logs.
 * **OOM-RL Intelligent Feedback Loop**: Multi-agent deep analysis + LLM Critic decision-making + sandboxed Playground execution, closing the loop from analysis to automated optimization.
+* **Empirical Strategy Arena**: A prospective multi-model tournament and benchmark zoo for testing strategy robustness under execution friction and parametric random baselines. Visit [arena.quantpits.com](https://arena.quantpits.com).
 
 ## 📂 Architecture Overview
 
