@@ -90,8 +90,12 @@ def _request():
             for position in range(4)
         ],
         "run_metadata_claims": [{
-            "recorder_join_verified": True, "mode": "LEGACY_UNQUALIFIED",
-            "mode_join_verified": True, "fit_start_time": "2020-01-01",
+            "recorder_join_verified": True,
+            "source_member_mode": "LEGACY_UNQUALIFIED",
+            "source_member_mode_authority": "SEALED_SOURCE_MEMBER_ID",
+            "source_member_mode_bound": True,
+            "run_metadata_mode_consistency": "NOT_APPLICABLE",
+            "fit_start_time": "2020-01-01",
             "fit_end_time": "2026-08-28", "training_window_verified": True,
         } for _ in range(4)],
         "raw_member_count": len(members),
@@ -206,7 +210,7 @@ def test_selected_configuration_is_embedded_deduplicated_and_conflict_visible():
         module._selected_references(manifest)
 
 
-def test_run_metadata_joins_recorder_mode_and_training_window(tmp_path):
+def test_run_metadata_binds_sealed_mode_and_training_window(tmp_path):
     run = tmp_path / "RUN"
     paths = (run / "meta.yaml", run / "params" / "fit_start_time",
              run / "params" / "fit_end_time", run / "params" / "training_mode")
@@ -217,11 +221,62 @@ def test_run_metadata_joins_recorder_mode_and_training_window(tmp_path):
         paths[3]: b"FULL\n",
     }
     claim = module._run_metadata_claim(run, paths, "RUN", "MODEL@FULL", values)
-    assert claim["mode_join_verified"] is True
+    assert claim["source_member_mode"] == "FULL"
+    assert claim["source_member_mode_authority"] == "SEALED_SOURCE_MEMBER_ID"
+    assert claim["source_member_mode_bound"] is True
+    assert claim["run_metadata_mode_consistency"] == "CONSISTENT"
     invalid = dict(values)
     invalid[paths[3]] = b"CPCV\n"
     with pytest.raises(module._Blocked, match="MODE"):
         module._run_metadata_claim(run, paths, "RUN", "MODEL@FULL", invalid)
+
+
+def test_run_metadata_accepts_absent_mode_without_forging_a_param_join(tmp_path):
+    run = tmp_path / "RUN"
+    paths = (run / "meta.yaml", run / "params" / "fit_start_time",
+             run / "params" / "fit_end_time")
+    values = {
+        paths[0]: ("run_id: RUN\nexperiment_id: %s\n" % run.parent.name).encode(),
+        paths[1]: b"2020-01-01\n",
+        paths[2]: b"2026-08-28\n",
+    }
+    claim = module._run_metadata_claim(run, paths, "RUN", "MODEL@static", values)
+    assert claim["source_member_mode"] == "static"
+    assert claim["source_member_mode_authority"] == "SEALED_SOURCE_MEMBER_ID"
+    assert claim["source_member_mode_bound"] is True
+    assert claim["run_metadata_mode_consistency"] == "NOT_DECLARED"
+
+
+def test_run_metadata_rejects_ambiguous_mode_declarations(tmp_path):
+    run = tmp_path / "RUN"
+    paths = (run / "meta.yaml", run / "params" / "fit_start_time",
+             run / "params" / "fit_end_time", run / "params" / "mode",
+             run / "params" / "training_mode")
+    values = {
+        paths[0]: ("run_id: RUN\nexperiment_id: %s\n" % run.parent.name).encode(),
+        paths[1]: b"2020-01-01\n",
+        paths[2]: b"2026-08-28\n",
+        paths[3]: b"static\n",
+        paths[4]: b"static\n",
+    }
+    with pytest.raises(module._Blocked, match="MODE"):
+        module._run_metadata_claim(run, paths, "RUN", "MODEL@static", values)
+
+
+def test_receipt_rejects_forged_sealed_mode_authority_and_status():
+    request = _request()
+    for field, value in (
+        ("source_member_mode_authority", "RUN_PARAM"),
+        ("source_member_mode_bound", False),
+        ("run_metadata_mode_consistency", "NOT_DECLARED"),
+    ):
+        receipt = copy.deepcopy(request.receipt)
+        receipt["run_metadata_claims"][0][field] = value
+        with pytest.raises(module.ModelArtifactCapsuleContractError, match="claim"):
+            module._validate_receipt(
+                receipt, request.authority, request.payload_data,
+                request.payload, request.cycle_id,
+            )
 
 
 def test_store_commits_three_files_manifest_last_and_exactly_adopts(tmp_path):

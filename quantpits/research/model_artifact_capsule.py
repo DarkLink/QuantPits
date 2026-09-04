@@ -606,13 +606,24 @@ def _run_metadata_claim(
     except ModelArtifactCapsuleContractError as exc:
         raise _Blocked("SOURCE_RUN_TRAINING_WINDOW_INVALID") from exc
     mode = source_id.rsplit("@", 1)[1] if "@" in source_id else "LEGACY_UNQUALIFIED"
-    observed_mode = find("mode") or find("training_mode")
-    if mode != "LEGACY_UNQUALIFIED" and observed_mode != mode:
+    observed_modes = [
+        value for key, value in params.items()
+        if PurePosixPath(key).name in {"mode", "training_mode"}
+    ]
+    if mode == "LEGACY_UNQUALIFIED":
+        mode_consistency = "NOT_APPLICABLE"
+    elif not observed_modes:
+        mode_consistency = "NOT_DECLARED"
+    elif len(observed_modes) == 1 and observed_modes[0] == mode:
+        mode_consistency = "CONSISTENT"
+    else:
         raise _Blocked("SOURCE_RUN_MODE_MISMATCH")
     return {
         "recorder_join_verified": True,
-        "mode": mode,
-        "mode_join_verified": mode == "LEGACY_UNQUALIFIED" or observed_mode == mode,
+        "source_member_mode": mode,
+        "source_member_mode_authority": "SEALED_SOURCE_MEMBER_ID",
+        "source_member_mode_bound": True,
+        "run_metadata_mode_consistency": mode_consistency,
         "fit_start_time": fit_start,
         "fit_end_time": fit_end,
         "training_window_verified": True,
@@ -932,14 +943,22 @@ def _validate_receipt(
         )
         if (
             type(claim) is not dict or set(claim) != {
-                "recorder_join_verified", "mode", "mode_join_verified",
+                "recorder_join_verified", "source_member_mode",
+                "source_member_mode_authority", "source_member_mode_bound",
+                "run_metadata_mode_consistency",
                 "fit_start_time", "fit_end_time", "training_window_verified",
             }
             or claim["recorder_join_verified"] is not True
-            or claim["mode_join_verified"] is not True
+            or claim["source_member_mode_authority"] != "SEALED_SOURCE_MEMBER_ID"
+            or claim["source_member_mode_bound"] is not True
             or claim["training_window_verified"] is not True
-            or type(claim["mode"]) is not str or not claim["mode"]
-            or claim["mode"] != expected_mode
+            or claim["source_member_mode"] != expected_mode
+            or expected_mode == "LEGACY_UNQUALIFIED"
+            and claim["run_metadata_mode_consistency"] != "NOT_APPLICABLE"
+            or expected_mode != "LEGACY_UNQUALIFIED"
+            and claim["run_metadata_mode_consistency"] not in {
+                "NOT_DECLARED", "CONSISTENT",
+            }
             or type(claim["fit_start_time"]) is not str or not claim["fit_start_time"]
             or type(claim["fit_end_time"]) is not str or not claim["fit_end_time"]
         ):
