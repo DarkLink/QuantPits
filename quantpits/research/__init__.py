@@ -106,6 +106,14 @@ _EXPORT_MODULES = {
     "FRESH_BOOTSTRAP_AUTHORIZATION_ACTION": "quantpits.research.forward_bootstrap",
     "prepare_fresh_champion_segment_matched_bootstrap": "quantpits.research.forward_bootstrap",
     "publish_fresh_champion_segment_matched_bootstrap": "quantpits.research.forward_bootstrap",
+    "MODEL_ARTIFACT_CAPSULE_AUTHORIZATION_ACTION": "quantpits.research.model_artifact_capsule",
+    "ModelArtifactCapsuleContractError": "quantpits.research.model_artifact_capsule",
+    "ModelArtifactCapsuleInputError": "quantpits.research.model_artifact_capsule",
+    "ModelArtifactCapsulePlan": "quantpits.research.model_artifact_capsule",
+    "ModelArtifactCapsuleResult": "quantpits.research.model_artifact_capsule",
+    "prepare_definition_bound_model_artifact_capsule": "quantpits.research.model_artifact_capsule",
+    "publish_definition_bound_model_artifact_capsule": "quantpits.research.model_artifact_capsule",
+    "adopt_definition_bound_model_artifact_capsule": "quantpits.research.model_artifact_capsule",
 }
 
 
@@ -220,4 +228,12 @@ __all__ = [
     "FRESH_BOOTSTRAP_AUTHORIZATION_ACTION",
     "prepare_fresh_champion_segment_matched_bootstrap",
     "publish_fresh_champion_segment_matched_bootstrap",
+    "MODEL_ARTIFACT_CAPSULE_AUTHORIZATION_ACTION",
+    "ModelArtifactCapsuleContractError",
+    "ModelArtifactCapsuleInputError",
+    "ModelArtifactCapsulePlan",
+    "ModelArtifactCapsuleResult",
+    "prepare_definition_bound_model_artifact_capsule",
+    "publish_definition_bound_model_artifact_capsule",
+    "adopt_definition_bound_model_artifact_capsule",
 ]
