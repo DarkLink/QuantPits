@@ -201,6 +201,21 @@ class ExecutionQualityAgent(BaseAgent):
                 # Load data
                 order_df = pd.read_csv(order_log_path)
                 trade_df = pd.read_csv(trade_log_path)
+
+                # pandas 3 no longer permits string concatenation between an
+                # empty inferred-string column and an empty object column.
+                # Empty input is a terminal no-data observation, so classify it
+                # before attempting datetime construction.
+                if order_df.empty:
+                    findings.append(self._make_finding(
+                        'info', 'Execution timing analysis',
+                        'No order data available in this window.',
+                        {'status': 'no_data'}
+                    ))
+                    return AgentFindings(
+                        self.name, ctx.window_label, findings,
+                        recommendations, raw_metrics,
+                    )
                 
                 # Create datetime strings for filtering
                 order_df['datetime'] = pd.to_datetime(order_df['委托日期'].astype(str) + ' ' + order_df['委托时间'])

@@ -86,6 +86,10 @@ _SAFE_PREDICTION_PICKLE_GLOBALS = frozenset({
     ("copyreg", "_reconstructor"),
     ("numpy", "dtype"),
     ("numpy", "ndarray"),
+    # NumPy 2 moved ``numeric`` into the private ``numpy._core`` package.
+    # Keep both spellings so prediction artifacts produced by either supported
+    # NumPy object graph remain readable by the restricted unpickler.
+    ("numpy._core.numeric", "_frombuffer"),
     ("numpy.core.numeric", "_frombuffer"),
     ("numpy._core.multiarray", "_reconstruct"),
     ("numpy.core.multiarray", "_reconstruct"),
@@ -104,6 +108,21 @@ _SAFE_PREDICTION_PICKLE_GLOBALS = frozenset({
     ("pandas.core.internals.managers", "BlockManager"),
     ("pandas.core.internals.managers", "SingleBlockManager"),
     ("pandas.core.series", "Series"),
+    # pandas 3 serializes several public aliases directly and uses its Arrow
+    # string backing array by default.  These are the narrow constructors used
+    # by a one-column prediction frame; arbitrary pickle globals remain denied.
+    ("pandas", "DataFrame"),
+    ("pandas", "DatetimeIndex"),
+    ("pandas", "Index"),
+    ("pandas", "MultiIndex"),
+    ("pandas", "RangeIndex"),
+    ("pandas", "Series"),
+    ("pandas", "StringDtype"),
+    ("pandas.arrays", "ArrowStringArray"),
+    ("pandas.arrays", "DatetimeArray"),
+    ("pyarrow.lib", "_restore_array"),
+    ("pyarrow.lib", "py_buffer"),
+    ("pyarrow.lib", "type_for_alias"),
 })
 
 

@@ -88,7 +88,10 @@ def evaluate_health():
 
     # 3. Historical Percentile Extremes (Factor Drift)
     # Evaluate 1-year historical percentiles for Barra exposures
-    past_year_60 = df_60.last("252D").dropna(subset=['Exposure_Liquidity', 'Exposure_Momentum', 'Exposure_Volatility'])
+    cutoff = df_60.index[-1] - pd.Timedelta(days=252)
+    past_year_60 = df_60.loc[df_60.index > cutoff].dropna(
+        subset=['Exposure_Liquidity', 'Exposure_Momentum', 'Exposure_Volatility'],
+    )
     
     print(f"DEBUG: len(past_year_60)={len(past_year_60)}")
     

@@ -230,7 +230,10 @@ class TrainingHealthAgent(BaseAgent):
                 # D. Factor drift (Barra exposures percentile)
                 if 'Exposure_Liquidity' in df_60.columns:
                     try:
-                        past_year_60 = df_60.last("252D").dropna(subset=['Exposure_Liquidity'])
+                        cutoff = df_60.index[-1] - pd.Timedelta(days=252)
+                        past_year_60 = df_60.loc[df_60.index > cutoff].dropna(
+                            subset=['Exposure_Liquidity'],
+                        )
                         if not past_year_60.empty:
                             curr_size = past_year_60['Exposure_Liquidity'].iloc[-1]
                             size_5th = past_year_60['Exposure_Liquidity'].quantile(0.05)

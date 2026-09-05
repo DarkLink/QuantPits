@@ -655,6 +655,11 @@ def test_aggregate_score_normalization_is_loss_visible_and_finite(tmp_path, valu
     frame = pd.read_pickle(io.BytesIO(source.prediction_bytes(requests[0])))
     if value == 2 ** 54:
         frame = frame.astype("int64")
+    elif type(value) is bool:
+        # pandas 3 rejects a lossy bool write into a float block.  Use an
+        # object block so the test still reaches the production normalizer and
+        # proves that boolean scores are rejected there.
+        frame = frame.astype("object")
     frame.iloc[0, 0] = value
     _rewrite_source(source, requests[0], frame)
     result = inspect_rolling_aggregate_sources(

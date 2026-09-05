@@ -29,13 +29,13 @@ class GtjaAdapter(BaseBrokerAdapter):
     def _clean(frame: pd.DataFrame, *, filter_codes: bool) -> pd.DataFrame:
         df = frame.copy()
         for col in df.columns:
-            if df[col].dtype == "object":
-                df[col] = df[col].astype(str).str.lstrip("\t").str.strip()
+            if pd.api.types.is_object_dtype(df[col].dtype) or pd.api.types.is_string_dtype(df[col].dtype):
+                df[col] = df[col].astype("string").str.lstrip("\t").str.strip()
         if filter_codes and "证券代码" in df.columns:
-            codes = df["证券代码"].astype(str).str.lstrip("\t").str.strip()
-            valid = ~codes.str.lower().isin(["nan", "none", ""])
+            codes = df["证券代码"].astype("string").str.lstrip("\t").str.strip()
+            valid = codes.notna() & ~codes.str.lower().isin(["nan", "none", ""])
             df = df.loc[valid].copy()
-            df["证券代码"] = codes.loc[valid].apply(lambda value: value.split(".")[0].zfill(6))
+            df["证券代码"] = codes.loc[valid].str.split(".").str[0].str.zfill(6)
             df = df[df["证券代码"].str.startswith(("6", "0", "3"))].copy()
         return df
 
