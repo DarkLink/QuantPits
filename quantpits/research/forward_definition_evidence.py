@@ -1280,11 +1280,18 @@ def _observe_outer(
     )
 
 
+def _fresh_adopt_inventory(paths: Sequence[Path]) -> Tuple[Tuple[Any, ...], ...]:
+    # Reuse the selected-authority reader; unrelated capsules are not inputs.
+    from quantpits.research.decision_surface import _selected_fingerprint
+    return _selected_fingerprint(paths)
+
+
 def _observe_fresh_outer(
     production: Path, research: Path, activation: Path, definitions: Path,
     evidence: Path, identities_before: Mapping[str, Tuple[int, ...]],
     inventory_before: Sequence[Tuple[Any, ...]], excluded: Path,
     request: _EvidenceRequest, receipt: ForwardDefinitionEvidenceStoreReceipt,
+    *, selected_inputs: Optional[Sequence[Path]] = None,
 ) -> _OuterObservation:
     identities_after = None
     inventory_after = None
@@ -1296,12 +1303,14 @@ def _observe_fresh_outer(
         ) = _split_formal_inputs(
             production, research, activation, definitions, evidence,
         )
-        inventory_after = _workspace_inventory(
-            research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+        inventory_after = (
+            _fresh_adopt_inventory(selected_inputs) if selected_inputs is not None
+            else _workspace_inventory(research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES)
         )
         public_exact = _verify_public_evidence(evidence, request, receipt)
-        inventory_after = _workspace_inventory(
-            research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
+        inventory_after = (
+            _fresh_adopt_inventory(selected_inputs) if selected_inputs is not None
+            else _workspace_inventory(research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES)
         )
         if not _same_split_identities(
             production, research, activation, definitions, evidence,
@@ -1779,10 +1788,13 @@ def _adopt_fresh_champion_segment_definition_evidence(
             evidence / activation.stem,
         )),
     )
+    selected_inputs = (
+        production / "config" / "strategy_config.yaml",
+        production / "data" / "evidence" / "v1" / "cycles" / cycle_id,
+        activation, definitions / activation.stem, evidence / activation.stem,
+    )
     try:
-        before = _workspace_inventory(
-            research, excluded, byte_budget=_FRESH_MAX_INVENTORY_BYTES,
-        )
+        before = _fresh_adopt_inventory(selected_inputs)
         candidate, definition_receipt, request = _fresh_segment_join(
             production, research, cycle_id, activation, definitions,
         )
@@ -1815,6 +1827,7 @@ def _adopt_fresh_champion_segment_definition_evidence(
         outer = _observe_fresh_outer(
             production, research, activation, definitions, evidence,
             identities, before, excluded, request, receipt,
+            selected_inputs=selected_inputs,
         )
         if (
             not production_guard.supported or production_guard.mutated()
@@ -1828,6 +1841,7 @@ def _adopt_fresh_champion_segment_definition_evidence(
             outer = _observe_fresh_outer(
                 production, research, activation, definitions, evidence,
                 identities, before, excluded, request, receipt,
+                selected_inputs=selected_inputs,
             )
     finally:
         active = sys.exc_info()[1]

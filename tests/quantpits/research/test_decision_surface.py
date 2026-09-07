@@ -609,12 +609,14 @@ def _observer_layout(tmp_path):
 @pytest.mark.parametrize(
     "outcome", ["same", "version", "incomparable", "reference_intent_incomparable"],
 )
+@pytest.mark.parametrize("reference_source", ["research", "production"])
 def test_observer_is_strictly_zero_write_and_returns_exact_six_rows(
-    tmp_path, monkeypatch, outcome,
+    tmp_path, monkeypatch, outcome, reference_source,
 ):
     layout = _observer_layout(tmp_path)
     research, production, engine, activation, definitions, evidence, bootstraps = layout
-    reference_path = research / "reference-cycle"
+    reference_root = production if reference_source == "production" else research
+    reference_path = reference_root / "reference-cycle"
     current_path = production / "current-cycle"
     reference_path.mkdir()
     current_path.mkdir()
@@ -635,13 +637,24 @@ def test_observer_is_strictly_zero_write_and_returns_exact_six_rows(
             "phase37a_manifest_digest": {"manifest": True},
         }),
     )
+    calls = []
+    def fresh_evidence(prod, res, *args):
+        assert prod == production and res == research
+        calls.append("fresh_evidence")
+        return _SyntheticEvidence()
+    def fresh_candidate(prod, res, *args):
+        assert prod == production and res == research
+        calls.append("fresh_candidate")
+        return _SyntheticDefinition()
+    monkeypatch.setattr(evidence_module, "adopt_fresh_champion_segment_definition_evidence", fresh_evidence)
+    monkeypatch.setattr(observation_module, "observe_fresh_champion_segment_candidate", fresh_candidate)
     reference_manifest = {"kind": "reference"}
     current_manifest = {"kind": "current"}
     monkeypatch.setattr(
         module, "_cycle_authority",
         lambda root, cycle: (
             reference_path, reference_manifest, {}
-        ) if root == research else (current_path, current_manifest, {}),
+        ) if cycle == "2026-08-14" and root == reference_root else (current_path, current_manifest, {}),
     )
     activation_bytes = activation.read_bytes()
     def read_regular(path, **_kwargs):
@@ -685,7 +698,9 @@ def test_observer_is_strictly_zero_write_and_returns_exact_six_rows(
     result = observe_production_decision_surface(
         research, production, engine, "2026-08-21", activation,
         definitions, evidence, bootstraps, "bootstrap.synthetic",
+        reference_source=reference_source,
     )
+    assert calls == (["fresh_evidence", "fresh_candidate"] if reference_source == "production" else [])
     expected = {
         "same": "SAME_CHAMPION_SEGMENT", "version": "VERSION_BREAK",
         "incomparable": "INCOMPARABLE",
@@ -704,3 +719,48 @@ def test_safe_summary_contains_no_cycle_ids_paths_or_private_values():
     assert b"2026-08-21" not in encoded
     assert b"/tmp" not in encoded
     assert b"recorder" not in encoded.lower()
+
+
+def test_reference_source_default_preserves_legacy():
+    import inspect
+    assert inspect.signature(observe_production_decision_surface).parameters["reference_source"].default == "research"
+
+
+@pytest.mark.parametrize("source_state", ["missing", "corrupt"])
+def test_reference_source_does_not_fallback(tmp_path, monkeypatch, source_state):
+    import shutil
+    from tests.quantpits.research.test_forward_observation import _fresh_split_bundle
+    production, research, activation, cycle, _ = _fresh_split_bundle(tmp_path)
+    shadow = research / "research/shadow_v1"
+    definitions, evidence, bootstraps = (shadow / name for name in ("definitions", "definition_evidence", "bootstraps"))
+    for path in (definitions, evidence, bootstraps):
+        path.mkdir(mode=0o700)
+    copy = research / "data/evidence/v1/cycles" / cycle.name
+    copy.parent.mkdir(parents=True)
+    shutil.copytree(str(cycle), str(copy))
+    if source_state == "missing":
+        shutil.rmtree(str(cycle))
+    else:
+        (cycle / "seal.json").write_bytes(b"{}\n")
+    engine, _ = _synthetic_engine(tmp_path)
+    with pytest.raises(module.DecisionSurfaceInputError):
+        observe_production_decision_surface(research, production, engine, "2026-09-04", activation,
+            definitions, evidence, bootstraps, "bootstrap.synthetic", reference_source="production")
+    assert copy.is_dir()
+    assert cycle.exists() is (source_state == "corrupt")
+
+
+@pytest.mark.parametrize("reference_source", ["research", "production"])
+def test_failed_evidence_does_not_observe_candidate(tmp_path, monkeypatch, reference_source):
+    from types import SimpleNamespace
+    import quantpits.research.forward_definition_evidence as evidence_module
+    import quantpits.research.forward_observation as observation_module
+    research, production, engine, activation, definitions, evidence, bootstraps = _observer_layout(tmp_path)
+    monkeypatch.setattr(module, "SourceMutationObserver", _SyntheticGuard)
+    name = "adopt_forward_definition_evidence" if reference_source == "research" else "adopt_fresh_champion_segment_definition_evidence"
+    observer = "observe_frozen_shadow_forward_definition_candidate" if reference_source == "research" else "observe_fresh_champion_segment_candidate"
+    monkeypatch.setattr(evidence_module, name, lambda *args: SimpleNamespace(status="CONFLICT", definition_evidence_complete=False))
+    monkeypatch.setattr(observation_module, observer, lambda *args: pytest.fail("failed adoption must stop before candidate observation"))
+    with pytest.raises(module.DecisionSurfaceInputError):
+        observe_production_decision_surface(research, production, engine, "2026-09-04", activation,
+            definitions, evidence, bootstraps, "bootstrap.synthetic", reference_source=reference_source)

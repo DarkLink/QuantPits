@@ -994,3 +994,21 @@ def test_invalid_formal_paths_engineering_activation_and_budget_fail_zero_write(
             engineering, CYCLE, formal_activation,
             engineering_definitions, engineering_evidence,
         )
+
+
+def test_fresh_adopt_ignores_unrelated_capsule_growth(fresh_evidence_workspace):
+    assert _fresh_publish(fresh_evidence_workspace).status == "COMMITTED"
+    production, research, activation, definitions, evidence = fresh_evidence_workspace
+    unrelated = research / "research" / "shadow_v1" / "signal_input_capsules"
+    unrelated.mkdir(mode=0o700)
+    with (unrelated / "retained.bin").open("wb") as handle:
+        handle.truncate(65 * 1024 * 1024)
+    before = _snapshot(production), _snapshot(research)
+    adopted = _fresh_adopt(fresh_evidence_workspace)
+    assert adopted.status == "ADOPTED"
+    assert adopted.evidence_receipt.did_write is False
+    assert before == (_snapshot(production), _snapshot(research))
+    victim = evidence / activation.stem / "reference_receipt.json"
+    victim.write_bytes(b"{}\n")
+    with pytest.raises(ForwardDefinitionEvidenceContractError):
+        _fresh_adopt(fresh_evidence_workspace)

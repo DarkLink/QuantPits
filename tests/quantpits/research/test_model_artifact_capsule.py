@@ -746,6 +746,9 @@ def test_real_definition_evidence_and_sealed_cycle_join_into_live_request(
     )
     assert module._publish_store(capsules, plan._request).status == "COMMITTED"
     shutil.rmtree(production / "runs")
+    with (research / "unrelated-capsule.bin").open("wb") as handle:
+        handle.truncate(65 * 1024 * 1024)
+    before_adopt = module._protected_inventory(production, None), module._protected_inventory(research, None)
     adopted = module.adopt_definition_bound_model_artifact_capsule(
         production, research, CYCLE, activation, definitions, evidence,
         capsules, plan.capsule_id,
@@ -753,3 +756,11 @@ def test_real_definition_evidence_and_sealed_cycle_join_into_live_request(
     assert adopted.status == "ADOPTED"
     assert adopted.did_write is False
     assert adopted.model_artifact_retention_complete is True
+    assert before_adopt == (module._protected_inventory(production, None), module._protected_inventory(research, None))
+    payload = capsules / plan.capsule_id / module.PAYLOAD_NAME
+    payload.write_bytes(b"{}\n")
+    rejected = module.adopt_definition_bound_model_artifact_capsule(
+        production, research, CYCLE, activation, definitions, evidence, capsules, plan.capsule_id,
+    )
+    assert rejected.status != "ADOPTED"
+    assert rejected.did_write is False

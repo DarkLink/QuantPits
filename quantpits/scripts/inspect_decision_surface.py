@@ -34,6 +34,7 @@ def _parser() -> _SafeParser:
     parser.add_argument("--evidence-store")
     parser.add_argument("--bootstrap-store")
     parser.add_argument("--bootstrap-set-id")
+    parser.add_argument("--reference-source", choices=("research", "production"), default="research")
     return parser
 
 
@@ -95,6 +96,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.research_workspace, args.production_workspace, args.engine_root,
                 args.current_cycle, args.activation, args.definition_store,
                 args.evidence_store, args.bootstrap_store, args.bootstrap_set_id,
+                reference_source=args.reference_source,
             )
         except _PROCESS_CONTROL:
             raise

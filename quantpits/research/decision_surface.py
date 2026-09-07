@@ -803,7 +803,11 @@ def _bootstrap_authority(
         )
         if row.get("size_bytes") != len(data) or _digest(data, "raw_bytes") != expected:
             raise _ComponentIncomparable("BOOTSTRAP_MEMBER_DIGEST_MISMATCH")
-    definition_request = dict(definition.to_store_request().request_digest)
+    from quantpits.research.definition_store import revalidate_definition_bundle_request
+    request = revalidate_definition_bundle_request(
+        definition.compiled_definitions.to_store_request()
+    )
+    definition_request = dict(request.request_digest)
     if (
         manifest.get("bootstrap_set_id") != identifier
         or manifest.get("definition_set_id") != definition.definition_set_id
@@ -1292,8 +1296,11 @@ def _observe_production_decision_surface(
     evidence_store_root: Any,
     bootstrap_store_root: Any,
     bootstrap_set_id: Any,
+    *, reference_source: str = "research",
 ) -> ProductionDecisionSurfaceResult:
     """Freshly classify one current Production cycle, strictly without writes."""
+    if reference_source not in ("research", "production"):
+        raise DecisionSurfaceInputError("invalid reference source")
     current_cycle = _date(current_cycle_id, "current_cycle_id")
     identifier = _identifier(bootstrap_set_id, "bootstrap_set_id")
     research = _physical_path(research_workspace_root, "research_workspace_root", directory=True)
@@ -1323,11 +1330,6 @@ def _observe_production_decision_surface(
         raise DecisionSurfaceInputError("engine Git control directory is unavailable") from exc
     if stat.S_ISLNK(git_info.st_mode) or not stat.S_ISDIR(git_info.st_mode):
         raise DecisionSurfaceInputError("engine root must be an explicit physical Git repository")
-    try:
-        activation_raw = _strict_json(_read_regular(activation)[0], "activation")
-        evidence_cycle = _date(activation_raw.get("evidence_cycle_id"), "evidence_cycle_id")
-    except _ComponentIncomparable as exc:
-        raise DecisionSurfaceInputError("formal activation is incomparable") from exc
     watched_research = (
         activation.relative_to(research).as_posix(),
         definitions.relative_to(research).as_posix(),
@@ -1337,7 +1339,11 @@ def _observe_production_decision_surface(
     )
     current_relative = "data/evidence/v1/cycles/%s" % current_cycle
     research_guard = SourceMutationObserver(research, watched_research)
-    production_guard = SourceMutationObserver(production, (current_relative,))
+    production_guard = SourceMutationObserver(
+        production, (current_relative,) if reference_source == "research" else (
+            "data/evidence/v1/cycles", "config/strategy_config.yaml",
+        ),
+    )
     engine_guard = SourceMutationObserver(engine, CURATED_CODE_PATHS)
     git_control_paths = tuple(
         engine / ".git" / name for name in ("HEAD", "index", "packed-refs", "refs")
@@ -1372,16 +1378,30 @@ def _observe_production_decision_surface(
             for item in (research_guard, production_guard, engine_guard, *git_guards)
         ):
             raise DecisionSurfaceInputError("source mutation observation is unavailable")
-        from quantpits.research.forward_definition_evidence import adopt_forward_definition_evidence
-        evidence = adopt_forward_definition_evidence(
-            research, evidence_cycle, activation, definitions, evidence_root,
-        )
+        try:
+            activation_raw = _strict_json(_read_regular(activation)[0], "activation")
+            evidence_cycle = _date(activation_raw.get("evidence_cycle_id"), "evidence_cycle_id")
+        except _ComponentIncomparable as exc:
+            raise DecisionSurfaceInputError("formal activation is incomparable") from exc
+        if reference_source == "production":
+            from quantpits.research.forward_definition_evidence import (
+                adopt_fresh_champion_segment_definition_evidence,
+            )
+            from quantpits.research.forward_observation import observe_fresh_champion_segment_candidate as observe_definition
+            evidence = adopt_fresh_champion_segment_definition_evidence(
+                production, research, evidence_cycle, activation, definitions, evidence_root,
+            )
+            definition_args = (production, research, evidence_cycle, activation)
+        else:
+            from quantpits.research.forward_definition_evidence import adopt_forward_definition_evidence
+            from quantpits.research.forward_observation import observe_frozen_shadow_forward_definition_candidate as observe_definition
+            evidence = adopt_forward_definition_evidence(
+                research, evidence_cycle, activation, definitions, evidence_root,
+            )
+            definition_args = (research, evidence_cycle, activation)
         if evidence.status != "ADOPTED" or not evidence.definition_evidence_complete:
             raise DecisionSurfaceInputError("formal definition evidence was not adopted exactly")
-        from quantpits.research.forward_observation import observe_frozen_shadow_forward_definition_candidate
-        definition = observe_frozen_shadow_forward_definition_candidate(
-            research, evidence_cycle, activation,
-        )
+        definition = observe_definition(*definition_args)
         reference_cycle, source_receipt = _bootstrap_authority(
             research, bootstraps, identifier, definition, evidence,
         )
@@ -1392,7 +1412,7 @@ def _observe_production_decision_surface(
         ):
             raise DecisionSurfaceContractError("current cycle chronology is invalid")
         reference_path, reference_manifest, _reference_seal = _cycle_authority(
-            research, reference_cycle,
+            production if reference_source == "production" else research, reference_cycle,
         )
         reference_before = _selected_fingerprint((reference_path,))
         if (
@@ -1533,6 +1553,7 @@ def observe_production_decision_surface(
     evidence_store_root: Any,
     bootstrap_store_root: Any,
     bootstrap_set_id: Any,
+    *, reference_source: str = "research",
 ) -> ProductionDecisionSurfaceResult:
     """Fail closed with typed errors while preserving process-control."""
     try:
@@ -1540,6 +1561,7 @@ def observe_production_decision_surface(
             research_workspace_root, production_workspace_root, engine_root,
             current_cycle_id, activation_path, definition_store_root,
             evidence_store_root, bootstrap_store_root, bootstrap_set_id,
+            reference_source=reference_source,
         )
     except _PROCESS_CONTROL:
         raise

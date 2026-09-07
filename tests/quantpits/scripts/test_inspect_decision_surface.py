@@ -44,7 +44,7 @@ def _args():
 def test_cli_status_exit_code_privacy_and_canonical_json_are_consistent(
     monkeypatch, capsys, status, code,
 ):
-    monkeypatch.setattr(surface, "observe_production_decision_surface", lambda *_: _result(status))
+    monkeypatch.setattr(surface, "observe_production_decision_surface", lambda *_, **kw: _result(status))
     assert cli.main(_args()) == code
     output = capsys.readouterr().out.encode()
     payload = json.loads(output)
@@ -64,7 +64,7 @@ def test_cli_unknown_argument_does_not_echo_private_token(monkeypatch, capsys):
 
 
 def test_cli_contract_error_is_privacy_safe(monkeypatch, capsys):
-    def fail(*_args):
+    def fail(*_args, **kwargs):
         raise surface.DecisionSurfaceInputError("/private/model/RECORDER_SECRET")
     monkeypatch.setattr(surface, "observe_production_decision_surface", fail)
     assert cli.main(_args()) == 2
@@ -99,9 +99,21 @@ def test_cli_help_import_preserve_env_cwd_and_workspace(tmp_path):
 
 
 def test_cli_process_control_propagates(monkeypatch):
-    def stop(*_args):
+    def stop(*_args, **kwargs):
         raise KeyboardInterrupt()
     monkeypatch.setattr(surface, "observe_production_decision_surface", stop)
     with pytest.raises(KeyboardInterrupt):
         cli.main(_args())
 
+
+
+@pytest.mark.parametrize("selected", ["research", "production"])
+def test_reference_source_option_is_explicit(monkeypatch, capsys, selected):
+    calls = []
+    def observe(*args, **kwargs):
+        calls.append(kwargs)
+        return _result("SAME_CHAMPION_SEGMENT")
+    monkeypatch.setattr(surface, "observe_production_decision_surface", observe)
+    assert cli.main(_args() + ["--reference-source", selected]) == 0
+    assert calls == [{"reference_source": selected}]
+    assert json.loads(capsys.readouterr().out)["status"] == "SAME_CHAMPION_SEGMENT"

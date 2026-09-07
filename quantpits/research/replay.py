@@ -702,6 +702,46 @@ def _compare(champion: RankingResult, challenger: RankingResult, top_k: int) -> 
     }
 
 
+def _rank_complete_predictions(*, predictions, member_order, anchor_date, eligible_instruments):
+    universe = tuple(sorted(eligible_instruments))
+    names = tuple(member_order)
+    if not universe or len(set(universe)) != len(universe):
+        raise ReplayContractError("eligible universe must be non-empty and unique")
+    if not names or len(set(names)) != len(names) or any(name not in predictions for name in names):
+        raise ReplayContractError("arm membership is not an exact source subset")
+    normalized_columns = {}
+    for name in names:
+        scores, observed_rows = _date_scores(predictions[name], name, anchor_date)
+        if observed_rows != len(universe) or set(scores) != set(universe) or any(
+            isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value))
+            for value in scores.values()
+        ):
+            raise ReplayInputError("cannot rank an incomplete model/date observation")
+        normalized_columns[name] = pd.Series(
+            _rank_percentiles({key: float(value) for key, value in scores.items()}),
+            index=list(universe), dtype=float,
+        )
+    normalized_frame = pd.DataFrame(normalized_columns, index=list(universe))
+    fused_series = normalized_frame[list(names)].mean(axis=1)
+    return canonical_full_ranking(universe, {
+        instrument: float(value) for instrument, value in fused_series.items()
+    })
+
+
+def rank_complete_anchor(
+    *, prediction_bytes_by_member, member_order, anchor_date, eligible_instruments,
+) -> RankingResult:
+    """Rank one complete anchor using Stage A's frozen percentile/mean rules."""
+    anchor = _strict_date(anchor_date, "anchor_date")
+    names = tuple(member_order)
+    if any(name not in prediction_bytes_by_member for name in names):
+        raise ReplayInputError("missing prediction source")
+    return _rank_complete_predictions(
+        predictions={name: _prediction_frame(prediction_bytes_by_member[name], name) for name in names},
+        member_order=names, anchor_date=anchor, eligible_instruments=eligible_instruments,
+    )
+
+
 class ResearchRankingReplay:
     """Sole truth owner for Stage-A inventory, fusion, parity, and comparison."""
 
@@ -761,30 +801,11 @@ class ResearchRankingReplay:
         return tuple(by_week[key] for key in sorted(by_week))
 
     def _ranking(self, anchor: str, member_names: Sequence[str]) -> RankingResult:
-        universe = _universe_at(self.inputs.universe_intervals, anchor)
-        source_by_name = {source.model_name: source for source in self.inputs.sources}
-        if len(member_names) != len(set(member_names)) or any(name not in source_by_name for name in member_names):
-            raise ReplayContractError("arm membership is not an exact source subset")
-        normalized_columns = {}
-        for name in member_names:
-            scores, observed_rows = _date_scores(source_by_name[name].prediction, name, anchor)
-            if observed_rows != len(universe) or set(scores) != set(universe) or any(
-                isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value))
-                for value in scores.values()
-            ):
-                raise ReplayInputError("cannot rank an incomplete model/date observation")
-            normalized_columns[name] = pd.Series(
-                _rank_percentiles({key: float(value) for key, value in scores.items()}),
-                index=list(universe), dtype=float,
-            )
-        # Match the Production equal-fusion primitive exactly: construct the
-        # normalized wide frame in declared member order, then use pandas'
-        # row-wise mean.  A Python scalar sum can differ by one ULP and change
-        # deterministic tie ordering even when scores are tolerance-equal.
-        normalized_frame = pd.DataFrame(normalized_columns, index=list(universe))
-        fused_series = normalized_frame[list(member_names)].mean(axis=1)
-        fused = {instrument: float(value) for instrument, value in fused_series.items()}
-        return canonical_full_ranking(universe, fused)
+        return _rank_complete_predictions(
+            predictions={source.model_name: source.prediction for source in self.inputs.sources},
+            member_order=member_names, anchor_date=anchor,
+            eligible_instruments=_universe_at(self.inputs.universe_intervals, anchor),
+        )
 
     def run(self, *, preferred_start: str, preferred_end: str, window_size: int = 6) -> dict:
         start = _strict_date(preferred_start, "preferred_start")

@@ -549,3 +549,50 @@ def test_cli_has_no_score_tolerance_override():
             "--score-tolerance", "1e300",
         ])
     assert caught.value.code == 2
+
+
+@pytest.mark.parametrize("singleton", [False, True])
+def test_complete_anchor_matches_stage_a(tmp_path, singleton):
+    import io
+    universe = ("AAA",) if singleton else INSTRUMENTS
+    raw = {}
+    columns = {}
+    for index, name in enumerate(MODELS):
+        values = [1.] if singleton else ([1., 1., 3., 4.] if index == 0 else [4., 2., 2., 1.])
+        frame = pd.DataFrame({"score": values}, index=pd.MultiIndex.from_tuples(
+            [(pd.Timestamp(DATES[-1]), item) for item in universe], names=("datetime", "instrument")))
+        buffer = io.BytesIO()
+        frame.to_pickle(buffer)
+        raw[name] = buffer.getvalue()
+        ranks = pd.Series(values, index=universe).rank(method="average")
+        columns[name] = pd.Series([0.5], index=universe) if singleton else (ranks - 1) / (len(universe) - 1)
+    expected = canonical_full_ranking(universe, pd.DataFrame(columns)[list(MODELS)].mean(axis=1).to_dict())
+    actual = replay.rank_complete_anchor(prediction_bytes_by_member=raw, member_order=MODELS,
+             anchor_date=DATES[-1], eligible_instruments=tuple(reversed(universe)))
+    assert actual.to_csv_bytes() == expected.to_csv_bytes()
+
+
+@pytest.mark.parametrize("kind", ["missing_source", "missing_anchor", "missing_row", "duplicate", "foreign", "nan", "inf"])
+def test_complete_anchor_rejects_incomplete_scores(kind):
+    import io
+    frames = [_prediction(i) for i in range(4)]
+    if kind == "missing_anchor":
+        frames[0] = frames[0].drop(pd.Timestamp(DATES[-1]), level="datetime")
+    elif kind == "missing_row":
+        frames[0] = frames[0].iloc[:-1]
+    elif kind == "duplicate":
+        frames[0] = pd.concat([frames[0], frames[0].iloc[[-1]]])
+    elif kind == "foreign":
+        frames[0] = _prediction(0, foreign=(DATES[-1], MODELS[0], "FOREIGN"))
+    elif kind in ("nan", "inf"):
+        frames[0].iloc[-1, 0] = float(kind)
+    raw = {}
+    for name, frame in zip(MODELS, frames):
+        buffer = io.BytesIO()
+        frame.to_pickle(buffer)
+        raw[name] = buffer.getvalue()
+    if kind == "missing_source":
+        del raw[MODELS[0]]
+    with pytest.raises((ReplayContractError, ReplayInputError)):
+        replay.rank_complete_anchor(prediction_bytes_by_member=raw, member_order=MODELS,
+                                   anchor_date=DATES[-1], eligible_instruments=INSTRUMENTS)
