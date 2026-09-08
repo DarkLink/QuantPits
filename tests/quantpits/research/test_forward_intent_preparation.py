@@ -409,3 +409,43 @@ def test_copy_branch_preparation_digest_uses_content_inventory(prepared_inputs, 
     assert third['status'] == 'PREPARED', third
     assert first['input_digest'] != third['input_digest']
     assert first['preparation_digest'] != third['preparation_digest']
+
+
+def test_private_guard_handoff_stays_live(prepared_inputs):
+    args = prepared_inputs[0]
+    owner = m._PreparationGuards()
+    result = m._prepare_first_forward_intent(*args, _guard_owner=owner)
+    try:
+        assert result.status == 'PREPARED'
+        owner.check()
+        path = args[3] / 'calendars/day.txt'
+        path.write_bytes(path.read_bytes())
+        with pytest.raises(m._Blocked, match='INPUT_STABILITY_LOST'):
+            owner.check()
+    finally:
+        owner.close()
+    assert owner.guards == []
+
+
+def test_guard_handoff_finalization_failure_releases(prepared_inputs, monkeypatch):
+    owner = m._PreparationGuards()
+    original = m.surface.SourceMutationObserver
+    guards = []
+    class Tracked:
+        def __init__(self, *args, **kwargs):
+            self.inner = original(*args, **kwargs)
+            self.supported = self.inner.supported
+            self.closed = False
+            guards.append(self)
+        def mutated(self):
+            return self.inner.mutated()
+        def close(self):
+            self.inner.close()
+            self.closed = True
+    monkeypatch.setattr(m.surface, 'SourceMutationObserver', Tracked)
+    def fail(*args):
+        raise ValueError('pair failed')
+    monkeypatch.setattr(m, '_PreparedPair', fail)
+    result = m._prepare_first_forward_intent(*prepared_inputs[0], _guard_owner=owner)
+    assert result.status == 'PRECONDITION_BLOCKED'
+    assert not owner.guards and guards and all(g.closed for g in guards)

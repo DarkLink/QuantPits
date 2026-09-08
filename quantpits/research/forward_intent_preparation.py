@@ -272,6 +272,43 @@ def prepare_first_forward_intent(
     definition_store_root, evidence_store_root, bootstrap_store_root, bootstrap_set_id,
     signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id,
 ) -> FirstForwardIntentPreparation:
+    return _prepare_first_forward_intent(
+        production_workspace_root, research_workspace_root, engine_root,
+        qlib_provider_root, current_cycle_id, activation_path,
+        definition_store_root, evidence_store_root, bootstrap_store_root, bootstrap_set_id,
+        signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id,
+    )
+
+
+class _PreparationGuards:
+    """Private ownership seam; a successful transfer remains live until close."""
+    def __init__(self):
+        self.guards = []
+
+    def check(self):
+        _require(bool(self.guards) and not any(g.mutated() for g in self.guards),
+                 "INPUT_STABILITY_LOST")
+
+    def close(self):
+        failure = None
+        while self.guards:
+            guard = self.guards.pop()
+            try:
+                guard.close()
+            except BaseException as exc:
+                if failure is None or isinstance(exc, _PROCESS_CONTROL):
+                    failure = exc
+        if failure is not None:
+            raise failure
+
+
+def _prepare_first_forward_intent(
+    production_workspace_root, research_workspace_root, engine_root,
+    qlib_provider_root, current_cycle_id, activation_path,
+    definition_store_root, evidence_store_root, bootstrap_store_root, bootstrap_set_id,
+    signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id,
+    *, _guard_owner=None,
+) -> FirstForwardIntentPreparation:
     summary = _summary()
     guards = []
     stage = "INPUT_INVALID"
@@ -428,7 +465,7 @@ def prepare_first_forward_intent(
                  and not any(guard.mutated() for guard in guards), stage)
         _require(_engine(engine, manifest) == (commit, tree, implementation), stage)
         # Close observations before granting a result; cleanup failure is not PREPARED.
-        while guards:
+        while guards and _guard_owner is None:
             guard = guards[-1]
             _require(not guard.mutated(), stage)
             guard.close()
@@ -449,10 +486,16 @@ def prepare_first_forward_intent(
         summary["input_digest"] = _hash(input_payload)
         summary["preparation_digest"] = _hash({"input_digest": summary["input_digest"], "roles": summary["roles"]})
         summary.update(status="PREPARED", intent_pair_prepared=True)
-        return _result(summary, _PreparedPair(
+        result = _result(summary, _PreparedPair(
             priors, rankings, snapshots, plans, compiled, receipt,
             canonical_json_bytes(input_payload), (day_data, future_data), canonical_json_bytes(bootstrap),
         ))
+        if _guard_owner is not None:
+            _require(type(_guard_owner) is _PreparationGuards and not _guard_owner.guards,
+                     "GUARD_HANDOFF_INVALID")
+            _require(not any(guard.mutated() for guard in guards), "INPUT_STABILITY_LOST")
+            _guard_owner.guards, guards = guards, []
+        return result
     except _PROCESS_CONTROL:
         raise
     except Exception as exc:
