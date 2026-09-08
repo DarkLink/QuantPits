@@ -61,3 +61,9 @@ B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单�
 进一步排查发现，部分历史 `source_experiment` 指向了错误实验，不能把按该名称查不到记录直接解释成 recorder 已删除。Research 兼容读者现在在**同一显式文件后端**中，按精确 recorder ID 唯一定位，并核对 recorder `meta.yaml` 内的 run ID、experiment ID 与物理目录。实验名称仅来自该实际实验的元数据；不改写历史 tags，不选择其他 recorder，不使用 latest。重复 recorder ID、记录元数据不匹配或真正缺失仍拒绝。同名实验本身不替代唯一 run ID 的判断。实验命名空间及所选 record metadata 也纳入观察窗口。
 
 生产预测入口的默认来源追溯仍保守地使用其显式 backend/experiment；无法核实的旧链记录 UNRESOLVED。Research 的文件后端兼容观察可通过上述独立定位核实它，不把 UNRESOLVED 缓存标签当成训练来源丢失的证明。
+
+### 内容摘要与观察预算（C3 §13 补修）
+
+传给 C3 的 observed-input inventory 使用 `MODEL_COPY_INPUT_CONTENT_INVENTORY_V1`：仅包含稳定的 `reference` / `current` 来源角色、相对路径、存在/文件/实验清单状态及实际 raw digest。文件 bytes 不变时，调用之间的 touch、同内容重建或物理目录搬移不会改变该内容 inventory；这不改变现有 bundle 的工作区 authority 合同。实际 tag/model bytes 变化仍改变摘要或触发完整性拒绝。
+
+device、inode、mode、mtime、ctime 等仅用于本次调用的本地前后检查及 guard，不进入 input/preparation digest。调用期间的变化仍会阻塞；成功移交的 guards 保持到外层 preparation 完成。模型输入实际读取和后置内容核对统一采用 **128 MiB 单文件上限**，前置只观察 metadata，不再隐式调用通用 32 MiB fingerprint。超过上限仍拒绝；其他 evidence readers、writer 与存储格式的预算不变。

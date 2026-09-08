@@ -4,9 +4,12 @@ Live file-backend ancestry is an additional observed input, never substituted
 for sealed model bytes. No MLflow client, model loading, or latest selection.
 """
 from pathlib import Path
+import os
 import re
 
 from quantpits.training.model_identity import model_content_digest, trace_training_origin
+
+MAX_INPUT_BYTES = 128 * 1024 * 1024
 
 
 def observe_model_copy_pair(reference_root, reference_manifest, current_root, current_manifest,
@@ -14,8 +17,16 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
     from quantpits.research import decision_surface as s
     guards, selected, inventories = [], [], []
     watched = set()
+    content = {}
+    semantic = {}
     namespaces = set()
     roots = (Path(reference_root), Path(current_root))
+
+    # Physical continuity is local to this invocation, never semantic identity.
+    def metadata(path):
+        info = os.lstat(str(path))
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
     def watch(root, path):
         if path in watched:
@@ -28,14 +39,21 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
         guards.append(guard)
         if not guard.supported:
             raise s._ComponentIncomparable("MODEL_INPUT_OBSERVATION_UNSUPPORTED")
-        before = s._selected_fingerprint((path,))
+        before = metadata(path)
         selected.append((path, before))
 
-    def read(root, path):
+    def read(root, path, role):
         watch(root, path)
-        return s._read_regular(path, maximum=128 * 1024 * 1024)[0]
+        data = s._read_regular(path, maximum=MAX_INPUT_BYTES)[0]
+        digest = s._digest(data, 'raw_bytes')
+        if content.setdefault(path, digest) != digest:
+            raise s._ComponentIncomparable('MODEL_INPUT_CHANGED')
+        semantic[(role, path.relative_to(root).as_posix())] = {
+            'state': 'file', 'raw_digest': digest,
+        }
+        return data
 
-    def projection(root, manifest):
+    def projection(root, manifest, role):
         source = s._source_projection(manifest)  # authoritative partition validation
         artifacts = {a['position']: a for a in manifest['model_and_ensemble_lineage']['source_artifacts']
                      if a.get('role') == 'source_training'}
@@ -56,7 +74,7 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
                 if not directory.is_dir():
                     raise s._ComponentIncomparable('MODEL_LINEAGE_RECORD_MISSING')
                 watch(root, directory / 'tags')
-                values = {path.name: read(root, path).decode('utf-8')
+                values = {path.name: read(root, path, role).decode('utf-8')
                           for path in sorted((directory / 'tags').iterdir()) if path.is_file()}
                 return values
 
@@ -77,17 +95,23 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
                     namespace_guard._watch(mlruns, namespace_guard._SELF_MASK | namespace_guard._PARENT_MASK, None, True)
                     namespaces.add(mlruns)
                 inventory = tuple(sorted(mlruns.glob('*/meta.yaml')))
+                semantic[(role, 'mlruns')] = {
+                    'state': 'experiment_inventory',
+                    'members': [path.relative_to(mlruns).as_posix() for path in inventory],
+                }
                 inventories.append((mlruns, inventory))
                 candidates = []
                 for experiment_meta in inventory:
-                    experiment_data = yaml.safe_load(read(root, experiment_meta))
+                    experiment_data = yaml.safe_load(read(root, experiment_meta, role))
                     record = experiment_meta.parent / identifier
                     guard = s.SourceMutationObserver(root, ((record / 'meta.yaml').relative_to(root).as_posix(),))
                     guards.append(guard)
                     if not guard.supported:
                         raise s._ComponentIncomparable('MODEL_INPUT_OBSERVATION_UNSUPPORTED')
-                    if record.exists():
-                        metadata = yaml.safe_load(read(root, record / 'meta.yaml'))
+                    if not record.exists():
+                        semantic[(role, record.relative_to(root).as_posix())] = {'state': 'absent'}
+                    else:
+                        metadata = yaml.safe_load(read(root, record / 'meta.yaml', role))
                         ids = [metadata.get(key) for key in ('run_id', 'run_uuid') if key in metadata]
                         if (not ids or any(value != identifier for value in ids)
                                 or str(metadata.get('experiment_id')) != experiment_meta.parent.name
@@ -109,7 +133,7 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
                 except ValueError:
                     raise s._ComponentIncomparable('MODEL_MEMBER_LOCATOR_INVALID')
                 if relative == 'model.pkl' or re.fullmatch(r'model_fold_[0-9]+\.pkl', relative):
-                    raw = read(root, root / path)
+                    raw = read(root, root / path, role)
                     if s._digest(raw, 'raw_bytes') != item['digest']:
                         raise s._ComponentIncomparable('MODEL_SEALED_BYTES_MISMATCH')
                     names[relative] = model_content_digest(raw)
@@ -117,7 +141,7 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
                       and not relative.startswith(('portfolio_analysis/', 'sig_analysis/'))):
                     # Only explicitly known observation/report artifacts are excluded.
                     # Unknown inputs/configuration remain exact content dependencies.
-                    raw = read(root, root / path)
+                    raw = read(root, root / path, role)
                     if s._digest(raw, 'raw_bytes') != item['digest']:
                         raise s._ComponentIncomparable('MODEL_SEALED_BYTES_MISMATCH')
                     auxiliary[relative] = s._digest(raw, 'raw_bytes')
@@ -130,13 +154,20 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
         return {'protocol': 'OBSERVED_TRAINING_ORIGIN_MODEL_CONTENT_V1', 'members': rows}
 
     try:
-        values = (projection(roots[0], reference_manifest), projection(roots[1], current_manifest))
-        if (any(before != s._selected_fingerprint((path,)) for path, before in selected)
+        values = (projection(roots[0], reference_manifest, 'reference'),
+                  projection(roots[1], current_manifest, 'current'))
+        if (any(before != metadata(path) for path, before in selected)
+                or any(digest != s._digest(s._read_regular(path, maximum=MAX_INPUT_BYTES)[0], 'raw_bytes')
+                       for path, digest in content.items())
                 or any(g.mutated() for g in guards)
                 or any(tuple(sorted(root.glob('*/meta.yaml'))) != entries for root, entries in inventories)):
             raise s._ComponentIncomparable('MODEL_INPUT_CHANGED')
         if input_inventory is not None:
-            input_inventory.append(s._digest([before for _, before in selected]))
+            input_inventory.append(s._digest({
+                'protocol': 'MODEL_COPY_INPUT_CONTENT_INVENTORY_V1',
+                'members': [dict(value, role=role, relative_path=relative)
+                            for (role, relative), value in sorted(semantic.items())],
+            }))
         if retained_guards is not None:
             retained_guards.extend(guards)
             guards.clear()  # Ownership transfers only after successful verification.

@@ -17,6 +17,7 @@ from quantpits.research import forward_intent_preparation as m
 from quantpits.research import decision_surface as surface
 from tests.quantpits.research.test_forward_definition_evidence import fresh_evidence_workspace
 from tests.quantpits.research.test_forward_bootstrap import fresh_bootstrap_workspace, _fresh_bootstrap_publish
+from tests.quantpits.research.test_model_continuity import copied_models
 
 ANCHOR = "2026-09-04"
 TRADE = "2026-09-07"
@@ -367,3 +368,44 @@ def test_bootstrap_state_must_match_observed_source(prepared_inputs, monkeypatch
     assert summary["status"] == "PRECONDITION_BLOCKED"
     assert summary["reason_codes"] == ["BOOTSTRAP_SOURCE_ECONOMICS_INVALID"]
     assert all(role["status"] == "NOT_RUN" for role in summary["roles"])
+
+
+
+def test_copy_branch_preparation_digest_uses_content_inventory(prepared_inputs, copied_models, monkeypatch):
+    import os
+    from quantpits.research import model_continuity as continuity
+    args = prepared_inputs[0]
+    root, (reference, current) = copied_models
+    original = continuity.observe_model_copy_pair
+    original_projection = surface._source_projection
+    def projection(value):
+        if value is prepared_inputs[2]:
+            return {}
+        if 'model_and_ensemble_lineage' not in value:
+            return {'fixture_reference': True}
+        return original_projection(value)
+    monkeypatch.setattr(surface, '_source_projection', projection)
+    original_cycle = surface._cycle_authority
+    def cycle_authority(workspace, date):
+        if date == '2026-08-28':
+            return workspace / 'data/evidence/v1/cycles' / date, {'fixture_reference': True}, {}
+        return original_cycle(workspace, date)
+    monkeypatch.setattr(surface, '_cycle_authority', cycle_authority)
+    monkeypatch.setattr(surface, '_source_matches_definition', lambda projection, candidate: bool(projection))
+    def copied_pair(*unused, **kwargs):
+        return original(root, reference, root, current, **kwargs)
+    monkeypatch.setattr(continuity, 'observe_model_copy_pair', copied_pair)
+    first = m.prepare_first_forward_intent(*args).to_safe_summary_dict()
+    assert first['status'] == 'PREPARED', first['reason_codes']
+    tag = root / 'mlruns/1/source_0_b/tags/model'
+    info = tag.stat()
+    os.utime(tag, ns=(info.st_atime_ns, info.st_mtime_ns + 1000000000))
+    second = m.prepare_first_forward_intent(*args).to_safe_summary_dict()
+    assert second['status'] == 'PREPARED', second
+    assert first['input_digest'] == second['input_digest']
+    assert first['preparation_digest'] == second['preparation_digest']
+    (tag.parent / 'audit_note').write_text('new bytes')
+    third = m.prepare_first_forward_intent(*args).to_safe_summary_dict()
+    assert third['status'] == 'PREPARED', third
+    assert first['input_digest'] != third['input_digest']
+    assert first['preparation_digest'] != third['preparation_digest']

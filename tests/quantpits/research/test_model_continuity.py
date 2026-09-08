@@ -205,3 +205,93 @@ def test_duplicate_experiment_names_do_not_override_unique_recorder_identity(cop
     (directory / 'meta.yaml').write_text('name: TRAINING\n')
     first, second = observe_model_copy_pair(root, a, root, b)
     assert first == second
+
+
+@pytest.mark.parametrize('change', ['mtime', 'recreate', 'relocate'])
+def test_content_inventory_ignores_physical_file_identity(copied_models, tmp_path, change):
+    import os
+    import shutil
+    root, (a, b) = copied_models
+    first, second = [], []
+    pair = observe_model_copy_pair(root, a, root, b, input_inventory=first)
+    tag = root / 'mlruns/1/source_0_b/tags/model'
+    if change == 'mtime':
+        info = tag.stat()
+        os.utime(tag, ns=(info.st_atime_ns, info.st_mtime_ns + 1000000000))
+    elif change == 'recreate':
+        replacement = tag.with_name('replacement')
+        replacement.write_bytes(tag.read_bytes())
+        replacement.replace(tag)
+    else:
+        destination = tmp_path / 'relocated'
+        shutil.copytree(root, destination)
+        root = destination
+    assert observe_model_copy_pair(root, a, root, b, input_inventory=second) == pair
+    assert first == second
+
+
+def test_content_inventory_retains_actual_tag_bytes(copied_models):
+    root, (a, b) = copied_models
+    inventories = [[], []]
+    observe_model_copy_pair(root, a, root, b, input_inventory=inventories[0])
+    (root / 'mlruns/1/source_0_b/tags/audit_note').write_text('changed')
+    observe_model_copy_pair(root, a, root, b, input_inventory=inventories[1])
+    assert inventories[0] != inventories[1]
+
+
+def test_metadata_change_during_read_still_blocks(copied_models, monkeypatch):
+    import os
+    from quantpits.research import model_continuity as module
+    root, (a, b) = copied_models
+    original = module.model_content_digest
+    def touched(data):
+        tag = root / 'mlruns/1/source_0_a/tags/model'
+        info = tag.stat()
+        os.utime(tag, ns=(info.st_atime_ns, info.st_mtime_ns + 1000000000))
+        return original(data)
+    monkeypatch.setattr(module, 'model_content_digest', touched)
+    with pytest.raises(ValueError):
+        observe_model_copy_pair(root, a, root, b)
+
+
+def _replace_selected_models(root, manifests, raw):
+    for manifest in manifests:
+        artifact = next(a for a in manifest['model_and_ensemble_lineage']['source_artifacts']
+                        if a.get('role') == 'source_training' and a['position'] == 0)
+        member = next(m for m in artifact['members'] if m['path'].endswith('/model.pkl'))
+        (root / member['path']).write_bytes(raw)
+        member['digest'] = TypedDigest.raw(raw).to_dict()
+        artifact['artifact_tree_digest'] = TypedDigest.canonical(
+            [{'path': m['path'], 'digest': m['digest']} for m in artifact['members']], 'file_inventory').to_dict()
+
+
+def test_model_above_32_mib_uses_same_budget_for_read_and_recheck(copied_models, monkeypatch):
+    from quantpits.research import decision_surface as surface
+    from quantpits.research import model_continuity as module
+    root, manifests = copied_models
+    raw = pickle.dumps({'model_payload': b'x' * (33 * 1024 * 1024)}, protocol=4)
+    _replace_selected_models(root, manifests, raw)
+    original = surface._read_regular
+    reads = []
+    def reader(path, **kwargs):
+        if path.name == 'model.pkl':
+            reads.append(kwargs['maximum'])
+        return original(path, **kwargs)
+    monkeypatch.setattr(surface, '_read_regular', reader)
+    a, b = observe_model_copy_pair(root, manifests[0], root, manifests[1])
+    assert a == b
+    assert len(reads) == 16  # Eight model files: actual read and final content check.
+    assert set(reads) == {module.MAX_INPUT_BYTES}
+
+
+def test_model_above_declared_budget_is_rejected_before_parser(copied_models, monkeypatch):
+    from quantpits.research import model_continuity as module
+    root, (a, b) = copied_models
+    path = root / 'mlruns/1/source_0_a/artifacts/model.pkl'
+    with path.open('wb') as stream:
+        stream.truncate(module.MAX_INPUT_BYTES + 1)
+    def unexpected(*args):
+        pytest.fail('oversized model reached the parser')
+    monkeypatch.setattr(module, 'model_content_digest', unexpected)
+    with pytest.raises(ValueError):
+        observe_model_copy_pair(root, a, root, b)
