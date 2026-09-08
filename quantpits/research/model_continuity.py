@@ -47,42 +47,10 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
                     or locator.parts[-1] != 'artifacts' or locator.parts[2] != artifact['recorder_id']
                     or any(part in ('.', '..') for part in locator.parts)):
                 raise s._ComponentIncomparable('MODEL_LINEAGE_BACKEND_UNSUPPORTED')
-            experiment_directories = {}
+            resolved_locations = {}
 
             def tags(experiment, identifier):
-                if not re.fullmatch(r'[a-zA-Z0-9_-]+', identifier):
-                    raise ValueError('invalid recorder selector')
-                if experiment not in experiment_directories:
-                    # Resolve an explicit experiment name, not a latest recorder.
-                    import yaml
-                    mlruns = root / 'mlruns'
-                    if mlruns not in namespaces:
-                        s._physical_path(mlruns, "model backend", directory=True)
-                        namespace_guard = s.SourceMutationObserver(mlruns, ())
-                        guards.append(namespace_guard)
-                        if not namespace_guard.supported:
-                            raise s._ComponentIncomparable("MODEL_INPUT_OBSERVATION_UNSUPPORTED")
-                        # Watch the experiment namespace shallowly; never inventory
-                        # all recorder payloads just to resolve an experiment name.
-                        namespace_guard._watch(mlruns, namespace_guard._SELF_MASK | namespace_guard._PARENT_MASK, None, True)
-                        for directory in sorted(mlruns.iterdir()):
-                            if directory.is_dir():
-                                guard = s.SourceMutationObserver(root, ((directory / 'meta.yaml').relative_to(root).as_posix(),))
-                                guards.append(guard)
-                                if not guard.supported:
-                                    raise s._ComponentIncomparable("MODEL_INPUT_OBSERVATION_UNSUPPORTED")
-                        namespaces.add(mlruns)
-                    inventory = tuple(sorted(mlruns.glob("*/meta.yaml")))
-                    inventories.append((mlruns, inventory))
-                    matches = []
-                    for path in inventory:
-                        value = yaml.safe_load(read(root, path))
-                        if isinstance(value, dict) and value.get('name') == experiment:
-                            matches.append(path.parent)
-                    if len(matches) != 1:
-                        raise s._ComponentIncomparable('MODEL_LINEAGE_EXPERIMENT_AMBIGUOUS')
-                    experiment_directories[experiment] = matches[0]
-                directory = experiment_directories[experiment] / identifier
+                directory = resolved_locations[(experiment, identifier)]
                 if identifier == artifact['recorder_id'] and directory != root / locator.parent:
                     raise ValueError('source experiment locator mismatch')
                 if not directory.is_dir():
@@ -92,8 +60,47 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
                           for path in sorted((directory / 'tags').iterdir()) if path.is_file()}
                 return values
 
+            def resolve_identity(declared_experiment, identifier):
+                # Run IDs, unlike legacy experiment-name tags, are stable. Resolve
+                # exactly this ID across the explicit backend, never a latest run.
+                if not isinstance(identifier, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', identifier):
+                    raise s._ComponentIncomparable('MODEL_RECORDER_ID_INVALID')
+                import yaml
+                mlruns = root / 'mlruns'
+                if mlruns not in namespaces:
+                    s._physical_path(mlruns, "model backend", directory=True)
+                    namespace_guard = s.SourceMutationObserver(mlruns, tuple(
+                        directory.name + '/meta.yaml' for directory in mlruns.iterdir() if directory.is_dir()))
+                    guards.append(namespace_guard)
+                    if not namespace_guard.supported:
+                        raise s._ComponentIncomparable("MODEL_INPUT_OBSERVATION_UNSUPPORTED")
+                    namespace_guard._watch(mlruns, namespace_guard._SELF_MASK | namespace_guard._PARENT_MASK, None, True)
+                    namespaces.add(mlruns)
+                inventory = tuple(sorted(mlruns.glob('*/meta.yaml')))
+                inventories.append((mlruns, inventory))
+                candidates = []
+                for experiment_meta in inventory:
+                    experiment_data = yaml.safe_load(read(root, experiment_meta))
+                    record = experiment_meta.parent / identifier
+                    guard = s.SourceMutationObserver(root, ((record / 'meta.yaml').relative_to(root).as_posix(),))
+                    guards.append(guard)
+                    if not guard.supported:
+                        raise s._ComponentIncomparable('MODEL_INPUT_OBSERVATION_UNSUPPORTED')
+                    if record.exists():
+                        metadata = yaml.safe_load(read(root, record / 'meta.yaml'))
+                        ids = [metadata.get(key) for key in ('run_id', 'run_uuid') if key in metadata]
+                        if (not ids or any(value != identifier for value in ids)
+                                or str(metadata.get('experiment_id')) != experiment_meta.parent.name
+                                or not isinstance(experiment_data.get('name'), str)):
+                            raise s._ComponentIncomparable('MODEL_RECORDER_METADATA_MISMATCH')
+                        candidates.append((experiment_data['name'], identifier))
+                        resolved_locations[(experiment_data['name'], identifier)] = record
+                if len(candidates) != 1:
+                    raise s._ComponentIncomparable('MODEL_RECORDER_ID_MISSING_OR_AMBIGUOUS')
+                return candidates[0]
+
             origin = trace_training_origin(artifact['experiment_name'], artifact['recorder_id'], tags,
-                                           member['family'])
+                                           member['family'], resolve_identity=resolve_identity)
             names, auxiliary = {}, {}
             for item in artifact['members']:
                 path = Path(item['path'])

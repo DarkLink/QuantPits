@@ -27,6 +27,7 @@ def copied_models(tmp_path):
             run = experiment / identifier
             tags = run / 'tags'
             tags.mkdir(parents=True)
+            (run / 'meta.yaml').write_text('experiment_id: "1"\nrun_id: ' + identifier + '\n')
             (tags / 'model').write_text('MODEL_%d' % i)
             if suffix == 'b':
                 (tags / 'mode').write_text('predict_only')
@@ -170,3 +171,37 @@ def test_new_ambiguous_experiment_invalidates_retained_observation(copied_models
     finally:
         for g in reversed(guards):
             g.close()
+
+
+def test_legacy_wrong_experiment_tag_resolves_only_exact_unique_run_id(copied_models):
+    root, (a, b) = copied_models
+    (root / 'mlruns/1/source_0_b/tags/source_experiment').write_text('STALE_NAME')
+    first, second = observe_model_copy_pair(root, a, root, b)
+    assert first == second
+
+
+@pytest.mark.parametrize('kind', ['duplicate', 'wrong_id', 'wrong_experiment'])
+def test_run_metadata_cannot_redirect_or_disambiguate_identity(copied_models, kind):
+    root, (a, b) = copied_models
+    if kind == 'duplicate':
+        directory = root / 'mlruns/2'
+        directory.mkdir()
+        (directory / 'meta.yaml').write_text('name: OTHER\n')
+        duplicate = directory / 'source_0_a'
+        duplicate.mkdir()
+        (duplicate / 'meta.yaml').write_text('experiment_id: "2"\nrun_id: source_0_a\n')
+    else:
+        (root / 'mlruns/1/source_0_a/meta.yaml').write_text(
+            'experiment_id: "%s"\nrun_id: %s\n' % ('2' if kind == 'wrong_experiment' else '1',
+                                                    'wrong' if kind == 'wrong_id' else 'source_0_a'))
+    with pytest.raises(ValueError):
+        observe_model_copy_pair(root, a, root, b)
+
+
+def test_duplicate_experiment_names_do_not_override_unique_recorder_identity(copied_models):
+    root, (a, b) = copied_models
+    directory = root / 'mlruns/2'
+    directory.mkdir()
+    (directory / 'meta.yaml').write_text('name: TRAINING\n')
+    first, second = observe_model_copy_pair(root, a, root, b)
+    assert first == second

@@ -107,3 +107,11 @@ def test_depth_limit_does_not_accept_partial_ancestry():
         return {'model': 'M', 'source_experiment': exp, 'source_record_id': str(int(identifier)+1)}
     with pytest.raises(ModelIdentityError):
         trace_training_origin('E', '0', reader, 'M', max_depth=2)
+
+
+def test_identity_resolver_may_correct_experiment_but_never_recorder_id():
+    tags = lambda *_: {'model': 'M'}
+    value = trace_training_origin('stale', 'id', tags, 'M', resolve_identity=lambda e, r: ('actual', r))
+    assert value['training_origin_experiment'] == 'actual'
+    with pytest.raises(ModelIdentityError):
+        trace_training_origin('stale', 'id', tags, 'M', resolve_identity=lambda e, r: ('actual', 'another'))

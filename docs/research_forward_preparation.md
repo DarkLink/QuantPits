@@ -55,3 +55,9 @@ B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单�
 历史兼容观察目前仅支持工作区内显式 `mlruns/<experiment-id>/<recorder-id>/artifacts` 的物理文件后端；会读取对应实验元数据和父链 tags，以及封存引用的模型/辅助文件，并对所选输入进行变化观察和前后核对。这些 live ancestry 信息是**本次观察的补充证据**，不是旧 seal 已封存的事实；不初始化 MLflow，不搜索最新 recorder。缺失、歧义、符号链接、内容不符或来源无法证明时返回 INCOMPARABLE（C3 为 PRECONDITION_BLOCKED）。确实不同且可验证的训练来源、权重或配置仍为 VERSION_BREAK。
 
 只读修复不补造已清理的历史记录，也不豁免 C3 的实际引擎源码与 seal 匹配要求。修改预测代码之后，历史周期可能仍因源码不符阻塞；不能为了得到 PREPARED 修改旧 seal 或关闭校验。
+
+### 旧实验归属标签修正（2026-09-08）
+
+进一步排查发现，部分历史 `source_experiment` 指向了错误实验，不能把按该名称查不到记录直接解释成 recorder 已删除。Research 兼容读者现在在**同一显式文件后端**中，按精确 recorder ID 唯一定位，并核对 recorder `meta.yaml` 内的 run ID、experiment ID 与物理目录。实验名称仅来自该实际实验的元数据；不改写历史 tags，不选择其他 recorder，不使用 latest。重复 recorder ID、记录元数据不匹配或真正缺失仍拒绝。同名实验本身不替代唯一 run ID 的判断。实验命名空间及所选 record metadata 也纳入观察窗口。
+
+生产预测入口的默认来源追溯仍保守地使用其显式 backend/experiment；无法核实的旧链记录 UNRESOLVED。Research 的文件后端兼容观察可通过上述独立定位核实它，不把 UNRESOLVED 缓存标签当成训练来源丢失的证明。

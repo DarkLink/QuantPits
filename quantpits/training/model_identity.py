@@ -97,7 +97,8 @@ def model_content_digest(data):
         raise ModelIdentityError("model content cannot be compared") from exc
 
 
-def trace_training_origin(experiment, recorder_id, read_tags, model_name, max_depth=128):
+def trace_training_origin(experiment, recorder_id, read_tags, model_name, max_depth=128,
+                          resolve_identity=None):
     """Walk explicit direct-parent tags; never treat a cached root tag as proof.
 
     read_tags is a caller-owned reader. Legacy untagged terminal training runs
@@ -106,6 +107,11 @@ def trace_training_origin(experiment, recorder_id, read_tags, model_name, max_de
     """
     seen, chain = set(), []
     for _ in range(max_depth):
+        if resolve_identity is not None:
+            resolved_experiment, resolved_id = resolve_identity(experiment, recorder_id)
+            if resolved_id != recorder_id:
+                raise ModelIdentityError("resolver changed recorder identity")
+            experiment = resolved_experiment
         identity = (experiment, recorder_id)
         if not all(isinstance(v, str) and v for v in identity) or identity in seen:
             raise ModelIdentityError("invalid or cyclic model lineage")
