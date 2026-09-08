@@ -1143,6 +1143,10 @@ def _ensemble_projection(cycle: Path, manifest: Mapping[str, Any]) -> Dict[str, 
     }
 
 
+def _raise_copy_error(code):
+    raise _ComponentIncomparable(code)
+
+
 def _prediction_projection(manifest: Mapping[str, Any]) -> Dict[str, Any]:
     source = _source_projection(manifest)
     rows = []
@@ -1345,6 +1349,7 @@ def _observe_production_decision_surface(
         ),
     )
     engine_guard = SourceMutationObserver(engine, CURATED_CODE_PATHS)
+    copy_guards = []
     git_control_paths = tuple(
         engine / ".git" / name for name in ("HEAD", "index", "packed-refs", "refs")
     )
@@ -1475,6 +1480,32 @@ def _observe_production_decision_surface(
                 raise DecisionSurfaceInputError("authority continuity was lost")
             return _make_result(components, reference_cycle, current_cycle)
         current_commit = _engine_commit(current_manifest)
+        # Legacy seals name the immediate prediction-copy recorder as training.
+        # Keep frozen definition admission exact, then independently observe the
+        # complete ancestry and sealed model contents when recorder identities move.
+        copy_pair = None
+        copy_error = None
+        try:
+            current_sources = _source_projection(current_manifest)
+        except _PROCESS_CONTROL:
+            raise
+        except Exception:
+            current_sources = None
+            copy_error = "CURRENT_SOURCE_INCOMPARABLE"
+        if source_reference_valid and copy_error is None and current_sources != reference_sources:
+            try:
+                from quantpits.research.model_continuity import observe_model_copy_pair
+                copy_pair = observe_model_copy_pair(
+                    production if reference_source == "production" else research,
+                    reference_manifest, production, current_manifest, retained_guards=copy_guards,
+                )
+                reference_sources, current_sources = copy_pair
+                reference_prediction = {"protocol": "TRAINING_ORIGIN_MODEL_JOIN_V1", "source": reference_sources}
+            except _PROCESS_CONTROL:
+                raise
+            except Exception as exc:
+                copy_error = (exc.reason_code if isinstance(exc, _ComponentIncomparable)
+                              else "MODEL_COPY_CONTINUITY_UNVERIFIED")
         components = (
             _observe_component(
                 COMPONENT_NAMES[0], reference_code,
@@ -1485,7 +1516,7 @@ def _observe_production_decision_surface(
                 "REFERENCE_SOURCE_DEFINITION_MISMATCH",
             ) if not source_reference_valid else _observe_component(
                 COMPONENT_NAMES[1], reference_sources,
-                lambda: _source_projection(current_manifest),
+                lambda: current_sources if copy_error is None else _raise_copy_error(copy_error),
             ),
             _component(
                 COMPONENT_NAMES[2], reference_ensemble, None,
@@ -1499,7 +1530,9 @@ def _observe_production_decision_surface(
                 "REFERENCE_SOURCE_DEFINITION_MISMATCH",
             ) if not source_reference_valid else _observe_component(
                 COMPONENT_NAMES[3], reference_prediction,
-                lambda: _prediction_projection(current_manifest),
+                lambda: (_raise_copy_error(copy_error) if copy_error else
+                         {"protocol": "TRAINING_ORIGIN_MODEL_JOIN_V1", "source": current_sources}
+                         if copy_pair is not None else _prediction_projection(current_manifest)),
             ),
             _observe_component(
                 COMPONENT_NAMES[4], reference_market,
@@ -1520,6 +1553,7 @@ def _observe_production_decision_surface(
         if (
             before != after or research_guard.mutated() or production_guard.mutated()
             or engine_guard.mutated() or any(item.mutated() for item in git_guards)
+            or any(item.mutated() for item in copy_guards)
             or reference_before != _selected_fingerprint((reference_path,))
         ):
             raise DecisionSurfaceInputError("authority continuity was lost")
@@ -1532,7 +1566,7 @@ def _observe_production_decision_surface(
         raise DecisionSurfaceInputError("decision-surface observation failed closed") from exc
     finally:
         active = __import__("sys").exc_info()[1]
-        for guard in (*reversed(git_guards), engine_guard, production_guard, research_guard):
+        for guard in (*reversed(copy_guards), *reversed(git_guards), engine_guard, production_guard, research_guard):
             try:
                 guard.close()
             except _PROCESS_CONTROL:

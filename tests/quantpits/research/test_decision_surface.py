@@ -681,6 +681,10 @@ def test_observer_is_strictly_zero_write_and_returns_exact_six_rows(
         "protocol": "PER_MODEL_CROSS_SECTIONAL_PERCENTILE_RANK_EQUAL_MEAN_V1",
         "ensemble": 1,
     })
+    import quantpits.research.model_continuity as continuity
+    monkeypatch.setattr(continuity, "observe_model_copy_pair", lambda *_, **_kwargs: (
+        {"source": 1}, {"source": 2 if outcome == "version" else 1},
+    ))
     monkeypatch.setattr(module, "_prediction_projection", lambda _manifest: {"parents": 1})
     def market(manifest):
         if outcome == "incomparable" and manifest["kind"] == "current":

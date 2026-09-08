@@ -216,10 +216,12 @@ def _engine(engine, manifest):
         _require(len(identity) == 40 and all(c in "0123456789abcdef" for c in identity), "ENGINE_IDENTITY_INVALID")
         identities.append(identity)
     files = ("forward_intent_preparation.py", "replay.py", "intents.py", "accounting.py",
-             "historical_cycle.py", "decision_surface.py", "forward_definition_evidence.py",
+             "historical_cycle.py", "decision_surface.py", "model_continuity.py", "forward_definition_evidence.py",
              "forward_observation.py", "forward_definitions.py", "definition_store.py",
              "forward_bootstrap.py", "forward_portfolio_source.py", "model_artifact_capsule.py", "signal_input_capsule.py")
     implementation = [{"path": name, "digest": _raw(Path(__file__).with_name(name).read_bytes())} for name in files]
+    implementation.append({"path": "training/model_identity.py", "digest": _raw(
+        (Path(__file__).parents[1] / "training/model_identity.py").read_bytes())})
     return identities[0], identities[1], _hash(implementation)
 
 
@@ -321,7 +323,16 @@ def prepare_first_forward_intent(
         summary["bootstrap_source_cycle_id"] = source_cycle
         stage = "CURRENT_CYCLE_INVALID"
         cycle_path, manifest, seal = surface._cycle_authority(production, anchor)
-        _require(surface._source_matches_definition(surface._source_projection(manifest), candidate), "SIGNAL_DEFINITION_JOIN_INVALID")
+        copy_join = None
+        copy_inventory = []
+        if not surface._source_matches_definition(surface._source_projection(manifest), candidate):
+            from quantpits.research.model_continuity import observe_model_copy_pair
+            _, reference_manifest, _ = surface._cycle_authority(production, source_cycle)
+            _require(surface._source_matches_definition(surface._source_projection(reference_manifest), candidate),
+                     "SIGNAL_DEFINITION_JOIN_INVALID")
+            copy_join = observe_model_copy_pair(production, reference_manifest, production, manifest,
+                                                retained_guards=guards, input_inventory=copy_inventory)
+            _require(copy_join[0] == copy_join[1], "SIGNAL_DEFINITION_JOIN_INVALID")
         stage = "RUNTIME_CODE_MISMATCH"
         commit, tree, implementation = _engine(engine, manifest)
         summary.update(engine_commit=commit, engine_tree=tree, implementation_digest=implementation)
@@ -410,6 +421,9 @@ def prepare_first_forward_intent(
         stage = "ARM_PLANNING_FAILED"
         plans = _plan_pair(priors, rankings, snapshots, definition, anchor, trade, market, summary)
         stage = "INPUT_STABILITY_LOST"
+        if copy_join is not None:
+            input_payload["model_copy_continuity"] = copy_join
+            input_payload["model_copy_observed_inputs"] = copy_inventory
         _require(before == _metadata(selected) and price_before == _metadata(price_selected)
                  and not any(guard.mutated() for guard in guards), stage)
         _require(_engine(engine, manifest) == (commit, tree, implementation), stage)

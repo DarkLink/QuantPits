@@ -1080,18 +1080,22 @@ def test_predict_single_model_fallback_chain(mock_env_constants, tmp_path):
     parent_recorder = MagicMock()
     parent_recorder.load_object.return_value = model
     parent_recorder.info = {"id": "parent_id"}
+    parent_recorder.list_tags.return_value = {"model": "M1"}
 
     child_recorder = MagicMock()
     child_recorder.load_object.side_effect = [Exception("not found"), pd.Series([0.5])]
     child_recorder.list_tags.return_value = {
         "source_record_id": "parent_id",
         "source_experiment": "ParentExp",
+        "model": "M1", "mode": "predict_only",
     }
     child_recorder.info = {"id": "child_id"}
 
     with patch("qlib.utils.init_instance_by_config", side_effect=[model, MagicMock(), MagicMock()]):
         with patch("qlib.workflow.R") as mock_R:
-            mock_R.get_recorder.side_effect = [child_recorder, parent_recorder, child_recorder]
+            def get_recorder(*args, **kwargs):
+                return parent_recorder if kwargs.get("recorder_id") == "parent_id" else child_recorder
+            mock_R.get_recorder.side_effect = get_recorder
             mock_R.start.return_value.__enter__.return_value = mock_R
 
             with patch("quantpits.utils.train_utils.inject_config", return_value=task_config):
@@ -1100,8 +1104,11 @@ def test_predict_single_model_fallback_chain(mock_env_constants, tmp_path):
                         "M1", {"yaml_file": str(yaml_file)}, params, "E", source
                     )
     assert result["success"] is True
-    # Should have loaded model from parent recorder
+    # Model fallback and independently traced root both survive an extra copy.
     assert parent_recorder.load_object.called
+    assert mock_R.set_tags.call_args.kwargs["training_origin_record_id"] == "parent_id"
+    assert mock_R.set_tags.call_args.kwargs["training_origin_status"] == "VERIFIED"
+    assert mock_R.set_tags.call_args.kwargs["source_record_id"] == "I"
 
 
 def test_predict_single_model_max_depth_exceeded(mock_env_constants, tmp_path):

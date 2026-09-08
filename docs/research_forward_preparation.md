@@ -37,3 +37,21 @@ stdout 仅一行 canonical safe JSON，包含日期、固定 role、状态、计
 B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单保留。C3 不结算，也不验证结算后的现金或 no-deficit-worsening。历史日期的技术准备不能回填 prospective evidence；C4 需另选尚未开盘的周期并重新观察输入。
 
 旧 `inspect_decision_surface` 新增 `--reference-source research|production`，默认仍为 `research`；fresh split-root 布局显式选 `production`，不会按存在性 fallback。此次容量修复仅适用于 fresh definition evidence 的只读 ADOPT；prepare/publish writer 的全树预算未改变。
+
+## Predict-only 副本的身份与历史兼容
+
+`predict-only` 继续保存本次实际使用的 `model.pkl`（CPCV 保存完整 fold 集合）。预测运行 ID 与直接父 recorder 用于审计，不代表一次新的训练。新增的 `training_origin_record_id` / `training_origin_experiment` tags 来自沿明确父链的实际追溯；`training_origin_status=VERIFIED` 表示本次追溯完成。历史父记录缺失、循环、模型名矛盾或缓存根身份冲突时，预测仍可使用已加载的模型，记录 `UNRESOLVED`，不伪造原始训练身份。进程控制中断继续传播。
+
+冻结 definition、capsule、manifest 和 seal 不改写。原有精确来源匹配仍可使用；当历史封存中的直接来源或 artifacts 清单变化时，decision surface 通过额外的只读兼容观察比较：
+
+- 明确的训练来源链终点，不能根据 latest 或仅根据缓存根 tag 推断；
+- 每个模型/fold 的实际文件，先核验其 raw SHA-256 与所属周期的封存清单完全一致；
+- 完整模型对象的版本化内容指纹，及未被明确分类为报告的辅助文件。
+
+内容指纹使用非执行的 pickle opcode 解析，不反序列化模型、不导入 Torch、不执行 GLOBAL/REDUCE。仅规范化 FRAME、等价字节长度编码以及已识别的 Torch legacy storage 分配 ID；保留张量内容、dtype、shape/stride、别名关系、模型配置和优化器状态。CatBoost 内嵌模型 bytes 保持精确比较。它是保守的复制兼容协议，不是任意 pickle 的通用语义等价判定。未知编码不能因解析失败被认定为相同。
+
+`pred.pkl`、`label.pkl`、`code_status.txt` / `code_diff.txt` / `code_cached.txt`、`portfolio_analysis/` 和 `sig_analysis/` 不参与模型身份；其各自封存、信号和运行校验继续生效。未知辅助输入仍按相对文件名和 raw digest 比较。推理代码、融合规则、市场和订单策略仍由原有独立组件检查。
+
+历史兼容观察目前仅支持工作区内显式 `mlruns/<experiment-id>/<recorder-id>/artifacts` 的物理文件后端；会读取对应实验元数据和父链 tags，以及封存引用的模型/辅助文件，并对所选输入进行变化观察和前后核对。这些 live ancestry 信息是**本次观察的补充证据**，不是旧 seal 已封存的事实；不初始化 MLflow，不搜索最新 recorder。缺失、歧义、符号链接、内容不符或来源无法证明时返回 INCOMPARABLE（C3 为 PRECONDITION_BLOCKED）。确实不同且可验证的训练来源、权重或配置仍为 VERSION_BREAK。
+
+只读修复不补造已清理的历史记录，也不豁免 C3 的实际引擎源码与 seal 匹配要求。修改预测代码之后，历史周期可能仍因源码不符阻塞；不能为了得到 PREPARED 修改旧 seal 或关闭校验。

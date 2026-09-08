@@ -2059,8 +2059,15 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
         return result
 
     try:
+        from quantpits.training.model_identity import prediction_origin_tags
+        origin_tags = prediction_origin_tags(
+            source_exp, source_id,
+            lambda exp, rid: R.get_recorder(experiment_name=exp, recorder_id=rid).list_tags(),
+            model_name,
+        )
         with R.start(experiment_name=experiment_name):
             R.set_tags(model=model_name, anchor_date=params['anchor_date'],
+                        **origin_tags,
                         mode='cpcv_predict',
                         source_experiment=source_exp,
                         source_record_id=source_id)
@@ -2917,12 +2924,20 @@ def predict_single_model(model_name, model_info, params, experiment_name,
         else:
             dataset = init_instance_by_config(dataset_cfg)
 
+        # Preserve direct parent audit tags and independently traced training origin.
+        from quantpits.training.model_identity import prediction_origin_tags
+        origin_tags = prediction_origin_tags(
+            source_experiment, source_record_id,
+            lambda exp, rid: R.get_recorder(experiment_name=exp, recorder_id=rid).list_tags(),
+            model_name,
+        )
         # 3. 在新实验下创建 Recorder 并预测
         with R.start(experiment_name=experiment_name):
             R.set_tags(
                 model=model_name,
                 anchor_date=params['anchor_date'],
                 mode='predict_only',
+                **origin_tags,
                 source_experiment=source_experiment,
                 source_record_id=source_record_id,
             )
