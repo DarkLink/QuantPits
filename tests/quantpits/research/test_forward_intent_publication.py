@@ -356,3 +356,21 @@ def test_existing_contradictory_member_is_conflict(publication):
         expected_request_digest=result.request_digest)
     assert observed.status == 'CONFLICT'
     assert not observed.to_safe_summary_dict()['did_write']
+
+
+def test_d1_metadata_is_same_verified_read_and_defensive_copy(publication):
+    result = _publish(publication)
+    _, kw = publication
+    observed = m.inspect_first_forward_intent_pair(kw['intent_store_root'], kw['epoch_id'],
+        expected_request_digest=result.request_digest)
+    metadata = observed.d1_metadata
+    assert set(metadata) == {'request.json', 'manifest.json', 'completion.json', 'calendar_day.txt'}
+    for name, data in metadata.items():
+        assert data.encode('utf-8') == (kw['intent_store_root'] / kw['epoch_id'] / name).read_bytes()
+    metadata['request.json'] = 'changed'
+    assert observed.d1_metadata['request.json'] != 'changed'
+    assert not observed.to_safe_summary_dict()['prospective_claim']
+    (kw['intent_store_root'] / kw['epoch_id'] / 'completion.json').unlink()
+    failed = m.inspect_first_forward_intent_pair(kw['intent_store_root'], kw['epoch_id'],
+        expected_request_digest=result.request_digest)
+    assert failed.d1_metadata is None and failed.d1_inputs is None

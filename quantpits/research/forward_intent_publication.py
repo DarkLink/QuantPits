@@ -135,7 +135,7 @@ class _TimeGate:
 
 class FirstIntentPublicationPlan:
     """Immutable safe observation, never a publication input."""
-    __slots__ = ("_summary", "_inputs")
+    __slots__ = ("_summary", "_inputs", "_metadata")
 
     def __init__(self, *args, **kwargs):
         raise TypeError("use publication APIs")
@@ -154,6 +154,11 @@ class FirstIntentPublicationPlan:
     @property
     def d1_inputs(self):
         return self._inputs
+
+    @property
+    def d1_metadata(self):
+        """Copies of verified persisted metadata; no publication authority."""
+        return None if self._metadata is None else json.loads(self._metadata)
 
     def to_safe_summary_dict(self):
         return json.loads(self._summary)
@@ -186,10 +191,11 @@ def _summary(status="PRECONDITION_BLOCKED", **changes):
     return value
 
 
-def _result(cls, summary, inputs=None):
+def _result(cls, summary, inputs=None, metadata=None):
     value = object.__new__(cls)
     object.__setattr__(value, "_summary", canonical(summary))
     object.__setattr__(value, "_inputs", inputs)
+    object.__setattr__(value, "_metadata", None if metadata is None else canonical(metadata))
     return value
 
 
@@ -243,12 +249,13 @@ def _build(prepared, epoch, policy):
     return members, canonical(manifest), digest
 
 
-def _validate_words(receipt, day, anchor):
+def _validate_words(receipt, day, anchor, *, kind="CASH_CLOSE"):
+    _need(kind in ("CASH_CLOSE", "NEXT_OPEN"))
     _keys(receipt, ("observation_kind", "observation_date", "calendar_position", "requested_instruments",
                     "rows", "observed_instruments", "missing_instruments", "invalid_instruments", "counts", "digest"))
     _need(receipt["digest"] == prices_module._digest_payload({k: v for k, v in receipt.items() if k != "digest"}))
     position = day.index(anchor)
-    _need(receipt["observation_kind"] == "CASH_CLOSE" and receipt["observation_date"] == anchor
+    _need(receipt["observation_kind"] == kind and receipt["observation_date"] == anchor
           and type(receipt["calendar_position"]) is int and receipt["calendar_position"] == position)
     requested = receipt["requested_instruments"]
     _need(requested and requested == sorted(set(requested))
@@ -257,8 +264,8 @@ def _validate_words(receipt, day, anchor):
         _keys(row, ("instrument", "observation_date", "calendar_position", "derived_field", "status", "reason_code",
                     "numerator", "denominator", "derivation_rule", "cash_price"))
         _need(row["observation_date"] == anchor and row["calendar_position"] == position
-              and row["derived_field"] == "CASH_CLOSE" and row["derivation_rule"] == prices_module.DERIVATION_RULE)
-        for key, field in (("numerator", "close"), ("denominator", "factor")):
+              and row["derived_field"] == kind and row["derivation_rule"] == prices_module.DERIVATION_RULE)
+        for key, field in (("numerator", "close" if kind == "CASH_CLOSE" else "open"), ("denominator", "factor")):
             word = row[key]
             _keys(word, ("field", "logical_path", "status", "reason_code", "raw_file_digest", "feature_float32_bits", "feature_text"))
             _need(word["field"] == field and word["logical_path"] == "features/%s/%s.day.bin" % (row["instrument"].lower(), field))
@@ -579,8 +586,10 @@ def inspect_first_forward_intent_pair(intent_store_root, epoch_id, *, expected_r
     try:
         _digest(expected_request_digest)
         root, target, identity = _target(intent_store_root, epoch_id)
-        summary, inputs, _ = _read_bundle(root, target, identity, epoch_id, expected_request_digest)
-        return _result(FirstIntentBundleObservation, summary, inputs)
+        summary, inputs, data = _read_bundle(root, target, identity, epoch_id, expected_request_digest)
+        metadata = {name: data[name].decode("utf-8") for name in
+                    ("request.json", "manifest.json", "completion.json", "calendar_day.txt")}
+        return _result(FirstIntentBundleObservation, summary, inputs, metadata)
     except _PROCESS_CONTROL:
         raise
     except Exception as exc:
