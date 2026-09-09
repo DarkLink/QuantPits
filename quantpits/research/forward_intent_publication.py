@@ -78,6 +78,8 @@ def _json(data):
             for key, child in item.items():
                 if key in numeric_fields:
                     _need(type(child) is not bool)
+                if key == "schema_version":
+                    _need(type(child) is int)
                 check_types(child)
         elif isinstance(item, list):
             for child in item:
@@ -97,10 +99,10 @@ def _stamp(value):
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _policy(deadline, next_open, zone, opening):
+def _policy(deadline, next_open, zone, opening, *, continuing=False):
     deadline, next_open = _utc(deadline), _utc(next_open)
     _need(type(zone) is str and gettz(zone) is not None and not zone.startswith("/"), "TIME_POLICY_INVALID")
-    _need(deadline <= next_open and opening == OPENING_POLICY, "TIME_POLICY_INVALID")
+    _need(deadline <= next_open and opening == ("VERIFIED_PREDECESSOR_AFTER_STATE_V1" if continuing else OPENING_POLICY), "TIME_POLICY_INVALID")
     return {"policy": TIME_POLICY, "decision_deadline_utc": _stamp(deadline),
             "next_open_utc": _stamp(next_open), "market_timezone": zone,
             "opening_policy": opening, "budget_seconds": 600, "clock_tolerance_seconds": 2}
@@ -216,12 +218,12 @@ def _budget(members):
           and sum(map(len, members.values())) <= TOTAL_LIMIT, "BUNDLE_BUDGET_EXCEEDED")
 
 
-def _build(prepared, epoch, policy):
+def _build(prepared, epoch, policy, *, continuing=False):
     _need(prepared.intent_pair_prepared, "PREPARATION_REQUIRED")
     pair, summary = prepared.pair, prepared.to_safe_summary_dict()
     definitions = {"schema_version": 1, "definitions": pair.definitions._current_raw()}
     members = {"definitions.json": canonical(definitions),
-               "priors.json": canonical({"schema_version": 1, "opening_policy": OPENING_POLICY,
+               "priors.json": canonical({"schema_version": 1, "opening_policy": policy["opening_policy"],
                    "bootstrap_manifest": json.loads(pair.bootstrap_bytes),
                    "roles": [{"role": role, "state": state.to_dict()} for role, state in zip(c3.ROLES, pair.priors)]}),
                "champion_ranking.csv": pair.rankings[0].to_csv_bytes(),
@@ -236,6 +238,12 @@ def _build(prepared, epoch, policy):
             "input_provenance": json.loads(pair.input_provenance), "input_digest": summary["input_digest"],
             "preparation_digest": summary["preparation_digest"], "roles": summary["roles"],
             "semantic_members": _inventory(members)}
+    if continuing:
+        body.update(schema_version=2, domain="CONTINUING_FORWARD_INTENT_PAIR_REQUEST_V1",
+                    continuation=pair.continuation)
+        _need(pair.continuation is not None, "PREDECESSOR_REQUIRED")
+        body["implementation"]["domain"] = "CONTINUING_INTENT_PUBLICATION_IMPLEMENTATION_V1"
+        body["implementation"]["members"].extend(_continuing_implementation())
     digest = _hash(body)
     definitions["request_digest"] = digest
     members["definitions.json"] = canonical(definitions)
@@ -245,7 +253,9 @@ def _build(prepared, epoch, policy):
     manifest = {"schema_version": 1, "domain": "FIRST_FORWARD_INTENT_PAIR_BUNDLE_V1",
                 "epoch_id": epoch, "current_cycle_id": body["current_cycle_id"],
                 "request_digest": digest, "members": _inventory(members)}
-    _validate(members, manifest, epoch, digest)
+    if continuing:
+        manifest.update(schema_version=2, domain="CONTINUING_FORWARD_INTENT_PAIR_BUNDLE_V1")
+    _validate(members, manifest, epoch, digest, continuing=continuing)
     return members, canonical(manifest), digest
 
 
@@ -385,20 +395,25 @@ def _validate_plan(report, prior, ranking, snapshot, definition, anchor, trade, 
     return batch
 
 
-def _validate(members, manifest, epoch, expected):
+def _continuing_implementation():
+    return [{"path": name, "sha256": _raw((Path(__file__).parents[1] / name).read_bytes())}
+            for name in ("research/forward_continuation.py", "scripts/continue_forward.py")]
+
+
+def _validate(members, manifest, epoch, expected, *, continuing=False):
     _budget(members)
     _keys(manifest, ("schema_version", "domain", "epoch_id", "current_cycle_id", "request_digest", "members"))
-    _need(manifest["schema_version"] == 1 and manifest["domain"] == "FIRST_FORWARD_INTENT_PAIR_BUNDLE_V1"
+    _need(manifest["schema_version"] == (2 if continuing else 1) and manifest["domain"] == ("CONTINUING_FORWARD_INTENT_PAIR_BUNDLE_V1" if continuing else "FIRST_FORWARD_INTENT_PAIR_BUNDLE_V1")
           and manifest["epoch_id"] == epoch and manifest["request_digest"] == expected
           and manifest["members"] == _inventory(members))
     request = _keys(_json(members["request.json"]), ("body", "request_digest"))
     body = _keys(request["body"], ("schema_version domain epoch_id current_cycle_id trade_date time_policy implementation "
-                  "input_provenance input_digest preparation_digest roles semantic_members").split())
+                  "input_provenance input_digest preparation_digest roles semantic_members").split() + (["continuation"] if continuing else []))
     _need(request["request_digest"] == expected == _hash(body) and body["epoch_id"] == epoch
-          and body["schema_version"] == 1 and body["domain"] == "FIRST_FORWARD_INTENT_PAIR_REQUEST_V1")
+          and body["schema_version"] == (2 if continuing else 1) and body["domain"] == ("CONTINUING_FORWARD_INTENT_PAIR_REQUEST_V1" if continuing else "FIRST_FORWARD_INTENT_PAIR_REQUEST_V1"))
     implementation = _keys(body["implementation"], ("domain", "members"))
-    _need(implementation["domain"] == "FIRST_INTENT_PUBLICATION_IMPLEMENTATION_V1")
-    _need([r["path"] for r in implementation["members"]] == ["research/forward_intent_publication.py", "scripts/publish_forward_intent.py"])
+    _need(implementation["domain"] == ("CONTINUING_INTENT_PUBLICATION_IMPLEMENTATION_V1" if continuing else "FIRST_INTENT_PUBLICATION_IMPLEMENTATION_V1"))
+    _need([r["path"] for r in implementation["members"]] == ["research/forward_intent_publication.py", "scripts/publish_forward_intent.py"] + (["research/forward_continuation.py", "scripts/continue_forward.py"] if continuing else []))
     for row in implementation["members"]:
         _keys(row, ("path", "sha256"))
         _digest(row["sha256"])
@@ -432,13 +447,13 @@ def _validate(members, manifest, epoch, expected):
           and provenance["calendar"] == _raw(members["calendar_day.txt"])
           and provenance["future_calendar"] == _raw(members["calendar_future.txt"]))
     policy = body["time_policy"]
-    _need(policy == _policy(policy["decision_deadline_utc"], policy["next_open_utc"], policy["market_timezone"], policy["opening_policy"]))
+    _need(policy == _policy(policy["decision_deadline_utc"], policy["next_open_utc"], policy["market_timezone"], policy["opening_policy"], continuing=continuing))
     _need(_utc(policy["next_open_utc"]).astimezone(gettz(policy["market_timezone"])).date().isoformat() == trade, "NEXT_OPEN_DATE_MISMATCH")
     prior_doc = _keys(_json(members["priors.json"]), ("schema_version", "opening_policy", "bootstrap_manifest", "roles"))
     plan_doc = _keys(_json(members["plans.json"]), ("schema_version", "roles"))
     price_doc = _keys(_json(members["anchor_prices.json"]), ("schema_version", "receipt"))
     _need(prior_doc["schema_version"] == plan_doc["schema_version"] == price_doc["schema_version"] == 1
-          and prior_doc["opening_policy"] == OPENING_POLICY)
+          and prior_doc["opening_policy"] == policy["opening_policy"])
     bootstrap = prior_doc["bootstrap_manifest"]
     from quantpits.research import forward_bootstrap as bootstrap_module
     _keys(bootstrap, ("schema_version bootstrap_kind storage_claim bootstrap_set_id definition_set_id "
@@ -471,17 +486,22 @@ def _validate(members, manifest, epoch, expected):
     for index, role in enumerate(c3.ROLES):
         state = _keys(prior_doc["roles"][index], ("role", "state"))["state"]
         prior = ShadowPortfolioState.from_dict({k: v for k, v in state.items() if k != "digest"})
-        _need(prior.to_dict() == state and prior.as_of_date == selectors["bootstrap_source_cycle_id"] < anchor)
-        strategy = (compiled.champion, compiled.challenger)[index].to_dict()
-        _need(strategy["data_cutoff"] <= selectors["definition_evidence_cycle_id"] <= prior.as_of_date
-              and anchor >= strategy["effective_cycle"])
-        portfolio_id = "portfolio." + _hash(dict(domain="MATCHED_FORWARD_PORTFOLIO_ID_V1", role=role,
-            bootstrap_source_cycle_id=prior.as_of_date, source_portfolio_raw_digest=bootstrap["source_portfolio_raw_digest"],
-            definition_set_id=compiled.definition_set_id, strategy_id=strategy["strategy_id"]))
-        _need(prior.portfolio_id == portfolio_id and bootstrap["roles"][index] == dict(role=role,
-            strategy_id=strategy["strategy_id"], portfolio_id=portfolio_id, state_digest=c3.surface._digest(state)))
-        from quantpits.research.forward_bootstrap import _economic_payload
-        _need(c3.surface._digest(_economic_payload(prior)) == bootstrap["economic_state_digest"])
+        if continuing:
+            from quantpits.research.forward_continuation import _validate_prior
+            _validate_prior(body["continuation"], index, role, prior, state, compiled, selectors, anchor)
+            _need(prior.portfolio_id == bootstrap["roles"][index]["portfolio_id"], "PREDECESSOR_ROLE_INVALID")
+        else:
+            _need(prior.to_dict() == state and prior.as_of_date == selectors["bootstrap_source_cycle_id"] < anchor)
+            strategy = (compiled.champion, compiled.challenger)[index].to_dict()
+            _need(strategy["data_cutoff"] <= selectors["definition_evidence_cycle_id"] <= prior.as_of_date
+                  and anchor >= strategy["effective_cycle"])
+            portfolio_id = "portfolio." + _hash(dict(domain="MATCHED_FORWARD_PORTFOLIO_ID_V1", role=role,
+                bootstrap_source_cycle_id=prior.as_of_date, source_portfolio_raw_digest=bootstrap["source_portfolio_raw_digest"],
+                definition_set_id=compiled.definition_set_id, strategy_id=strategy["strategy_id"]))
+            _need(prior.portfolio_id == portfolio_id and bootstrap["roles"][index] == dict(role=role,
+                strategy_id=strategy["strategy_id"], portfolio_id=portfolio_id, state_digest=c3.surface._digest(state)))
+            from quantpits.research.forward_bootstrap import _economic_payload
+            _need(c3.surface._digest(_economic_payload(prior)) == bootstrap["economic_state_digest"])
         ranking_data = members[role.lower() + "_ranking.csv"]
         ranking = c3.replay._ranking_from_csv(ranking_data)
         _need(ranking.to_csv_bytes() == ranking_data and ranking.complete and ranking.scored_count > 0 and ranking.missing_count == 0)
@@ -508,6 +528,11 @@ def _validate(members, manifest, epoch, expected):
           and {r["instrument"] for r in rankings[0].rows} == {r["instrument"] for r in rankings[1].rows}
           and receipt["requested_instruments"] == sorted({r["instrument"] for r in rankings[0].rows}
               | {p.instrument for prior in priors for p in prior.positions}))
+    if continuing:
+        from quantpits.research.forward_continuation import _validate_continuation, _schedule
+        _validate_continuation(body["continuation"], epoch, compiled, selectors)
+        _need(body["continuation"]["schedule"]["market_timezone"] == policy["market_timezone"], "SCHEDULE_INVALID")
+        _schedule(members["calendar_day.txt"], members["calendar_future.txt"], body["continuation"], anchor, trade)
     return body, tuple(FirstIntentAccountingInputs(role, prior, batch, execution)
                        for role, prior, batch in zip(c3.ROLES, priors, batches))
 
@@ -525,11 +550,14 @@ def _target(root, epoch):
     return root, root / epoch, _directory(root)
 
 
-def _binding(root, identity, epoch):
-    return _hash({"root": str(root), "identity": list(identity), "epoch_id": epoch})
+def _binding(root, identity, epoch, *, store_bindings=None):
+    value = {"root": str(root), "identity": list(identity), "epoch_id": epoch}
+    if store_bindings is not None:
+        value["store_bindings"] = store_bindings
+    return _hash(value)
 
 
-def _read_bundle(root, target, identity, epoch, expected, *, completion=True):
+def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cycle_index=None):
     _need(_directory(root) == identity, "TARGET_REPLACED")
     _need(os.path.lexists(str(target)), "INCOMPLETE")
     target_identity = _directory(target)
@@ -547,17 +575,25 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True):
     members = {name: data[name] for name in MEMBERS}
     manifest = _json(data["manifest.json"])
     _need(manifest.get("request_digest") == expected, "CONFLICT")
-    body, inputs = _validate(members, manifest, epoch, expected)
+    body, inputs = _validate(members, manifest, epoch, expected, continuing=cycle_index is not None)
+    if cycle_index is not None:
+        _need(body["continuation"]["cycle_index"] == cycle_index, "CYCLE_INDEX_INVALID")
     record = None
     if completion:
         record = _keys(_json(data["completion.json"]), ("schema_version", "event", "operation_id", "epoch_id",
             "current_cycle_id", "request_digest", "manifest_digest", "time_policy", "bundle_verified_at_utc",
-            "preparation_started_at_utc", "target_binding_digest"))
+            "preparation_started_at_utc", "target_binding_digest") + (("store_bindings",) if cycle_index is not None else ()))
         _need(record["schema_version"] == 1 and record["event"] == "DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION"
               and record["epoch_id"] == epoch and record["current_cycle_id"] == body["current_cycle_id"]
               and record["request_digest"] == expected and record["manifest_digest"] == _raw(data["manifest.json"])
               and record["time_policy"] == body["time_policy"]
-              and record["target_binding_digest"] == _binding(root, identity, epoch))
+              and record["target_binding_digest"] == _binding(root, identity, target.name,
+                  store_bindings=record["store_bindings"] if cycle_index is not None else None))
+        if cycle_index is not None:
+            _keys(record["store_bindings"], ("intent", "settlement"))
+            for value in record["store_bindings"].values():
+                _digest(value)
+            _need(record["store_bindings"]["intent"] == _binding(root, identity, "CONTINUING_INTENT_ROOT"), "STORE_BINDING_INVALID")
         _need(str(uuid.UUID(record["operation_id"])) == record["operation_id"])
         started, verified = _utc(record["preparation_started_at_utc"]), _utc(record["bundle_verified_at_utc"])
         _need(started <= verified < _utc(body["time_policy"]["decision_deadline_utc"])
@@ -572,8 +608,12 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True):
     summary = _summary("VERIFIED", request_digest=expected, manifest_digest=_raw(data["manifest.json"]),
         current_cycle_id=body["current_cycle_id"], trade_date=body["trade_date"],
         bundle_verified=True, completion_record_verified=completion, d1_readable=completion,
-        target_binding_digest=_binding(root, identity, epoch),
+        target_binding_digest=_binding(root, identity, target.name,
+            store_bindings=record["store_bindings"] if cycle_index is not None and record else None),
         order_counts=[len(i.intents.intents) for i in inputs])
+    if cycle_index is not None:
+        summary.update(cycle_index=cycle_index, cycle_intent_published=False,
+                       predecessor_join_observed=False, whole_chain_verified=False, planning_roles=body["roles"])
     if record:
         summary.update(operation_id=record["operation_id"], recorded_time_claim={
             "policy": TIME_POLICY, "bundle_verified_at_utc": record["bundle_verified_at_utc"],
@@ -614,8 +654,11 @@ def _write_member(descriptor, name, data):
         os.close(fd)
 
 
-def _publish_bundle(root, target, identity, epoch, members, manifest, digest, gate, owner):
-    summary = _summary(request_digest=digest, target_binding_digest=_binding(root, identity, epoch))
+def _publish_bundle(root, target, identity, epoch, members, manifest, digest, gate, owner, *, cycle_index=None, store_bindings=None):
+    summary = _summary(request_digest=digest, target_binding_digest=_binding(root, identity, target.name, store_bindings=store_bindings))
+    if cycle_index is not None:
+        summary.update(cycle_index=cycle_index, cycle_intent_published=False,
+                       predecessor_join_observed=False, whole_chain_verified=False, planning_roles=None)
     root_fd = target_fd = None
     attempted = False
     try:
@@ -627,16 +670,21 @@ def _publish_bundle(root, target, identity, epoch, members, manifest, digest, ga
         _need((info.st_dev, info.st_ino, info.st_mode) == identity, "TARGET_REPLACED")
         try:
             attempted = True
-            os.mkdir(epoch, mode=0o700, dir_fd=root_fd)
+            os.mkdir(target.name, mode=0o700, dir_fd=root_fd)
             summary.update(did_write=True, write_state="TARGET_CREATED")
         except FileExistsError:
             attempted = False
-            observed = inspect_first_forward_intent_pair(root, epoch, expected_request_digest=digest)
+            if cycle_index is None:
+                observed = inspect_first_forward_intent_pair(root, epoch, expected_request_digest=digest)
+            else:
+                from quantpits.research.forward_continuation import inspect_next_forward_intent_pair
+                observed = inspect_next_forward_intent_pair(root.parent, epoch, cycle_index,
+                                                           expected_request_digest=digest)
             summary = observed.to_safe_summary_dict()
             if observed.status == "VERIFIED":
                 summary["status"] = "ADOPTED"
             return summary, observed.d1_inputs
-        target_fd = os.open(epoch, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd)
+        target_fd = os.open(target.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd)
         info = os.fstat(target_fd)
         target_identity = (info.st_dev, info.st_ino, info.st_mode)
         _need(_directory(target) == target_identity, "TARGET_REPLACED")
@@ -645,29 +693,34 @@ def _publish_bundle(root, target, identity, epoch, members, manifest, digest, ga
             _write_member(target_fd, name, data)
         os.fsync(target_fd)
         os.fsync(root_fd)
-        _, _, stored = _read_bundle(root, target, identity, epoch, digest, completion=False)
+        _, _, stored = _read_bundle(root, target, identity, epoch, digest, completion=False, cycle_index=cycle_index)
         _need(all(stored[name] == data for name, data in members.items()) and stored["manifest.json"] == manifest)
         owner.check()
         verified = gate.check("DATA_BUNDLE_VERIFIED")
         operation = str(uuid.uuid4())
         summary.update(operation_id=operation, manifest_digest=_raw(manifest))
-        record = canonical(dict(schema_version=1, event="DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION",
+        record_doc = dict(schema_version=1, event="DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION",
             operation_id=operation, epoch_id=epoch, current_cycle_id=_json(members["request.json"])["body"]["current_cycle_id"],
             request_digest=digest, manifest_digest=_raw(manifest), time_policy=gate.policy,
             bundle_verified_at_utc=verified, preparation_started_at_utc=gate.observations[0]["at_utc"],
-            target_binding_digest=_binding(root, identity, epoch)))
+            target_binding_digest=_binding(root, identity, target.name, store_bindings=store_bindings))
+        if cycle_index is not None:
+            record_doc["store_bindings"] = store_bindings
+        record = canonical(record_doc)
         _need(len(record) <= RECORD_LIMIT)
         _write_member(target_fd, "completion.json", record)
         os.fsync(target_fd)
         os.fsync(root_fd)
-        observed, inputs, final_data = _read_bundle(root, target, identity, epoch, digest)
+        observed, inputs, final_data = _read_bundle(root, target, identity, epoch, digest, cycle_index=cycle_index)
         _need(final_data["completion.json"] == record and _directory(target) == target_identity, "TARGET_REPLACED")
         owner.check()
         owner.close()
         gate.check("FINAL_PUBLICATION_VERIFIED")
         summary = observed
         observed.update(status="COMMITTED", did_write=True, write_state="COMMITTED",
-                        prospective_claim=True, epoch_started=True, time_observations=gate.observations)
+                        prospective_claim=True, epoch_started=cycle_index is None, time_observations=gate.observations)
+        if cycle_index is not None:
+            observed.update(cycle_intent_published=True, predecessor_join_observed=True)
         return observed, inputs
     except _PROCESS_CONTROL:
         raise
@@ -690,6 +743,8 @@ def _publish_bundle(root, target, identity, epoch, members, manifest, digest, ga
                 except Exception:
                     summary.update(status="UNCERTAIN", reason_codes=["DESCRIPTOR_CLOSE_FAILED"],
                                    prospective_claim=False, epoch_started=False)
+                    if cycle_index is not None:
+                        summary.update(cycle_intent_published=False, predecessor_join_observed=False)
 
 
 def _run(args, root_value, epoch, deadline, next_open, zone, opening, expected=None):

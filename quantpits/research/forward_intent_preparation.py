@@ -51,6 +51,7 @@ class _PreparedPair(NamedTuple):
     input_provenance: bytes
     calendar_bytes: Tuple[bytes, bytes]
     bootstrap_bytes: bytes
+    continuation: Any = None
 
 
 class FirstForwardIntentPreparation:
@@ -302,12 +303,12 @@ class _PreparationGuards:
             raise failure
 
 
-def _prepare_first_forward_intent(
+def _prepare_forward_intent(
     production_workspace_root, research_workspace_root, engine_root,
     qlib_provider_root, current_cycle_id, activation_path,
     definition_store_root, evidence_store_root, bootstrap_store_root, bootstrap_set_id,
     signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id,
-    *, _guard_owner=None,
+    *, _guard_owner=None, _continuation=None,
 ) -> FirstForwardIntentPreparation:
     summary = _summary()
     guards = []
@@ -357,6 +358,11 @@ def _prepare_first_forward_intent(
         request = compiled.to_store_request()
         stage = "BOOTSTRAP_INVALID"
         source_cycle, priors, bootstrap = _bootstrap(production, bootstraps, bootstrap_set_id, candidate, evidence, anchor)
+        continuation = None
+        if _continuation is not None:
+            from quantpits.research.forward_continuation import _observe_predecessor
+            priors, continuation = _observe_predecessor(_continuation, guards, compiled,
+                bootstrap_set_id, model_capsule_id, source_cycle, evidence_cycle, anchor)
         summary["bootstrap_source_cycle_id"] = source_cycle
         stage = "CURRENT_CYCLE_INVALID"
         cycle_path, manifest, seal = surface._cycle_authority(production, anchor)
@@ -414,8 +420,11 @@ def _prepare_first_forward_intent(
         day, future = _calendar(day_data), _calendar(future_data)
         _require(anchor in day and anchor in future and tuple(d for d in day if d <= anchor) == tuple(d for d in future if d <= anchor), stage)
         sessions = tuple(d for d in future if d > anchor)
-        _require(bool(sessions), "NEXT_SESSION_UNAVAILABLE")
+        _require(bool(sessions), "SCHEDULE_UNAVAILABLE" if continuation is not None else "NEXT_SESSION_UNAVAILABLE")
         trade = sessions[0]
+        if continuation is not None:
+            from quantpits.research.forward_continuation import _schedule
+            _schedule(day_data, future_data, continuation, anchor, trade)
         summary.update(trade_date=trade, calendar_match_status="MATCH" if surface._digest(day_data, "raw_bytes") == material["calendar_digest"] else "DIFFERENT",
                        price_provenance="CURRENT_PROVIDER_ANCHOR_OBSERVATION")
         requested = tuple(sorted(set(universe) | {position.instrument for prior in priors for position in prior.positions}))
@@ -488,7 +497,7 @@ def _prepare_first_forward_intent(
         summary.update(status="PREPARED", intent_pair_prepared=True)
         result = _result(summary, _PreparedPair(
             priors, rankings, snapshots, plans, compiled, receipt,
-            canonical_json_bytes(input_payload), (day_data, future_data), canonical_json_bytes(bootstrap),
+            canonical_json_bytes(input_payload), (day_data, future_data), canonical_json_bytes(bootstrap), continuation,
         ))
         if _guard_owner is not None:
             _require(type(_guard_owner) is _PreparationGuards and not _guard_owner.guards,
@@ -499,9 +508,10 @@ def _prepare_first_forward_intent(
     except _PROCESS_CONTROL:
         raise
     except Exception as exc:
+        from quantpits.research.forward_intent_publication import _Invalid
         summary.update(status="PRECONDITION_BLOCKED", intent_pair_prepared=False,
                        input_digest=None, preparation_digest=None,
-                       reason_codes=[exc.code if isinstance(exc, _Blocked) else stage])
+                       reason_codes=[exc.code if isinstance(exc, (_Blocked, _Invalid)) else stage])
         return _result(summary)
     finally:
         active = sys.exc_info()[1]
@@ -519,3 +529,7 @@ def _prepare_first_forward_intent(
                            input_digest=None, preparation_digest=None,
                            reason_codes=["INPUT_OBSERVER_CLOSE_FAILED"])
             return _result(summary)
+
+
+def _prepare_first_forward_intent(*args, _guard_owner=None):
+    return _prepare_forward_intent(*args, _guard_owner=_guard_owner)

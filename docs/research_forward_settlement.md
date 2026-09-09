@@ -63,3 +63,7 @@ Python API 位于 `quantpits.research.forward_settlement`：
 离线 reader 验证 exact inventory、canonical schema、来源关联、float32 words、派生现金价和 quote projection，再用严格 loader 重建输入并真实调用 `ShadowPortfolioTransition.apply`，比对完整保存结果。它无需 live provider、Production、MLflow、模型或原 C4 目录。成功 observation 的 `after_states` 按 CHAMPION、CHALLENGER 顺序返回 typed 状态及 prior/intent/source request/manifest/operation/settlement request predecessor 关联。READY 不授予 after-state 消费资格。
 
 `accounting_pair_complete` 与 `state_chain_ready` 不要求全部成交或完整估值。会计 COMPLETE、估值 PARTIAL 时仍可交付 after-state；NAV 为 null，完整缺价名单保存在 transition。B0 保留 signed cash、whole-order fill/no-fill、费用、滑点和 no-deficit-worsening。`nav_before/nav_after` 是同一 next-open 的会计对账，不是跨周投资收益。内层仍为 `RETROSPECTIVE_TECHNICAL_REPLAY`、`prospective_claim=false`，外层仅表明承接了原前向记录，不再次启动 epoch。保留 `UNMODELED` corporate action 模式及 warning，不能据此声称处理了除权分红。
+
+## 连续周期接入
+
+D2 使用独立的 [连续周期入口](research_forward_continuation.md)。本模块共享 NEXT_OPEN 观察、两臂 B0 重算和 create-only 写入，严格区分首期 v1 与连续期 v2 来源及原成功记录。`inspect_first_forward_settlement` 新增只读 `continuation_metadata` 副本，提供同次验明的本期 request、来源 intent request/completion，供 D2 显式接续；该副本不授予发布资格，不声称已经验证整条历史链。首期 safe JSON 与 v1 文件合同保持不变。

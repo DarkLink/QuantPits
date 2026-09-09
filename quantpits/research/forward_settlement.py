@@ -43,7 +43,7 @@ class SettlementAfterState(NamedTuple):
 
 
 class FirstForwardSettlementObservation:
-    __slots__ = ("_summary", "_states")
+    __slots__ = ("_summary", "_states", "_metadata")
 
     def __init__(self, *args, **kwargs):
         raise TypeError("use settlement APIs")
@@ -63,6 +63,10 @@ class FirstForwardSettlementObservation:
     def after_states(self):
         return self._states
 
+    @property
+    def continuation_metadata(self):
+        return None if self._metadata is None else json.loads(self._metadata)
+
     def to_safe_summary_dict(self):
         return json.loads(self._summary)
 
@@ -79,10 +83,11 @@ def _summary(status="PRECONDITION_BLOCKED", **changes):
     return value
 
 
-def _result(summary, states=None):
+def _result(summary, states=None, metadata=None):
     value = object.__new__(FirstForwardSettlementObservation)
     object.__setattr__(value, "_summary", canonical(summary))
     object.__setattr__(value, "_states", states if summary["state_chain_ready"] else None)
+    object.__setattr__(value, "_metadata", None if metadata is None else canonical(metadata))
     return value
 
 
@@ -114,10 +119,10 @@ IMPLEMENTATION_PATHS = ("research/forward_settlement.py", "scripts/settle_forwar
                         "research/forward_intent_publication.py")
 
 
-def _implementation():
-    return dict(domain="FIRST_FORWARD_SETTLEMENT_IMPLEMENTATION_V1", members=[
+def _implementation(*, continuing=False):
+    return dict(domain="CONTINUING_FORWARD_SETTLEMENT_IMPLEMENTATION_V1" if continuing else "FIRST_FORWARD_SETTLEMENT_IMPLEMENTATION_V1", members=[
         dict(path=name, sha256=_raw((Path(__file__).parents[1] / name).read_bytes()))
-        for name in IMPLEMENTATION_PATHS])
+        for name in IMPLEMENTATION_PATHS + (("research/forward_continuation.py", "scripts/continue_forward.py") if continuing else ())])
 
 
 def _budget(members):
@@ -125,25 +130,26 @@ def _budget(members):
           and sum(map(len, members.values())) <= TOTAL_LIMIT, "BUNDLE_BUDGET_EXCEEDED")
 
 
-def _source(source, success_bytes, epoch):
+def _source(source, success_bytes, epoch, *, continuing=False):
     """Check saved references and canonical inputs; never re-adopt external sources."""
     _keys(source, ("schema_version", "metadata", "roles"))
-    _need(source["schema_version"] == 1)
-    meta = _keys(source["metadata"], ("request.json", "manifest.json", "completion.json", "calendar_day.txt"))
+    _need(source["schema_version"] == (2 if continuing else 1))
+    from quantpits.research.forward_continuation import SOURCE_METADATA
+    meta = _keys(source["metadata"], SOURCE_METADATA if continuing else ("request.json", "manifest.json", "completion.json", "calendar_day.txt"))
     request, manifest, completion = (_json(meta[n].encode("utf-8")) for n in
                                    ("request.json", "manifest.json", "completion.json"))
     _keys(request, ("body", "request_digest"))
     body = _keys(request["body"], ("schema_version domain epoch_id current_cycle_id trade_date time_policy implementation "
-        "input_provenance input_digest preparation_digest roles semantic_members").split())
+        "input_provenance input_digest preparation_digest roles semantic_members").split() + (["continuation"] if continuing else []))
     expected = _digest(request["request_digest"])
     _need(_hash(body) == expected and body["epoch_id"] == epoch
-          and body["domain"] == "FIRST_FORWARD_INTENT_PAIR_REQUEST_V1" and body["schema_version"] == 1)
+          and body["domain"] == ("CONTINUING_FORWARD_INTENT_PAIR_REQUEST_V1" if continuing else "FIRST_FORWARD_INTENT_PAIR_REQUEST_V1") and body["schema_version"] == (2 if continuing else 1))
     _keys(manifest, ("schema_version", "domain", "epoch_id", "current_cycle_id", "request_digest", "members"))
     anchor, trade = body["current_cycle_id"], body["trade_date"]
     c4.c3.surface._date(anchor, "anchor")
     c4.c3.surface._date(trade, "trade")
-    _need(anchor < trade and manifest["schema_version"] == 1
-          and manifest["domain"] == "FIRST_FORWARD_INTENT_PAIR_BUNDLE_V1"
+    _need(anchor < trade and manifest["schema_version"] == (2 if continuing else 1)
+          and manifest["domain"] == ("CONTINUING_FORWARD_INTENT_PAIR_BUNDLE_V1" if continuing else "FIRST_FORWARD_INTENT_PAIR_BUNDLE_V1")
           and manifest["epoch_id"] == epoch and manifest["current_cycle_id"] == anchor
           and manifest["request_digest"] == expected)
     _need([r["name"] for r in manifest["members"]] == list(c4.MEMBERS))
@@ -156,10 +162,10 @@ def _source(source, success_bytes, epoch):
             _need(row["sha256"] == _raw(data) and row["size"] == len(data))
     policy = body["time_policy"]
     _need(policy == c4._policy(policy["decision_deadline_utc"], policy["next_open_utc"],
-                              policy["market_timezone"], policy["opening_policy"]))
+                              policy["market_timezone"], policy["opening_policy"], continuing=continuing))
     _need(c4._utc(policy["next_open_utc"]).astimezone(c4.gettz(policy["market_timezone"])).date().isoformat() == trade)
     _keys(completion, ("schema_version event operation_id epoch_id current_cycle_id request_digest manifest_digest "
-          "time_policy bundle_verified_at_utc preparation_started_at_utc target_binding_digest").split())
+          "time_policy bundle_verified_at_utc preparation_started_at_utc target_binding_digest").split() + (["store_bindings"] if continuing else []))
     manifest_digest = _raw(meta["manifest.json"].encode("utf-8"))
     _need(completion["schema_version"] == 1
           and completion["event"] == "DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION"
@@ -168,14 +174,26 @@ def _source(source, success_bytes, epoch):
           and completion["time_policy"] == policy)
     _need(str(uuid.UUID(completion["operation_id"])) == completion["operation_id"])
     _digest(completion["target_binding_digest"])
+    if continuing:
+        _keys(completion["store_bindings"], ("intent", "settlement"))
+        for value in completion["store_bindings"].values():
+            _digest(value)
     # Original safe record may be pretty printed; preserve exact bytes and reject duplicate keys.
     success = _json(canonical(prices._strict_json(success_bytes, "success")))
-    _keys(success, c4._summary().keys())
+    _keys(success, list(c4._summary()) + (["cycle_index", "cycle_intent_published", "predecessor_join_observed", "whole_chain_verified", "planning_roles"] if continuing else []))
     _need(success["schema_version"] == 1 and success["status"] == "COMMITTED"
           and success["write_state"] == "COMMITTED" and success["reason_codes"] == []
           and all(success[k] is True for k in ("did_write", "bundle_verified", "completion_record_verified",
-                                               "d1_readable", "prospective_claim", "epoch_started"))
+                                               "d1_readable", "prospective_claim"))
+          and success["epoch_started"] is (not continuing)
           and success["promotion_capability"] is False, "ORIGINAL_SUCCESS_REQUIRED")
+    if continuing:
+        _need(success["cycle_index"] == body["continuation"]["cycle_index"]
+              and type(success["cycle_index"]) is int
+              and success["cycle_intent_published"] is True
+              and success["predecessor_join_observed"] is True
+              and success["whole_chain_verified"] is False
+              and success["planning_roles"] == body["roles"], "ORIGINAL_SUCCESS_MISMATCH")
     for key, value in dict(request_digest=expected, manifest_digest=manifest_digest,
                            operation_id=completion["operation_id"], target_binding_digest=completion["target_binding_digest"],
                            current_cycle_id=anchor, trade_date=trade).items():
@@ -220,11 +238,30 @@ def _source(source, success_bytes, epoch):
                                                                for k in ExecutionAssumption._FIELDS})
               and prior.digest == ref["prior_digest"] and batch.digest == ref["intent_batch_digest"]
               and len(batch.intents) == ref["order_count"] and ref["status"] == "COMPLETE"
-              and batch.trade_date == trade and prior.as_of_date < anchor
+              and batch.trade_date == trade and batch.cycle_id == anchor and prior.as_of_date <= anchor
               and prior.portfolio_id == batch.portfolio_id)
         inputs.append(c4.FirstIntentAccountingInputs(row["role"], prior, batch, assumption))
     _need(inputs[0].prior.portfolio_id != inputs[1].prior.portfolio_id
           and success["order_counts"] == [len(i.intents.intents) for i in inputs])
+    if continuing:
+        from quantpits.research.forward_continuation import _validate_continuation, _validate_prior, _schedule
+        _need(len(success_bytes) <= RECORD_LIMIT, "BUNDLE_BUDGET_EXCEEDED")
+        definitions = _keys(_json(meta["definitions.json"].encode("utf-8")),
+                            ("schema_version", "definitions", "request_digest"))
+        _need(definitions["schema_version"] == 1 and definitions["request_digest"] == expected)
+        compiled = c4.compile_shadow_forward_definitions(definitions["definitions"])
+        _need(provenance["definition"] == dict(compiled.request_digest)
+              and provenance["execution_assumption"] == compiled.execution_assumption.to_dict())
+        _validate_continuation(body["continuation"], epoch, compiled, provenance["selectors"])
+        _need(body["continuation"]["schedule"]["market_timezone"] == policy["market_timezone"], "SCHEDULE_INVALID")
+        for index, item in enumerate(inputs):
+            _validate_prior(body["continuation"], index, item.role, item.prior, item.prior.to_dict(),
+                            compiled, provenance["selectors"], anchor)
+        future_bytes = meta["calendar_future.txt"].encode("utf-8")
+        _need(provenance["future_calendar"] == _raw(future_bytes))
+        _schedule(day_bytes, future_bytes, body["continuation"], anchor, trade)
+    else:
+        _need(all(i.prior.as_of_date < anchor for i in inputs))
     return body, completion, tuple(inputs)
 
 
@@ -299,23 +336,29 @@ def _calculate(inputs, rows):
 
 
 def _request_body(epoch, body, completion, inputs, logical, *, implementation):
-    return dict(schema_version=1, domain="FIRST_FORWARD_SETTLEMENT_REQUEST_V1", epoch_id=epoch,
+    result = dict(schema_version=1, domain="FIRST_FORWARD_SETTLEMENT_REQUEST_V1", epoch_id=epoch,
         current_cycle_id=body["current_cycle_id"], trade_date=body["trade_date"],
         source_request_digest=completion["request_digest"], source_manifest_digest=completion["manifest_digest"],
         source_operation_id=completion["operation_id"], publication_success_digest=_raw(logical["publication_success.json"]),
         roles=[dict(role=i.role, prior_digest=i.prior.digest, intent_batch_digest=i.intents.digest,
                     execution_assumption_digest=i.execution_assumption.digest) for i in inputs],
         arrival_rule=ARRIVAL_RULE, implementation=implementation, semantic_members=c4._inventory(logical))
+    if body["domain"] == "CONTINUING_FORWARD_INTENT_PAIR_REQUEST_V1":
+        result.update(schema_version=2, domain="CONTINUING_FORWARD_SETTLEMENT_REQUEST_V1",
+                      continuation=body["continuation"])
+    return result
 
 
-def _validate(members, manifest, epoch, expected):
+def _validate(members, manifest, epoch, expected, *, cycle_index=None):
     _budget(members)
     _keys(manifest, ("schema_version", "domain", "epoch_id", "current_cycle_id", "request_digest", "members"))
     request = _keys(_json(members["request.json"]), ("body", "request_digest"))
     body = request["body"]
     _need(request["request_digest"] == expected == _hash(body))
     source = _json(members["source_intent.json"])
-    original, completion, inputs = _source(source, members["publication_success.json"], epoch)
+    original, completion, inputs = _source(source, members["publication_success.json"], epoch, continuing=cycle_index is not None)
+    if cycle_index is not None:
+        _need(original["continuation"]["cycle_index"] == cycle_index, "CYCLE_INDEX_INVALID")
     day = _calendar(members["calendar_day.txt"], original, source)
     rows = _prices(_json(members["next_open_prices.json"]), day, original["trade_date"], inputs)
     transitions, diagnostics = _calculate(inputs, rows)
@@ -327,13 +370,13 @@ def _validate(members, manifest, epoch, expected):
     rebuilt = _request_body(epoch, original, completion, inputs, logical, implementation=body["implementation"])
     # Fingerprint is recorded evidence, not a requirement to keep the current engine installed.
     implementation = _keys(body["implementation"], ("domain", "members"))
-    _need(implementation["domain"] == "FIRST_FORWARD_SETTLEMENT_IMPLEMENTATION_V1"
-          and [r["path"] for r in implementation["members"]] == list(IMPLEMENTATION_PATHS))
+    _need(implementation["domain"] == ("CONTINUING_FORWARD_SETTLEMENT_IMPLEMENTATION_V1" if cycle_index is not None else "FIRST_FORWARD_SETTLEMENT_IMPLEMENTATION_V1")
+          and [r["path"] for r in implementation["members"]] == list(IMPLEMENTATION_PATHS) + (["research/forward_continuation.py", "scripts/continue_forward.py"] if cycle_index is not None else []))
     for ref in implementation["members"]:
         _keys(ref, ("path", "sha256"))
         _digest(ref["sha256"])
     rebuilt["implementation"] = implementation
-    _need(_same(body, rebuilt) and _same(manifest, dict(schema_version=1, domain="FIRST_FORWARD_SETTLEMENT_BUNDLE_V1",
+    _need(_same(body, rebuilt) and _same(manifest, dict(schema_version=2 if cycle_index is not None else 1, domain="CONTINUING_FORWARD_SETTLEMENT_BUNDLE_V1" if cycle_index is not None else "FIRST_FORWARD_SETTLEMENT_BUNDLE_V1",
         epoch_id=epoch, current_cycle_id=body["current_cycle_id"], request_digest=expected, members=c4._inventory(members))))
     states = tuple(SettlementAfterState(i.role, t.after_state, i.prior.digest, i.intents.digest,
         completion["request_digest"], completion["manifest_digest"], completion["operation_id"], expected)
@@ -341,7 +384,7 @@ def _validate(members, manifest, epoch, expected):
     return body, states, diagnostics
 
 
-def _read_bundle(root, target, identity, epoch, expected, *, completion=True):
+def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cycle_index=None):
     _need(c4._directory(root) == identity, "TARGET_REPLACED")
     _need(os.path.lexists(str(target)), "INCOMPLETE")
     target_identity = c4._directory(target)
@@ -355,7 +398,7 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True):
             maximum=MEMBER_LIMIT if name in MEMBERS else RECORD_LIMIT, private=True)
     manifest = _json(data["manifest.json"])
     _need(manifest.get("request_digest") == expected, "CONFLICT")
-    body, states, diagnostics = _validate({n: data[n] for n in MEMBERS}, manifest, epoch, expected)
+    body, states, diagnostics = _validate({n: data[n] for n in MEMBERS}, manifest, epoch, expected, cycle_index=cycle_index)
     record = None
     if completion:
         record = _keys(_json(data["completion.json"]), ("schema_version event operation_id epoch_id current_cycle_id "
@@ -363,7 +406,7 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True):
         _need(record["schema_version"] == 1 and record["event"] == "SETTLEMENT_DATA_VERIFIED_BEFORE_COMPLETION"
               and record["epoch_id"] == epoch and record["current_cycle_id"] == body["current_cycle_id"]
               and record["request_digest"] == expected and record["manifest_digest"] == _raw(data["manifest.json"])
-              and record["target_binding_digest"] == c4._binding(root, identity, epoch))
+              and record["target_binding_digest"] == c4._binding(root, identity, target.name))
         _need(str(uuid.UUID(record["operation_id"])) == record["operation_id"])
         source = _json(data["source_intent.json"])
         original = _json(source["metadata"]["request.json"].encode("utf-8"))["body"]
@@ -376,18 +419,30 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True):
           and {p.name for p in target.iterdir()} == set(names), "TARGET_REPLACED")
     summary = _summary("VERIFIED", request_digest=expected, manifest_digest=_raw(data["manifest.json"]),
         current_cycle_id=body["current_cycle_id"], trade_date=body["trade_date"],
-        target_binding_digest=c4._binding(root, identity, epoch), bundle_verified=True,
+        target_binding_digest=c4._binding(root, identity, target.name), bundle_verified=True,
         completion_record_verified=completion, accounting_pair_complete=True, state_chain_ready=completion,
         source_forward_record_linked=True, roles=diagnostics, operation_id=record["operation_id"] if record else None)
+    if cycle_index is not None:
+        meta = _metadata(data)
+        _need(meta["source_completion"]["store_bindings"]["settlement"] ==
+              c4._binding(root, identity, "CONTINUING_SETTLEMENT_ROOT"), "STORE_BINDING_INVALID")
+        summary.update(cycle_index=cycle_index, whole_chain_verified=False)
     return summary, states, data
+
+
+def _metadata(data):
+    source = _json(data["source_intent.json"])
+    return {"request": _json(data["request.json"])["body"],
+            "source_completion": _json(source["metadata"]["completion.json"].encode("utf-8")),
+            "source_request": _json(source["metadata"]["request.json"].encode("utf-8"))["body"]}
 
 
 def inspect_first_forward_settlement(settlement_store_root, epoch_id, *, expected_request_digest):
     try:
         _digest(expected_request_digest)
         root, target, identity = c4._target(settlement_store_root, epoch_id)
-        summary, states, _ = _read_bundle(root, target, identity, epoch_id, expected_request_digest)
-        return _result(summary, states)
+        summary, states, data = _read_bundle(root, target, identity, epoch_id, expected_request_digest)
+        return _result(summary, states, _metadata(data))
     except _PROCESS_CONTROL:
         raise
     except Exception as exc:
@@ -405,18 +460,24 @@ def _guard(owner, root, paths):
     return guard
 
 
-def _build(intent_root, epoch, expected, success_path, provider_root, owner, summary):
-    root, target, _ = c4._target(intent_root, epoch)
-    _guard(owner, root, (epoch,))
-    observed = c4.inspect_first_forward_intent_pair(root, epoch, expected_request_digest=expected)
+def _build(intent_root, epoch, expected, success_path, provider_root, owner, summary, *, cycle_index=None):
+    if cycle_index is None:
+        root, target, _ = c4._target(intent_root, epoch)
+        _guard(owner, root, (epoch,))
+        observed = c4.inspect_first_forward_intent_pair(root, epoch, expected_request_digest=expected)
+    else:
+        from quantpits.research.forward_continuation import _target, inspect_next_forward_intent_pair
+        root, target, _ = _target(intent_root, epoch, cycle_index)
+        _guard(owner, root, (target.name,))
+        observed = inspect_next_forward_intent_pair(intent_root, epoch, cycle_index, expected_request_digest=expected)
     _need(observed.status == "VERIFIED" and observed.d1_inputs is not None, "SOURCE_INTENT_INVALID")
-    source = dict(schema_version=1, metadata=observed.d1_metadata, roles=[dict(role=i.role,
+    source = dict(schema_version=2 if cycle_index is not None else 1, metadata=observed.d1_metadata, roles=[dict(role=i.role,
         prior=i.prior.to_dict(), intents=i.intents.to_dict(), execution_assumption=i.execution_assumption.to_dict())
         for i in observed.d1_inputs])
     success_path = c4.c3.surface._physical_path(success_path, "success", directory=False)
     _guard(owner, success_path.parent, (success_path.name,))
     success_bytes, _ = c4.c3.surface._read_regular(success_path, maximum=MEMBER_LIMIT, private=True)
-    body, completion, inputs = _source(source, success_bytes, epoch)
+    body, completion, inputs = _source(source, success_bytes, epoch, continuing=cycle_index is not None)
     # Join the original physical completion to the same validated C4 observation.
     _need(completion["target_binding_digest"] == observed.to_safe_summary_dict()["target_binding_digest"])
     summary.update(current_cycle_id=body["current_cycle_id"], trade_date=body["trade_date"])
@@ -444,13 +505,13 @@ def _build(intent_root, epoch, expected, success_path, provider_root, owner, sum
         "calendar_day.txt": day_bytes, "next_open_prices.json": canonical(price_doc),
         "settlements.json": canonical(dict(schema_version=1, roles=[dict(role=r, transition=t.to_dict())
                                                                  for r, t in zip(ROLES, transitions)]))}
-    request_body = _request_body(epoch, body, completion, inputs, logical, implementation=_implementation())
+    request_body = _request_body(epoch, body, completion, inputs, logical, implementation=_implementation(continuing=cycle_index is not None))
     digest = _hash(request_body)
     members = {"request.json": canonical(dict(body=request_body, request_digest=digest)), **logical}
-    manifest = dict(schema_version=1, domain="FIRST_FORWARD_SETTLEMENT_BUNDLE_V1", epoch_id=epoch,
+    manifest = dict(schema_version=2 if cycle_index is not None else 1, domain="CONTINUING_FORWARD_SETTLEMENT_BUNDLE_V1" if cycle_index is not None else "FIRST_FORWARD_SETTLEMENT_BUNDLE_V1", epoch_id=epoch,
         current_cycle_id=body["current_cycle_id"], request_digest=digest, members=c4._inventory(members))
     _need(len(canonical(manifest)) <= RECORD_LIMIT, "BUNDLE_BUDGET_EXCEEDED")
-    _validate(members, manifest, epoch, digest)
+    _validate(members, manifest, epoch, digest, cycle_index=cycle_index)
     owner.check()
     return members, canonical(manifest), digest
 
@@ -459,7 +520,7 @@ def _build(intent_root, epoch, expected, success_path, provider_root, owner, sum
 _write_member = c4._write_member
 
 
-def _publish(root, target, identity, epoch, members, manifest, digest, owner, summary):
+def _publish(root, target, identity, epoch, members, manifest, digest, owner, summary, *, cycle_index=None):
     root_fd = target_fd = None
     attempted = False
     states = None
@@ -471,16 +532,20 @@ def _publish(root, target, identity, epoch, members, manifest, digest, owner, su
         _need((info.st_dev, info.st_ino, info.st_mode) == identity, "TARGET_REPLACED")
         try:
             attempted = True
-            os.mkdir(epoch, mode=0o700, dir_fd=root_fd)
+            os.mkdir(target.name, mode=0o700, dir_fd=root_fd)
             summary.update(did_write=True, write_state="TARGET_CREATED")
         except FileExistsError:
             attempted = False
-            result = inspect_first_forward_settlement(root, epoch, expected_request_digest=digest)
+            if cycle_index is None:
+                result = inspect_first_forward_settlement(root, epoch, expected_request_digest=digest)
+            else:
+                from quantpits.research.forward_continuation import inspect_next_forward_settlement
+                result = inspect_next_forward_settlement(root.parent, epoch, cycle_index, expected_request_digest=digest)
             summary.update(result.to_safe_summary_dict())
             if result.status == "VERIFIED":
                 summary["status"] = "ADOPTED"
             return result.after_states
-        target_fd = os.open(epoch, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd)
+        target_fd = os.open(target.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd)
         info = os.fstat(target_fd)
         target_identity = (info.st_dev, info.st_ino, info.st_mode)
         for name, data in list(members.items()) + [("manifest.json", manifest)]:
@@ -489,20 +554,20 @@ def _publish(root, target, identity, epoch, members, manifest, digest, owner, su
             _write_member(target_fd, name, data)
         os.fsync(target_fd)
         os.fsync(root_fd)
-        _, _, stored = _read_bundle(root, target, identity, epoch, digest, completion=False)
+        _, _, stored = _read_bundle(root, target, identity, epoch, digest, completion=False, cycle_index=cycle_index)
         _need(all(stored[n] == d for n, d in members.items()) and stored["manifest.json"] == manifest)
         owner.check()
         now = _clock()
         _need(isinstance(now, datetime) and now.tzinfo is not None and now.utcoffset().total_seconds() == 0, "CLOCK_INVALID")
         record = canonical(dict(schema_version=1, event="SETTLEMENT_DATA_VERIFIED_BEFORE_COMPLETION",
             operation_id=str(uuid.uuid4()), epoch_id=epoch, current_cycle_id=summary["current_cycle_id"],
-            request_digest=digest, manifest_digest=_raw(manifest), target_binding_digest=c4._binding(root, identity, epoch),
+            request_digest=digest, manifest_digest=_raw(manifest), target_binding_digest=c4._binding(root, identity, target.name),
             settled_at_utc=c4._stamp(now)))
         _need(len(record) <= RECORD_LIMIT, "BUNDLE_BUDGET_EXCEEDED")
         _write_member(target_fd, "completion.json", record)
         os.fsync(target_fd)
         os.fsync(root_fd)
-        observed, states, stored = _read_bundle(root, target, identity, epoch, digest)
+        observed, states, stored = _read_bundle(root, target, identity, epoch, digest, cycle_index=cycle_index)
         _need(stored["completion.json"] == record and c4._directory(target) == target_identity, "TARGET_REPLACED")
         owner.check()
         summary.update(observed)
