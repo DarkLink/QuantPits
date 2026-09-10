@@ -222,7 +222,7 @@ def inspect_next_forward_intent_pair(intent_store_root, epoch_id, cycle_index, *
         _digest(expected_request_digest)
         root, target, identity = _target(intent_store_root, epoch_id, cycle_index)
         safe, inputs, data = c4._read_bundle(root, target, identity, epoch_id, expected_request_digest, cycle_index=cycle_index)
-        return c4._result(c4.FirstIntentBundleObservation, safe, inputs, {n: data[n].decode("utf-8") for n in SOURCE_METADATA})
+        return c4._result(c4.FirstIntentBundleObservation, safe, inputs, {n: data[n].decode("utf-8") for n in SOURCE_METADATA}, data)
     except c4._PROCESS_CONTROL:
         raise
     except Exception as exc:
@@ -336,7 +336,7 @@ def inspect_next_forward_settlement(settlement_store_root, epoch_id, cycle_index
         meta = d1._metadata(data)
         _need(meta["source_completion"]["store_bindings"]["settlement"] ==
               c4._binding(root, identity, "CONTINUING_SETTLEMENT_ROOT"), "STORE_BINDING_INVALID")
-        return d1._result(safe, states, meta)
+        return d1._result(safe, states, meta, data)
     except c4._PROCESS_CONTROL:
         raise
     except Exception as exc:

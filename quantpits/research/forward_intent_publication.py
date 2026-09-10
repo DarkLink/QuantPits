@@ -137,7 +137,7 @@ class _TimeGate:
 
 class FirstIntentPublicationPlan:
     """Immutable safe observation, never a publication input."""
-    __slots__ = ("_summary", "_inputs", "_metadata")
+    __slots__ = ("_summary", "_inputs", "_metadata", "_report_data")
 
     def __init__(self, *args, **kwargs):
         raise TypeError("use publication APIs")
@@ -161,6 +161,11 @@ class FirstIntentPublicationPlan:
     def d1_metadata(self):
         """Copies of verified persisted metadata; no publication authority."""
         return None if self._metadata is None else json.loads(self._metadata)
+
+    @property
+    def verified_report_data(self):
+        """Defensive copy of same-read verified members, without authority."""
+        return None if self._report_data is None else json.loads(self._report_data)
 
     def to_safe_summary_dict(self):
         return json.loads(self._summary)
@@ -193,11 +198,13 @@ def _summary(status="PRECONDITION_BLOCKED", **changes):
     return value
 
 
-def _result(cls, summary, inputs=None, metadata=None):
+def _result(cls, summary, inputs=None, metadata=None, report_data=None):
     value = object.__new__(cls)
     object.__setattr__(value, "_summary", canonical(summary))
     object.__setattr__(value, "_inputs", inputs)
     object.__setattr__(value, "_metadata", None if metadata is None else canonical(metadata))
+    object.__setattr__(value, "_report_data", None if report_data is None else canonical(
+        {name: raw.decode("utf-8") for name, raw in report_data.items()}))
     return value
 
 
@@ -629,7 +636,7 @@ def inspect_first_forward_intent_pair(intent_store_root, epoch_id, *, expected_r
         summary, inputs, data = _read_bundle(root, target, identity, epoch_id, expected_request_digest)
         metadata = {name: data[name].decode("utf-8") for name in
                     ("request.json", "manifest.json", "completion.json", "calendar_day.txt")}
-        return _result(FirstIntentBundleObservation, summary, inputs, metadata)
+        return _result(FirstIntentBundleObservation, summary, inputs, metadata, data)
     except _PROCESS_CONTROL:
         raise
     except Exception as exc:

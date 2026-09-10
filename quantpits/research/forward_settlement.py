@@ -43,7 +43,7 @@ class SettlementAfterState(NamedTuple):
 
 
 class FirstForwardSettlementObservation:
-    __slots__ = ("_summary", "_states", "_metadata")
+    __slots__ = ("_summary", "_states", "_metadata", "_report_data")
 
     def __init__(self, *args, **kwargs):
         raise TypeError("use settlement APIs")
@@ -67,6 +67,11 @@ class FirstForwardSettlementObservation:
     def continuation_metadata(self):
         return None if self._metadata is None else json.loads(self._metadata)
 
+    @property
+    def verified_report_data(self):
+        """Defensive copy of same-read verified members, without authority."""
+        return None if self._report_data is None else json.loads(self._report_data)
+
     def to_safe_summary_dict(self):
         return json.loads(self._summary)
 
@@ -83,11 +88,13 @@ def _summary(status="PRECONDITION_BLOCKED", **changes):
     return value
 
 
-def _result(summary, states=None, metadata=None):
+def _result(summary, states=None, metadata=None, report_data=None):
     value = object.__new__(FirstForwardSettlementObservation)
     object.__setattr__(value, "_summary", canonical(summary))
     object.__setattr__(value, "_states", states if summary["state_chain_ready"] else None)
     object.__setattr__(value, "_metadata", None if metadata is None else canonical(metadata))
+    object.__setattr__(value, "_report_data", None if report_data is None else canonical(
+        {name: raw.decode("utf-8") for name, raw in report_data.items()}))
     return value
 
 
@@ -442,7 +449,7 @@ def inspect_first_forward_settlement(settlement_store_root, epoch_id, *, expecte
         _digest(expected_request_digest)
         root, target, identity = c4._target(settlement_store_root, epoch_id)
         summary, states, data = _read_bundle(root, target, identity, epoch_id, expected_request_digest)
-        return _result(summary, states, _metadata(data))
+        return _result(summary, states, _metadata(data), data)
     except _PROCESS_CONTROL:
         raise
     except Exception as exc:
