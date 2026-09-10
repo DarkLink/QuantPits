@@ -381,8 +381,18 @@ def _build(request):
                 row['status'] = 'UNCERTAIN'
                 row['reason_codes'].append('SOURCE_CHANGED_DURING_WINDOW')
     finally:
+        close_failed = False
         for guard in guards:
-            guard.close()
+            try:
+                guard.close()
+            except Exception:
+                # A failed close has uncertain fd state: never retry, and keep
+                # closing other guards without replacing an active interruption.
+                close_failed = True
+        if close_failed:
+            for row in rows:
+                row['status'] = 'UNCERTAIN'
+                row['reason_codes'].append('SOURCE_GUARD_CLOSE_FAILED')
     # Use sufficient precision for the persisted accounting values and ratio quantization.
     with localcontext() as context:
         context.prec = max(128, 4 * max(len(str(a[k])) for r in rows for a in r['arms']
@@ -467,6 +477,7 @@ class ReportOutputError(ValueError):
 def write_report(report, output_dir):
     """Create private derived files; no overwrite, no rollback of uncertain output."""
     written, attempted = [], []
+    failed = False
     fd = None
     try:
         target = Path(output_dir).absolute()
@@ -509,9 +520,17 @@ def write_report(report, output_dir):
                 raise ValueError()
         return written
     except c4._PROCESS_CONTROL:
+        failed = True
         raise
     except Exception:
+        failed = True
         raise ReportOutputError(written, attempted) from None
     finally:
         if fd is not None:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except Exception:
+                # Preserve an existing safe failure or process-control exception.
+                # On success, close failure still prevents reporting completion.
+                if not failed:
+                    raise ReportOutputError(written, attempted) from None

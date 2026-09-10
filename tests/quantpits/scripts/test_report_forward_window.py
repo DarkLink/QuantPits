@@ -128,3 +128,70 @@ def test_output_replacement_is_failure(tmp_path, monkeypatch):
         m.write_report(report, target)
     assert exc.value.attempted_files == ['report.json', 'cycles.csv', 'report.md']
     assert 'report.md' not in exc.value.written_files
+
+
+def fail_output_close(monkeypatch, target):
+    original = os.close
+    calls = []
+    def close(fd):
+        is_target = os.readlink('/proc/self/fd/%s' % fd) == str(target)
+        original(fd)
+        if is_target:
+            calls.append(fd)
+            raise OSError('/private/close-secret')
+    monkeypatch.setattr(m.os, 'close', close)
+    return calls
+
+
+@pytest.mark.parametrize('body_failure', [False, True])
+def test_cli_close_failure_is_safe(tmp_path, monkeypatch, capsys, body_failure):
+    request = tmp_path / 'request.json'
+    request.write_text(json.dumps(empty_request(tmp_path)))
+    output = tmp_path / 'output'
+    calls = fail_output_close(monkeypatch, output)
+    original = m.c4._write_member
+    if body_failure:
+        def write(fd, name, data):
+            if name == 'cycles.csv':
+                raise OSError('/private/write-secret')
+            original(fd, name, data)
+        monkeypatch.setattr(m.c4, '_write_member', write)
+    assert cli.main(['--request-file', str(request), '--output-dir', str(output)]) == 5
+    captured = capsys.readouterr()
+    assert not captured.err
+    assert 'secret' not in captured.out and str(tmp_path) not in captured.out
+    summary = json.loads(captured.out)
+    assert summary['status'] == 'OUTPUT_FAILED'
+    assert summary['reason_codes'] == ['OUTPUT_FAILED']
+    assert summary['written_files'] == (['report.json'] if body_failure else ['report.json', 'cycles.csv', 'report.md'])
+    assert summary['attempted_files'] == (['report.json', 'cycles.csv'] if body_failure else summary['written_files'])
+    assert (output / 'report.json').is_file()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('control', [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_output_close_cannot_replace_interruption(tmp_path, monkeypatch, control):
+    report = build(empty_request(tmp_path))
+    target = tmp_path / 'output'
+    calls = fail_output_close(monkeypatch, target)
+    interruption = control('original interruption')
+    def write(*args):
+        raise interruption
+    monkeypatch.setattr(m.c4, '_write_member', write)
+    with pytest.raises(control) as caught:
+        m.write_report(report, target)
+    assert caught.value is interruption
+    assert len(calls) == 1
+
+
+def test_close_failure_inside_callers_exception_handler(tmp_path, monkeypatch):
+    report = build(empty_request(tmp_path))
+    target = tmp_path / 'output'
+    calls = fail_output_close(monkeypatch, target)
+    try:
+        raise RuntimeError('unrelated caller exception')
+    except RuntimeError:
+        with pytest.raises(m.ReportOutputError) as caught:
+            m.write_report(report, target)
+    assert caught.value.written_files == ['report.json', 'cycles.csv', 'report.md']
+    assert len(calls) == 1

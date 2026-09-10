@@ -366,3 +366,40 @@ def test_physical_store_binding_cannot_be_spliced(settlement, tmp_path):
     assert report['rows'][0]['intent']['status'] != 'VERIFIED'
     assert report['rows'][0]['settlement']['status'] == 'VERIFIED'
     assert report['metrics']['arms'][0]['window_return'] is None
+
+
+@pytest.mark.parametrize('failure', [None, RuntimeError, KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_guard_close_attempts_all_and_preserves_interruption(tmp_path, monkeypatch, failure):
+    from tests.quantpits.scripts.test_report_forward_window import empty_request
+    request = empty_request(tmp_path)
+    original = m.SourceMutationObserver.close
+    closed = []
+    def close(guard):
+        closed.append(guard)
+        original(guard)
+        if len(closed) == 1:
+            raise OSError('/private/guard-close-secret')
+    monkeypatch.setattr(m.SourceMutationObserver, 'close', close)
+    interruption = failure('original failure') if failure else None
+    if failure:
+        def diagnostics(*args):
+            raise interruption
+        monkeypatch.setattr(m, '_diagnostics', diagnostics)
+    if failure in (KeyboardInterrupt, SystemExit, GeneratorExit):
+        with pytest.raises(failure) as caught:
+            build(request)
+        assert caught.value is interruption
+    else:
+        report = build(request)
+        assert report['status'] == 'BLOCKED'
+        assert len(report['rows']) == report['requested_count'] == 1
+        assert report['rows'][0]['status'] == 'UNCERTAIN'
+        assert 'SOURCE_GUARD_CLOSE_FAILED' in report['reason_codes']
+        if failure:
+            assert 'REPORT_PAYLOAD_INVALID' in report['reason_codes']
+        assert not report['requested_window_chain_verified']
+        assert not report['source_forward_records_complete']
+        assert report['metrics']['return_difference'] is None
+        assert 'secret' not in json.dumps(m.safe_summary(report))
+    assert len(closed) == 2 and len({id(g) for g in closed}) == 2
+    assert all(g.fd == -1 for g in closed)
