@@ -59,3 +59,5 @@ python -m quantpits.scripts.continue_forward inspect-settlement \
 `state_chain_ready` 只表示本 settlement 的实际 B0 重算与两臂 after-state 已验证、可用于后续接入；`predecessor_join_observed` 来自 fresh preparation；不递归验证全链，不输出 `whole_chain_verified=true`。单个数据成员 4 MiB、总计 32 MiB、记录 1 MiB；边界错误保留普通失败/中断/写后不确定语义。
 
 相关文档：[首期准备](research_forward_preparation.md)、[首期结算](research_forward_settlement.md)。D3 共同窗口报告和真实观察周期另行推进。
+
+D2 使用同一 C3 有限维护兼容判断，拒绝时保留全部组件原因；通过时把 `RESEARCH_MAINTENANCE_ADMISSION_V1` 来源材料保存在本期 request。旧首期 V1 与新兼容 request 可接续，协议材料变化本身不触发经济断段；每期仍须实际检查源码/来源、冻结定义、前序各自 after-state、周度日历和时间 gate。新材料不改变原始成功记录字段或 D1/D3 的成功记录要求。

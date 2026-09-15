@@ -60,6 +60,39 @@ CURATED_CODE_PATHS = (
     "quantpits/evidence/ranking.py",
 )
 
+# Reviewed static/CPCV prediction-origin annotations only. These are content
+# identities, not a commit whitelist; no transitive compatibility is implied.
+ORIGIN_TAGS_RULE = "PREDICTION_ORIGIN_TAGS_MAINTENANCE_V1"
+ORIGIN_TAGS_HELPER = "quantpits/training/model_identity.py"
+_ORIGIN_TAGS_OLD = "e039dd14af98d8784388edae75e2d80501952709bdb0a76c603f185a762b1c15"
+_ORIGIN_TAGS_NEW = "15a468434a5060a15f12d34b90ab06039bc6093ef7f3048e2a0d96c23aec377e"
+_ORIGIN_TAGS_DEPENDENCY = "0f13fe3eea4141c3438ced6b80f3f9dc4681fc2f914f2252e05c2fdd214b0e18"
+
+
+def _origin_tags_pair(reference, current):
+    return (reference == {"algorithm": "sha256", "domain": "canonical_json",
+                          "value": _ORIGIN_TAGS_OLD, "size_bytes": 4411}
+            and current == {"algorithm": "sha256", "domain": "canonical_json",
+                            "value": _ORIGIN_TAGS_NEW, "size_bytes": 4411})
+
+
+def _origin_tags_dependency(engine, commit):
+    completed = subprocess.run(
+        ["git", "--no-replace-objects", "cat-file", "blob",
+         "%s:%s" % (commit, ORIGIN_TAGS_HELPER)], cwd=str(engine),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=10,
+    )
+    expected = {"algorithm": "sha256", "domain": "raw_bytes",
+                "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": 7295}
+    if completed.returncode != 0 or _digest(completed.stdout, "raw_bytes") != expected:
+        raise _ComponentIncomparable("MAINTENANCE_DEPENDENCY_UNVERIFIED")
+    # A sealed dependency alone cannot authorize execution of different bytes.
+    loaded = Path(__file__).resolve().parents[2] / ORIGIN_TAGS_HELPER
+    if any(_digest(_read_regular(path)[0], "raw_bytes") != expected
+           for path in (engine / ORIGIN_TAGS_HELPER, loaded)):
+        raise _ComponentIncomparable("MAINTENANCE_DEPENDENCY_RUNTIME_MISMATCH")
+    return expected
+
 _PROCESS_CONTROL = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _AUTHORITY = object()
 _RESULT_BINDINGS = weakref.WeakKeyDictionary()  # type: ignore[var-annotated]
@@ -351,7 +384,7 @@ class DecisionSurfaceComponent:
 
     def _validate(self) -> None:
         if self.name not in COMPONENT_NAMES or self.comparison not in {
-            "EQUAL", "DIFFERENT", "INCOMPARABLE",
+            "EQUAL", "DIFFERENT", "INCOMPARABLE", "COMPATIBLE",
         }:
             raise DecisionSurfaceContractError("component classification is invalid")
         _typed_digest(dict(self.reference_digest), "reference", "canonical_json")
@@ -366,6 +399,11 @@ class DecisionSurfaceComponent:
             )
         ):
             raise DecisionSurfaceContractError("component fields are inconsistent")
+        if self.comparison == "COMPATIBLE" and not (
+            self.name == COMPONENT_NAMES[0] and self.reason_code == ORIGIN_TAGS_RULE
+            and _origin_tags_pair(dict(self.reference_digest), dict(self.current_digest))
+        ):
+            raise DecisionSurfaceContractError("maintenance rule identity is invalid")
 
     def to_safe_dict(self) -> Dict[str, Any]:
         self._validate()
@@ -467,8 +505,10 @@ class ProductionDecisionSurfaceResult:
             item.reason_code for item in self._components if item.reason_code != "EXACT_EQUAL"
         ))
         return {
-            "schema_version": SCHEMA_VERSION,
-            "observation_kind": OBSERVATION_KIND,
+            "schema_version": 2 if any(item.comparison == "COMPATIBLE" for item in self._components) else SCHEMA_VERSION,
+            "observation_kind": ("PRODUCTION_DECISION_SURFACE_CONTINUITY_V2"
+                                 if any(item.comparison == "COMPATIBLE" for item in self._components)
+                                 else OBSERVATION_KIND),
             "status": status,
             "reason_codes": list(reasons),
             "component_count": len(self._components),
@@ -497,6 +537,35 @@ def _make_result(
         _authority=_AUTHORITY, components=tuple(components),
         reference_cycle_id=reference_cycle, current_cycle_id=current_cycle,
     )
+
+
+def maintenance_admission(result):
+    """Versioned provenance for an observer-owned positive maintenance result."""
+    result._validate()
+    if not result.same_champion_segment or result.components[0].comparison != "COMPATIBLE":
+        return None
+    row = result.components[0]
+    return {
+        "protocol": "RESEARCH_MAINTENANCE_ADMISSION_V1", "rule_id": ORIGIN_TAGS_RULE,
+        "reference_raw_digest": dict(row.reference_digest),
+        "current_raw_digest": dict(row.current_digest),
+        "dependency_raw_digest": {"algorithm": "sha256", "domain": "raw_bytes",
+                                  "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": 7295},
+    }
+
+
+def validate_maintenance_admission(value):
+    """Validate retained content; this does not recreate live admission authority."""
+    if (type(value) is not dict or set(value) != {
+        "protocol", "rule_id", "reference_raw_digest", "current_raw_digest", "dependency_raw_digest",
+    } or value["protocol"] != "RESEARCH_MAINTENANCE_ADMISSION_V1"
+        or value["rule_id"] != ORIGIN_TAGS_RULE
+        or not _origin_tags_pair(value["reference_raw_digest"], value["current_raw_digest"])
+        or value["dependency_raw_digest"] != {
+            "algorithm": "sha256", "domain": "raw_bytes",
+            "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": 7295,
+        }):
+        raise DecisionSurfaceContractError("maintenance admission content is invalid")
 
 
 def _manifest_object(cycle: Path, observation: Mapping[str, Any], name: str) -> Dict[str, Any]:
@@ -1348,7 +1417,7 @@ def _observe_production_decision_surface(
             "data/evidence/v1/cycles", "config/strategy_config.yaml",
         ),
     )
-    engine_guard = SourceMutationObserver(engine, CURATED_CODE_PATHS)
+    engine_guard = SourceMutationObserver(engine, CURATED_CODE_PATHS + (ORIGIN_TAGS_HELPER,))
     copy_guards = []
     git_control_paths = tuple(
         engine / ".git" / name for name in ("HEAD", "index", "packed-refs", "refs")
@@ -1363,6 +1432,7 @@ def _observe_production_decision_surface(
         bootstraps / identifier,
         production / "data" / "evidence" / "v1" / "cycles" / current_cycle,
         *(engine / logical for logical in CURATED_CODE_PATHS),
+        engine / ORIGIN_TAGS_HELPER,
         *git_control_paths,
     )
     authority_directories = (
@@ -1546,6 +1616,58 @@ def _observe_production_decision_surface(
                 lambda: _intent_projection(current_path, current_manifest),
             ),
         )
+        code = components[0]
+        if code.comparison == "EQUAL" and code.current_digest["value"] == _ORIGIN_TAGS_NEW:
+            # The reviewed new train_utils calls this dependency even on exact
+            # baselines. Do not let an uncurated helper change ride that path.
+            try:
+                _origin_tags_dependency(engine, reference_commit)
+                _origin_tags_dependency(engine, current_commit)
+            except _PROCESS_CONTROL:
+                raise
+            except Exception as exc:
+                components = (_component(COMPONENT_NAMES[0], reference_code, None,
+                    exc.reason_code if isinstance(exc, _ComponentIncomparable)
+                    else "MAINTENANCE_DEPENDENCY_UNVERIFIED"),) + components[1:]
+        if code.comparison == "DIFFERENT" and not _origin_tags_pair(
+            dict(code.reference_digest), dict(code.current_digest),
+        ):
+            components = (DecisionSurfaceComponent(
+                _authority=_AUTHORITY, name=code.name, comparison="DIFFERENT",
+                reference_digest=dict(code.reference_digest), current_digest=dict(code.current_digest),
+                reason_code="ECONOMIC_COMPATIBILITY_NOT_ESTABLISHED",
+            ),) + components[1:]
+        if code.comparison == "DIFFERENT" and _origin_tags_pair(
+            dict(code.reference_digest), dict(code.current_digest),
+        ):
+            # Only the fully observed source/model path is within this rule.
+            # Other component failures retain their independent diagnostics.
+            try:
+                _origin_tags_dependency(engine, current_commit)
+                if all(row.comparison == "EQUAL" for row in components[1:]):
+                    if copy_pair is None:
+                        from quantpits.research.model_continuity import observe_model_copy_pair
+                        verified_pair = observe_model_copy_pair(
+                            production if reference_source == "production" else research,
+                            reference_manifest, production, current_manifest,
+                            retained_guards=copy_guards,
+                        )
+                    else:
+                        verified_pair = copy_pair
+                    if verified_pair[0] != verified_pair[1]:
+                        raise _ComponentIncomparable("MAINTENANCE_SOURCE_NOT_EQUAL")
+                    code = DecisionSurfaceComponent(
+                        _authority=_AUTHORITY, name=COMPONENT_NAMES[0], comparison="COMPATIBLE",
+                        reference_digest=dict(code.reference_digest), current_digest=dict(code.current_digest),
+                        reason_code=ORIGIN_TAGS_RULE,
+                    )
+            except _PROCESS_CONTROL:
+                raise
+            except Exception as exc:
+                code = _component(COMPONENT_NAMES[0], reference_code, None,
+                    exc.reason_code if isinstance(exc, _ComponentIncomparable)
+                    else "MAINTENANCE_SOURCE_UNVERIFIED")
+            components = (code,) + components[1:]
         after = (
             _directory_identities(authority_directories),
             _selected_fingerprint(selected_paths),

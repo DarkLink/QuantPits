@@ -295,3 +295,28 @@ def test_model_above_declared_budget_is_rejected_before_parser(copied_models, mo
     monkeypatch.setattr(module, 'model_content_digest', unexpected)
     with pytest.raises(ValueError):
         observe_model_copy_pair(root, a, root, b)
+
+
+def test_selected_inputs_share_bounded_listener_instances(copied_models, monkeypatch):
+    from quantpits.research import decision_surface as surface
+    original = surface.SourceMutationObserver
+    active = set()
+    peak = [0]
+    class LimitedObserver(original):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            if self.fd >= 0:
+                active.add(self.fd)
+            peak[0] = max(peak[0], len(active))
+            # Reproduce the real per-user inotify limit, retaining actual watches.
+            if len(active) > 8:
+                self.supported = False
+        def close(self):
+            active.discard(self.fd)
+            return super().close()
+    monkeypatch.setattr(surface, 'SourceMutationObserver', LimitedObserver)
+    root, (a, b) = copied_models
+    first, second = observe_model_copy_pair(root, a, root, b)
+    assert first == second
+    assert peak[0] <= 4
+    assert not active

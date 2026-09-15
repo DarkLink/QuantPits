@@ -20,7 +20,22 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
     content = {}
     semantic = {}
     namespaces = set()
+    root_guards = {}
     roots = (Path(reference_root), Path(current_root))
+
+    def watch_path(root, relative):
+        # One instance per explicit workspace, with the same selected watches.
+        # A per-file instance exhausts Linux's per-user limit on real backends.
+        guard = root_guards.get(root)
+        if guard is None:
+            guard = s.SourceMutationObserver(root, (relative,))
+            guards.append(guard)
+            root_guards[root] = guard
+        else:
+            guard.add_paths((relative,))
+        if not guard.supported:
+            raise s._ComponentIncomparable("MODEL_INPUT_OBSERVATION_UNSUPPORTED")
+        return guard
 
     # Physical continuity is local to this invocation, never semantic identity.
     def metadata(path):
@@ -35,10 +50,7 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
         relative = path.relative_to(root).as_posix()
         # The existing reader rejects symlinks, including intermediate parents.
         s._physical_path(path, "model input", directory=path.is_dir())
-        guard = s.SourceMutationObserver(root, (relative,))
-        guards.append(guard)
-        if not guard.supported:
-            raise s._ComponentIncomparable("MODEL_INPUT_OBSERVATION_UNSUPPORTED")
+        watch_path(root, relative)
         before = metadata(path)
         selected.append((path, before))
 
@@ -104,10 +116,7 @@ def observe_model_copy_pair(reference_root, reference_manifest, current_root, cu
                 for experiment_meta in inventory:
                     experiment_data = yaml.safe_load(read(root, experiment_meta, role))
                     record = experiment_meta.parent / identifier
-                    guard = s.SourceMutationObserver(root, ((record / 'meta.yaml').relative_to(root).as_posix(),))
-                    guards.append(guard)
-                    if not guard.supported:
-                        raise s._ComponentIncomparable('MODEL_INPUT_OBSERVATION_UNSUPPORTED')
+                    watch_path(root, (record / 'meta.yaml').relative_to(root).as_posix())
                     if not record.exists():
                         semantic[(role, record.relative_to(root).as_posix())] = {'state': 'absent'}
                     else:

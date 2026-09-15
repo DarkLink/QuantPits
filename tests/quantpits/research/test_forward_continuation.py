@@ -220,10 +220,13 @@ def test_stop_conditions(continuation, monkeypatch, kind, code):
     elif kind == 'deadline':
         monkeypatch.setattr(m.c4, '_clock', lambda: (m.c4._utc(kw['decision_deadline_utc']), 100.))
     else:
+        from tests.quantpits.research.test_decision_surface import _result
         monkeypatch.setattr(m.c3.surface, 'observe_production_decision_surface',
-            lambda *a, **k: SimpleNamespace(status='VERSION_BREAK', same_champion_segment=False))
+            lambda *a, **k: _result(change=m.c3.surface.COMPONENT_NAMES[0]))
     result = m.prepare_next_forward_intent_publication(*args, **kw)
-    assert result.to_safe_summary_dict()['reason_codes'] == [code]
+    expected = ([code, 'ECONOMIC_CODE_SURFACE_DIFFERENT', 'STABLE_COMPONENT_DIFFERENT']
+                if kind == 'version' else [code])
+    assert result.to_safe_summary_dict()['reason_codes'] == expected
     assert result.status == ('VERSION_BREAK' if kind == 'version' else 'PRECONDITION_BLOCKED')
 
 

@@ -449,3 +449,37 @@ def test_guard_handoff_finalization_failure_releases(prepared_inputs, monkeypatc
     result = m._prepare_first_forward_intent(*prepared_inputs[0], _guard_owner=owner)
     assert result.status == 'PRECONDITION_BLOCKED'
     assert not owner.guards and guards and all(g.closed for g in guards)
+
+
+@pytest.mark.parametrize('incomparable', [False, True])
+def test_surface_keeps_all_component_diagnostics(prepared_inputs, monkeypatch, incomparable):
+    from tests.quantpits.research.test_decision_surface import _components
+    rows = list(_components(change=surface.COMPONENT_NAMES[0],
+                            incomparable=surface.COMPONENT_NAMES[4] if incomparable else None))
+    rows[5] = surface._component(surface.COMPONENT_NAMES[5], {'fee': 1}, {'fee': 2}, '')
+    observed = surface._make_result(rows, '2026-08-28', '2026-09-04')
+    monkeypatch.setattr(surface, 'observe_production_decision_surface', lambda *a, **kw: observed)
+    summary = m.prepare_first_forward_intent(*prepared_inputs[0]).to_safe_summary_dict()
+    assert summary['status'] == ('PRECONDITION_BLOCKED' if incomparable else 'VERSION_BREAK')
+    assert 'ECONOMIC_CODE_SURFACE_DIFFERENT' in summary['reason_codes']
+    assert 'PORTFOLIO_INTENT_POLICY_DIFFERENT' in summary['reason_codes']
+    if incomparable:
+        assert 'MARKET_UNIVERSE_POLICY_INCOMPARABLE' in summary['reason_codes']
+
+
+@pytest.mark.parametrize('error', [OSError, KeyboardInterrupt])
+def test_surface_detail_failure_preserves_rejection_or_interrupt(prepared_inputs, monkeypatch, error):
+    class Observed:
+        status = 'VERSION_BREAK'
+        same_champion_segment = False
+        @property
+        def components(self):
+            raise error('PRIVATE_DETAIL')
+    monkeypatch.setattr(surface, 'observe_production_decision_surface', lambda *a, **kw: Observed())
+    if error is KeyboardInterrupt:
+        with pytest.raises(KeyboardInterrupt):
+            m.prepare_first_forward_intent(*prepared_inputs[0])
+    else:
+        summary = m.prepare_first_forward_intent(*prepared_inputs[0]).to_safe_summary_dict()
+        assert summary['status'] == 'VERSION_BREAK'
+        assert summary['reason_codes'] == ['VERSION_BREAK', 'SURFACE_DETAILS_UNAVAILABLE']

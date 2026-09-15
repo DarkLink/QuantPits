@@ -59,6 +59,8 @@ def _help() -> Dict[str, Any]:
         "schema_version": 1,
         "observation_kind": "PRODUCTION_DECISION_SURFACE_CONTINUITY_V1",
         "status": "help",
+        "component_comparisons": ["EQUAL", "COMPATIBLE", "DIFFERENT", "INCOMPARABLE"],
+        "maintenance_observation_kind": "PRODUCTION_DECISION_SURFACE_CONTINUITY_V2",
         "required_arguments": [
             "research-workspace", "production-workspace", "engine-root",
             "current-cycle", "activation", "definition-store",

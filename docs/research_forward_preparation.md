@@ -67,3 +67,7 @@ B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单�
 传给 C3 的 observed-input inventory 使用 `MODEL_COPY_INPUT_CONTENT_INVENTORY_V1`：仅包含稳定的 `reference` / `current` 来源角色、相对路径、存在/文件/实验清单状态及实际 raw digest。文件 bytes 不变时，调用之间的 touch、同内容重建或物理目录搬移不会改变该内容 inventory；这不改变现有 bundle 的工作区 authority 合同。实际 tag/model bytes 变化仍改变摘要或触发完整性拒绝。
 
 device、inode、mode、mtime、ctime 等仅用于本次调用的本地前后检查及 guard，不进入 input/preparation digest。调用期间的变化仍会阻塞；成功移交的 guards 保持到外层 preparation 完成。模型输入实际读取和后置内容核对统一采用 **128 MiB 单文件上限**，前置只观察 metadata，不再隐式调用通用 32 MiB fingerprint。超过上限仍拒绝；其他 evidence readers、writer 与存储格式的预算不变。
+
+来源源码与经济连续性分开报告。raw Git blob 投影仍使用原 V1 协议、完整受管文件和原始 bytes。仅本次审查的 static/CPCV `prediction_origin_tags` old→new 精确投影组合可通过 `PREDICTION_ORIGIN_TAGS_MAINTENANCE_V1`：其余五组件须相同，模型及训练父链须实际验证，新增 `training/model_identity.py` 的封存和运行 bytes 须匹配审查身份。兼容组件报告 `COMPATIBLE` 和两个不同的 raw digest，safe observation 使用 `PRODUCTION_DECISION_SURFACE_CONTINUITY_V2`；SAME 只表示此有限合同下可同段。surface ID 仍绑定原参考 V1 raw 投影，不是归一化经济 hash。未知源码差异报告 `ECONOMIC_COMPATIBILITY_NOT_ESTABLISHED` 并拒绝；规则不传递到第三版本，也不豁免 runtime、来源、parity 或时间 gate。
+
+VERSION_BREAK 和 INCOMPARABLE 在 C3 `reason_codes` 中保留各实际失败组件及其有界原因；INCOMPARABLE 优先。仅详情读取失败时保留主分类并增加 `SURFACE_DETAILS_UNAVAILABLE`，控制中断继续传播。兼容路径的 `input_provenance.maintenance_admission` 使用独立 `RESEARCH_MAINTENANCE_ADMISSION_V1`，绑定规则、old/new raw 投影及 helper raw digest；其内容验证不会重新授予 live 准入能力。

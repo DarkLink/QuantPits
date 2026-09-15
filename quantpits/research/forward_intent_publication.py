@@ -435,6 +435,37 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
                        "implementation engine_commit engine_tree execution_assumption").split()
     if "model_copy_continuity" in provenance or "model_copy_observed_inputs" in provenance:
         provenance_keys += ["model_copy_continuity", "model_copy_observed_inputs"]
+    if "maintenance_admission" in provenance:
+        provenance_keys += ["maintenance_admission"]
+        c3.surface.validate_maintenance_admission(provenance["maintenance_admission"])
+        _need("model_copy_continuity" in provenance and "model_copy_observed_inputs" in provenance)
+        pair = provenance["model_copy_continuity"]
+        inventory = provenance["model_copy_observed_inputs"]
+        _need(type(pair) is list and len(pair) == 2 and pair[0] == pair[1])
+        _keys(pair[0], ("protocol", "members"))
+        _need(pair[0]["protocol"] == "OBSERVED_TRAINING_ORIGIN_MODEL_CONTENT_V1")
+        rows = pair[0]["members"]
+        wanted = compiled.champion.to_dict()["source_members"]
+        _need(type(rows) is list and len(rows) == len(wanted))
+        for row, source in zip(rows, wanted):
+            _keys(row, ("position", "source_id", "origin", "models", "auxiliary_inputs"))
+            _need(type(row["position"]) is int and row["position"] == source["position"]
+                  and row["source_id"] == source["source_id"])
+            _keys(row["origin"], ("training_origin_experiment", "training_origin_record_id"))
+            _need(all(type(v) is str and v for v in row["origin"].values()))
+            models = row["models"]
+            _need(type(models) is dict and bool(models)
+                  and (set(models) == {"model.pkl"}
+                       or set(models) == {"model_fold_%d.pkl" % i for i in range(len(models))}))
+            for digest in models.values():
+                _digest(digest)
+            _need(type(row["auxiliary_inputs"]) is dict)
+            for path, digest in row["auxiliary_inputs"].items():
+                _need(type(path) is str and path and not Path(path).is_absolute()
+                      and ".." not in Path(path).parts)
+                c3.surface._typed_digest(digest, "maintenance_auxiliary", "raw_bytes")
+        _need(type(inventory) is list and len(inventory) == 1)
+        c3.surface._typed_digest(inventory[0], "maintenance_observed_inputs", "canonical_json")
     _keys(provenance, provenance_keys)
     _need(body["input_digest"] == _hash(provenance)
           and body["preparation_digest"] == _hash({"input_digest": body["input_digest"], "roles": body["roles"]}))

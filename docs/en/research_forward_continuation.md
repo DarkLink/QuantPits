@@ -59,3 +59,5 @@ A fresh successful publication reports `cycle_intent_published=true, prospective
 `state_chain_ready` describes actual B0 recomputation and both after-states in this settlement. `predecessor_join_observed` comes from fresh preparation. Unread history is not verified and `whole_chain_verified` is never true. Limits remain 4 MiB per data member, 32 MiB total and 1 MiB per record, preserving ordinary failures, process-control propagation and uncertain post-write states.
 
 See [first settlement](research_forward_settlement.md). D3 common-window reporting and real observation periods remain separate work.
+
+D2 uses the same C3 limited maintenance rule, retains all component rejection reasons, and stores `RESEARCH_MAINTENANCE_ADMISSION_V1` provenance in compatible requests. An original V1 first intent can precede a compatible request; protocol-material changes alone do not break the economic segment. Every cycle still checks actual code/provenance, frozen definitions, each predecessor after-state, weekly calendars and time gates. The new material does not change original success-record fields or D1/D3 success-evidence requirements.

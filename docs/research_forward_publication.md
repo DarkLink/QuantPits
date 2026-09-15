@@ -27,3 +27,5 @@ completion 的时刻只声明其创建前已经完成的数据 bundle 核验，�
 退出码：READY/COMMITTED/ADOPTED/VERIFIED 为 0；前置拒绝或 request mismatch 为 2；VERSION_BREAK 为 3；CONFLICT 为 4；UNCERTAIN/INCOMPLETE 为 5。写后失败报告实际已写或 UNKNOWN；进程控制中断传播。缺 completion 不允许补写；已有 completion 但最后 gate 超时/不确定时，后来的字节检查不能代替原始成功记录。safe stdout 不含 private epoch、路径、证券、资金或原始异常。
 
 开发测试仅使用临时工作区。真实 publication 另需具体候选、Production/Research/provider 绑定、冻结 selectors、新周期/截止、request digest、唯一 target、safe 记录位置和最多 600 秒预算的授权。历史 C3 PREPARED 不是未来周期依据。开发验收与首次真实运行分别记录：实现及合成合同验收后，后续开发可使用该 reader/schema，无需等待市场周期；首次真实发布仍须独立通过时间与来源检查，才能声明前向 epoch 已启动。
+
+C4 原样传播 C3 的多组件拒绝原因。通过有限来源 tags 维护规则时，request 的 `input_provenance.maintenance_admission` 保存版本化规则及原始源码/依赖身份，并参与 input/request digest；已有 implementation provenance 同时绑定执行该规则的 Research 实现。成功 stdout 字段集合及其空 `reason_codes` 不变，旧 V1 request 不要求此可选来源材料，也不重写旧 digest 或 operation。C4/D1/D2/D3 reader 验证新材料的协议与精确身份；准入依据详见该 request 和对应 surface observation，不能从 safe JSON 重新获得发布资格。

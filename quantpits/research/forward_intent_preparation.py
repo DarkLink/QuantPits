@@ -343,10 +343,24 @@ def _prepare_forward_intent(
             research, production, engine, anchor, activation, definitions, evidence_root,
             bootstraps, bootstrap_set_id, reference_source="production",
         )
-        if observed.status == "VERSION_BREAK":
-            summary.update(status="VERSION_BREAK", reason_codes=["VERSION_BREAK"])
+        if not observed.same_champion_segment:
+            reason = "VERSION_BREAK" if observed.status == "VERSION_BREAK" else "SURFACE_INCOMPARABLE"
+            reasons = [reason]
+            try:
+                for row in observed.components:
+                    if row.comparison != "EQUAL":
+                        reasons.append(row.name.upper() + "_" + row.comparison)
+                        reasons.append(row.reason_code)
+            except _PROCESS_CONTROL:
+                raise
+            except Exception:
+                reasons.append("SURFACE_DETAILS_UNAVAILABLE")
+            summary.update(status="VERSION_BREAK" if observed.status == "VERSION_BREAK" else "PRECONDITION_BLOCKED",
+                           reason_codes=list(dict.fromkeys(reasons)))
             return _result(summary)
         _require(observed.same_champion_segment, "SURFACE_INCOMPARABLE")
+        admission = (surface.maintenance_admission(observed)
+                     if isinstance(observed, surface.ProductionDecisionSurfaceResult) else None)
         stage = "DEFINITION_ADOPTION_FAILED"
         from quantpits.research.forward_definition_evidence import adopt_fresh_champion_segment_definition_evidence
         from quantpits.research.forward_observation import observe_fresh_champion_segment_candidate
@@ -368,7 +382,7 @@ def _prepare_forward_intent(
         cycle_path, manifest, seal = surface._cycle_authority(production, anchor)
         copy_join = None
         copy_inventory = []
-        if not surface._source_matches_definition(surface._source_projection(manifest), candidate):
+        if admission is not None or not surface._source_matches_definition(surface._source_projection(manifest), candidate):
             from quantpits.research.model_continuity import observe_model_copy_pair
             _, reference_manifest, _ = surface._cycle_authority(production, source_cycle)
             _require(surface._source_matches_definition(surface._source_projection(reference_manifest), candidate),
@@ -465,6 +479,8 @@ def _prepare_forward_intent(
                          "implementation": implementation, "engine_commit": commit, "engine_tree": tree,
                          "execution_assumption": compiled.execution_assumption.to_dict()}
         stage = "ARM_PLANNING_FAILED"
+        if admission is not None:
+            input_payload["maintenance_admission"] = admission
         plans = _plan_pair(priors, rankings, snapshots, definition, anchor, trade, market, summary)
         stage = "INPUT_STABILITY_LOST"
         if copy_join is not None:
