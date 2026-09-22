@@ -87,7 +87,7 @@ def prepared_inputs(fresh_bootstrap_workspace, tmp_path, monkeypatch):
     }}}
     seal = {"named_file_digests": {"ranking.csv": surface._digest(ranking.to_csv_bytes(), "raw_bytes")}}
     original = surface._cycle_authority
-    monkeypatch.setattr(surface, "_cycle_authority", lambda root, date: (cycle, manifest, seal) if date == ANCHOR else original(root, date))
+    monkeypatch.setattr(surface, "_cycle_authority", lambda root, date, **kw: (cycle, manifest, seal) if date == ANCHOR else original(root, date))
     monkeypatch.setattr(surface, "observe_production_decision_surface", lambda *args, **kw: SimpleNamespace(status="SAME_CHAMPION_SEGMENT", same_champion_segment=True))
     original_projection = surface._source_projection
     monkeypatch.setattr(surface, "_source_projection", lambda value: {} if value is manifest else original_projection(value))
@@ -257,7 +257,7 @@ def test_champion_parity_is_actual(prepared_inputs, kind):
     seal["named_file_digests"]["ranking.csv"] = surface._digest(data, "raw_bytes")
     summary = m.prepare_first_forward_intent(*args).to_safe_summary_dict()
     assert summary["status"] == "PRECONDITION_BLOCKED"
-    assert summary["reason_codes"][0] == {"score": "CHAMPION_PARITY_SCORE", "rank": "CHAMPION_PARITY_ORDER", "unscored": "SEALED_RANKING_INCOMPLETE"}[kind]
+    assert summary["reason_codes"][0] == {"score": "CHAMPION_PARITY_SCORE", "rank": "CHAMPION_PARITY_ORDER", "unscored": "CHAMPION_PARITY_COVERAGE"}[kind]
 
 
 def test_final_input_change_denies_pair(prepared_inputs, monkeypatch):
@@ -386,7 +386,7 @@ def test_copy_branch_preparation_digest_uses_content_inventory(prepared_inputs, 
         return original_projection(value)
     monkeypatch.setattr(surface, '_source_projection', projection)
     original_cycle = surface._cycle_authority
-    def cycle_authority(workspace, date):
+    def cycle_authority(workspace, date, **kw):
         if date == '2026-08-28':
             return workspace / 'data/evidence/v1/cycles' / date, {'fixture_reference': True}, {}
         return original_cycle(workspace, date)
@@ -483,3 +483,16 @@ def test_surface_detail_failure_preserves_rejection_or_interrupt(prepared_inputs
         summary = m.prepare_first_forward_intent(*prepared_inputs[0]).to_safe_summary_dict()
         assert summary['status'] == 'VERSION_BREAK'
         assert summary['reason_codes'] == ['VERSION_BREAK', 'SURFACE_DETAILS_UNAVAILABLE']
+
+
+def test_no_scored_members_keeps_observation_without_plan(prepared_inputs):
+    args, _, _, seal = prepared_inputs
+    data = m.replay.canonical_full_ranking(INSTRUMENTS, {}).to_csv_bytes()
+    (args[0] / 'data/evidence/v1/cycles' / ANCHOR / 'ranking.csv').write_bytes(data)
+    seal['named_file_digests']['ranking.csv'] = surface._digest(data, 'raw_bytes')
+    result = m.prepare_first_forward_intent(*args)
+    summary = result.to_safe_summary_dict()
+    assert result.status == 'PRECONDITION_BLOCKED' and result.pair is None
+    assert summary['reason_codes'] == ['NO_SCORED_MEMBERS']
+    assert summary['roles'][0]['coverage_counts'] == dict(eligible=3, scored=0, missing=3)
+    assert all(role['status'] == 'NOT_RUN' for role in summary['roles'])

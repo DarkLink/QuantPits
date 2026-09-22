@@ -652,7 +652,7 @@ def test_observer_is_strictly_zero_write_and_returns_exact_six_rows(
     current_manifest = {"kind": "current"}
     monkeypatch.setattr(
         module, "_cycle_authority",
-        lambda root, cycle: (
+        lambda root, cycle, **kw: (
             reference_path, reference_manifest, {}
         ) if cycle == "2026-08-14" and root == reference_root else (current_path, current_manifest, {}),
     )

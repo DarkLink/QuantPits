@@ -30,9 +30,11 @@ stdout 仅一行 canonical safe JSON，包含日期、固定 role、状态、计
 
 只有 `PREPARED` 的 API 结果保留完整内存 pair。safe JSON 不能恢复 pair，也不是 C4 的写入授权。`intent_publication_capability`、`epoch_started`、`prospective_claim`、`promotion_capability` 和 `did_write` 始终 false。
 
-首版要求每个模型在 anchor 上完整覆盖 sealed universe：缺分、重复、foreign、NaN/inf 和 sealed unscored 都会阻塞，不填分或缩池。融合沿用 Stage A 的平均并列 percentile、冻结成员顺序的 pandas mean 和 canonical tie-break。两臂相同排名、100% overlap、零订单均合法。
+前向准备允许四模型在当期 anchor 共同缺行：先验证各自原始 index 唯一、无池外行、score 有限，再要求评分成员集合完全相同。辅助 label 列为空不影响 score。完整 universe 始终保留，例如 eligible=246、scored=243、missing=3；缺失原因为 missing_prediction，不推定停牌。融合在实际评分截面沿用 Stage A 的平均并列 percentile、冻结成员顺序的 pandas mean 和 canonical tie-break；Challenger 仍使用固定三模型。Champion 与封存排名逐行核对成员、评分状态、缺失原因、分数和排名。无评分返回 NO_SCORED_MEMBERS；单模型缺行、错 anchor、重复、foreign、NaN/inf 均拒绝。历史 replay 默认仍要求完整覆盖。两臂相同排名、100% overlap、零订单均合法。
 
-只观察一次两臂 union 的 anchor close，再分别投影到 B1。day/day_future 的历史 session 顺序必须一致，trade date 取 anchor 后首个 future session。价格来源为 `CURRENT_PROVIDER_ANCHOR_OBSERVATION`；历史物化关系仍为 `unverified`。calendar 与 seal 的 byte-match 单独报告，calendar 正常扩展不等于历史价格重现。现有 reader 为 hash 读取完整 close/factor 文件；决策仅解释 anchor 值，不读取 open 文件、不使用 next-open。
+这是既有全成员部分排名和 B1 未评分持仓规则的接通；新增明确的共同截面准入规则以 COMMON_ANCHOR_RANK_EQUAL_V1 记录在部分输入的 C4 provenance 中，并由 reader 检查。完整输入不增加此字段，旧完整格式仍可读。当期缺失集合变化不改变策略定义或 bootstrap；不兼容实际经济规则变化。signal capsule 的 retention_complete 仅表示五份请求文件留存并验证齐全，不表示评分完整或可以交易。seal 的 ranking_coverage_partial 仅由当前 surface、signal 留存及 C3 消费者明确准入，其他消费者的默认 gate 保留。
+
+每臂请求本臂 scored ∪ holdings 的 anchor close；联合观察一次后准确分配到 B1。未评分已持有者仍请求价格并保留，未评分未持有者不买入，池外无价退出继续 pending。day/day_future 的历史 session 顺序必须一致，trade date 取 anchor 后首个 future session。价格来源为 `CURRENT_PROVIDER_ANCHOR_OBSERVATION`；历史物化关系仍为 `unverified`。calendar 与 seal 的 byte-match 单独报告，calendar 正常扩展不等于历史价格重现。现有 reader 为 hash 读取完整 close/factor 文件；决策仅解释 anchor 值，不读取 open 文件、不使用 next-open。
 
 B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单保留。C3 不结算，也不验证结算后的现金或 no-deficit-worsening。历史日期的技术准备不能回填 prospective evidence；C4 需另选尚未开盘的周期并重新观察输入。
 

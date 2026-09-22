@@ -433,6 +433,9 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
     provenance = body["input_provenance"]
     provenance_keys = ("selectors definition bootstrap cycle_seal signal model rankings calendar future_calendar price "
                        "implementation engine_commit engine_tree execution_assumption").split()
+    if "coverage_policy" in provenance:
+        provenance_keys += ["coverage_policy"]
+        _need(provenance["coverage_policy"] == "COMMON_ANCHOR_RANK_EQUAL_V1")
     if "model_copy_continuity" in provenance or "model_copy_observed_inputs" in provenance:
         provenance_keys += ["model_copy_continuity", "model_copy_observed_inputs"]
     if "maintenance_admission" in provenance:
@@ -542,8 +545,9 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
             _need(c3.surface._digest(_economic_payload(prior)) == bootstrap["economic_state_digest"])
         ranking_data = members[role.lower() + "_ranking.csv"]
         ranking = c3.replay._ranking_from_csv(ranking_data)
-        _need(ranking.to_csv_bytes() == ranking_data and ranking.complete and ranking.scored_count > 0 and ranking.missing_count == 0)
-        requested = sorted({r["instrument"] for r in ranking.rows} | {p.instrument for p in prior.positions})
+        _need(ranking.to_csv_bytes() == ranking_data and ranking.scored_count > 0
+              and all(r["scored"] or r["coverage_status"] == "missing_prediction" for r in ranking.rows))
+        requested = sorted({r["instrument"] for r in ranking.rows if r["scored"]} | {p.instrument for p in prior.positions})
         snapshot = intent_module.AnchorPriceSnapshot.from_iterable(anchor_date=anchor, requested_instruments=requested,
             rows=[dict(instrument=r["instrument"], anchor_date=anchor,
                        status="OBSERVED" if r["status"] == "OBSERVED" else "MISSING",
@@ -564,8 +568,11 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
         rankings.append(ranking)
     _need(priors[0].portfolio_id != priors[1].portfolio_id
           and {r["instrument"] for r in rankings[0].rows} == {r["instrument"] for r in rankings[1].rows}
-          and receipt["requested_instruments"] == sorted({r["instrument"] for r in rankings[0].rows}
+          and receipt["requested_instruments"] == sorted({r["instrument"] for ranking in rankings for r in ranking.rows if r["scored"]}
               | {p.instrument for prior in priors for p in prior.positions}))
+    _need(("coverage_policy" in provenance) == bool(rankings[0].missing_count))
+    _need({r["instrument"] for r in rankings[0].rows if r["scored"]}
+          == {r["instrument"] for r in rankings[1].rows if r["scored"]})
     if continuing:
         from quantpits.research.forward_continuation import _validate_continuation, _schedule
         _validate_continuation(body["continuation"], epoch, compiled, selectors)

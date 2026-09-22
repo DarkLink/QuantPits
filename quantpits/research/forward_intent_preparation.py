@@ -197,7 +197,7 @@ def _parity(sealed, rebuilt):
     for left, right in zip(sealed.rows, rebuilt.rows):
         _require(all(left[key] == right[key] for key in ("instrument", "eligible", "scored", "rank", "coverage_status")),
                  "CHAMPION_PARITY_ORDER")
-        _require(abs(float(left["raw_score"]) - float(right["raw_score"])) <= 1e-12,
+        _require(not left["scored"] or abs(float(left["raw_score"]) - float(right["raw_score"])) <= 1e-12,
                  "CHAMPION_PARITY_SCORE")
 
 
@@ -379,7 +379,7 @@ def _prepare_forward_intent(
                 bootstrap_set_id, model_capsule_id, source_cycle, evidence_cycle, anchor)
         summary["bootstrap_source_cycle_id"] = source_cycle
         stage = "CURRENT_CYCLE_INVALID"
-        cycle_path, manifest, seal = surface._cycle_authority(production, anchor)
+        cycle_path, manifest, seal = surface._cycle_authority(production, anchor, allow_partial_ranking=True)
         copy_join = None
         copy_inventory = []
         if admission is not None or not surface._source_matches_definition(surface._source_projection(manifest), candidate):
@@ -409,7 +409,7 @@ def _prepare_forward_intent(
         champion = replay._ranking_from_csv(sealed_bytes)
         summary["sealed_ranking_digest"] = _raw(sealed_bytes)
         summary["roles"][0]["coverage_counts"] = {"eligible": champion.eligible_count, "scored": champion.scored_count, "missing": champion.missing_count}
-        _require(champion.complete and champion.missing_count == 0 and champion.scored_count > 0, "SEALED_RANKING_INCOMPLETE")
+        _require(champion.scored_count > 0, "NO_SCORED_MEMBERS")
         material = manifest["data_identity"]["qlib_materialization_identity"]
         market = surface._market_projection(manifest)["market"]
         universe_path = "instruments/%s.txt" % material["universe_name"]
@@ -423,10 +423,15 @@ def _prepare_forward_intent(
         subset = tuple(row["source_id"] for row in compiled.challenger.to_dict()["source_members"])
         _require(len(members) == 4 and len(subset) == 3 and tuple(name for name in members if name in subset) == subset, "MEMBER_ORDER_INVALID")
         inputs = dict(zip(members, signal_bytes[:4]))
-        rebuilt = replay.rank_complete_anchor(prediction_bytes_by_member=inputs, member_order=members, anchor_date=anchor, eligible_instruments=universe)
+        rebuilt = replay.rank_common_anchor(prediction_bytes_by_member=inputs, member_order=members, anchor_date=anchor, eligible_instruments=universe)
         summary["recomputed_ranking_digest"] = _raw(rebuilt.to_csv_bytes())
         _parity(champion, rebuilt)
-        challenger = replay.rank_complete_anchor(prediction_bytes_by_member=inputs, member_order=subset, anchor_date=anchor, eligible_instruments=universe)
+        if champion.missing_count:
+            fused = replay._prediction_frame(signal_bytes[4], "sealed_ensemble")
+            _require(anchor in fused, "ENSEMBLE_ANCHOR_MISSING")
+            fused_scores, _ = replay._date_scores(fused, "sealed_ensemble", anchor)
+            _parity(champion, replay.canonical_full_ranking(universe, fused_scores))
+        challenger = replay.rank_common_anchor(prediction_bytes_by_member=inputs, member_order=subset, anchor_date=anchor, eligible_instruments=universe)
         rankings = (champion, challenger)
         stage = "CALENDAR_INVALID"
         day_data = replay._stable_read(provider, "calendars/day.txt")
@@ -441,7 +446,10 @@ def _prepare_forward_intent(
             _schedule(day_data, future_data, continuation, anchor, trade)
         summary.update(trade_date=trade, calendar_match_status="MATCH" if surface._digest(day_data, "raw_bytes") == material["calendar_digest"] else "DIFFERENT",
                        price_provenance="CURRENT_PROVIDER_ANCHOR_OBSERVATION")
-        requested = tuple(sorted(set(universe) | {position.instrument for prior in priors for position in prior.positions}))
+        requested_by_role = tuple({row["instrument"] for row in ranking.rows if row["scored"]}
+                                  | {p.instrument for p in prior.positions}
+                                  for ranking, prior in zip(rankings, priors))
+        requested = tuple(sorted(set().union(*requested_by_role)))
         price_paths = tuple(provider / "features" / instrument.lower() / (field + ".day.bin") for instrument in requested for field in ("close", "factor"))
         price_selected = price_paths + (provider / universe_path,)
         price_before = _metadata(price_selected)
@@ -456,12 +464,12 @@ def _prepare_forward_intent(
                  and receipt.calendar_position == day.index(anchor), "PRICE_RECEIPT_JOIN_INVALID")
         summary["price_counts"] = receipt.to_dict()["counts"]
         snapshots = tuple(AnchorPriceSnapshot.from_iterable(
-            anchor_date=anchor, requested_instruments=tuple(sorted(set(universe) | {p.instrument for p in prior.positions})),
+            anchor_date=anchor, requested_instruments=tuple(sorted(role_requested)),
             rows=[{"instrument": row["instrument"], "anchor_date": anchor,
                    "status": "OBSERVED" if row["status"] == "OBSERVED" else "MISSING",
                    "cash_close": row["cash_price"] if row["status"] == "OBSERVED" else None}
-                  for row in receipt.rows if row["instrument"] in set(universe) | {p.instrument for p in prior.positions}],
-        ) for prior in priors)
+                  for row in receipt.rows if row["instrument"] in role_requested],
+        ) for role_requested in requested_by_role)
         definition = CurrentRuleIntentDefinition.from_dict(compiled.protocol.to_dict()["intent_definition"])
         for role, ranking, prior, snapshot in zip(summary["roles"], rankings, priors, snapshots):
             role.update(coverage_counts={"eligible": ranking.eligible_count, "scored": ranking.scored_count, "missing": ranking.missing_count},
@@ -478,6 +486,8 @@ def _prepare_forward_intent(
                          "calendar": _raw(day_data), "future_calendar": _raw(future_data), "price": dict(receipt.digest),
                          "implementation": implementation, "engine_commit": commit, "engine_tree": tree,
                          "execution_assumption": compiled.execution_assumption.to_dict()}
+        if champion.missing_count:
+            input_payload["coverage_policy"] = "COMMON_ANCHOR_RANK_EQUAL_V1"
         stage = "ARM_PLANNING_FAILED"
         if admission is not None:
             input_payload["maintenance_admission"] = admission
@@ -503,7 +513,7 @@ def _prepare_forward_intent(
                                  "top_overlap_count": len(top[0] & top[1]), "buy_overlap_count": len(buys[0] & buys[1]), "sell_overlap_count": len(sells[0] & sells[1])}
         count = champion.scored_count
         if count >= 2:
-            ranks = [{row["instrument"]: row["rank"] for row in ranking.rows} for ranking in rankings]
+            ranks = [{row["instrument"]: row["rank"] for row in ranking.rows if row["scored"]} for ranking in rankings]
             squared = sum((ranks[0][key] - ranks[1][key]) ** 2 for key in ranks[0])
             summary["comparison"].update(spearman=1.0 - 6.0 * squared / (count * (count ** 2 - 1)), spearman_reason=None)
         else:
@@ -527,7 +537,7 @@ def _prepare_forward_intent(
         from quantpits.research.forward_intent_publication import _Invalid
         summary.update(status="PRECONDITION_BLOCKED", intent_pair_prepared=False,
                        input_digest=None, preparation_digest=None,
-                       reason_codes=[exc.code if isinstance(exc, (_Blocked, _Invalid)) else stage])
+                       reason_codes=[exc.code if isinstance(exc, (_Blocked, _Invalid, replay.CommonCoverageInputError)) else stage])
         return _result(summary)
     finally:
         active = sys.exc_info()[1]

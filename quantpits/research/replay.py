@@ -742,6 +742,58 @@ def rank_complete_anchor(
     )
 
 
+class CommonCoverageInputError(ReplayInputError):
+    """Forward diagnostics contain a fixed public reason, never source contents."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def rank_common_anchor(
+    *, prediction_bytes_by_member, member_order, anchor_date, eligible_instruments,
+) -> RankingResult:
+    """Forward-only common coverage; never intersect differing model indexes.
+
+    Missing rows stay in the full eligible inventory. Historical replay keeps
+    its complete-input contract. Auxiliary columns have no scoring meaning.
+    """
+    anchor = _strict_date(anchor_date, "anchor_date")
+    names = tuple(member_order)
+    universe = tuple(eligible_instruments)
+    if not names or len(set(names)) != len(names):
+        raise CommonCoverageInputError("MEMBER_ORDER_INVALID")
+    columns = {}
+    common = None
+    for name in names:
+        if name not in prediction_bytes_by_member:
+            raise CommonCoverageInputError("PREDICTION_SOURCE_MISSING")
+        try:
+            prediction = _prediction_frame(prediction_bytes_by_member[name], name)
+        except ReplayInputError as exc:
+            code = ("PREDICTION_INDEX_DUPLICATE" if "duplicate" in str(exc)
+                    else "PREDICTION_CONTENT_INVALID")
+            raise CommonCoverageInputError(code) from exc
+        if anchor not in prediction:
+            raise CommonCoverageInputError("PREDICTION_ANCHOR_MISSING")
+        scores, count = _date_scores(prediction, name, anchor)
+        if count != len(scores):
+            raise CommonCoverageInputError("PREDICTION_INDEX_DUPLICATE")
+        if set(scores) - set(universe):
+            raise CommonCoverageInputError("PREDICTION_INDEX_FOREIGN")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float))
+               or not math.isfinite(float(v)) for v in scores.values()):
+            raise CommonCoverageInputError("PREDICTION_SCORE_NONFINITE")
+        if common is not None and set(scores) != common:
+            raise CommonCoverageInputError("PREDICTION_COVERAGE_DIFFERENT")
+        common = set(scores)
+        columns[name] = _rank_percentiles(scores)
+    if not common:
+        raise CommonCoverageInputError("NO_SCORED_MEMBERS")
+    frame = pd.DataFrame(columns, index=[i for i in universe if i in common])
+    return canonical_full_ranking(universe, frame[list(names)].mean(axis=1).to_dict())
+
+
 class ResearchRankingReplay:
     """Sole truth owner for Stage-A inventory, fusion, parity, and comparison."""
 

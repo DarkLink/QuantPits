@@ -25,7 +25,7 @@ def _calendar(path, dates):
     path.write_text('\n'.join(dates) + '\n')
 
 
-def _cycle(args, anchor, manifest, seal, monkeypatch):
+def _cycle(args, anchor, manifest, seal, monkeypatch, missing=()):
     args = list(args)
     args[4] = anchor
     args[11] = 'signal.' + anchor
@@ -39,6 +39,7 @@ def _cycle(args, anchor, manifest, seal, monkeypatch):
             values[1] = 100
         frame = pd.DataFrame({'score': values}, index=pd.MultiIndex.from_tuples(
             [(pd.Timestamp(anchor), i) for i in INSTRUMENTS], names=('datetime', 'instrument')))
+        frame = frame.loc[~frame.index.get_level_values("instrument").isin(missing)]
         stream = io.BytesIO()
         frame.to_pickle(stream)
         data = stream.getvalue()
@@ -50,14 +51,24 @@ def _cycle(args, anchor, manifest, seal, monkeypatch):
     universe = ('\n'.join(i + '\t2020-01-01\t2030-01-01' for i in INSTRUMENTS) + '\n').encode()
     (args[3] / 'instruments/csi300.txt').write_bytes(universe)
     manifest['data_identity']['qlib_materialization_identity']['universe_digest'] = m.c3.surface._digest(universe, 'raw_bytes')
-    ranking = m.c3.replay.rank_complete_anchor(prediction_bytes_by_member={str(i): predictions[str(i)] for i in range(4)},
+    ranking = m.c3.replay.rank_common_anchor(prediction_bytes_by_member={str(i): predictions[str(i)] for i in range(4)},
         member_order=tuple(str(i) for i in range(4)), anchor_date=anchor, eligible_instruments=INSTRUMENTS)
+    if missing:
+        fused = pd.DataFrame({'score': [float(r['raw_score']) for r in ranking.rows if r['scored']]},
+            index=pd.MultiIndex.from_tuples([(pd.Timestamp(anchor), r['instrument'])
+                for r in ranking.rows if r['scored']], names=('datetime', 'instrument')))
+        stream = io.BytesIO()
+        fused.to_pickle(stream)
+        data = stream.getvalue()
+        (root / MEMBER_NAMES[4]).write_bytes(data)
+        inventory[4]['raw_digest'] = m.c3.surface._digest(data, 'raw_bytes')
+        (root / 'capsule_manifest.json').write_bytes(m.c4.canonical(dict(members=inventory)))
     cycle = args[0] / 'data/evidence/v1/cycles' / anchor
     cycle.mkdir(mode=0o700, exist_ok=True)
     (cycle / 'ranking.csv').write_bytes(ranking.to_csv_bytes())
     seal = dict(named_file_digests={'ranking.csv': m.c3.surface._digest(ranking.to_csv_bytes(), 'raw_bytes')})
     original = m.c3.surface._cycle_authority
-    monkeypatch.setattr(m.c3.surface, '_cycle_authority', lambda root, day: (cycle, manifest, seal) if day == anchor else original(root, day))
+    monkeypatch.setattr(m.c3.surface, '_cycle_authority', lambda root, day, **kw: (cycle, manifest, seal) if day == anchor else original(root, day))
     _calendar(args[3] / 'calendars/day.txt', [d for d in DATES if d <= anchor])
     _calendar(args[3] / 'calendars/day_future.txt', DATES)
     for instrument in set(INSTRUMENTS) | {'SH600001'}:
@@ -619,3 +630,48 @@ def test_reader_replacement_is_uncertain(continuation, monkeypatch):
     observed = m.inspect_next_forward_intent_pair(kw['intent_store_root'], kw['epoch_id'], 2,
         expected_request_digest=published.request_digest)
     assert observed.status == 'UNCERTAIN' and observed.d1_inputs is None
+
+
+@pytest.fixture
+def partial_continuation(publication, prepared_inputs, tmp_path, monkeypatch):
+    original = _cycle
+    def common(args, anchor, manifest, seal, patch):
+        missing = ('SH600000',) if anchor == '2026-09-04' else ('SH600100',)
+        return original(args, anchor, manifest, seal, patch, missing=missing)
+    monkeypatch.setattr(__import__(__name__, fromlist=['_cycle']), '_cycle', common)
+    return continuation.__wrapped__(publication, prepared_inputs, tmp_path, monkeypatch)
+
+
+def test_partial_coverage_changes_keep_predecessor(partial_continuation, monkeypatch):
+    fixture = partial_continuation
+    published = publish_intent(fixture)
+    args, kw, previous = fixture[:3]
+    _, target, _ = m._target(kw['intent_store_root'], kw['epoch_id'], 2)
+    first_root = kw['first_intent_store_root'] / kw['epoch_id']
+    first = m.c3.replay._ranking_from_csv((first_root / 'champion_ranking.csv').read_bytes())
+    second = m.c3.replay._ranking_from_csv((target / 'champion_ranking.csv').read_bytes())
+    assert {r['instrument'] for r in first.rows if not r['scored']} == {'SH600000'}
+    assert {r['instrument'] for r in second.rows if not r['scored']} == {'SH600100'}
+    assert first.eligible_count == second.eligible_count == len(INSTRUMENTS)
+    body = json.loads((target / 'request.json').read_bytes())['body']
+    assert body['input_provenance']['coverage_policy'] == 'COMMON_ANCHOR_RANK_EQUAL_V1'
+    assert published.d1_inputs[0].prior.digest == previous.after_states[0].after_state.digest
+    held = published.d1_inputs[0].prior.positions[0].instrument
+    (args[3] / 'features' / held.lower() / 'open.day.bin').unlink()
+    settled, _ = settle(fixture, published, monkeypatch)
+    assert settled.status == 'COMMITTED'
+    assert any(r['valuation_status'] == 'PARTIAL' for r in settled.to_safe_summary_dict()['roles'])
+    from tests.quantpits.research.test_forward_window_report import build
+    request = dict(schema_version=1, first_intent_store_root=str(kw['first_intent_store_root']),
+        first_settlement_store_root=str(kw['predecessor_settlement_store_root']),
+        continuing_intent_store_root=str(kw['intent_store_root']),
+        continuing_settlement_store_root=str(kw['settlement_store_root']), epoch_id=kw['epoch_id'],
+        requested_cycles=[dict(cycle_index=1, current_cycle_id='2026-09-04',
+            expected_intent_request_digest=kw['expected_first_intent_request_digest'],
+            expected_settlement_request_digest=previous.request_digest),
+            dict(cycle_index=2, current_cycle_id='2026-09-11',
+            expected_intent_request_digest=published.request_digest,
+            expected_settlement_request_digest=settled.request_digest)])
+    report = build(request)
+    assert report['status'] == 'PARTIAL' and len(report['rows']) == 2
+    assert report['metrics']['arms'][0]['window_return'] is None

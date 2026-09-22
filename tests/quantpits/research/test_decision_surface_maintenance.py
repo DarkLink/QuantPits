@@ -118,7 +118,7 @@ def test_real_surface_source_and_engine(tmp_path, monkeypatch, copied_models, va
     candidate.compiled_definitions.champion = _SyntheticLeaf(champion)
     monkeypatch.setattr(obs, "observe_fresh_champion_segment_candidate", lambda *a: candidate)
     monkeypatch.setattr(s, "_bootstrap_authority", lambda *a: ("2026-08-14", receipt))
-    monkeypatch.setattr(s, "_cycle_authority", lambda root, day: (reference_path, reference, {})
+    monkeypatch.setattr(s, "_cycle_authority", lambda root, day, **kw: (reference_path, reference, {})
                         if day == "2026-08-14" else (current_path, current, {}))
     monkeypatch.setattr(s, "_intent_matches_definition", lambda *a: True)
     monkeypatch.setattr(s, "_ensemble_projection", lambda *a: {

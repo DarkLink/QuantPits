@@ -146,10 +146,22 @@ def test_run_config_ranking_universe_and_lineage_context_are_all_required(tmp_pa
     }
     module._run_context(tmp_path, manifest)
     assert calls == ["prediction", "post_trade", "ensemble", "order"]
+    from quantpits.evidence.ranking import canonical_full_ranking
+    ranked = canonical_full_ranking(("A", "B"), {"A": 1.0})
+    (tmp_path / "ranking.csv").write_bytes(ranked.to_csv_bytes())
+    (tmp_path / "ranking.csv").chmod(0o600)
+    partial = copy.deepcopy(manifest)
+    partial["ranking"] = dict(status="partial", eligible_count=2, scored_count=1,
+        missing_count=1, ranking_digest=TypedDigest.raw(ranked.to_csv_bytes()).to_dict())
+    module._run_context(tmp_path, partial)
+    for bad_count in (True, 0, 2):
+        partial["ranking"]["scored_count"] = bad_count
+        with pytest.raises(module._Blocked, match="RANKING_CONTEXT_INVALID"):
+            module._run_context(tmp_path, partial)
     for mutation in ("ranking", "universe", "config"):
         invalid = copy.deepcopy(manifest)
         if mutation == "ranking":
-            invalid["ranking"]["status"] = "partial"
+            invalid["ranking"]["status"] = "invalid"
         elif mutation == "universe":
             invalid["data_identity"]["qlib_materialization_identity"]["status"] = "missing"
         else:
@@ -228,7 +240,7 @@ def test_mixed_embedded_and_workspace_sources_are_freshly_read(tmp_path, monkeyp
     }
     monkeypatch.setattr(
         module._phase37, "_cycle_authority",
-        lambda *_args: (cycle, manifest, {}),
+        lambda *_args, **kw: (cycle, manifest, {}),
     )
     monkeypatch.setattr(module, "_run_context", lambda *_args: None)
     request = module._derive_request(production, cycle_id, read_live=True)
@@ -252,7 +264,7 @@ def test_ordinary_member_failure_still_observes_later_requested_members(tmp_path
         "status": "sealed_complete", "problems": [],
         "model_and_ensemble_lineage": {"source_artifacts": rows},
     }
-    monkeypatch.setattr(module._phase37, "_cycle_authority", lambda *_: (cycle, manifest, {}))
+    monkeypatch.setattr(module._phase37, "_cycle_authority", lambda *_, **kw: (cycle, manifest, {}))
     monkeypatch.setattr(module, "_run_context", lambda *_: None)
     observed = []
     def read_live(_root, logical, _expected):

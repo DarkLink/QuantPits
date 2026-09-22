@@ -322,10 +322,19 @@ def _run_context(cycle_path: Path, manifest: Mapping[str, Any]) -> None:
     _phase37._market_projection(manifest)
     ranking = manifest.get("ranking")
     if (
-        type(ranking) is not dict or ranking.get("status") != "complete"
+        type(ranking) is not dict or ranking.get("status") not in {"complete", "partial"}
         or ranking.get("ranking_digest") is None
     ):
         raise _Blocked("RANKING_CONTEXT_INVALID")
+    if ranking["status"] == "partial":
+        from quantpits.research.replay import _ranking_from_csv
+        raw, _ = _phase37._read_regular(cycle_path / "ranking.csv", private=True)
+        observed = _ranking_from_csv(raw)
+        if (TypedDigest.raw(raw).to_dict() != ranking["ranking_digest"]
+                or observed.complete or any(
+                    type(ranking.get(key)) is not int or ranking[key] != getattr(observed, key)
+                    for key in ("eligible_count", "scored_count", "missing_count"))):
+            raise _Blocked("RANKING_CONTEXT_INVALID")
     material = manifest.get("data_identity", {}).get("qlib_materialization_identity")
     if type(material) is not dict or material.get("status") != "observed":
         raise _Blocked("UNIVERSE_CONTEXT_INVALID")
@@ -508,7 +517,7 @@ def _derive_request(
     try:
         if not cycle_guard.supported:
             raise _Blocked("SOURCE_CONTINUITY_UNSUPPORTED")
-        cycle_path, manifest, _seal = _phase37._cycle_authority(production, cycle_id)
+        cycle_path, manifest, _seal = _phase37._cycle_authority(production, cycle_id, allow_partial_ranking=True)
         _run_context(cycle_path, manifest)
         rows = _artifact_rows(manifest)
         metadata = _member_metadata(rows)

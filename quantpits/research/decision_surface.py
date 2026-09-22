@@ -670,7 +670,7 @@ def _referenced_bytes(
     return data
 
 
-def _cycle_authority(root: Path, cycle_id: str) -> Tuple[Path, Dict[str, Any], Dict[str, Any]]:
+def _cycle_authority(root: Path, cycle_id: str, *, allow_partial_ranking: bool = False) -> Tuple[Path, Dict[str, Any], Dict[str, Any]]:
     cycle = root / "data" / "evidence" / "v1" / "cycles" / cycle_id
     try:
         cycle_info = os.lstat(str(cycle))
@@ -718,7 +718,8 @@ def _cycle_authority(root: Path, cycle_id: str) -> Tuple[Path, Dict[str, Any], D
                 raise _ComponentIncomparable("CYCLE_PROBLEM_INVENTORY_DUPLICATE")
             identities.add(identity)
         blocking = {item for item in identities if item[2]}
-        if not blocking.issubset(_ALLOWED_PARTIAL):
+        allowed = _ALLOWED_PARTIAL | ({("ranking_coverage_partial", "ranking", True)} if allow_partial_ranking else set())
+        if not blocking.issubset(allowed):
             raise _ComponentIncomparable("CYCLE_BLOCKING_PROBLEM_NOT_SCOPED")
     replay_core = {
         key: value for key, value in manifest.items()
@@ -1528,7 +1529,7 @@ def _observe_production_decision_surface(
         )
         try:
             current_path, current_manifest, _current_seal = _cycle_authority(
-                production, current_cycle,
+                production, current_cycle, allow_partial_ranking=True,
             )
         except _PROCESS_CONTROL:
             raise
