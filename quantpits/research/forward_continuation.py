@@ -1,8 +1,8 @@
 """Explicit weekly continuation of a verified two-arm forward epoch.
 
 Only a fresh predecessor read grants a planning join. Offline observations verify
-this bundle, never the unread history. Store bindings are physical completion
-metadata and are deliberately excluded from semantic requests.
+this bundle, never the unread history. V2 store bindings identify the frozen
+chain and role; physical identity is checked during each operation.
 """
 from __future__ import annotations
 
@@ -35,15 +35,21 @@ def _target(root, epoch, index):
     return parent, parent / str(index), c4._directory(parent)
 
 
-def _bindings(intent_root, settlement_root, epoch, index):
+def _bindings(intent_root, settlement_root, epoch, index, *, body=None):
     result = {}
     for name, value in (("intent", intent_root), ("settlement", settlement_root)):
         root, _, identity = _target(value, epoch, index)
         result[name] = c4._binding(root, identity, "CONTINUING_%s_ROOT" % name.upper())
     _need(result["intent"] != result["settlement"], "STORE_BINDING_INVALID")
-    _need(c3.surface._physical_path(intent_root, "intent", directory=True) !=
-          c3.surface._physical_path(settlement_root, "settlement", directory=True), "STORE_BINDING_INVALID")
-    return result
+    left = c3.surface._physical_path(intent_root, "intent", directory=True)
+    right = c3.surface._physical_path(settlement_root, "settlement", directory=True)
+    _need(left != right and left not in right.parents and right not in left.parents, "STORE_BINDING_INVALID")
+    return c4._logical_stores(body) if body is not None else result
+
+
+def _source_bindings(meta, intent_root, settlement_root, epoch, index):
+    return _bindings(intent_root, settlement_root, epoch, index,
+        body=meta["source_request"] if c4._completion_version(meta["source_completion"]) == 2 else None)
 
 
 def _week(day):
@@ -152,6 +158,8 @@ def _observe_predecessor(selection, guards, compiled, bootstrap_id, model_id, so
     _watch(guards, first_root, (epoch,))
     first = c4.inspect_first_forward_intent_pair(first_root, epoch,
         expected_request_digest=selection["expected_first_intent_request_digest"])
+    _need("LEGACY_PHYSICAL_BINDING_MISMATCH" not in first.to_safe_summary_dict()["reason_codes"],
+          "LEGACY_PHYSICAL_BINDING_MISMATCH")
     _need(first.status == "VERIFIED" and first.d1_inputs is not None, "FIRST_INTENT_INVALID")
     first_body = c4._json(first.d1_metadata["request.json"].encode())["body"]
     frozen = {k: v for k, v in first_body["input_provenance"]["selectors"].items()
@@ -159,7 +167,7 @@ def _observe_predecessor(selection, guards, compiled, bootstrap_id, model_id, so
     _need(frozen == dict(definition_set_id=compiled.definition_set_id, definition_evidence_cycle_id=evidence_cycle,
                         bootstrap_set_id=bootstrap_id, bootstrap_source_cycle_id=source_cycle, model_capsule_id=model_id)
           and first_body["input_provenance"]["definition"] == dict(compiled.request_digest), "FROZEN_DEFINITION_MISMATCH")
-    bindings = _bindings(selection["intent_store_root"], selection["settlement_store_root"], epoch, index)
+    _bindings(selection["intent_store_root"], selection["settlement_store_root"], epoch, index)
     for key in ("intent_store_root", "settlement_store_root"):
         root, _, _ = _target(selection[key], epoch, index)
         # Root identities also remain stable during preparation and publication.
@@ -177,6 +185,8 @@ def _observe_predecessor(selection, guards, compiled, bootstrap_id, model_id, so
         _need(root == _target(selection["settlement_store_root"], epoch, index)[0], "STORE_BINDING_INVALID")
         previous = inspect_next_forward_settlement(predecessor_root, epoch, previous_index,
             expected_request_digest=selection["expected_predecessor_request_digest"])
+    _need("LEGACY_PHYSICAL_BINDING_MISMATCH" not in previous.to_safe_summary_dict()["reason_codes"],
+          "LEGACY_PHYSICAL_BINDING_MISMATCH")
     _need(previous.status == "VERIFIED" and previous.to_safe_summary_dict()["state_chain_ready"]
           and previous.after_states is not None, "PREDECESSOR_SETTLEMENT_INVALID")
     meta = previous.continuation_metadata
@@ -192,7 +202,9 @@ def _observe_predecessor(selection, guards, compiled, bootstrap_id, model_id, so
         _need(saved["first_intent"] == _reference(first) and saved["frozen_selectors"] == frozen
               and saved["cycle_index"] == previous_index
               and saved["schedule"] == dict(rule=RULE, first_anchor=first_body["current_cycle_id"], market_timezone=first_body["time_policy"]["market_timezone"]), "PREDECESSOR_JOIN_INVALID")
-        _need(meta["source_completion"]["store_bindings"] == bindings, "STORE_BINDING_INVALID")
+        if c4._completion_version(meta["source_completion"]) == 2 or not d1._completion_is_portable(meta):
+            _need(meta["source_completion"]["store_bindings"] == _source_bindings(meta,
+                selection["intent_store_root"], selection["settlement_store_root"], epoch, index), "STORE_BINDING_INVALID")
     states = previous.after_states
     _need([s.role for s in states] == list(c3.ROLES), "PREDECESSOR_ROLE_INVALID")
     for old, initial in zip(states, first.d1_inputs):
@@ -259,10 +271,12 @@ def _intent_run(args, selection, deadline, next_open, expected=None):
             members, manifest, digest = c4._build(prepared, epoch, policy, continuing=True)
             owner.check()
             _need(bindings == _bindings(selection["intent_store_root"], selection["settlement_store_root"], epoch, index), "STORE_BINDING_INVALID")
+            body = c4._json(members["request.json"])["body"]
+            bindings = _bindings(selection["intent_store_root"], selection["settlement_store_root"], epoch, index, body=body)
             gate.check("PREPARATION_VERIFIED")
             safe.update(status="READY", request_digest=digest, current_cycle_id=args[4],
                 trade_date=prepared.to_safe_summary_dict()["trade_date"], predecessor_join_observed=True,
-                target_binding_digest=c4._binding(root, identity, target.name, store_bindings=bindings), time_observations=gate.observations,
+                target_binding_digest=c4._portable_binding("intent", body, c4._raw(manifest)), time_observations=gate.observations,
                 order_counts=[len(p.intents.intents) for p in prepared.pair.plans])
             if os.path.lexists(str(target)):
                 safe.update(status="CONFLICT", reason_codes=["CONFLICT"])
@@ -334,8 +348,7 @@ def inspect_next_forward_settlement(settlement_store_root, epoch_id, cycle_index
         root, target, identity = _target(settlement_store_root, epoch_id, cycle_index)
         safe, states, data = d1._read_bundle(root, target, identity, epoch_id, expected_request_digest, cycle_index=cycle_index)
         meta = d1._metadata(data)
-        _need(meta["source_completion"]["store_bindings"]["settlement"] ==
-              c4._binding(root, identity, "CONTINUING_SETTLEMENT_ROOT"), "STORE_BINDING_INVALID")
+        d1._settlement_store_binding(meta, root, identity)
         return d1._result(safe, states, meta, data)
     except c4._PROCESS_CONTROL:
         raise
@@ -362,8 +375,8 @@ def _settlement_run(intent_root, epoch, index, expected_intent, success, provide
                 return d1._result(safe, states)
         members, manifest, digest = d1._build(intent_root, epoch, expected_intent, success, provider, owner, safe, cycle_index=index)
         meta = d1._metadata(members)
-        _need(meta["source_completion"]["store_bindings"] == _bindings(intent_root, settlement_root, epoch, index), "STORE_BINDING_INVALID")
-        safe.update(status="READY", request_digest=digest, target_binding_digest=c4._binding(root, identity, target.name),
+        _need(meta["source_completion"]["store_bindings"] == _source_bindings(meta, intent_root, settlement_root, epoch, index), "STORE_BINDING_INVALID")
+        safe.update(status="READY", request_digest=digest, target_binding_digest=c4._portable_binding("settlement", c4._json(members["request.json"])["body"], c4._raw(manifest)),
                     accounting_pair_complete=True, source_forward_record_linked=True)
         if os.path.lexists(str(target)):
             safe.update(status="CONFLICT", reason_codes=["CONFLICT"])

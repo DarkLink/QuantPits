@@ -291,6 +291,8 @@ def rehash_bundle(kw, mutate):
     manifest.update(request_digest=request['request_digest'], members=m.c4._inventory(data))
     completion = json.loads((target / 'completion.json').read_bytes())
     completion.update(request_digest=request['request_digest'], manifest_digest=m._hash(manifest))
+    if completion['schema_version'] == 2:
+        completion['target_binding_digest'] = m.c4._portable_binding('settlement', request['body'], m._hash(manifest))
     for n, raw in data.items():
         (target / n).write_bytes(raw)
     (target / 'manifest.json').write_bytes(m.canonical(manifest))
@@ -588,3 +590,104 @@ def test_descriptor_close_failure_releases_remaining_descriptors(settlement, mon
     for fd in set(closed):
         with pytest.raises(OSError):
             os.fstat(fd)
+
+
+@pytest.mark.parametrize('rebuild_same_path', [False, True])
+def test_copied_intent_settles_with_original_success(settlement, publication, tmp_path, rebuild_same_path):
+    baseline = prepare(settlement)
+    expected = publish(settlement)
+    original_root = settlement['intent_store_root']
+    snapshot = {p.relative_to(original_root): p.read_bytes() for p in original_root.rglob('*') if p.is_file()}
+    success_bytes = settlement['publication_success_record_path'].read_bytes()
+    copied = tmp_path / 'restored_intents'
+    shutil.copytree(original_root, copied)
+    # Keep the old inode allocated, but remove its canonical path.
+    original_root.rename(tmp_path / 'inactive_intents')
+    if rebuild_same_path:
+        copied.rename(original_root)
+        copied = original_root
+    restored_success = tmp_path / 'restored_stdout.json'
+    shutil.copy2(settlement['publication_success_record_path'], restored_success)
+    settlement['publication_success_record_path'].unlink()
+    root = tmp_path / 'restored_settlements'
+    root.mkdir(mode=0o700)
+    restored = dict(settlement, intent_store_root=copied, settlement_store_root=root,
+                    publication_success_record_path=restored_success)
+    plan = prepare(restored)
+    assert plan.request_digest == baseline.request_digest
+    adopted = m.c4.publish_first_forward_intent_pair(*publication[0],
+        **dict(publication[1], intent_store_root=copied),
+        expected_request_digest=settlement['expected_intent_request_digest'])
+    safe = adopted.to_safe_summary_dict()
+    original_safe = json.loads(success_bytes)
+    assert adopted.status == 'ADOPTED' and not safe['prospective_claim'] and not safe['did_write']
+    for key in ('request_digest', 'manifest_digest', 'operation_id', 'recorded_time_claim', 'target_binding_digest'):
+        assert safe[key] == original_safe[key]
+    result = publish(restored)
+    assert result.after_states == expected.after_states
+    assert result.to_safe_summary_dict()['target_binding_digest'] == expected.to_safe_summary_dict()['target_binding_digest']
+    assert restored_success.read_bytes() == success_bytes
+    assert {p.relative_to(copied): p.read_bytes() for p in copied.rglob('*') if p.is_file()} == snapshot
+
+
+def test_v1_original_location_and_v2_successor(settlement, tmp_path):
+    from tests.quantpits.research.legacy_forward_records import convert_intent, physical
+    convert_intent(settlement['intent_store_root'], settlement['epoch_id'], settlement['publication_success_record_path'])
+    path = settlement['intent_store_root'] / settlement['epoch_id'] / 'completion.json'
+    original = path.read_bytes()
+    copied_intent = tmp_path / 'legacy_intent_copy'
+    shutil.copytree(settlement['intent_store_root'], copied_intent)
+    blocked = m.prepare_first_forward_settlement(**dict(settlement, intent_store_root=copied_intent))
+    assert blocked.to_safe_summary_dict()['reason_codes'] == ['LEGACY_PHYSICAL_BINDING_MISMATCH']
+    result = publish(settlement)
+    assert path.read_bytes() == original
+    completion = settlement['settlement_store_root'] / settlement['epoch_id'] / 'completion.json'
+    assert json.loads(completion.read_bytes())['schema_version'] == 2
+    # Independent frozen V1 settlement layout; reader must preserve exact bytes.
+    value = json.loads(completion.read_bytes())
+    legacy = dict(schema_version=1, **{k: value[k] for k in ('event', 'operation_id', 'epoch_id',
+        'current_cycle_id', 'request_digest', 'manifest_digest', 'settled_at_utc')})
+    legacy['target_binding_digest'] = physical(settlement['settlement_store_root'], settlement['epoch_id'])
+    completion.write_bytes(m.canonical(legacy))
+    before = completion.read_bytes()
+    assert inspect(settlement, result.request_digest).status == 'VERIFIED'
+    assert completion.read_bytes() == before
+    moved = tmp_path / 'legacy_copy'
+    shutil.copytree(settlement['settlement_store_root'], moved)
+    observation = inspect(dict(settlement, settlement_store_root=moved), result.request_digest)
+    assert observation.to_safe_summary_dict()['reason_codes'] == ['LEGACY_PHYSICAL_BINDING_MISMATCH']
+
+
+def test_versions_and_record_kind_in_settlement_and_embedded_source(settlement):
+    import copy
+    result = publish(settlement)
+    root = settlement['settlement_store_root'] / settlement['epoch_id']
+    path = root / 'completion.json'
+    saved = path.read_bytes()
+    body = json.loads((root / 'request.json').read_bytes())['body']
+    for version in (None, 0, 3, True, '2'):
+        value = json.loads(saved)
+        if version is None:
+            value.pop('schema_version')
+        else:
+            value['schema_version'] = version
+        path.write_bytes(m.canonical(value))
+        assert inspect(settlement, result.request_digest).after_states is None
+    value = json.loads(saved)
+    value['target_binding_digest'] = m.c4._portable_binding('intent', body, value['manifest_digest'])
+    path.write_bytes(m.canonical(value))
+    assert inspect(settlement, result.request_digest).after_states is None
+    path.write_bytes(saved)
+    source = json.loads((root / 'source_intent.json').read_bytes())
+    success = (root / 'publication_success.json').read_bytes()
+    for version in (None, 3, True, '2'):
+        changed = copy.deepcopy(source)
+        completion = json.loads(changed['metadata']['completion.json'])
+        if version is None:
+            completion.pop('schema_version')
+        else:
+            completion['schema_version'] = version
+        changed['metadata']['completion.json'] = m.canonical(completion).decode()
+        with pytest.raises(m.c4._Invalid):
+            m._source(changed, success, settlement['epoch_id'])
+    assert inspect(settlement, result.request_digest).status == 'VERIFIED'

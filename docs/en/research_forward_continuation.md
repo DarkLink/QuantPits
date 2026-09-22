@@ -19,7 +19,7 @@ Explicitly provision two dedicated roots and their epoch parents with mode `0700
 <settlement-root>/<epoch>/3
 ```
 
-Writers create only the current canonical integer slot. They do not create parents recursively, overwrite slots or use leading zeros, hashes or attempt IDs. Preserve conflicts, incomplete bundles and uncertain writes for inspection/adoption using the original expected request. Physical bindings of both roots are retained in completion metadata, included together in the original success record’s target_binding_digest, and checked on subsequent fresh joins.
+Writers create only the current canonical integer slot. They do not create parents recursively, overwrite slots or use leading zeros, hashes or attempt IDs. Preserve conflicts, incomplete bundles and uncertain writes for inspection/adoption using the original expected request. V2 completion store_bindings identify the frozen chain and intent/settlement roles, checked on subsequent joins. The actual target roots must remain non-overlapping.
 
 1. Inspect the settled predecessor and exact original first-intent identity.
 2. Complete the current Production seal and signal capsule. Prepare the intent with the frozen definition/bootstrap/model selectors, current cycle/signal and exact predecessor.
@@ -61,3 +61,12 @@ A fresh successful publication reports `cycle_intent_published=true, prospective
 See [first settlement](research_forward_settlement.md). D3 common-window reporting and real observation periods remain separate work.
 
 D2 uses the same C3 limited maintenance rule, retains all component rejection reasons, and stores `RESEARCH_MAINTENANCE_ADMISSION_V1` provenance in compatible requests. An original V1 first intent can precede a compatible request; protocol-material changes alone do not break the economic segment. Every cycle still checks actual code/provenance, frozen definitions, each predecessor after-state, weekly calendars and time gates. The new material does not change original success-record fields or D1/D3 success-evidence requirements.
+
+
+## Copying records and format compatibility
+
+New `completion.schema_version=2` records use `FORWARD_RECORD_BINDING_V2`. Their `target_binding_digest` binds record kind, epoch, cycle/index, request digest and manifest digest. Continuing `store_bindings` use `FORWARD_CHAIN_STORE_V2`, binding the intent/settlement role, first request/manifest/operation, frozen selectors, definition request and schedule. Neither binding includes paths, device, inode, mtime or host identity. Request/bundle versions and the safe stdout schema are unchanged; request version 2 alone does not indicate portability.
+
+Copy the four runtime stores and required original COMMITTED stdout bytes, restore directory mode 0700 and file mode 0600, and explicitly select the new roots. Reading, inspection and adoption neither rewrite records nor renew the original publication time or prospective claim. D1 consumes copied intents and original stdout; D3 reads copied chains; D2 continues from verified after-states without resetting bootstrap or epoch. Production, provider, definitions and models remain explicit inputs. This does not migrate an entire workspace or MLflow URIs.
+
+V1 completions retain physical binding checks at their original location, with subsequent new records written as V2. A new V2 settlement can retain an unchanged V1 source completion and still be copied: its own verified content binding identifies the new settlement. The V1 intent itself remains bound to its original directory. Copied V1 records return `LEGACY_PHYSICAL_BINDING_MISMATCH`; no automatic conversion or rewriting occurs. Unknown, missing or ill-typed versions are rejected. Canonical-path, directory identity, file fingerprint, source mutation and create-only checks remain active during operations. Independent copies do not share a global lock; select one active copy after recovery. A code rollback must retain a V2 reader and must not downgrade published records. This format change does not change economic rules or introduce a production approval gate.

@@ -374,3 +374,42 @@ def test_d1_metadata_is_same_verified_read_and_defensive_copy(publication):
     failed = m.inspect_first_forward_intent_pair(kw['intent_store_root'], kw['epoch_id'],
         expected_request_digest=result.request_digest)
     assert failed.d1_metadata is None and failed.d1_inputs is None
+
+
+def test_completion_versions_are_explicit(publication):
+    result = _publish(publication)
+    kw = publication[1]
+    path = kw['intent_store_root'] / kw['epoch_id'] / 'completion.json'
+    original = path.read_bytes()
+    for version in (None, 0, 3, True, '2'):
+        value = json.loads(original)
+        if version is None:
+            value.pop('schema_version')
+        else:
+            value['schema_version'] = version
+        path.write_bytes(m.canonical(value))
+        observed = m.inspect_first_forward_intent_pair(kw['intent_store_root'], kw['epoch_id'],
+            expected_request_digest=result.request_digest)
+        assert observed.status != 'VERIFIED' and observed.d1_inputs is None
+    path.write_bytes(original)
+    assert m.inspect_first_forward_intent_pair(kw['intent_store_root'], kw['epoch_id'],
+        expected_request_digest=result.request_digest).status == 'VERIFIED'
+
+
+def test_portable_digest_payload_has_no_physical_identity(monkeypatch):
+    payloads = []
+    original = m._hash
+    def capture(value):
+        payloads.append(value)
+        return original(value)
+    monkeypatch.setattr(m, '_hash', capture)
+    body = dict(epoch_id='epoch', current_cycle_id='2026-09-04',
+        continuation=dict(cycle_index=3, first_intent=dict(request_digest='a' * 64,
+            manifest_digest='b' * 64, operation_id='frozen-operation'), frozen_selectors={'bootstrap_set_id': 'frozen'},
+            definition_request_digest={'digest': 'c' * 64}, schedule={'first_anchor': '2026-08-28'}))
+    m._portable_binding('intent', body, 'd' * 64)
+    assert set(payloads[-1]) == {'domain', 'kind', 'epoch_id', 'current_cycle_id', 'cycle_index', 'request_digest', 'manifest_digest'}
+    stores = m._logical_stores(body)
+    assert stores['intent'] != stores['settlement']
+    assert set(payloads[-1]) == {'domain', 'epoch_id', 'role', 'chain'}
+    assert set(payloads[-1]['chain']) == {'first_intent', 'frozen_selectors', 'definition_request_digest', 'schedule'}

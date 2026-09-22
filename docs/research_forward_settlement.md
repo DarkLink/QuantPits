@@ -67,3 +67,12 @@ Python API 位于 `quantpits.research.forward_settlement`：
 ## 连续周期接入
 
 D2 使用独立的 [连续周期入口](research_forward_continuation.md)。本模块共享 NEXT_OPEN 观察、两臂 B0 重算和 create-only 写入，严格区分首期 v1 与连续期 v2 来源及原成功记录。`inspect_first_forward_settlement` 新增只读 `continuation_metadata` 副本，提供同次验明的本期 request、来源 intent request/completion，供 D2 显式接续；该副本不授予发布资格，不声称已经验证整条历史链。首期 safe JSON 与 v1 文件合同保持不变。
+
+
+## 记录复制与格式兼容
+
+新写入的 `completion.schema_version=2` 使用 `FORWARD_RECORD_BINDING_V2`：`target_binding_digest` 绑定记录种类、epoch、周期/index、request 和 manifest 摘要。连续记录的 `store_bindings` 使用 `FORWARD_CHAIN_STORE_V2`，区分 intent/settlement 角色，并绑定首期 request/manifest/operation、冻结 selectors、definition request 和 schedule。它们不包含路径、device、inode、mtime 或主机身份。request/bundle 自身的版本及 safe stdout 的 schema 不变，不能仅凭 request 的版本 2 判断是否可迁移。
+
+可将四个运行 store 与必要的原 COMMITTED stdout 原样复制到新目录，恢复目录 0700、文件 0600 权限，再显式指定新根。reader/inspect/adopt 不改写记录、不刷新首次成功时间，也不产生新的 prospective claim。D1 消费复制后的 intent 和原 stdout；D3 可读取复制链；D2 从已结算 after-state 接续，无需重建 bootstrap 或 epoch。Production、provider、定义和模型仍按现有参数提供，这不包含整个工作区或 MLflow URI 的迁移。
+
+V1 completion 在原位置继续按旧物理绑定读取，后续新记录写 V2；新 V2 settlement 可保留未经改写的 V1 来源 completion，并以自身已校验的内容绑定支持复制；V1 intent 本身仍受原目录限制。复制 V1 后会返回 `LEGACY_PHYSICAL_BINDING_MISMATCH`，本功能不迁移或重写旧记录。未知、缺失或类型混乱的版本被拒绝。操作期间仍检查规范路径、目录身份、文件指纹、来源变动和 create-only 冲突。两个独立副本不共享全局锁，恢复后应选定一个活动副本。代码回退须保留 V2 reader，不得降级改写已发布记录；这不是经济规则变更或新的生产审批门槛。

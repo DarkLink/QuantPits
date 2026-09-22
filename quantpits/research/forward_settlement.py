@@ -174,7 +174,7 @@ def _source(source, success_bytes, epoch, *, continuing=False):
     _keys(completion, ("schema_version event operation_id epoch_id current_cycle_id request_digest manifest_digest "
           "time_policy bundle_verified_at_utc preparation_started_at_utc target_binding_digest").split() + (["store_bindings"] if continuing else []))
     manifest_digest = _raw(meta["manifest.json"].encode("utf-8"))
-    _need(completion["schema_version"] == 1
+    _need(c4._completion_version(completion) in (1, 2)
           and completion["event"] == "DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION"
           and completion["epoch_id"] == epoch and completion["current_cycle_id"] == anchor
           and completion["request_digest"] == expected and completion["manifest_digest"] == manifest_digest
@@ -185,6 +185,11 @@ def _source(source, success_bytes, epoch, *, continuing=False):
         _keys(completion["store_bindings"], ("intent", "settlement"))
         for value in completion["store_bindings"].values():
             _digest(value)
+    if c4._completion_version(completion) == 2:
+        _need(completion["target_binding_digest"] == c4._portable_binding("intent", body, manifest_digest),
+              "RECORD_BINDING_INVALID")
+        if continuing:
+            _need(completion["store_bindings"] == c4._logical_stores(body), "STORE_BINDING_INVALID")
     # Original safe record may be pretty printed; preserve exact bytes and reject duplicate keys.
     success = _json(canonical(prices._strict_json(success_bytes, "success")))
     _keys(success, list(c4._summary()) + (["cycle_index", "cycle_intent_published", "predecessor_join_observed", "whole_chain_verified", "planning_roles"] if continuing else []))
@@ -410,10 +415,10 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cy
     if completion:
         record = _keys(_json(data["completion.json"]), ("schema_version event operation_id epoch_id current_cycle_id "
             "request_digest manifest_digest target_binding_digest settled_at_utc").split())
-        _need(record["schema_version"] == 1 and record["event"] == "SETTLEMENT_DATA_VERIFIED_BEFORE_COMPLETION"
+        _need(c4._completion_version(record) in (1, 2) and record["event"] == "SETTLEMENT_DATA_VERIFIED_BEFORE_COMPLETION"
               and record["epoch_id"] == epoch and record["current_cycle_id"] == body["current_cycle_id"]
-              and record["request_digest"] == expected and record["manifest_digest"] == _raw(data["manifest.json"])
-              and record["target_binding_digest"] == c4._binding(root, identity, target.name))
+              and record["request_digest"] == expected and record["manifest_digest"] == _raw(data["manifest.json"]))
+        c4._record_binding(record, "settlement", body, _raw(data["manifest.json"]), root, identity, target.name)
         _need(str(uuid.UUID(record["operation_id"])) == record["operation_id"])
         source = _json(data["source_intent.json"])
         original = _json(source["metadata"]["request.json"].encode("utf-8"))["body"]
@@ -426,20 +431,38 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cy
           and {p.name for p in target.iterdir()} == set(names), "TARGET_REPLACED")
     summary = _summary("VERIFIED", request_digest=expected, manifest_digest=_raw(data["manifest.json"]),
         current_cycle_id=body["current_cycle_id"], trade_date=body["trade_date"],
-        target_binding_digest=c4._binding(root, identity, target.name), bundle_verified=True,
+        target_binding_digest=record["target_binding_digest"] if record else
+            c4._portable_binding("settlement", body, _raw(data["manifest.json"])), bundle_verified=True,
         completion_record_verified=completion, accounting_pair_complete=True, state_chain_ready=completion,
         source_forward_record_linked=True, roles=diagnostics, operation_id=record["operation_id"] if record else None)
     if cycle_index is not None:
         meta = _metadata(data)
-        _need(meta["source_completion"]["store_bindings"]["settlement"] ==
-              c4._binding(root, identity, "CONTINUING_SETTLEMENT_ROOT"), "STORE_BINDING_INVALID")
+        _settlement_store_binding(meta, root, identity)
         summary.update(cycle_index=cycle_index, whole_chain_verified=False)
     return summary, states, data
+
+
+def _settlement_store_binding(meta, root, identity):
+    record = meta["source_completion"]
+    # A V2 settlement seals the source already verified at its original location.
+    # Its embedded V1 source remains unchanged; that old directory is not the
+    # physical identity of this new settlement record.
+    if (_completion_is_portable(meta) and c4._completion_version(record) == 1):
+        return
+    expected = (c4._logical_stores(meta["source_request"])["settlement"]
+                if c4._completion_version(record) == 2 else
+                c4._binding(root, identity, "CONTINUING_SETTLEMENT_ROOT"))
+    _need(record["store_bindings"]["settlement"] == expected, "STORE_BINDING_INVALID")
+
+
+def _completion_is_portable(meta):
+    return meta["settlement_completion"] is not None and c4._completion_version(meta["settlement_completion"]) == 2
 
 
 def _metadata(data):
     source = _json(data["source_intent.json"])
     return {"request": _json(data["request.json"])["body"],
+            "settlement_completion": _json(data["completion.json"]) if "completion.json" in data else None,
             "source_completion": _json(source["metadata"]["completion.json"].encode("utf-8")),
             "source_request": _json(source["metadata"]["request.json"].encode("utf-8"))["body"]}
 
@@ -477,6 +500,8 @@ def _build(intent_root, epoch, expected, success_path, provider_root, owner, sum
         root, target, _ = _target(intent_root, epoch, cycle_index)
         _guard(owner, root, (target.name,))
         observed = inspect_next_forward_intent_pair(intent_root, epoch, cycle_index, expected_request_digest=expected)
+    _need("LEGACY_PHYSICAL_BINDING_MISMATCH" not in observed.to_safe_summary_dict()["reason_codes"],
+          "LEGACY_PHYSICAL_BINDING_MISMATCH")
     _need(observed.status == "VERIFIED" and observed.d1_inputs is not None, "SOURCE_INTENT_INVALID")
     source = dict(schema_version=2 if cycle_index is not None else 1, metadata=observed.d1_metadata, roles=[dict(role=i.role,
         prior=i.prior.to_dict(), intents=i.intents.to_dict(), execution_assumption=i.execution_assumption.to_dict())
@@ -566,9 +591,9 @@ def _publish(root, target, identity, epoch, members, manifest, digest, owner, su
         owner.check()
         now = _clock()
         _need(isinstance(now, datetime) and now.tzinfo is not None and now.utcoffset().total_seconds() == 0, "CLOCK_INVALID")
-        record = canonical(dict(schema_version=1, event="SETTLEMENT_DATA_VERIFIED_BEFORE_COMPLETION",
+        record = canonical(dict(schema_version=2, event="SETTLEMENT_DATA_VERIFIED_BEFORE_COMPLETION",
             operation_id=str(uuid.uuid4()), epoch_id=epoch, current_cycle_id=summary["current_cycle_id"],
-            request_digest=digest, manifest_digest=_raw(manifest), target_binding_digest=c4._binding(root, identity, target.name),
+            request_digest=digest, manifest_digest=_raw(manifest), target_binding_digest=c4._portable_binding("settlement", _json(members["request.json"])["body"], _raw(manifest)),
             settled_at_utc=c4._stamp(now)))
         _need(len(record) <= RECORD_LIMIT, "BUNDLE_BUDGET_EXCEEDED")
         _write_member(target_fd, "completion.json", record)
@@ -620,14 +645,14 @@ def _run(intent_root, epoch, expected_intent, success_path, provider, settlement
                     summary["status"] = "ADOPTED"
             else:
                 members, manifest, digest = _build(intent_root, epoch, expected_intent, success_path, provider, owner, summary)
-                summary.update(request_digest=digest, target_binding_digest=c4._binding(root, identity, epoch))
+                summary.update(request_digest=digest, target_binding_digest=c4._portable_binding("settlement", _json(members["request.json"])["body"], _raw(manifest)))
                 if digest != expected:
                     summary.update(status="REQUEST_MISMATCH", reason_codes=["REQUEST_MISMATCH"])
                 else:
                     states = _publish(root, target, identity, epoch, members, manifest, digest, owner, summary)
         else:
             members, manifest, digest = _build(intent_root, epoch, expected_intent, success_path, provider, owner, summary)
-            summary.update(status="READY", request_digest=digest, target_binding_digest=c4._binding(root, identity, epoch),
+            summary.update(status="READY", request_digest=digest, target_binding_digest=c4._portable_binding("settlement", _json(members["request.json"])["body"], _raw(manifest)),
                            accounting_pair_complete=True, source_forward_record_linked=True)
     except _PROCESS_CONTROL:
         raise

@@ -16,7 +16,7 @@ root 必须预先存在，是规范绝对物理路径、0700 私有目录。epoc
 
 bundle 固定九个数据成员：`request.json`、`definitions.json`、`priors.json`、两臂 `*_ranking.csv`、`plans.json`、`anchor_prices.json`、`calendar_day.txt`、`calendar_future.txt`；另有 `manifest.json` 与 `completion.json`。每个数据成员至多 4 MiB，合计至多 32 MiB，两个记录各至多 1 MiB。bootstrap manifest 与两个完整 prior 分别保留，未声称复制 bootstrap 全部原始文件。模型与信号 capsule 保留引用；实际使用的日历、价格 words/rows 则保存在本 bundle。
 
-先对八个非 request 逻辑成员建立 SHA256 inventory，再计算版本化 request body 的 canonical SHA256。definitions 中的 C4 request digest 在这一逻辑摘要中剔除；然后生成最终九成员 raw inventory 的 manifest。completion 绑定 manifest 的 raw digest，故没有自引用。C4 serializer/reader/writer 和 CLI 源码具有独立实现指纹。物理 root 身份只进入执行绑定摘要和 completion，不改变语义 request。
+先对八个非 request 逻辑成员建立 SHA256 inventory，再计算版本化 request body 的 canonical SHA256。definitions 中的 C4 request digest 在这一逻辑摘要中剔除；然后生成最终九成员 raw inventory 的 manifest。completion 绑定 manifest 的 raw digest，故没有自引用。C4 serializer/reader/writer 和 CLI 源码具有独立实现指纹。物理 root 身份仅用于本次 I/O 稳定性检查；新 completion 使用下述 V2 内容绑定。
 
 reader 校验完整集合、canonical schema、摘要、角色/来源/日期、完整 prior、ranking、计划/intent 关联，以及 float32 words 到 cash close 和各臂价格 projection。保存的 planner report 仍是封存报告，reader 不重建 planner authority，也不重新执行生产 planner。合法零订单、signed cash、pending 和 shortage 保留。
 
@@ -31,3 +31,12 @@ completion 的时刻只声明其创建前已经完成的数据 bundle 核验，�
 C4 原样传播 C3 的多组件拒绝原因。通过有限来源 tags 维护规则时，request 的 `input_provenance.maintenance_admission` 保存版本化规则及原始源码/依赖身份，并参与 input/request digest；已有 implementation provenance 同时绑定执行该规则的 Research 实现。成功 stdout 字段集合及其空 `reason_codes` 不变，旧 V1 request 不要求此可选来源材料，也不重写旧 digest 或 operation。C4/D1/D2/D3 reader 验证新材料的协议与精确身份；准入依据详见该 request 和对应 surface observation，不能从 safe JSON 重新获得发布资格。
 
 共同缺行的前向输入保留完整 eligible 清册及每臂 coverage_counts。部分输入的 input_provenance 必须携带 coverage_policy=COMMON_ANCHOR_RANK_EQUAL_V1；reader 检查两臂 scored 集合一致、缺失原因为 missing_prediction、统计与排名/计划一致，价格集合为各臂 scored ∪ holdings，联合 receipt 不得漏项或多项。角色 COMPLETE 只表示该臂计算完成。旧完整输入无需新增字段；inspect/adopt 仍不能生成原始成功时间或 prospective_claim。
+
+
+## 记录复制与格式兼容
+
+新写入的 `completion.schema_version=2` 使用 `FORWARD_RECORD_BINDING_V2`：`target_binding_digest` 绑定记录种类、epoch、周期/index、request 和 manifest 摘要。连续记录的 `store_bindings` 使用 `FORWARD_CHAIN_STORE_V2`，区分 intent/settlement 角色，并绑定首期 request/manifest/operation、冻结 selectors、definition request 和 schedule。它们不包含路径、device、inode、mtime 或主机身份。request/bundle 自身的版本及 safe stdout 的 schema 不变，不能仅凭 request 的版本 2 判断是否可迁移。
+
+可将四个运行 store 与必要的原 COMMITTED stdout 原样复制到新目录，恢复目录 0700、文件 0600 权限，再显式指定新根。reader/inspect/adopt 不改写记录、不刷新首次成功时间，也不产生新的 prospective claim。D1 消费复制后的 intent 和原 stdout；D3 可读取复制链；D2 从已结算 after-state 接续，无需重建 bootstrap 或 epoch。Production、provider、定义和模型仍按现有参数提供，这不包含整个工作区或 MLflow URI 的迁移。
+
+V1 completion 在原位置继续按旧物理绑定读取，后续新记录写 V2；新 V2 settlement 可保留未经改写的 V1 来源 completion，并以自身已校验的内容绑定支持复制；V1 intent 本身仍受原目录限制。复制 V1 后会返回 `LEGACY_PHYSICAL_BINDING_MISMATCH`，本功能不迁移或重写旧记录。未知、缺失或类型混乱的版本被拒绝。操作期间仍检查规范路径、目录身份、文件指纹、来源变动和 create-only 冲突。两个独立副本不共享全局锁，恢复后应选定一个活动副本。代码回退须保留 V2 reader，不得降级改写已发布记录；这不是经济规则变更或新的生产审批门槛。

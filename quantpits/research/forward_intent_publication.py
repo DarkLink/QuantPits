@@ -602,6 +602,49 @@ def _binding(root, identity, epoch, *, store_bindings=None):
     return _hash(value)
 
 
+def _logical_stores(body):
+    """Role-separated chain identity, independent of the configured directories."""
+    continuation = body["continuation"]
+    chain = {key: continuation[key] for key in
+             ("first_intent", "frozen_selectors", "definition_request_digest", "schedule")}
+    return {role: _hash(dict(domain="FORWARD_CHAIN_STORE_V2", epoch_id=body["epoch_id"],
+                             role=role, chain=chain)) for role in ("intent", "settlement")}
+
+
+def _portable_binding(kind, body, manifest_digest):
+    return _hash(dict(domain="FORWARD_RECORD_BINDING_V2", kind=kind,
+        epoch_id=body["epoch_id"], current_cycle_id=body["current_cycle_id"],
+        cycle_index=body["continuation"]["cycle_index"] if "continuation" in body else 1,
+        request_digest=_hash(body), manifest_digest=manifest_digest))
+
+
+def _completion_version(record):
+    version = record["schema_version"]
+    _need(type(version) is int and version in (1, 2), "COMPLETION_VERSION_UNSUPPORTED")
+    return version
+
+
+def _record_binding(record, kind, body, manifest_digest, root, identity, slot):
+    if _completion_version(record) == 1:
+        expected = _binding(root, identity, slot, store_bindings=record.get("store_bindings"))
+        _need(record["target_binding_digest"] == expected, "LEGACY_PHYSICAL_BINDING_MISMATCH")
+    else:
+        expected = _portable_binding(kind, body, manifest_digest)
+        _need(record["target_binding_digest"] == expected, "RECORD_BINDING_INVALID")
+    return expected
+
+
+def _intent_store_bindings(record, body, root, identity):
+    _keys(record["store_bindings"], ("intent", "settlement"))
+    for value in record["store_bindings"].values():
+        _digest(value)
+    if _completion_version(record) == 2:
+        _need(record["store_bindings"] == _logical_stores(body), "STORE_BINDING_INVALID")
+    else:
+        _need(record["store_bindings"]["intent"] == _binding(root, identity, "CONTINUING_INTENT_ROOT"),
+              "LEGACY_PHYSICAL_BINDING_MISMATCH")
+
+
 def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cycle_index=None):
     _need(_directory(root) == identity, "TARGET_REPLACED")
     _need(os.path.lexists(str(target)), "INCOMPLETE")
@@ -628,17 +671,13 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cy
         record = _keys(_json(data["completion.json"]), ("schema_version", "event", "operation_id", "epoch_id",
             "current_cycle_id", "request_digest", "manifest_digest", "time_policy", "bundle_verified_at_utc",
             "preparation_started_at_utc", "target_binding_digest") + (("store_bindings",) if cycle_index is not None else ()))
-        _need(record["schema_version"] == 1 and record["event"] == "DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION"
+        _need(_completion_version(record) in (1, 2) and record["event"] == "DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION"
               and record["epoch_id"] == epoch and record["current_cycle_id"] == body["current_cycle_id"]
               and record["request_digest"] == expected and record["manifest_digest"] == _raw(data["manifest.json"])
-              and record["time_policy"] == body["time_policy"]
-              and record["target_binding_digest"] == _binding(root, identity, target.name,
-                  store_bindings=record["store_bindings"] if cycle_index is not None else None))
+              and record["time_policy"] == body["time_policy"])
+        _record_binding(record, "intent", body, _raw(data["manifest.json"]), root, identity, target.name)
         if cycle_index is not None:
-            _keys(record["store_bindings"], ("intent", "settlement"))
-            for value in record["store_bindings"].values():
-                _digest(value)
-            _need(record["store_bindings"]["intent"] == _binding(root, identity, "CONTINUING_INTENT_ROOT"), "STORE_BINDING_INVALID")
+            _intent_store_bindings(record, body, root, identity)
         _need(str(uuid.UUID(record["operation_id"])) == record["operation_id"])
         started, verified = _utc(record["preparation_started_at_utc"]), _utc(record["bundle_verified_at_utc"])
         _need(started <= verified < _utc(body["time_policy"]["decision_deadline_utc"])
@@ -653,8 +692,8 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cy
     summary = _summary("VERIFIED", request_digest=expected, manifest_digest=_raw(data["manifest.json"]),
         current_cycle_id=body["current_cycle_id"], trade_date=body["trade_date"],
         bundle_verified=True, completion_record_verified=completion, d1_readable=completion,
-        target_binding_digest=_binding(root, identity, target.name,
-            store_bindings=record["store_bindings"] if cycle_index is not None and record else None),
+        target_binding_digest=record["target_binding_digest"] if record else
+            _portable_binding("intent", body, _raw(data["manifest.json"])),
         order_counts=[len(i.intents.intents) for i in inputs])
     if cycle_index is not None:
         summary.update(cycle_index=cycle_index, cycle_intent_published=False,
@@ -700,7 +739,8 @@ def _write_member(descriptor, name, data):
 
 
 def _publish_bundle(root, target, identity, epoch, members, manifest, digest, gate, owner, *, cycle_index=None, store_bindings=None):
-    summary = _summary(request_digest=digest, target_binding_digest=_binding(root, identity, target.name, store_bindings=store_bindings))
+    body = _json(members["request.json"])["body"]
+    summary = _summary(request_digest=digest, target_binding_digest=_portable_binding("intent", body, _raw(manifest)))
     if cycle_index is not None:
         summary.update(cycle_index=cycle_index, cycle_intent_published=False,
                        predecessor_join_observed=False, whole_chain_verified=False, planning_roles=None)
@@ -744,11 +784,11 @@ def _publish_bundle(root, target, identity, epoch, members, manifest, digest, ga
         verified = gate.check("DATA_BUNDLE_VERIFIED")
         operation = str(uuid.uuid4())
         summary.update(operation_id=operation, manifest_digest=_raw(manifest))
-        record_doc = dict(schema_version=1, event="DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION",
+        record_doc = dict(schema_version=2, event="DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION",
             operation_id=operation, epoch_id=epoch, current_cycle_id=_json(members["request.json"])["body"]["current_cycle_id"],
             request_digest=digest, manifest_digest=_raw(manifest), time_policy=gate.policy,
             bundle_verified_at_utc=verified, preparation_started_at_utc=gate.observations[0]["at_utc"],
-            target_binding_digest=_binding(root, identity, target.name, store_bindings=store_bindings))
+            target_binding_digest=_portable_binding("intent", body, _raw(manifest)))
         if cycle_index is not None:
             record_doc["store_bindings"] = store_bindings
         record = canonical(record_doc)
@@ -819,7 +859,7 @@ def _run(args, root_value, epoch, deadline, next_open, zone, opening, expected=N
             gate.check("PREPARATION_VERIFIED")
             summary.update(status="READY", request_digest=digest, current_cycle_id=args[4],
                 trade_date=prepared.to_safe_summary_dict()["trade_date"],
-                target_binding_digest=_binding(root, identity, epoch), time_observations=gate.observations,
+                target_binding_digest=_portable_binding("intent", _json(members["request.json"])["body"], _raw(manifest)), time_observations=gate.observations,
                 order_counts=[len(p.intents.intents) for p in prepared.pair.plans])
             if expected is not None:
                 if expected != digest:

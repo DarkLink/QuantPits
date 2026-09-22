@@ -355,6 +355,8 @@ def test_changed_manifest_cannot_keep_request_authority(settlement, tmp_path):
 
 
 def test_physical_store_binding_cannot_be_spliced(settlement, tmp_path):
+    from tests.quantpits.research.legacy_forward_records import convert_intent
+    convert_intent(settlement["intent_store_root"], settlement["epoch_id"], settlement["publication_success_record_path"])
     import shutil
     result = publish_settlement(settlement)
     request = first_request(settlement, result, tmp_path)

@@ -19,7 +19,7 @@ D2 从已结算的首期开始，按同一冻结定义延续两臂状态：`C4 i
 <settlement-root>/<epoch>/3
 ```
 
-writer 只 create 当前整数槽；不递归创建父目录，不允许前导零、attempt/hash 换槽。同槽冲突、缺 completion、写后不确定均保留现场，只用原 expected request inspect/adopt。两种 root 的物理绑定留在 completion，并同时纳入本次原成功记录的 target_binding_digest；后续 fresh 接入不得换 root 绕开冲突。
+writer 只 create 当前整数槽；不递归创建父目录，不允许前导零、attempt/hash 换槽。同槽冲突、缺 completion、写后不确定均保留现场，只用原 expected request inspect/adopt。V2 completion 的 store_bindings 绑定冻结链起点和 intent/settlement 角色，后续接入复验链身份；实际两个目标 root 仍须互不重叠。
 
 1. 用 D1 或 D2 inspect 核对已结算前序及原首期身份。
 2. 完成当前 Production 周期 seal 与 signal capsule，再准备本期 intent。沿用原 definition/bootstrap/model selectors，指定本期 cycle/signal 和 exact predecessor。
@@ -61,3 +61,12 @@ python -m quantpits.scripts.continue_forward inspect-settlement \
 相关文档：[首期准备](research_forward_preparation.md)、[首期结算](research_forward_settlement.md)。D3 共同窗口报告和真实观察周期另行推进。
 
 D2 使用同一 C3 有限维护兼容判断，拒绝时保留全部组件原因；通过时把 `RESEARCH_MAINTENANCE_ADMISSION_V1` 来源材料保存在本期 request。旧首期 V1 与新兼容 request 可接续，协议材料变化本身不触发经济断段；每期仍须实际检查源码/来源、冻结定义、前序各自 after-state、周度日历和时间 gate。新材料不改变原始成功记录字段或 D1/D3 的成功记录要求。
+
+
+## 记录复制与格式兼容
+
+新写入的 `completion.schema_version=2` 使用 `FORWARD_RECORD_BINDING_V2`：`target_binding_digest` 绑定记录种类、epoch、周期/index、request 和 manifest 摘要。连续记录的 `store_bindings` 使用 `FORWARD_CHAIN_STORE_V2`，区分 intent/settlement 角色，并绑定首期 request/manifest/operation、冻结 selectors、definition request 和 schedule。它们不包含路径、device、inode、mtime 或主机身份。request/bundle 自身的版本及 safe stdout 的 schema 不变，不能仅凭 request 的版本 2 判断是否可迁移。
+
+可将四个运行 store 与必要的原 COMMITTED stdout 原样复制到新目录，恢复目录 0700、文件 0600 权限，再显式指定新根。reader/inspect/adopt 不改写记录、不刷新首次成功时间，也不产生新的 prospective claim。D1 消费复制后的 intent 和原 stdout；D3 可读取复制链；D2 从已结算 after-state 接续，无需重建 bootstrap 或 epoch。Production、provider、定义和模型仍按现有参数提供，这不包含整个工作区或 MLflow URI 的迁移。
+
+V1 completion 在原位置继续按旧物理绑定读取，后续新记录写 V2；新 V2 settlement 可保留未经改写的 V1 来源 completion，并以自身已校验的内容绑定支持复制；V1 intent 本身仍受原目录限制。复制 V1 后会返回 `LEGACY_PHYSICAL_BINDING_MISMATCH`，本功能不迁移或重写旧记录。未知、缺失或类型混乱的版本被拒绝。操作期间仍检查规范路径、目录身份、文件指纹、来源变动和 create-only 冲突。两个独立副本不共享全局锁，恢复后应选定一个活动副本。代码回退须保留 V2 reader，不得降级改写已发布记录；这不是经济规则变更或新的生产审批门槛。
