@@ -463,6 +463,18 @@ def render_markdown(report):
             values += [arm[k] for k in ('role', 'nav_before', 'nav_after', 'normalized_nav', 'period_return', 'drawdown', 'cost')]
             values += [', '.join(row['reason_codes'] + arm['reason_codes'])]
             lines.append('| ' + ' | '.join(map(cell, values)) + ' |')
+    lines += ['', '| Cycle | Production source comparison | Production vs execution | Observation |',
+              '| --- | --- | --- | --- |']
+    for row in report['rows']:
+        context = row.get('source_context') or {}
+        change = context.get('input_provenance', {}).get('source_change')
+        if change:
+            values = (row['current_cycle_id'], change['production_comparison']['comparison'],
+                      change['production_execution_comparison'],
+                      change['production_unavailable_reason'] or change['production_comparison']['reason_code'])
+        else:
+            values = (row['current_cycle_id'], 'NOT_RECORDED', 'NOT_RECORDED', 'Legacy or unavailable source observation')
+        lines.append('| ' + ' | '.join(map(cell, values)) + ' |')
     lines += ['', *report['warnings'], 'Original records only support local observations; this report grants no prospective, epoch-start or promotion capability.', '']
     return '\n'.join(lines)
 

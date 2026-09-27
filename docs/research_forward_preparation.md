@@ -23,7 +23,7 @@ definition/reference cycle 与 bootstrap source cycle 从 Production 读取；de
 | 状态 | 退出码 | 含义 |
 | --- | --- | --- |
 | `PREPARED` | 0 | 两臂规划完成，输入关联、四源 parity 与最终稳定性通过 |
-| `VERSION_BREAK` | 3 | 既有 decision-surface observer 观察到冻结版本变化 |
+| `VERSION_BREAK` | 3 | 模型、配置等非源码组件发生变化 |
 | `PRECONDITION_BLOCKED` | 2 | 输入缺失、不相容、缺分、parity/实际源码不符、规划异常或观察不稳定 |
 
 stdout 仅一行 canonical safe JSON，包含日期、固定 role、状态、计数和摘要，不输出证券、现金、数量、私有命名 ID、路径或异常文本。未观察的计数为 null；前置失败时两臂 `NOT_RUN`。普通单臂规划失败后仍观察另一臂，整对不交付；进程控制中断传播。
@@ -52,11 +52,11 @@ B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单�
 
 内容指纹使用非执行的 pickle opcode 解析，不反序列化模型、不导入 Torch、不执行 GLOBAL/REDUCE。仅规范化 FRAME、等价字节长度编码以及已识别的 Torch legacy storage 分配 ID；保留张量内容、dtype、shape/stride、别名关系、模型配置和优化器状态。CatBoost 内嵌模型 bytes 保持精确比较。它是保守的复制兼容协议，不是任意 pickle 的通用语义等价判定。未知编码不能因解析失败被认定为相同。
 
-`pred.pkl`、`label.pkl`、`code_status.txt` / `code_diff.txt` / `code_cached.txt`、`portfolio_analysis/` 和 `sig_analysis/` 不参与模型身份；其各自封存、信号和运行校验继续生效。未知辅助输入仍按相对文件名和 raw digest 比较。推理代码、融合规则、市场和订单策略仍由原有独立组件检查。
+`pred.pkl`、`label.pkl`、`code_status.txt` / `code_diff.txt` / `code_cached.txt`、`portfolio_analysis/` 和 `sig_analysis/` 不参与模型身份；其各自封存、信号和运行校验继续生效。未知辅助输入仍按相对文件名和 raw digest 比较。推理源码差异作为观察保留；融合规则、市场和订单策略仍由独立组件检查。
 
 历史兼容观察目前仅支持工作区内显式 `mlruns/<experiment-id>/<recorder-id>/artifacts` 的物理文件后端；会读取对应实验元数据和父链 tags，以及封存引用的模型/辅助文件，并对所选输入进行变化观察和前后核对。这些 live ancestry 信息是**本次观察的补充证据**，不是旧 seal 已封存的事实；不初始化 MLflow，不搜索最新 recorder。缺失、歧义、符号链接、内容不符或来源无法证明时返回 INCOMPARABLE（C3 为 PRECONDITION_BLOCKED）。确实不同且可验证的训练来源、权重或配置仍为 VERSION_BREAK。
 
-只读修复不补造已清理的历史记录，也不豁免 C3 的实际引擎源码与 seal 匹配要求。修改预测代码之后，历史周期可能仍因源码不符阻塞；不能为了得到 PREPARED 修改旧 seal 或关闭校验。
+历史记录缺失仍须按实际输入错误处理；无需为源码维护改写旧 seal。
 
 ### 旧实验归属标签修正（2026-09-08）
 
@@ -70,6 +70,6 @@ B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单�
 
 device、inode、mode、mtime、ctime 等仅用于本次调用的本地前后检查及 guard，不进入 input/preparation digest。调用期间的变化仍会阻塞；成功移交的 guards 保持到外层 preparation 完成。模型输入实际读取和后置内容核对统一采用 **128 MiB 单文件上限**，前置只观察 metadata，不再隐式调用通用 32 MiB fingerprint。超过上限仍拒绝；其他 evidence readers、writer 与存储格式的预算不变。
 
-来源源码与经济连续性分开报告。raw Git blob 投影仍使用原 V1 协议、完整受管文件和原始 bytes。仅本次审查的 static/CPCV `prediction_origin_tags` old→new 精确投影组合可通过 `PREDICTION_ORIGIN_TAGS_MAINTENANCE_V1`：其余五组件须相同，模型及训练父链须实际验证，新增 `training/model_identity.py` 的封存和运行 bytes 须匹配审查身份。兼容组件报告 `COMPATIBLE` 和两个不同的 raw digest，safe observation 使用 `PRODUCTION_DECISION_SURFACE_CONTINUITY_V2`；SAME 只表示此有限合同下可同段。surface ID 仍绑定原参考 V1 raw 投影，不是归一化经济 hash。未知源码差异报告 `ECONOMIC_COMPATIBILITY_NOT_ESTABLISHED` 并拒绝；规则不传递到第三版本，也不豁免 runtime、来源、parity 或时间 gate。
+C3/C4/D2 默认将任意源码差异或源码等价比较不可用作为观察信息；只要其余模型、配置、信号与账户校验通过，就可以继续纸面记账。历史生产封存代码不必等于当前研究代码，当前工作文件仍与实际加载来源核对，并记录工作文件内容指纹，不能仅用 HEAD 代表执行内容。真实信号损坏、排名重建矛盾、模型/配置变化和错误前序仍拒绝。旧公开 decision-surface API 保留原比较语义；新日常路径不授予严格同段或维护许可。
 
-VERSION_BREAK 和 INCOMPARABLE 在 C3 `reason_codes` 中保留各实际失败组件及其有界原因；INCOMPARABLE 优先。仅详情读取失败时保留主分类并增加 `SURFACE_DETAILS_UNAVAILABLE`，控制中断继续传播。兼容路径的 `input_provenance.maintenance_admission` 使用独立 `RESEARCH_MAINTENANCE_ADMISSION_V1`，绑定规则、old/new raw 投影及 helper raw digest；其内容验证不会重新授予 live 准入能力。
+新 request 的 `input_provenance.source_change` 使用独立 `schema_version=1` / `SOURCE_DIFFERENCE_OBSERVATION_ONLY_V1`：`production_comparison` 保存两期生产源码比较，`production_commit`/`production_digest` 保存本期预测生产来源，`execution_commit`/`execution_tree`/`execution_implementation_digest`/`execution_code_digest` 保存当前研究执行来源；`production_execution_comparison` 为 EQUAL、DIFFERENT 或 INCOMPARABLE，不可观察时保存原因。它参与 input/request digest，不决定账户断段。旧 `maintenance_admission` 记录继续按旧合同读取。completion V2 的可迁移绑定与该字段版本独立；回退程序须保留可读取新字段的 reader，不改写历史记录。时间、原始 stdout、防重复及写入中断规则保持原合同。

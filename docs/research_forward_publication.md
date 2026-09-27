@@ -28,7 +28,9 @@ completion 的时刻只声明其创建前已经完成的数据 bundle 核验，�
 
 开发测试仅使用临时工作区。真实 publication 另需具体候选、Production/Research/provider 绑定、冻结 selectors、新周期/截止、request digest、唯一 target、safe 记录位置和最多 600 秒预算的授权。历史 C3 PREPARED 不是未来周期依据。开发验收与首次真实运行分别记录：实现及合成合同验收后，后续开发可使用该 reader/schema，无需等待市场周期；首次真实发布仍须独立通过时间与来源检查，才能声明前向 epoch 已启动。
 
-C4 原样传播 C3 的多组件拒绝原因。通过有限来源 tags 维护规则时，request 的 `input_provenance.maintenance_admission` 保存版本化规则及原始源码/依赖身份，并参与 input/request digest；已有 implementation provenance 同时绑定执行该规则的 Research 实现。成功 stdout 字段集合及其空 `reason_codes` 不变，旧 V1 request 不要求此可选来源材料，也不重写旧 digest 或 operation。C4/D1/D2/D3 reader 验证新材料的协议与精确身份；准入依据详见该 request 和对应 surface observation，不能从 safe JSON 重新获得发布资格。
+C3/C4/D2 默认将任意源码差异或源码等价比较不可用作为观察信息；只要其余模型、配置、信号与账户校验通过，就可以继续纸面记账。历史生产封存代码不必等于当前研究代码，当前工作文件仍与实际加载来源核对，并记录工作文件内容指纹，不能仅用 HEAD 代表执行内容。真实信号损坏、排名重建矛盾、模型/配置变化和错误前序仍拒绝。旧公开 decision-surface API 保留原比较语义；新日常路径不授予严格同段或维护许可。
+
+新 request 的 `input_provenance.source_change` 使用独立 `schema_version=1` / `SOURCE_DIFFERENCE_OBSERVATION_ONLY_V1`：`production_comparison` 保存两期生产源码比较，`production_commit`/`production_digest` 保存本期预测生产来源，`execution_commit`/`execution_tree`/`execution_implementation_digest`/`execution_code_digest` 保存当前研究执行来源；`production_execution_comparison` 为 EQUAL、DIFFERENT 或 INCOMPARABLE，不可观察时保存原因。它参与 input/request digest，不决定账户断段。旧 `maintenance_admission` 记录继续按旧合同读取。completion V2 的可迁移绑定与该字段版本独立；回退程序须保留可读取新字段的 reader，不改写历史记录。时间、原始 stdout、防重复及写入中断规则保持原合同。
 
 共同缺行的前向输入保留完整 eligible 清册及每臂 coverage_counts。部分输入的 input_provenance 必须携带 coverage_policy=COMMON_ANCHOR_RANK_EQUAL_V1；reader 检查两臂 scored 集合一致、缺失原因为 missing_prediction、统计与排名/计划一致，价格集合为各臂 scored ∪ holdings，联合 receipt 不得漏项或多项。角色 COMPLETE 只表示该臂计算完成。旧完整输入无需新增字段；inspect/adopt 仍不能生成原始成功时间或 prospective_claim。
 

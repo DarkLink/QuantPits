@@ -202,12 +202,13 @@ def _parity(sealed, rebuilt):
 
 
 def _engine(engine, manifest):
-    expected = surface._git_blob_projection(engine, surface._engine_commit(manifest))
-    for row in expected["members"]:
-        data = surface._read_regular(engine / row["path"])[0]
-        _require(surface._digest(data, "raw_bytes") == row["digest"], "RUNTIME_CODE_MISMATCH")
+    """Observe current files independently of the historical production seal."""
+    execution_members = []
+    for logical in surface.CURATED_CODE_PATHS:
+        data = surface._read_regular(engine / logical)[0]
+        execution_members.append({"path": logical, "digest": _raw(data)})
         # Python imports must consume the repository whose code was observed.
-        loaded = Path(__file__).resolve().parents[1] / Path(row["path"]).relative_to("quantpits")
+        loaded = Path(__file__).resolve().parents[1] / Path(logical).relative_to("quantpits")
         _require(loaded.read_bytes() == data, "LOADED_CODE_MISMATCH")
     identities = []
     for revision in ("HEAD", "HEAD^{tree}"):
@@ -223,7 +224,37 @@ def _engine(engine, manifest):
     implementation = [{"path": name, "digest": _raw(Path(__file__).with_name(name).read_bytes())} for name in files]
     implementation.append({"path": "training/model_identity.py", "digest": _raw(
         (Path(__file__).parents[1] / "training/model_identity.py").read_bytes())})
-    return identities[0], identities[1], _hash(implementation)
+    return identities[0], identities[1], _hash(implementation + execution_members)
+
+
+def _source_change(engine, manifest, observed, commit, tree, implementation):
+    """Observations only: production history is not execution admission."""
+    identity = manifest.get("engine_identity")
+    production_commit = identity.get("commit") if isinstance(identity, dict) else None
+    if not isinstance(production_commit, str):
+        production_commit = None
+    production_digest, reason = None, None
+    try:
+        production_digest = surface._digest(surface._git_blob_projection(engine, surface._engine_commit(manifest)))
+    except surface._ComponentIncomparable as exc:
+        reason = exc.reason_code
+    current = surface._digest({"protocol": "CURATED_ECONOMIC_CODE_SURFACE_V1", "members": [
+        {"path": path, "digest": surface._digest(surface._read_regular(engine / path)[0], "raw_bytes")}
+        for path in surface.CURATED_CODE_PATHS]})
+    comparison = observed.components[0].to_safe_dict()
+    if comparison["reason_code"].startswith("REFERENCE_CODE_"):
+        # Surface V1 requires a reference observation digest. Durable source
+        # provenance uses null for unavailable code, never a placeholder hash.
+        comparison["reference_digest"] = None
+        comparison["current_digest"] = production_digest
+    return {"schema_version": 1, "policy": "SOURCE_DIFFERENCE_OBSERVATION_ONLY_V1",
+            "production_comparison": comparison,
+            "production_commit": production_commit, "production_digest": production_digest,
+            "production_unavailable_reason": reason,
+            "execution_commit": commit, "execution_tree": tree,
+            "execution_implementation_digest": implementation, "execution_code_digest": current,
+            "production_execution_comparison": ("INCOMPARABLE" if production_digest is None else
+                "EQUAL" if production_digest == current else "DIFFERENT")}
 
 
 def _plan_pair(priors, rankings, snapshots, definition, anchor, trade, market, summary):
@@ -341,9 +372,12 @@ def _prepare_forward_intent(
         stage = "SURFACE_INCOMPARABLE"
         observed = surface.observe_production_decision_surface(
             research, production, engine, anchor, activation, definitions, evidence_root,
-            bootstraps, bootstrap_set_id, reference_source="production",
+            bootstraps, bootstrap_set_id, reference_source="production", source_change_continuity=True,
         )
-        if not observed.same_champion_segment:
+        inputs_equal = (all(row.comparison == "EQUAL" for row in observed.components[1:])
+                        if isinstance(observed, surface.ProductionDecisionSurfaceResult)
+                        else observed.same_champion_segment)
+        if not inputs_equal:
             reason = "VERSION_BREAK" if observed.status == "VERSION_BREAK" else "SURFACE_INCOMPARABLE"
             reasons = [reason]
             try:
@@ -358,9 +392,7 @@ def _prepare_forward_intent(
             summary.update(status="VERSION_BREAK" if observed.status == "VERSION_BREAK" else "PRECONDITION_BLOCKED",
                            reason_codes=list(dict.fromkeys(reasons)))
             return _result(summary)
-        _require(observed.same_champion_segment, "SURFACE_INCOMPARABLE")
-        admission = (surface.maintenance_admission(observed)
-                     if isinstance(observed, surface.ProductionDecisionSurfaceResult) else None)
+        _require(inputs_equal, "SURFACE_INCOMPARABLE")
         stage = "DEFINITION_ADOPTION_FAILED"
         from quantpits.research.forward_definition_evidence import adopt_fresh_champion_segment_definition_evidence
         from quantpits.research.forward_observation import observe_fresh_champion_segment_candidate
@@ -382,7 +414,7 @@ def _prepare_forward_intent(
         cycle_path, manifest, seal = surface._cycle_authority(production, anchor, allow_partial_ranking=True)
         copy_join = None
         copy_inventory = []
-        if admission is not None or not surface._source_matches_definition(surface._source_projection(manifest), candidate):
+        if not surface._source_matches_definition(surface._source_projection(manifest), candidate):
             from quantpits.research.model_continuity import observe_model_copy_pair
             _, reference_manifest, _ = surface._cycle_authority(production, source_cycle)
             _require(surface._source_matches_definition(surface._source_projection(reference_manifest), candidate),
@@ -489,8 +521,8 @@ def _prepare_forward_intent(
         if champion.missing_count:
             input_payload["coverage_policy"] = "COMMON_ANCHOR_RANK_EQUAL_V1"
         stage = "ARM_PLANNING_FAILED"
-        if admission is not None:
-            input_payload["maintenance_admission"] = admission
+        if isinstance(observed, surface.ProductionDecisionSurfaceResult):
+            input_payload["source_change"] = _source_change(engine, manifest, observed, commit, tree, implementation)
         plans = _plan_pair(priors, rankings, snapshots, definition, anchor, trade, market, summary)
         stage = "INPUT_STABILITY_LOST"
         if copy_join is not None:

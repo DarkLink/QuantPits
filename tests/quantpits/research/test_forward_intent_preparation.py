@@ -322,7 +322,7 @@ def test_actual_engine_sources_match_seal(tmp_path, monkeypatch):
     observed = original_engine(engine, manifest)
     assert observed[0] == commit and len(observed[2]) == 64
     (engine / "quantpits/utils/strategy.py").write_text("# changed economic code\n")
-    with pytest.raises(m._Blocked, match="RUNTIME_CODE_MISMATCH"):
+    with pytest.raises(m._Blocked, match="LOADED_CODE_MISMATCH"):
         original_engine(engine, manifest)
 
 

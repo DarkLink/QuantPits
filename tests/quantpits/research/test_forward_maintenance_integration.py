@@ -1,6 +1,6 @@
 """Real source binding, surface and engine through C4/D1/D2/D3.
 
-Capsule adoption and intent-policy extraction are controlled upstream substitutes;
+Signal adoption (except the real partial-seal case) and intent-policy extraction are controlled substitutes;
 Git, frozen definitions/evidence/bootstrap, lineage, model bytes and readers are real.
 """
 import copy
@@ -45,6 +45,13 @@ def fresh_evidence_workspace(tmp_path, copied_models):
     production, research, activation, cycle, _ = _fresh_split_bundle(tmp_path)
     origin, variants = copied_models
     shutil.copytree(str(origin / 'mlruns'), str(production / 'mlruns'))
+    for run in (production / 'mlruns/1').iterdir():
+        if not run.is_dir():
+            continue
+        params = run / 'params'
+        params.mkdir()
+        (params / 'fit_start_time').write_text('2020-01-01')
+        (params / 'fit_end_time').write_text('2026-08-01')
     manifest = json.loads((cycle / 'manifest.json').read_bytes())
     lineage = manifest['model_and_ensemble_lineage']
     sources = copy.deepcopy(variants[0]['model_and_ensemble_lineage']['source_artifacts'])
@@ -62,6 +69,13 @@ def fresh_evidence_workspace(tmp_path, copied_models):
         auxiliary = next(a for a in lineage['source_artifacts'] if a.get('position') == index and 'role' not in a)
         auxiliary['source_recorder_id'] = source['recorder_id']
     lineage['source_artifacts'] = sources + [a for a in lineage['source_artifacts'] if a.get('role') != 'source_training']
+    for name in ('ensemble_config.json', 'ensemble_records.json'):
+        data = json.dumps({'fixture': name}).encode()
+        extras_digest = s._digest(data, 'raw_bytes')
+        extra.append(data)
+        manifest['referenced_evidence'].append(dict(collection='inputs', evidence_class='ensemble',
+            kind='config', locator='config/' + name, locator_type='workspace_file',
+            observation=dict(path='config/' + name, detail='', status='observed', preservation_status='embedded', digest=extras_digest)))
     reseal(cycle, manifest, extra)
     shadow = research / 'research/shadow_v1'
     definitions, evidence = shadow / 'definitions', shadow / 'definition_evidence'
@@ -83,6 +97,18 @@ def fresh_bootstrap_workspace(fresh_evidence_workspace, tmp_path, request):
     engine = tmp_path / 'reviewed-engine'
     engine.mkdir()
     old, new = reviewed_engine(engine)
+    # An arbitrary recorder maintenance version, outside the old origin-tag pair.
+    from tests.quantpits.research.test_decision_surface import _git
+    path = engine / 'quantpits/training/records.py'
+    original = path.read_bytes()
+    path.write_bytes(original + b'\n# historical recorder maintenance\n')
+    _git(engine, 'add', '.')
+    _git(engine, 'commit', '-qm', 'recorder maintenance')
+    old = _git(engine, 'rev-parse', 'HEAD')
+    path.write_bytes(original)
+    _git(engine, 'add', '.')
+    _git(engine, 'commit', '-qm', 'current recorder implementation')
+    new = _git(engine, 'rev-parse', 'HEAD')
     from tests.quantpits.research.test_forward_portfolio_source import _write_bundle, _problem
     cycle = _write_bundle(tmp_path / 'source', problems=(_problem(),))
     destination = production / 'data/evidence/v1/cycles/2026-08-28'
@@ -129,6 +155,15 @@ def prepared_inputs(base_prepared_inputs, tmp_path, monkeypatch):
     from quantpits.research.forward_observation import observe_fresh_champion_segment_candidate
     candidate = observe_fresh_champion_segment_candidate(args[0], args[1], CYCLE, args[5])
     monkeypatch.setattr(s, '_intent_projection', lambda *a: s._definition_intent_projection(candidate))
+    from quantpits.research import model_artifact_capsule as model
+    monkeypatch.setattr(model, 'adopt_definition_bound_model_artifact_capsule', _REAL_MODEL_ADOPT)
+    model_args = (args[0], args[1], CYCLE, args[5], args[6], args[7], args[12])
+    retained = model.prepare_definition_bound_model_artifact_capsule(*model_args)
+    assert retained.status == 'PREPARED', str(retained.to_safe_summary_dict())
+    args[13] = retained.capsule_id
+    published = model.publish_definition_bound_model_artifact_capsule(*model_args, retained.capsule_id,
+        dict(retained.request_digest), model.AUTHORIZATION_ACTION)
+    assert published.status == 'COMMITTED', published.to_safe_summary_dict()
     checked = c3.prepare_first_forward_intent(*args)
     assert checked.status == 'PREPARED', str(checked.to_safe_summary_dict()['reason_codes'])
     return tuple(args), calls, manifest, seal
@@ -141,16 +176,12 @@ def test_c4_d1_d2_d3_maintenance_readers(continuation, monkeypatch):
     _, target, _ = d2._target(kw['intent_store_root'], kw['epoch_id'], 2)
     first_body = json.loads((kw['first_intent_store_root'] / kw['epoch_id'] / 'request.json').read_bytes())['body']
     next_body = json.loads((target / 'request.json').read_bytes())['body']
-    reference = _REAL_CYCLE(args[0], '2026-08-28')[1]
-    reference_digest = s._digest(s._git_blob_projection(args[2], s._engine_commit(reference)))
-    compatible = reference_digest['value'] == s._ORIGIN_TAGS_OLD
     for body in (first_body, next_body):
         provenance = body['input_provenance']
-        assert ('maintenance_admission' in provenance) is compatible
-        if compatible:
-            s.validate_maintenance_admission(provenance['maintenance_admission'])
-            assert provenance['model_copy_continuity'][0] == provenance['model_copy_continuity'][1]
-            assert provenance['model_copy_observed_inputs']
+        assert 'maintenance_admission' not in provenance
+        change = provenance['source_change']
+        assert change['production_comparison']['comparison'] in ('EQUAL', 'DIFFERENT')
+        assert change['production_execution_comparison'] == 'EQUAL'
     settled, _ = settle(continuation, published, monkeypatch)
     from quantpits.research import forward_window_report as report
     request = dict(schema_version=1, first_intent_store_root=str(kw['first_intent_store_root']),
@@ -167,6 +198,8 @@ def test_c4_d1_d2_d3_maintenance_readers(continuation, monkeypatch):
     from tests.quantpits.research.test_forward_window_report import build
     result = build(request)
     assert result['status'] == 'COMPLETE', result
+    assert all(row['source_context']['input_provenance']['source_change'] for row in result['rows'])
+    assert 'Production vs execution' in report.render_markdown(result)
 
 
 def test_real_surface_rejects_same_day_bootstrap(prepared_inputs):
@@ -176,22 +209,70 @@ def test_real_surface_rejects_same_day_bootstrap(prepared_inputs):
                       args[7], args[8], args[9], reference_source='production')
 
 
-def test_unreviewed_economic_change_rejected_by_c3_and_c4(publication):
+def test_arbitrary_source_change_observed_by_c3_and_c4(publication, tmp_path, monkeypatch):
     args, kw = publication
+    baseline = c3.prepare_first_forward_intent(*args)
+    assert baseline.status == 'PREPARED'
+    from tests.quantpits.research.test_forward_intent_publication import _publish
+    baseline_root = tmp_path / 'baseline_intents'
+    baseline_root.mkdir(mode=0o700)
+    baseline_kw = dict(kw, intent_store_root=baseline_root)
+    baseline_published = _publish((args, baseline_kw))
     from tests.quantpits.research.test_decision_surface import _git
     path = args[2] / 'quantpits/utils/train_utils.py'
-    path.write_text(path.read_text().replace('fm.predict(dataset=dataset)', 'fm.predict(dataset=dataset) * 2'))
+    original = path.read_bytes()
+    path.write_bytes(original + b'\n# arbitrary source change\n')
     _git(args[2], 'add', '.')
     _git(args[2], 'commit', '-qm', 'changed predictions')
-    # The selected current seal, supplied by the existing fixture, now names
-    # this implementation. Refusal must come from surface, before runtime gates.
+    # Production sealed this historical code; research runs the actual loaded
+    # files, restored below. No runtime or source comparison is mocked.
     manifest = s._cycle_authority(args[0], args[4])[1]
     manifest['engine_identity']['commit'] = _git(args[2], 'rev-parse', 'HEAD')
+    path.write_bytes(original)
     from quantpits.research import forward_intent_publication as c4
-    for result in (c3.prepare_first_forward_intent(*args), c4.prepare_first_forward_intent_publication(*args, **kw)):
-        assert result.status == 'VERSION_BREAK', result.to_safe_summary_dict()
-        assert 'ECONOMIC_COMPATIBILITY_NOT_ESTABLISHED' in result.to_safe_summary_dict()['reason_codes']
-    assert not list(kw['intent_store_root'].iterdir())
+    prepared = c3.prepare_first_forward_intent(*args)
+    assert prepared.status == 'PREPARED', prepared.to_safe_summary_dict()
+    change = json.loads(prepared.pair.input_provenance)['source_change']
+    assert change['production_comparison']['comparison'] == 'DIFFERENT'
+    assert change['production_execution_comparison'] == 'DIFFERENT'
+    assert change['execution_commit'] == change['production_commit']
+    assert change['execution_code_digest'] != change['production_digest']
+    result = c4.prepare_first_forward_intent_publication(*args, **kw)
+    assert result.status == 'READY', result.to_safe_summary_dict()
+    from tests.quantpits.research.test_forward_intent_publication import _publish
+    published = _publish((args, kw))
+    read = c4.inspect_first_forward_intent_pair(kw['intent_store_root'], kw['epoch_id'],
+                                              expected_request_digest=published.request_digest)
+    assert read.status == 'VERIFIED' and read.d1_inputs is not None
+    assert [p.to_dict() for p in baseline.pair.plans] == [p.to_dict() for p in prepared.pair.plans]
+    assert baseline.to_safe_summary_dict()['input_digest'] != prepared.to_safe_summary_dict()['input_digest']
+    import struct
+    from datetime import datetime, timezone
+    from quantpits.research import forward_settlement as d1
+    from tests.quantpits.research.test_forward_settlement import publish as publish_settlement
+    (args[3] / 'calendars/day.txt').write_bytes(b'2026-08-28\n2026-09-04\n2026-09-07\n')
+    for directory in (args[3] / 'features').iterdir():
+        for field, value in [('open', 10.), ('factor', 1.)]:
+            (directory / (field + '.day.bin')).write_bytes(struct.pack('<ffff', 0., value, value, value))
+    monkeypatch.setattr(d1, '_clock', lambda: datetime(2026, 9, 7, 2, tzinfo=timezone.utc))
+    states = []
+    for label, result, store in [('baseline', baseline_published, baseline_root),
+                                 ('changed', published, kw['intent_store_root'])]:
+        success = tmp_path / (label + '_success.json')
+        success.write_bytes(c4.canonical(result.to_safe_summary_dict()))
+        success.chmod(0o600)
+        root = tmp_path / (label + '_settlements')
+        root.mkdir(mode=0o700)
+        params = dict(intent_store_root=store, epoch_id=kw['epoch_id'],
+            expected_intent_request_digest=result.request_digest, publication_success_record_path=success,
+            qlib_provider_root=args[3], settlement_store_root=root)
+        settled = publish_settlement(params)
+        states.append([row.after_state.to_dict() for row in settled.after_states])
+        repeated = d1.publish_first_forward_settlement(**params, expected_request_digest=settled.request_digest)
+        assert repeated.status == 'ADOPTED' and not repeated.to_safe_summary_dict()['did_write']
+        read_back = d1.inspect_first_forward_settlement(root, kw['epoch_id'], expected_request_digest=settled.request_digest)
+        assert [row.after_state.to_dict() for row in read_back.after_states] == states[-1]
+    assert states[0] == states[1]
 
 
 def test_common_partial_real_seal_capsule_c3_c4(publication, prepared_inputs, monkeypatch):
@@ -314,3 +395,158 @@ def test_common_partial_real_seal_capsule_c3_c4(publication, prepared_inputs, mo
 
 
 from quantpits.research.signal_input_capsule import adopt_signal_input_capsule as _REAL_SIGNAL_ADOPT
+
+from quantpits.research.model_artifact_capsule import adopt_definition_bound_model_artifact_capsule as _REAL_MODEL_ADOPT
+
+
+@pytest.mark.parametrize('missing', ['reference', 'current', 'identity'])
+def test_unavailable_source_history_does_not_block_inputs(publication, missing):
+    args, kw = publication
+    manifest = (_REAL_CYCLE(args[0], '2026-08-28')[1] if missing == 'reference'
+                else s._cycle_authority(args[0], args[4])[1])
+    commit = manifest['engine_identity']['commit']
+    if missing == 'identity':
+        manifest['engine_identity'] = None
+    elif missing == 'current':
+        manifest['engine_identity']['commit'] = 'f' * 40
+    else:
+        # Keep HEAD available even when the reference shares its commit.
+        from tests.quantpits.research.test_decision_surface import _git
+        _git(args[2], 'commit', '--allow-empty', '-qm', 'execution identity')
+        (args[2] / '.git/objects' / commit[:2] / commit[2:]).unlink()
+    prepared = c3.prepare_first_forward_intent(*args)
+    assert prepared.status == 'PREPARED', prepared.to_safe_summary_dict()
+    change = json.loads(prepared.pair.input_provenance)['source_change']
+    assert change['production_comparison']['comparison'] == 'INCOMPARABLE'
+    if missing in ('current', 'identity'):
+        assert change['production_execution_comparison'] == 'INCOMPARABLE'
+    from quantpits.research import forward_intent_publication as c4
+    # The current HEAD must remain readable for execution provenance. The
+    # reference-only case has that independent authority available.
+    result = c4.prepare_first_forward_intent_publication(*args, **kw)
+    assert result.status == 'READY', result.to_safe_summary_dict()
+
+
+@pytest.fixture
+def maintained_portable_chain(publication, prepared_inputs, tmp_path, monkeypatch):
+    from tests.quantpits.research import test_forward_continuation as chain
+    from tests.quantpits.research.test_decision_surface import _git
+    original = chain._cycle
+    def maintenance(args, anchor, manifest, seal, patch, missing=()):
+        result = original(args, anchor, manifest, seal, patch, missing=missing)
+        cycle = args[0] / 'data/evidence/v1/cycles' / anchor
+        if not (cycle / 'objects').exists():
+            shutil.copytree(args[0] / 'data/evidence/v1/cycles/2026-08-28/objects', cycle / 'objects')
+        path = args[2] / 'quantpits/training/records.py'
+        loaded = path.read_bytes()
+        path.write_bytes(loaded + ('\n# recorder maintenance ' + anchor + '\n').encode())
+        _git(args[2], 'add', '.')
+        _git(args[2], 'commit', '-qm', 'production recorder ' + anchor)
+        manifest['engine_identity']['commit'] = _git(args[2], 'rev-parse', 'HEAD')
+        # Research uses the independently observed working files after sealing.
+        path.write_bytes(loaded)
+        return result
+    monkeypatch.setattr(chain, '_cycle', maintenance)
+    return chain.portable_partial_continuation.__wrapped__(publication, prepared_inputs, tmp_path, monkeypatch)
+
+
+def test_source_changes_copy_partial_three_periods(maintained_portable_chain, monkeypatch):
+    from tests.quantpits.research import test_forward_continuation as chain
+    chain.test_copy_partial_two_cycles_then_publish_and_settle_third(maintained_portable_chain, monkeypatch)
+    tmp = maintained_portable_chain[-1]
+    requests = sorted(tmp.glob('restored_*intent_store_root/**/request.json'))
+    changes = [json.loads(p.read_bytes())['body']['input_provenance']['source_change'] for p in requests]
+    assert len(changes) == 3
+    assert len({c['production_commit'] for c in changes}) == 3
+    assert all(c['production_execution_comparison'] == 'DIFFERENT' for c in changes)
+
+
+@pytest.mark.parametrize('kind', ['schema', 'comparison', 'execution', 'production', 'production_commit', 'unknown_field'])
+def test_source_provenance_semantics_after_rehash(publication, kind):
+    from quantpits.research import forward_intent_publication as c4
+    args, kw = publication
+    prepared = c3.prepare_first_forward_intent(*args)
+    policy = c4._policy(kw['decision_deadline_utc'], kw['next_open_utc'], kw['market_timezone'], kw['opening_policy'])
+    members, _, _ = c4._build(prepared, kw['epoch_id'], policy)
+    request = json.loads(members['request.json'])
+    body = request['body']
+    change = body['input_provenance']['source_change']
+    if kind == 'schema':
+        change['schema_version'] = True
+    elif kind == 'comparison':
+        change['production_execution_comparison'] = 'DIFFERENT'
+    elif kind == 'execution':
+        change['execution_implementation_digest'] = '0' * 64
+    elif kind == 'production':
+        change['production_digest']['value'] = '0' * 64
+    elif kind == 'production_commit':
+        change['production_commit'] = None
+    else:
+        change['approved'] = True
+    body['input_digest'] = c4._hash(body['input_provenance'])
+    body['preparation_digest'] = c4._hash(dict(input_digest=body['input_digest'], roles=body['roles']))
+    digest = c4._hash(body)
+    request['request_digest'] = digest
+    definitions = json.loads(members['definitions.json'])
+    definitions['request_digest'] = digest
+    members['definitions.json'] = c4.canonical(definitions)
+    members['request.json'] = c4.canonical(request)
+    manifest = dict(schema_version=1, domain='FIRST_FORWARD_INTENT_PAIR_BUNDLE_V1', epoch_id=kw['epoch_id'],
+                    current_cycle_id=args[4], request_digest=digest, members=c4._inventory(members))
+    with pytest.raises(c4._Invalid):
+        c4._validate(members, manifest, kw['epoch_id'], digest)
+
+
+@pytest.mark.parametrize('kind', ['model', 'ranking'])
+def test_real_input_errors_still_block_after_source_relaxation(prepared_inputs, kind):
+    args = prepared_inputs[0]
+    if kind == 'model':
+        from quantpits.research.model_artifact_capsule import PAYLOAD_NAME
+        (args[12] / args[13] / PAYLOAD_NAME).write_bytes(b'{}')
+        reason = 'MODEL_ADOPTION_FAILED'
+    else:
+        cycle, _, seal = s._cycle_authority(args[0], args[4])
+        ranking = c3.replay._ranking_from_csv((cycle / 'ranking.csv').read_bytes())
+        scores = {row['instrument']: -float(row['raw_score']) for row in ranking.rows}
+        data = c3.replay.canonical_full_ranking(tuple(scores), scores).to_csv_bytes()
+        (cycle / 'ranking.csv').write_bytes(data)
+        seal['named_file_digests']['ranking.csv'] = s._digest(data, 'raw_bytes')
+        reason = 'CHAMPION_PARITY_ORDER'
+    result = c3.prepare_first_forward_intent(*args)
+    assert result.status == 'PRECONDITION_BLOCKED', result.to_safe_summary_dict()
+    assert reason in result.to_safe_summary_dict()['reason_codes']
+
+
+def test_legacy_maintenance_provenance_reader(publication, tmp_path):
+    """Reconstruct the old retained format; no live maintenance authority granted."""
+    from quantpits.research import forward_intent_publication as c4
+    from quantpits.research.model_continuity import observe_model_copy_pair
+    args, kw = publication
+    prepared = c3.prepare_first_forward_intent(*args)
+    policy = c4._policy(kw['decision_deadline_utc'], kw['next_open_utc'], kw['market_timezone'], kw['opening_policy'])
+    members, _, _ = c4._build(prepared, kw['epoch_id'], policy)
+    engine = tmp_path / 'legacy_engine'
+    engine.mkdir()
+    old, new = reviewed_engine(engine)
+    body = json.loads(members['request.json'])['body']
+    provenance = body['input_provenance']
+    provenance.pop('source_change')
+    provenance['maintenance_admission'] = dict(protocol='RESEARCH_MAINTENANCE_ADMISSION_V1',
+        rule_id=s.ORIGIN_TAGS_RULE, reference_raw_digest=s._digest(s._git_blob_projection(engine, old)),
+        current_raw_digest=s._digest(s._git_blob_projection(engine, new)),
+        dependency_raw_digest=s._digest((engine / s.ORIGIN_TAGS_HELPER).read_bytes(), 'raw_bytes'))
+    reference = _REAL_CYCLE(args[0], '2026-08-28')[1]
+    inventory = []
+    provenance['model_copy_continuity'] = observe_model_copy_pair(args[0], reference, args[0], reference,
+                                                                input_inventory=inventory)
+    provenance['model_copy_observed_inputs'] = inventory
+    body['input_digest'] = c4._hash(provenance)
+    body['preparation_digest'] = c4._hash(dict(input_digest=body['input_digest'], roles=body['roles']))
+    digest = c4._hash(body)
+    definitions = json.loads(members['definitions.json'])
+    definitions['request_digest'] = digest
+    members['definitions.json'] = c4.canonical(definitions)
+    members['request.json'] = c4.canonical(dict(body=body, request_digest=digest))
+    manifest = dict(schema_version=1, domain='FIRST_FORWARD_INTENT_PAIR_BUNDLE_V1', epoch_id=kw['epoch_id'],
+                    current_cycle_id=args[4], request_digest=digest, members=c4._inventory(members))
+    c4._validate(members, manifest, kw['epoch_id'], digest)

@@ -60,7 +60,9 @@ python -m quantpits.scripts.continue_forward inspect-settlement \
 
 相关文档：[首期准备](research_forward_preparation.md)、[首期结算](research_forward_settlement.md)。D3 共同窗口报告和真实观察周期另行推进。
 
-D2 使用同一 C3 有限维护兼容判断，拒绝时保留全部组件原因；通过时把 `RESEARCH_MAINTENANCE_ADMISSION_V1` 来源材料保存在本期 request。旧首期 V1 与新兼容 request 可接续，协议材料变化本身不触发经济断段；每期仍须实际检查源码/来源、冻结定义、前序各自 after-state、周度日历和时间 gate。新材料不改变原始成功记录字段或 D1/D3 的成功记录要求。
+C3/C4/D2 默认将任意源码差异或源码等价比较不可用作为观察信息；只要其余模型、配置、信号与账户校验通过，就可以继续纸面记账。历史生产封存代码不必等于当前研究代码，当前工作文件仍与实际加载来源核对，并记录工作文件内容指纹，不能仅用 HEAD 代表执行内容。真实信号损坏、排名重建矛盾、模型/配置变化和错误前序仍拒绝。旧公开 decision-surface API 保留原比较语义；新日常路径不授予严格同段或维护许可。
+
+新 request 的 `input_provenance.source_change` 使用独立 `schema_version=1` / `SOURCE_DIFFERENCE_OBSERVATION_ONLY_V1`：`production_comparison` 保存两期生产源码比较，`production_commit`/`production_digest` 保存本期预测生产来源，`execution_commit`/`execution_tree`/`execution_implementation_digest`/`execution_code_digest` 保存当前研究执行来源；`production_execution_comparison` 为 EQUAL、DIFFERENT 或 INCOMPARABLE，不可观察时保存原因。它参与 input/request digest，不决定账户断段。旧 `maintenance_admission` 记录继续按旧合同读取。completion V2 的可迁移绑定与该字段版本独立；回退程序须保留可读取新字段的 reader，不改写历史记录。时间、原始 stdout、防重复及写入中断规则保持原合同。
 
 
 ## 记录复制与格式兼容

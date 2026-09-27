@@ -442,6 +442,7 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
         provenance_keys += ["maintenance_admission"]
         c3.surface.validate_maintenance_admission(provenance["maintenance_admission"])
         _need("model_copy_continuity" in provenance and "model_copy_observed_inputs" in provenance)
+    if "model_copy_continuity" in provenance:
         pair = provenance["model_copy_continuity"]
         inventory = provenance["model_copy_observed_inputs"]
         _need(type(pair) is list and len(pair) == 2 and pair[0] == pair[1])
@@ -469,6 +470,46 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
                 c3.surface._typed_digest(digest, "maintenance_auxiliary", "raw_bytes")
         _need(type(inventory) is list and len(inventory) == 1)
         c3.surface._typed_digest(inventory[0], "maintenance_observed_inputs", "canonical_json")
+    if "source_change" in provenance:
+        provenance_keys += ["source_change"]
+        _need("maintenance_admission" not in provenance)
+        change = _keys(provenance["source_change"], ("schema_version policy production_comparison production_commit "
+            "production_digest production_unavailable_reason execution_commit execution_tree "
+            "execution_implementation_digest execution_code_digest production_execution_comparison").split())
+        _need(type(change["schema_version"]) is int and change["schema_version"] == 1
+              and change["policy"] == "SOURCE_DIFFERENCE_OBSERVATION_ONLY_V1")
+        component = _keys(change["production_comparison"],
+                          ("name", "comparison", "reference_digest", "current_digest", "reason_code"))
+        _need(component["name"] == c3.surface.COMPONENT_NAMES[0]
+              and type(component["reason_code"]) is str and bool(component["reason_code"]))
+        for key in ("reference_digest", "current_digest"):
+            if component[key] is not None:
+                c3.surface._typed_digest(component[key], key, "canonical_json")
+        historical = ("INCOMPARABLE" if component["reference_digest"] is None or component["current_digest"] is None
+                      else "EQUAL" if component["reference_digest"] == component["current_digest"] else "DIFFERENT")
+        _need(component["comparison"] == historical)
+        _need(change["production_commit"] is None or type(change["production_commit"]) is str)
+        for key in ("execution_commit", "execution_tree"):
+            _need(type(change[key]) is str and len(change[key]) == 40
+                  and all(c in "0123456789abcdef" for c in change[key])
+                  and change[key] == provenance[key.replace("execution", "engine")])
+        _digest(change["execution_implementation_digest"])
+        _need(change["execution_implementation_digest"] == provenance["implementation"])
+        _need(component["current_digest"] == change["production_digest"])
+        c3.surface._typed_digest(change["execution_code_digest"], "execution_code", "canonical_json")
+        production = change["production_digest"]
+        reason = change["production_unavailable_reason"]
+        if production is None:
+            _need(type(reason) is str and bool(reason))
+            comparison = "INCOMPARABLE"
+        else:
+            c3.surface._typed_digest(production, "production_code", "canonical_json")
+            production_commit = change["production_commit"]
+            _need(reason is None and type(production_commit) is str
+                  and len(production_commit) in (40, 64)
+                  and all(c in "0123456789abcdef" for c in production_commit))
+            comparison = "EQUAL" if production == change["execution_code_digest"] else "DIFFERENT"
+        _need(change["production_execution_comparison"] == comparison)
     _keys(provenance, provenance_keys)
     _need(body["input_digest"] == _hash(provenance)
           and body["preparation_digest"] == _hash({"input_digest": body["input_digest"], "roles": body["roles"]}))

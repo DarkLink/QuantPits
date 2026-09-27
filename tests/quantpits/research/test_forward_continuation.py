@@ -233,9 +233,9 @@ def test_stop_conditions(continuation, monkeypatch, kind, code):
     else:
         from tests.quantpits.research.test_decision_surface import _result
         monkeypatch.setattr(m.c3.surface, 'observe_production_decision_surface',
-            lambda *a, **k: _result(change=m.c3.surface.COMPONENT_NAMES[0]))
+            lambda *a, **k: _result(change=m.c3.surface.COMPONENT_NAMES[5]))
     result = m.prepare_next_forward_intent_publication(*args, **kw)
-    expected = ([code, 'ECONOMIC_CODE_SURFACE_DIFFERENT', 'STABLE_COMPONENT_DIFFERENT']
+    expected = ([code, 'PORTFOLIO_INTENT_POLICY_DIFFERENT', 'STABLE_COMPONENT_DIFFERENT']
                 if kind == 'version' else [code])
     assert result.to_safe_summary_dict()['reason_codes'] == expected
     assert result.status == ('VERSION_BREAK' if kind == 'version' else 'PRECONDITION_BLOCKED')

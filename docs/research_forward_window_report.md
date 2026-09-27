@@ -79,3 +79,5 @@ post 为零或负时保留真实金额及 `NONPOSITIVE_NAV`，正 B 下仍可计
 - `report.md`：范围、共同基数、缺口、收益/成本和逐臂逐期值；null 明示。证券重叠和完整价格 provenance 在 JSON 中。
 
 计算使用局部高精度 Decimal；金额为确定性十进制字符串，比例输出 24 位小数 ROUND_HALF_EVEN 后去尾零，舍入不进入后续计算。JSON/CSV/Markdown 使用相同数值字符串。`request_digest` 不含本地 roots；`semantic_digest` 排除 `private_bindings` 和 `report_generated_at`，保留实际来源身份及实现文件 SHA256。报告是派生诊断文件，修改其 JSON 不会赋予任何发布或复用权限。旧 v1 首期不要求原来不存在的 D2 字段，后续 v2 的物理 binding 和 schedule 由既有 reader 验证。
+
+D3 在 `report.json` 每期 `source_context.input_provenance.source_change` 中保留生产与执行来源比较；Markdown 逐期展示差异及不可比较原因。旧记录显示 NOT_RECORDED。源码说明不将已验证会计结果降为 PARTIAL。

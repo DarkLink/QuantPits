@@ -1370,7 +1370,7 @@ def _observe_production_decision_surface(
     evidence_store_root: Any,
     bootstrap_store_root: Any,
     bootstrap_set_id: Any,
-    *, reference_source: str = "research",
+    *, reference_source: str = "research", source_change_continuity: bool = False,
 ) -> ProductionDecisionSurfaceResult:
     """Freshly classify one current Production cycle, strictly without writes."""
     if reference_source not in ("research", "production"):
@@ -1519,8 +1519,16 @@ def _observe_production_decision_surface(
             intent_reference_valid = False
             intent_reference_reason = "REFERENCE_INTENT_OBSERVATION_FAILED"
             reference_intent = _definition_intent_projection(definition)
-        reference_commit = _engine_commit(reference_manifest)
-        reference_code = _git_blob_projection(engine, reference_commit)
+        reference_code_error = None
+        try:
+            reference_commit = _engine_commit(reference_manifest)
+            reference_code = _git_blob_projection(engine, reference_commit)
+        except _ComponentIncomparable as exc:
+            if not source_change_continuity:
+                raise
+            reference_commit = None
+            reference_code = {"observation": "UNAVAILABLE"}
+            reference_code_error = "REFERENCE_CODE_" + exc.reason_code
         reference_prediction = _prediction_projection(reference_manifest)
         reference_market = _market_projection(reference_manifest)
         reference_values = (
@@ -1550,7 +1558,7 @@ def _observe_production_decision_surface(
             ):
                 raise DecisionSurfaceInputError("authority continuity was lost")
             return _make_result(components, reference_cycle, current_cycle)
-        current_commit = _engine_commit(current_manifest)
+        current_commit = None if source_change_continuity else _engine_commit(current_manifest)
         # Legacy seals name the immediate prediction-copy recorder as training.
         # Keep frozen definition admission exact, then independently observe the
         # complete ancestry and sealed model contents when recorder identities move.
@@ -1580,7 +1588,8 @@ def _observe_production_decision_surface(
         components = (
             _observe_component(
                 COMPONENT_NAMES[0], reference_code,
-                lambda: _git_blob_projection(engine, current_commit),
+                lambda: (_raise_copy_error(reference_code_error) if reference_code_error else
+                         _git_blob_projection(engine, _engine_commit(current_manifest))),
             ),
             _component(
                 COMPONENT_NAMES[1], reference_sources, None,
@@ -1618,7 +1627,7 @@ def _observe_production_decision_surface(
             ),
         )
         code = components[0]
-        if code.comparison == "EQUAL" and code.current_digest["value"] == _ORIGIN_TAGS_NEW:
+        if not source_change_continuity and code.comparison == "EQUAL" and code.current_digest["value"] == _ORIGIN_TAGS_NEW:
             # The reviewed new train_utils calls this dependency even on exact
             # baselines. Do not let an uncurated helper change ride that path.
             try:
@@ -1630,7 +1639,7 @@ def _observe_production_decision_surface(
                 components = (_component(COMPONENT_NAMES[0], reference_code, None,
                     exc.reason_code if isinstance(exc, _ComponentIncomparable)
                     else "MAINTENANCE_DEPENDENCY_UNVERIFIED"),) + components[1:]
-        if code.comparison == "DIFFERENT" and not _origin_tags_pair(
+        if not source_change_continuity and code.comparison == "DIFFERENT" and not _origin_tags_pair(
             dict(code.reference_digest), dict(code.current_digest),
         ):
             components = (DecisionSurfaceComponent(
@@ -1638,7 +1647,7 @@ def _observe_production_decision_surface(
                 reference_digest=dict(code.reference_digest), current_digest=dict(code.current_digest),
                 reason_code="ECONOMIC_COMPATIBILITY_NOT_ESTABLISHED",
             ),) + components[1:]
-        if code.comparison == "DIFFERENT" and _origin_tags_pair(
+        if not source_change_continuity and code.comparison == "DIFFERENT" and _origin_tags_pair(
             dict(code.reference_digest), dict(code.current_digest),
         ):
             # Only the fully observed source/model path is within this rule.
@@ -1710,7 +1719,7 @@ def observe_production_decision_surface(
     evidence_store_root: Any,
     bootstrap_store_root: Any,
     bootstrap_set_id: Any,
-    *, reference_source: str = "research",
+    *, reference_source: str = "research", source_change_continuity: bool = False,
 ) -> ProductionDecisionSurfaceResult:
     """Fail closed with typed errors while preserving process-control."""
     try:
@@ -1718,7 +1727,7 @@ def observe_production_decision_surface(
             research_workspace_root, production_workspace_root, engine_root,
             current_cycle_id, activation_path, definition_store_root,
             evidence_store_root, bootstrap_store_root, bootstrap_set_id,
-            reference_source=reference_source,
+            reference_source=reference_source, source_change_continuity=source_change_continuity,
         )
     except _PROCESS_CONTROL:
         raise
