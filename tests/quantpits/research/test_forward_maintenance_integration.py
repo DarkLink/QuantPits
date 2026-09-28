@@ -517,7 +517,8 @@ def test_real_input_errors_still_block_after_source_relaxation(prepared_inputs, 
     assert reason in result.to_safe_summary_dict()['reason_codes']
 
 
-def test_legacy_maintenance_provenance_reader(publication, tmp_path):
+@pytest.mark.parametrize("dependency_version", ["legacy", "current"])
+def test_legacy_maintenance_provenance_reader(publication, tmp_path, dependency_version):
     """Reconstruct the old retained format; no live maintenance authority granted."""
     from quantpits.research import forward_intent_publication as c4
     from quantpits.research.model_continuity import observe_model_copy_pair
@@ -535,6 +536,12 @@ def test_legacy_maintenance_provenance_reader(publication, tmp_path):
         rule_id=s.ORIGIN_TAGS_RULE, reference_raw_digest=s._digest(s._git_blob_projection(engine, old)),
         current_raw_digest=s._digest(s._git_blob_projection(engine, new)),
         dependency_raw_digest=s._digest((engine / s.ORIGIN_TAGS_HELPER).read_bytes(), 'raw_bytes'))
+    if dependency_version == "legacy":
+        provenance['maintenance_admission']['dependency_raw_digest'] = {
+            "algorithm": "sha256", "domain": "raw_bytes",
+            "value": "0f13fe3eea4141c3438ced6b80f3f9dc4681fc2f914f2252e05c2fdd214b0e18",
+            "size_bytes": 7295,
+        }
     reference = _REAL_CYCLE(args[0], '2026-08-28')[1]
     inventory = []
     provenance['model_copy_continuity'] = observe_model_copy_pair(args[0], reference, args[0], reference,

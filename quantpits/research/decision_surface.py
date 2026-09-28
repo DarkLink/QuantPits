@@ -66,7 +66,15 @@ ORIGIN_TAGS_RULE = "PREDICTION_ORIGIN_TAGS_MAINTENANCE_V1"
 ORIGIN_TAGS_HELPER = "quantpits/training/model_identity.py"
 _ORIGIN_TAGS_OLD = "e039dd14af98d8784388edae75e2d80501952709bdb0a76c603f185a762b1c15"
 _ORIGIN_TAGS_NEW = "15a468434a5060a15f12d34b90ab06039bc6093ef7f3048e2a0d96c23aec377e"
-_ORIGIN_TAGS_DEPENDENCY = "0f13fe3eea4141c3438ced6b80f3f9dc4681fc2f914f2252e05c2fdd214b0e18"
+# The alias resolver change preserves prediction_origin_tags' default path.
+_ORIGIN_TAGS_DEPENDENCY = "77e77ffc40a96457f2b36297002ffba5f7d976676013080b4bb63a1ff12b9bc3"
+_ORIGIN_TAGS_DEPENDENCY_SIZE = 7836
+# Retained records remain readable; this identity grants no live authority.
+_ORIGIN_TAGS_LEGACY_DEPENDENCY = {
+    "algorithm": "sha256", "domain": "raw_bytes",
+    "value": "0f13fe3eea4141c3438ced6b80f3f9dc4681fc2f914f2252e05c2fdd214b0e18",
+    "size_bytes": 7295,
+}
 
 
 def _origin_tags_pair(reference, current):
@@ -83,7 +91,7 @@ def _origin_tags_dependency(engine, commit):
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=10,
     )
     expected = {"algorithm": "sha256", "domain": "raw_bytes",
-                "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": 7295}
+                "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": _ORIGIN_TAGS_DEPENDENCY_SIZE}
     if completed.returncode != 0 or _digest(completed.stdout, "raw_bytes") != expected:
         raise _ComponentIncomparable("MAINTENANCE_DEPENDENCY_UNVERIFIED")
     # A sealed dependency alone cannot authorize execution of different bytes.
@@ -550,7 +558,7 @@ def maintenance_admission(result):
         "reference_raw_digest": dict(row.reference_digest),
         "current_raw_digest": dict(row.current_digest),
         "dependency_raw_digest": {"algorithm": "sha256", "domain": "raw_bytes",
-                                  "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": 7295},
+                                  "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": _ORIGIN_TAGS_DEPENDENCY_SIZE},
     }
 
 
@@ -561,10 +569,10 @@ def validate_maintenance_admission(value):
     } or value["protocol"] != "RESEARCH_MAINTENANCE_ADMISSION_V1"
         or value["rule_id"] != ORIGIN_TAGS_RULE
         or not _origin_tags_pair(value["reference_raw_digest"], value["current_raw_digest"])
-        or value["dependency_raw_digest"] != {
+        or value["dependency_raw_digest"] not in (_ORIGIN_TAGS_LEGACY_DEPENDENCY, {
             "algorithm": "sha256", "domain": "raw_bytes",
-            "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": 7295,
-        }):
+            "value": _ORIGIN_TAGS_DEPENDENCY, "size_bytes": _ORIGIN_TAGS_DEPENDENCY_SIZE,
+        })):
         raise DecisionSurfaceContractError("maintenance admission content is invalid")
 
 
