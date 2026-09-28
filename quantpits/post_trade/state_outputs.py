@@ -49,7 +49,12 @@ def build_state_output_payloads(ctx, change_set: PostTradeStateChangeSet, settle
         if not detail.empty:
             if "证券代码" in detail:
                 from quantpits.post_trade.state import normalize_instrument
-                detail["证券代码"] = detail["证券代码"].map(normalize_instrument)
+                from quantpits.scripts.brokers.base import INTEREST_TYPES
+                detail["证券代码"] = [
+                    "" if category in INTEREST_TYPES and (pd.isna(code) or not str(code).strip())
+                    else normalize_instrument(code)
+                    for code, category in zip(detail["证券代码"], detail["交易类别"])
+                ]
             detail["成交日期"] = date; detail["model"] = model
             detail_pairs.append((date, _csv_bytes(detail))); trade_frames.append(detail)
         transition = transition_map[date]

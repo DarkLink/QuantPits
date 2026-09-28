@@ -128,7 +128,15 @@ def trace_training_origin(experiment, recorder_id, read_tags, model_name, max_de
                 raise ModelIdentityError("prediction has no training parent")
             for _, entry in chain:
                 root = (entry.get("training_origin_experiment"), entry.get("training_origin_record_id"))
-                if root != (None, None) and root != identity:
+                if root == (None, None):
+                    continue
+                if root != identity and resolve_identity is not None:
+                    # Resolve a legacy experiment alias exactly as for parent tags.
+                    # A different or partial cached recorder remains a contradiction.
+                    if not all(isinstance(value, str) and value for value in root) or root[1] != recorder_id:
+                        raise ModelIdentityError("training origin tag conflicts with lineage")
+                    root = resolve_identity(*root)
+                if root != identity:
                     raise ModelIdentityError("training origin tag conflicts with lineage")
             return {"training_origin_experiment": experiment,
                     "training_origin_record_id": recorder_id}

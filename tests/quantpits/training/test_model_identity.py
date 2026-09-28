@@ -115,3 +115,37 @@ def test_identity_resolver_may_correct_experiment_but_never_recorder_id():
     assert value['training_origin_experiment'] == 'actual'
     with pytest.raises(ModelIdentityError):
         trace_training_origin('stale', 'id', tags, 'M', resolve_identity=lambda e, r: ('actual', 'another'))
+
+
+def test_cached_origin_experiment_alias_uses_exact_resolver():
+    rows = {
+        'copy': {'model': 'M', 'mode': 'predict_only',
+                 'source_experiment': 'legacy', 'source_record_id': 'train',
+                 'training_origin_experiment': 'legacy', 'training_origin_record_id': 'train'},
+        'train': {'model': 'M', 'mode': 'train'},
+    }
+    calls = []
+    def resolve(exp, rid):
+        calls.append((exp, rid))
+        return ('training' if rid == 'train' else 'prediction', rid)
+    result = trace_training_origin('prediction', 'copy', lambda e,r: rows[r], 'M', resolve_identity=resolve)
+    assert result == {'training_origin_experiment': 'training', 'training_origin_record_id': 'train'}
+    assert calls.count(('legacy', 'train')) == 2
+
+
+@pytest.mark.parametrize('experiment,identifier', [('legacy', 'wrong'), (None, 'train'), ('legacy', None)])
+def test_cached_origin_resolver_cannot_hide_wrong_or_partial_root(experiment, identifier):
+    tags = {'model': 'M', 'mode': 'train', 'training_origin_experiment': experiment,
+            'training_origin_record_id': identifier}
+    with pytest.raises(ModelIdentityError, match='conflicts'):
+        trace_training_origin('training', 'train', lambda *_: tags, 'M',
+                              resolve_identity=lambda e,r: ('training', r))
+
+
+@pytest.mark.parametrize('answer', [('other', 'train'), ('training', 'different')])
+def test_cached_origin_alias_must_resolve_to_actual_terminal(answer):
+    tags = {'model': 'M', 'mode': 'train', 'training_origin_experiment': 'legacy',
+            'training_origin_record_id': 'train'}
+    with pytest.raises(ModelIdentityError, match='conflicts'):
+        trace_training_origin('training', 'train', lambda *_: tags, 'M',
+            resolve_identity=lambda e,r: answer if e == 'legacy' else (e,r))

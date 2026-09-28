@@ -1,7 +1,7 @@
 import pandas as pd
 from decimal import Decimal
 from pathlib import Path
-from .base import BaseBrokerAdapter
+from .base import BaseBrokerAdapter, INTEREST_TYPES
 from quantpits.post_trade.contracts import BrokerParseError
 
 
@@ -26,7 +26,7 @@ class GtjaAdapter(BaseBrokerAdapter):
             raise BrokerParseError("[%s] cannot parse %s: %s" % (self.name, file_path, exc)) from exc
 
     @staticmethod
-    def _clean(frame: pd.DataFrame, *, filter_codes: bool) -> pd.DataFrame:
+    def _clean(frame: pd.DataFrame, *, filter_codes: bool, preserve_cash: bool = False) -> pd.DataFrame:
         df = frame.copy()
         for col in df.columns:
             if pd.api.types.is_object_dtype(df[col].dtype) or pd.api.types.is_string_dtype(df[col].dtype):
@@ -34,13 +34,15 @@ class GtjaAdapter(BaseBrokerAdapter):
         if filter_codes and "证券代码" in df.columns:
             codes = df["证券代码"].astype("string").str.lstrip("\t").str.strip()
             valid = codes.notna() & ~codes.str.lower().isin(["nan", "none", ""])
-            df = df.loc[valid].copy()
-            df["证券代码"] = codes.loc[valid].str.split(".").str[0].str.zfill(6)
-            df = df[df["证券代码"].str.startswith(("6", "0", "3"))].copy()
+            normalized = codes.str.split(".").str[0].str.zfill(6)
+            stock = valid & normalized.str.startswith(("6", "0", "3"))
+            cash = df["交易类别"].isin(INTEREST_TYPES) if preserve_cash and "交易类别" in df else pd.Series(False, index=df.index)
+            df = df.loc[stock | cash].copy()
+            df["证券代码"] = normalized.loc[df.index].where(stock.loc[df.index], "")
         return df
 
     def parse_settlement(self, file_path) -> pd.DataFrame:
-        return self.validate_stream(self._clean(self._read_excel(file_path), filter_codes=True), "settlement")
+        return self.validate_stream(self._clean(self._read_excel(file_path), filter_codes=True, preserve_cash=True), "settlement")
 
     def parse_orders(self, file_path) -> pd.DataFrame:
         return self.validate_stream(self._clean(self._read_excel(file_path), filter_codes=True), "order")

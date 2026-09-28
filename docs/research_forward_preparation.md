@@ -1,5 +1,7 @@
 # 首次 Shadow Forward intent 准备（C3）
 
+模型来源连续性检查对父链及缓存 training-origin 标签使用同一精确 recorder 解析规则。仅 experiment 名称陈旧、且 recorder ID 经后端唯一定位后仍对应实际训练根时，允许解析为当前 experiment；不同根、缺失/歧义 recorder、部分标签或模型内容变化仍拒绝。此过程不改写 MLflow 标签。
+
 C3 从显式 current cycle、冻结四模型 Champion、冻结三模型 Challenger 和同一 matched bootstrap，计算一对内存 intent。它只读取输入并计算，不保存订单、执行交易或开始 epoch。
 
 操作员先按工作区约定 source 正确环境，再显式指定所有物理绝对路径与已有 selector：

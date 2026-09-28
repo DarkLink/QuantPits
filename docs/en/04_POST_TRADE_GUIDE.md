@@ -1,5 +1,9 @@
 # Post-Trade Batch Processing Guide
 
+GTJA settlement parsing retains known cash adjustments, including `利息归本`, even without a stock code. Such rows keep an empty code in settlement logs and affect cash only; they do not create stock positions.
+
+Order/trade/settlement quantity reconciliation recognizes GTJA order labels `本方卖出` and `全额卖出` as sell instructions. It reconciles actual filled quantities, excludes zero-fill cancellations, and still rejects unknown directions.
+
 ## Overview
 
 The unified post-trade command handles three complementary broker evidence streams: settlement, orders, and intraday fills. Its default `--scope all` updates account state and preserves the raw evidence required by execution analytics.

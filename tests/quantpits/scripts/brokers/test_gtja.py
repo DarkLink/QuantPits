@@ -88,3 +88,22 @@ def test_gtja_adapter_read_orders_and_trades():
         df_trades = adapter.read_trades("dummy.xlsx")
         assert len(df_trades) == 3
         assert set(df_trades["证券代码"]) == {"000895", "600309", "000001"}
+
+
+@pytest.mark.parametrize("code", [None, "", "\t", "nan", "999999"])
+def test_settlement_retains_cash_interest_without_stock_code(code):
+    from decimal import Decimal
+    from quantpits.post_trade.state import normalize_settlement_frame
+    raw = pd.DataFrame({
+        "证券代码": [code], "交易类别": ["利息归本"],
+        "成交价格": [0], "成交数量": [0], "成交金额": [0],
+        "资金发生数": [4.05], "交收日期": ["2026-09-21"],
+    })
+    with patch("pandas.read_excel", return_value=raw):
+        parsed = GtjaAdapter().parse_settlement("interest.xlsx")
+    assert len(parsed) == 1
+    assert parsed.iloc[0]["证券代码"] == ""
+    events, _ = normalize_settlement_frame(parsed, "2026-09-21")
+    assert events[0].kind == "cash_adjustment"
+    assert events[0].instrument is None
+    assert events[0].cash_effect == Decimal("4.05")

@@ -1,5 +1,7 @@
 # First Shadow Forward intent preparation (C3)
 
+Model continuity resolves parent links and cached training-origin labels through the same exact recorder lookup. A stale experiment name is accepted only when the unchanged recorder ID uniquely resolves to the actual terminal training run. Different roots, missing or ambiguous recorders, partial tags, and changed model content remain rejected. MLflow tags are never rewritten.
+
 C3 computes one in-memory pair from an explicit current cycle, a frozen four-model Champion, its frozen three-model Challenger, and one matched bootstrap. It reads inputs and plans intents without storing orders, executing trades, or starting an epoch.
 
 Source the appropriate workspace environment first, then supply physical absolute paths and existing selectors explicitly:

@@ -31,3 +31,26 @@ def test_bonus_share_trade_row_is_not_execution_fill():
         "证券代码": ["600426"], "成交数量": [180],
     })
     assert reconcile_quantities(pd.DataFrame(), corporate_action, (), trade_date="2026-07-09") == ()
+
+
+@pytest.mark.parametrize("label", ["本方卖出", "全额卖出"])
+def test_gtja_sell_order_labels_reconcile_with_standard_fills(label):
+    order = _frame(10).assign(交易类别=label)
+    trade = _frame(10).assign(交易类别="深圳A股普通股票竞价卖出")
+    event = SettlementEvent(
+        "2026-01-02", "SZ000001", "sell", Decimal("10"),
+        Decimal("10"), Decimal("100"), Decimal("95"), 1,
+        "深圳A股普通股票竞价卖出",
+    )
+    # A fully cancelled instruction contributes no fill quantity.
+    order = pd.concat([order, _frame(0)], ignore_index=True)
+    assert reconcile_quantities(order, trade, (event,)) == (
+        (("2026-01-02", "SZ000001", "sell"), Decimal("10")),
+    )
+    with pytest.raises(ExecutionReconciliationError, match="do not reconcile"):
+        reconcile_quantities(order, trade.assign(成交数量=9), (event,))
+
+
+def test_unknown_sell_like_label_is_rejected():
+    with pytest.raises(ExecutionReconciliationError, match="Unsupported filled execution side"):
+        reconcile_quantities(_frame(10).assign(交易类别="未知卖出"), _frame(10), (_event(10),))
