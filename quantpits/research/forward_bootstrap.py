@@ -407,13 +407,13 @@ def _economic_payload(state: Any) -> Dict[str, Any]:
     return {key: raw[key] for key in ("as_of_date", "cash", "positions")}
 
 
-def _portfolio_id(role: str, source: Any, candidate: Any) -> str:
-    strategy = candidate.compiled_definitions.champion if role == "CHAMPION" else candidate.compiled_definitions.challenger
+def _portfolio_id(role: str, source: Any, compiled: Any) -> str:
+    strategy = compiled.champion if role == "CHAMPION" else compiled.challenger
     payload = {
         "domain": "MATCHED_FORWARD_PORTFOLIO_ID_V1", "role": role,
         "bootstrap_source_cycle_id": source.cycle_id,
         "source_portfolio_raw_digest": dict(source.portfolio_raw_digest),
-        "definition_set_id": candidate.definition_set_id,
+        "definition_set_id": compiled.definition_set_id,
         "strategy_id": strategy.to_dict()["strategy_id"],
     }
     return "portfolio." + hashlib.sha256(_canonical(payload)).hexdigest()
@@ -421,8 +421,17 @@ def _portfolio_id(role: str, source: Any, candidate: Any) -> str:
 
 def _build_states(source: Any, candidate: Any) -> Tuple[Any, Any, Dict[str, Any]]:
     from quantpits.research.accounting import ExecutionAssumption, ShadowPortfolioState
+    from quantpits.research.forward_observation import (
+        FreshChampionSegmentCandidate, ObservedForwardDefinitionCandidate,
+    )
     portfolio = source.verified_portfolio()
-    execution = candidate.compiled_definitions.execution_assumption.to_dict()
+    if type(candidate) is FreshChampionSegmentCandidate:
+        compiled, _ = candidate._validated_snapshot()
+    elif type(candidate) is ObservedForwardDefinitionCandidate:
+        compiled, _ = candidate._validated()
+    else:
+        raise ForwardBootstrapContractError("bootstrap candidate contains foreign authority")
+    execution = compiled.execution_assumption.to_dict()
     assumption = ExecutionAssumption.from_dict({key: execution[key] for key in ExecutionAssumption._FIELDS})
     cash = Decimal(portfolio["current_cash"])
     if cash % assumption.money_quantum:
@@ -439,7 +448,7 @@ def _build_states(source: Any, candidate: Any) -> Tuple[Any, Any, Dict[str, Any]
     states = []
     for role in ("CHAMPION", "CHALLENGER"):
         states.append(ShadowPortfolioState.from_dict({
-            "portfolio_id": _portfolio_id(role, source, candidate),
+            "portfolio_id": _portfolio_id(role, source, compiled),
             "as_of_date": source.cycle_id, "cash": portfolio["current_cash"],
             "positions": positions,
         }))
@@ -1068,11 +1077,12 @@ def _fresh_segment_request(
         raise ForwardBootstrapContractError(
             "fresh definition observation returned foreign authority",
         )
-    definition_request = definition.compiled_definitions.to_store_request()
+    compiled, reference = definition._validated_snapshot()
+    definition_request = compiled._fresh_store_request()
     if (
-        definition.definition_set_id != evidence.definition_receipt.definition_set_id
-        or definition.evidence_cycle_id != evidence.evidence_cycle_id
-        or dict(definition.compiled_request_digest)
+        compiled.definition_set_id != evidence.definition_receipt.definition_set_id
+        or reference["evidence_cycle_id"] != evidence.evidence_cycle_id
+        or reference["compiled_request_digest"]
         != dict(evidence.definition_receipt.request_digest)
         or dict(definition_request.request_digest)
         != dict(evidence.definition_receipt.request_digest)
@@ -1080,8 +1090,8 @@ def _fresh_segment_request(
         raise ForwardBootstrapInputError(
             "fresh definition observation does not join evidence",
         )
-    champion = definition.compiled_definitions.champion.to_dict()
-    challenger = definition.compiled_definitions.challenger.to_dict()
+    champion = compiled.champion.to_dict()
+    challenger = compiled.challenger.to_dict()
     cutoff = max(champion["data_cutoff"], challenger["data_cutoff"])
     if max(
         date.fromisoformat(cutoff), date.fromisoformat(definition_cycle),
@@ -1363,7 +1373,7 @@ def _prepare_fresh_champion_segment_matched_bootstrap(
                 "preflight source observations are inconsistent",
             )
         state = _target_state(bootstraps, request.bootstrap_set_id)
-        definition.compiled_definitions.to_store_request()
+        definition._validated_snapshot()
         source.verified_portfolio()
         evidence_result.to_safe_summary_dict()
         request.validate()
@@ -1463,7 +1473,7 @@ def _publish_fresh_champion_segment_matched_bootstrap(
             post_guard = SourceMutationObserver(
                 bootstraps, (request.bootstrap_set_id,),
             )
-            definition.compiled_definitions.to_store_request()
+            definition._validated_snapshot()
             source.verified_portfolio()
             evidence_result.to_safe_summary_dict()
             request.validate()

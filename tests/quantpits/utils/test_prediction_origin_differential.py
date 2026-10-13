@@ -1,4 +1,4 @@
-"""Execute both reviewed static/CPCV functions with the same controlled inputs."""
+"""Compare current static/CPCV prediction with and without origin annotations."""
 import ast
 import copy
 from datetime import datetime
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from tests.quantpits.research.test_decision_surface_maintenance import reviewed_train_sources
+from tests.quantpits.research.test_decision_surface_maintenance import prediction_origin_source_variants
 
 
 @pytest.mark.parametrize('kind', ['static', 'cpcv'])
@@ -19,7 +19,7 @@ def test_reviewed_prediction_outputs_and_failure_boundary(mock_env_constants, tm
     import qlib.workflow
     name = 'predict_single_model' if kind == 'static' else 'predict_cpcv_model'
     functions = []
-    for source in reviewed_train_sources():
+    for source in prediction_origin_source_variants():
         node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == name)
         scope = dict(vars(train))
         text = '\n'.join(source.splitlines()[node.lineno - 1:node.end_lineno])

@@ -1,4 +1,5 @@
-"""Reviewed real source variants; temporary Git and file-backed model ancestry."""
+"""Controlled origin-annotation variants; real Git and model ancestry."""
+import ast
 import copy
 import shutil
 from pathlib import Path
@@ -10,39 +11,59 @@ from tests.quantpits.research.test_decision_surface import _git, _observer_layou
 from tests.quantpits.research.test_model_continuity import copied_models
 
 
-def reviewed_train_sources():
-    current = (Path(s.__file__).parents[1] / "utils/train_utils.py").read_text()
-    old = current
-    blocks = [
-        "        from quantpits.training.model_identity import prediction_origin_tags\n"
-        "        origin_tags = prediction_origin_tags(\n"
-        "            source_exp, source_id,\n"
-        "            lambda exp, rid: R.get_recorder(experiment_name=exp, recorder_id=rid).list_tags(),\n"
-        "            model_name,\n"
-        "        )\n",
-        "                        **origin_tags,\n",
-        "        # Preserve direct parent audit tags and independently traced training origin.\n"
-        "        from quantpits.training.model_identity import prediction_origin_tags\n"
-        "        origin_tags = prediction_origin_tags(\n"
-        "            source_experiment, source_record_id,\n"
-        "            lambda exp, rid: R.get_recorder(experiment_name=exp, recorder_id=rid).list_tags(),\n"
-        "            model_name,\n"
-        "        )\n",
-        "                **origin_tags,\n",
-    ]
-    for block in blocks:
-        assert old.count(block) == 1
-        old = old.replace(block, "")
-    assert s._digest(old.encode(), "raw_bytes")["value"] == "64cc427c57795ff45dc1629ef06016c8d67d471780ed42f45c746f64a1026e19"
-    assert s._digest(current.encode(), "raw_bytes")["value"] == "36a4ca3c314faf77636b59467ef42b16386dd3cba70082b73ab88f1032bc203b"
+def prediction_origin_source_variants(current=None):
+    """Remove only origin annotations from the current prediction functions.
+
+    These are controlled before/after inputs, not historical whole-file bytes.
+    Unrelated changes to training must remain present in both versions.
+    """
+    if current is None:
+        current = (Path(s.__file__).parents[1] / "utils/train_utils.py").read_text(encoding="utf-8")
+    tree = ast.parse(current)
+    removed_lines = set()
+    for name in ("predict_single_model", "predict_cpcv_model"):
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
+        nodes = list(ast.walk(function))
+        imports = [node for node in nodes if isinstance(node, ast.ImportFrom)
+                   and node.module == "quantpits.training.model_identity"
+                   and [alias.name for alias in node.names] == ["prediction_origin_tags"]]
+        assignments = [node for node in nodes if isinstance(node, ast.Assign)
+                       and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id == "origin_tags"]
+        expansions = [node for node in nodes if isinstance(node, ast.keyword)
+                      and node.arg is None and isinstance(node.value, ast.Name)
+                      and node.value.id == "origin_tags"]
+        assert len(imports) == len(assignments) == len(expansions) == 1, name
+        # keyword nodes have no source positions on Python 3.8; their Name
+        # values do, and each expansion occupies its own line in these calls.
+        for node in imports + assignments + [keyword.value for keyword in expansions]:
+            removed_lines.update(range(node.lineno, node.end_lineno + 1))
+    old = "".join(line for number, line in enumerate(current.splitlines(keepends=True), 1)
+                  if number not in removed_lines)
+    ast.parse(old)
     return old, current
 
 
-def reviewed_engine(engine):
-    # Reconstruct the actual old bytes, independently checked against the
-    # reviewed blob identity. This also works in shallow CI checkouts.
+def test_prediction_origin_variants_preserve_unrelated_training_change():
+    source = (Path(s.__file__).parents[1] / "utils/train_utils.py").read_text(encoding="utf-8")
+    training = next(node for node in ast.parse(source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "train_single_model")
+    lines = source.splitlines(keepends=True)
+    lines.insert(training.body[0].end_lineno, "    unrelated_training_revision = 2\n")
+    edited = "".join(lines)
+    before, after = prediction_origin_source_variants(edited)
+    assert after == edited
+    assert "unrelated_training_revision = 2" in before
+    training_bodies = [next(node for node in ast.parse(value).body
+                           if isinstance(node, ast.FunctionDef) and node.name == "train_single_model")
+                       for value in (before, after)]
+    assert ast.dump(training_bodies[0]) == ast.dump(training_bodies[1])
+
+
+def origin_annotation_engine(engine, monkeypatch=None):
+    # Temporary sources work without historical Git objects in shallow CI.
     source = Path(s.__file__).parents[2]
-    old, new = reviewed_train_sources()
+    old, new = prediction_origin_source_variants()
     _git(engine, "init", "-q")
     _git(engine, "config", "user.email", "test@example.invalid")
     _git(engine, "config", "user.name", "Test")
@@ -53,17 +74,27 @@ def reviewed_engine(engine):
     train = engine / "quantpits/utils/train_utils.py"
     train.write_text(old)
     _git(engine, "add", ".")
-    _git(engine, "commit", "-qm", "old reviewed bytes")
+    _git(engine, "commit", "-qm", "without origin annotations")
     reference = _git(engine, "rev-parse", "HEAD")
     train.write_text(new)
     helper = engine / s.ORIGIN_TAGS_HELPER
     helper.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(str(source / s.ORIGIN_TAGS_HELPER), str(helper))
     _git(engine, "add", ".")
-    _git(engine, "commit", "-qm", "reviewed annotations")
+    _git(engine, "commit", "-qm", "with origin annotations")
     current = _git(engine, "rev-parse", "HEAD")
-    assert s._origin_tags_pair(s._digest(s._git_blob_projection(engine, reference)),
-                               s._digest(s._git_blob_projection(engine, current)))
+    if monkeypatch is not None:
+        # Isolate the legacy rule's reviewed inputs from the evolving checkout.
+        # Capture this pair once, before tests mutate code or dependencies;
+        # retain the real comparison, dependency checks and admission validator.
+        reference_digest = s._digest(s._git_blob_projection(engine, reference))
+        current_digest = s._digest(s._git_blob_projection(engine, current))
+        dependency_digest = s._digest(helper.read_bytes(), "raw_bytes")
+        monkeypatch.setattr(s, "_ORIGIN_TAGS_OLD", reference_digest["value"])
+        monkeypatch.setattr(s, "_ORIGIN_TAGS_NEW", current_digest["value"])
+        monkeypatch.setattr(s, "_ORIGIN_TAGS_DEPENDENCY", dependency_digest["value"])
+        monkeypatch.setattr(s, "_ORIGIN_TAGS_DEPENDENCY_SIZE", dependency_digest["size_bytes"])
+        assert s._origin_tags_pair(reference_digest, current_digest)
     return reference, current
 
 
@@ -71,7 +102,7 @@ def reviewed_engine(engine):
 def test_real_surface_source_and_engine(tmp_path, monkeypatch, copied_models, variant):
     layout = _observer_layout(tmp_path)
     research, production, engine, activation, definitions, evidence, bootstraps = layout
-    old, new = reviewed_engine(engine)
+    old, new = origin_annotation_engine(engine, monkeypatch)
     source_root, manifests = copied_models
     shutil.copytree(str(source_root / "mlruns"), str(production / "mlruns"))
     reference, current = copy.deepcopy(manifests)

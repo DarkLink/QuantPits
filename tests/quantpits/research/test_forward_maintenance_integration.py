@@ -16,7 +16,7 @@ from tests.quantpits.research import test_forward_definition_evidence as ev
 from tests.quantpits.research import test_forward_bootstrap as bs
 from tests.quantpits.research.test_forward_observation import _fresh_split_bundle, _reseal_fresh_cycle, CYCLE
 from tests.quantpits.research.test_model_continuity import copied_models
-from tests.quantpits.research.test_decision_surface_maintenance import reviewed_engine
+from tests.quantpits.research.test_decision_surface_maintenance import origin_annotation_engine
 from tests.quantpits.research.test_forward_intent_preparation import prepared_inputs as base_prepared_inputs
 from tests.quantpits.research.test_forward_intent_publication import publication
 from tests.quantpits.research.test_forward_continuation import continuation, publish_intent, settle
@@ -96,7 +96,7 @@ def fresh_bootstrap_workspace(fresh_evidence_workspace, tmp_path, request):
     production, research, activation, definitions, evidence = fresh_evidence_workspace
     engine = tmp_path / 'reviewed-engine'
     engine.mkdir()
-    old, new = reviewed_engine(engine)
+    old, new = origin_annotation_engine(engine)
     # An arbitrary recorder maintenance version, outside the old origin-tag pair.
     from tests.quantpits.research.test_decision_surface import _git
     path = engine / 'quantpits/training/records.py'
@@ -524,7 +524,7 @@ def test_real_input_errors_still_block_after_source_relaxation(prepared_inputs, 
 
 
 @pytest.mark.parametrize("dependency_version", ["legacy", "current"])
-def test_legacy_maintenance_provenance_reader(publication, tmp_path, dependency_version):
+def test_legacy_maintenance_provenance_reader(publication, tmp_path, monkeypatch, dependency_version):
     """Reconstruct the old retained format; no live maintenance authority granted."""
     from quantpits.research import forward_intent_publication as c4
     from quantpits.research.model_continuity import observe_model_copy_pair
@@ -534,7 +534,7 @@ def test_legacy_maintenance_provenance_reader(publication, tmp_path, dependency_
     members, _, _ = c4._build(prepared, kw['epoch_id'], policy)
     engine = tmp_path / 'legacy_engine'
     engine.mkdir()
-    old, new = reviewed_engine(engine)
+    old, new = origin_annotation_engine(engine, monkeypatch)
     body = json.loads(members['request.json'])['body']
     provenance = body['input_provenance']
     provenance.pop('source_change')
@@ -543,11 +543,7 @@ def test_legacy_maintenance_provenance_reader(publication, tmp_path, dependency_
         current_raw_digest=s._digest(s._git_blob_projection(engine, new)),
         dependency_raw_digest=s._digest((engine / s.ORIGIN_TAGS_HELPER).read_bytes(), 'raw_bytes'))
     if dependency_version == "legacy":
-        provenance['maintenance_admission']['dependency_raw_digest'] = {
-            "algorithm": "sha256", "domain": "raw_bytes",
-            "value": "0f13fe3eea4141c3438ced6b80f3f9dc4681fc2f914f2252e05c2fdd214b0e18",
-            "size_bytes": 7295,
-        }
+        provenance['maintenance_admission']['dependency_raw_digest'] = copy.deepcopy(s._ORIGIN_TAGS_LEGACY_DEPENDENCY)
     reference = _REAL_CYCLE(args[0], '2026-08-28')[1]
     inventory = []
     provenance['model_copy_continuity'] = observe_model_copy_pair(args[0], reference, args[0], reference,

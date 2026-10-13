@@ -13,9 +13,11 @@ def _import_ok(_module, _class_name):
     return ImportObservation(True, True, True, True, True, False, False, "observed")
 
 
-def test_duplicate_canonical_rows_remain_visible_and_block_support():
+def test_duplicate_canonical_rows_remain_visible_and_block_support(tmp_path):
     raw = _raw()
-    matrix = ModelCapabilityInspector._with_probes(_import_ok, _protocol_ok).inspect((raw, dict(raw)))
+    matrix = ModelCapabilityInspector._with_probes(
+        _import_ok, _protocol_ok, protected_roots=(tmp_path,),
+    ).inspect((raw, dict(raw)))
     assert matrix.n_declarations == 2
     assert len(matrix.results) == 2
     assert [item.status for item in matrix.results] == ["invalid_declaration", "invalid_declaration"]
@@ -25,22 +27,24 @@ def test_duplicate_canonical_rows_remain_visible_and_block_support():
         matrix.query(matrix.results[0].identity)
 
 
-def test_import_and_constructor_success_do_not_imply_supported():
-    matrix = ModelCapabilityInspector._with_probes(_import_ok).inspect((_raw(),))
+def test_import_and_constructor_success_do_not_imply_supported(tmp_path):
+    matrix = ModelCapabilityInspector._with_probes(_import_ok, protected_roots=(tmp_path,)).inspect((_raw(),))
     result = matrix.results[0]
     assert result.status == "not_comparable"
     assert {"module_imported", "class_resolved", "fit_signature", "predict_signature"}.issubset(result.checked_predicates)
     assert result.preflight_allowed is False
 
 
-def test_protocol_measurement_is_bound_to_exact_action_family_and_profiles():
+def test_protocol_measurement_is_bound_to_exact_action_family_and_profiles(tmp_path):
     train = RawModelCapabilityDeclaration.from_dict(_raw(action="train", execution_family="static"))
     measurement = _protocol_ok(train)
     same_row = ModelCapabilityInspector._with_probes(
         _import_ok, lambda _row: measurement,
+        protected_roots=(tmp_path,),
     ).inspect((train,)).results[0]
     foreign_row = ModelCapabilityInspector._with_probes(
         _import_ok, lambda _row: measurement,
+        protected_roots=(tmp_path,),
     ).inspect((_raw(action="resume", execution_family="rolling"),)).results[0]
     assert same_row.status == "not_comparable"
     assert same_row.reason == "wrapper_probe_not_authoritative"
@@ -54,18 +58,18 @@ def test_protocol_measurement_is_bound_to_exact_action_family_and_profiles():
     assert facts["capability_identity_match"].outcome == "failed"
 
 
-def test_optional_dependency_absence_is_conditional_not_dropped():
+def test_optional_dependency_absence_is_conditional_not_dropped(tmp_path):
     def dependency_missing(_module, _class_name):
         return ImportObservation(False, False, False, False, False, False, True, "dependency_missing")
 
-    matrix = ModelCapabilityInspector._with_probes(dependency_missing).inspect((_raw(),))
+    matrix = ModelCapabilityInspector._with_probes(dependency_missing, protected_roots=(tmp_path,)).inspect((_raw(),))
     assert matrix.n_declarations == len(matrix.results) == 1
     assert matrix.results[0].status == "conditional"
     assert matrix.results[0].identity.model_class == "ExampleModel"
     assert matrix.n_conditional == 1
 
 
-def test_import_class_signature_dependency_and_device_failures_are_typed():
+def test_import_class_signature_dependency_and_device_failures_are_typed(tmp_path):
     def varied(module, _class_name):
         if module.endswith("module_missing"):
             return ImportObservation(False, False, False, False, False, False, True, "dependency_missing")
@@ -75,7 +79,7 @@ def test_import_class_signature_dependency_and_device_failures_are_typed():
             return ImportObservation(True, True, False, True, True, False, False, "constructor_incompatible")
         return ImportObservation(True, True, True, True, True, False, False, "observed")
 
-    matrix = ModelCapabilityInspector._with_probes(varied).inspect((
+    matrix = ModelCapabilityInspector._with_probes(varied, protected_roots=(tmp_path,)).inspect((
         _raw(model_module="public.models.module_missing"),
         _raw(model_module="public.models.class_missing"),
         _raw(model_module="public.models.bad_constructor"),
@@ -92,16 +96,16 @@ def test_import_class_signature_dependency_and_device_failures_are_typed():
     assert gpu_facts["dependency_available"].outcome == "failed"
 
 
-def test_daily_and_multilabel_cpcv_without_projection_fail_closed():
+def test_daily_and_multilabel_cpcv_without_projection_fail_closed(tmp_path):
     for protocol in ("daily_market_label", "multi_label"):
-        matrix = ModelCapabilityInspector._with_probes(_import_ok, _protocol_ok).inspect((
+        matrix = ModelCapabilityInspector._with_probes(_import_ok, _protocol_ok, protected_roots=(tmp_path,)).inspect((
             _raw(dataset_protocol=protocol, execution_family="cpcv"),
         ))
         assert matrix.results[0].status == "unsupported"
         assert matrix.results[0].reason == "cpcv_projection_missing"
 
 
-def test_row_exception_fails_closed_and_preserves_later_rows():
+def test_row_exception_fails_closed_and_preserves_later_rows(tmp_path):
     calls = []
 
     def failing_first(module, _class_name):
@@ -110,7 +114,7 @@ def test_row_exception_fails_closed_and_preserves_later_rows():
             raise RuntimeError("ordinary operational failure")
         return _import_ok(module, _class_name)
 
-    matrix = ModelCapabilityInspector._with_probes(failing_first).inspect((
+    matrix = ModelCapabilityInspector._with_probes(failing_first, protected_roots=(tmp_path,)).inspect((
         _raw(model_module="public.models.first"),
         _raw(model_module="public.models.second"),
     ))
@@ -130,7 +134,9 @@ def test_process_control_interrupt_propagates_and_cleans_probe_resources(tmp_pat
             marker.unlink()
 
     with pytest.raises(KeyboardInterrupt):
-        ModelCapabilityInspector._with_probes(_import_ok, interrupting_probe).inspect((_raw(),))
+        ModelCapabilityInspector._with_probes(
+            _import_ok, interrupting_probe, protected_roots=(tmp_path,),
+        ).inspect((_raw(),))
     assert not marker.exists()
 
     for control in (KeyboardInterrupt, SystemExit, GeneratorExit):

@@ -228,6 +228,37 @@ def test_fresh_evidence_publish_reobserves_and_calls_adopter_and_writer_once(
     assert dict(written[0].request_digest) == dict(plan.evidence_request_digest)
 
 
+def test_fresh_evidence_rechecks_candidate_after_definition_adoption(
+    fresh_evidence_workspace, monkeypatch,
+):
+    import quantpits.research.forward_observation as observation
+    from quantpits.research.definition_store import CreateOnlyDefinitionBundleStore
+    original_observe = observation.observe_fresh_champion_segment_candidate
+    original_adopt = CreateOnlyDefinitionBundleStore.adopt_existing
+    observed = []
+
+    def observe(*args):
+        candidate = original_observe(*args)
+        observed.append(candidate)
+        return candidate
+
+    def adopt(store, request):
+        receipt = original_adopt(store, request)
+        object.__setattr__(
+            observed[-1]._observed_candidate.compiled_definitions,
+            "definition_set_id", "shadow.changed",
+        )
+        return receipt
+
+    monkeypatch.setattr(observation, "observe_fresh_champion_segment_candidate", observe)
+    monkeypatch.setattr(CreateOnlyDefinitionBundleStore, "adopt_existing", adopt)
+    before = tuple(_snapshot(root) for root in fresh_evidence_workspace[:2])
+    with pytest.raises(ForwardDefinitionEvidenceContractError, match="failed closed") as error:
+        _fresh_prepare(fresh_evidence_workspace)
+    assert isinstance(error.value.__cause__, observation.ForwardObservationContractError)
+    assert tuple(_snapshot(root) for root in fresh_evidence_workspace[:2]) == before
+
+
 @pytest.mark.parametrize("relation", ["same", "production_parent", "research_parent"])
 def test_fresh_evidence_requires_physically_separate_roots_and_exact_research_layout(
     fresh_evidence_workspace, relation,

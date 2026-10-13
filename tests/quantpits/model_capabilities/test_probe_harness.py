@@ -58,23 +58,26 @@ def test_generated_protocol_fixtures_cover_canonical_dataset_profiles():
             assert fixture.labels.shape[1] == 2
 
 
-def test_harness_self_test_measurements_cannot_grant_actual_wrapper_support():
+def test_harness_self_test_measurements_cannot_grant_actual_wrapper_support(tmp_path):
     measurement = _observation(
         ("2026-07-17", "2026-07-20", "2026-07-21"), (0.1, 0.2, 0.3),
     )
     result = ModelCapabilityInspector._with_probes(
         _import_ok, lambda _row: measurement,
+        protected_roots=(tmp_path,),
     ).inspect((_raw(),)).results[0]
     assert result.status == "not_comparable"
     assert result.preflight_allowed is False
 
 
-def test_label_dependent_processor_tail_drop_is_detected():
+def test_label_dependent_processor_tail_drop_is_detected(tmp_path):
     observed = _observation(
         ("2026-07-17", "2026-07-20"), (0.1, 0.2),
         processor_output_index=("2026-07-17", "2026-07-20"),
     )
-    matrix = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: observed).inspect((_raw(),))
+    matrix = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: observed, protected_roots=(tmp_path,),
+    ).inspect((_raw(),))
     result = matrix.results[0]
     assert result.status == "coverage_unsafe"
     facts = {item.name: item for item in result.predicates}
@@ -82,7 +85,7 @@ def test_label_dependent_processor_tail_drop_is_detected():
     assert facts["prediction_tail"].outcome == "failed"
 
 
-def test_prediction_tail_gap_duplicate_and_nonfinite_are_distinct_failures():
+def test_prediction_tail_gap_duplicate_and_nonfinite_are_distinct_failures(tmp_path):
     missing_tail = classify_prediction_coverage(_observation(
         ("2026-07-17", "2026-07-20"), (0.1, 0.2),
     ))
@@ -109,12 +112,13 @@ def test_prediction_tail_gap_duplicate_and_nonfinite_are_distinct_failures():
     for measurement, expected_reason in cases:
         result = ModelCapabilityInspector._with_probes(
             _import_ok, lambda _row, item=measurement: item,
+            protected_roots=(tmp_path,),
         ).inspect((_raw(),)).results[0]
         assert result.status == "coverage_unsafe"
         assert result.reason == expected_reason
 
 
-def test_artifact_roundtrip_and_foreign_source_are_classified():
+def test_artifact_roundtrip_and_foreign_source_are_classified(tmp_path):
     exact = _observation(
         ("2026-07-17", "2026-07-20", "2026-07-21"), (0.1, 0.2, 0.3),
     )
@@ -130,10 +134,18 @@ def test_artifact_roundtrip_and_foreign_source_are_classified():
         ("2026-07-17", "2026-07-20", "2026-07-21"), (0.1, 0.2, 0.3),
         model_module="public.models.foreign",
     )
-    exact_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: exact).inspect((_raw(),)).results[0]
-    foreign_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: foreign).inspect((_raw(),)).results[0]
-    missing_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: missing).inspect((_raw(),)).results[0]
-    wrapper_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: foreign_wrapper).inspect((_raw(),)).results[0]
+    exact_result = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: exact, protected_roots=(tmp_path,),
+    ).inspect((_raw(),)).results[0]
+    foreign_result = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: foreign, protected_roots=(tmp_path,),
+    ).inspect((_raw(),)).results[0]
+    missing_result = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: missing, protected_roots=(tmp_path,),
+    ).inspect((_raw(),)).results[0]
+    wrapper_result = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: foreign_wrapper, protected_roots=(tmp_path,),
+    ).inspect((_raw(),)).results[0]
     assert exact_result.status == "not_comparable"
     assert exact_result.reason == "wrapper_probe_not_authoritative"
     assert exact_result.preflight_allowed is False
@@ -143,7 +155,7 @@ def test_artifact_roundtrip_and_foreign_source_are_classified():
     assert wrapper_result.status == "not_comparable"
     assert wrapper_result.reason == "capability_identity_mismatch"
 
-def test_wrong_dataset_protocol_and_prediction_shape_fail_closed():
+def test_wrong_dataset_protocol_and_prediction_shape_fail_closed(tmp_path):
     wrong_protocol = _observation(
         ("2026-07-17", "2026-07-20", "2026-07-21"), (0.1, 0.2, 0.3),
         dataset_protocol="time_series",
@@ -151,8 +163,12 @@ def test_wrong_dataset_protocol_and_prediction_shape_fail_closed():
     wrong_shape = _observation(
         ("2026-07-17", "2026-07-20", "2026-07-21"), (0.1, True, 0.3),
     )
-    protocol_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: wrong_protocol).inspect((_raw(),)).results[0]
-    shape_result = ModelCapabilityInspector._with_probes(_import_ok, lambda _row: wrong_shape).inspect((_raw(),)).results[0]
+    protocol_result = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: wrong_protocol, protected_roots=(tmp_path,),
+    ).inspect((_raw(),)).results[0]
+    shape_result = ModelCapabilityInspector._with_probes(
+        _import_ok, lambda _row: wrong_shape, protected_roots=(tmp_path,),
+    ).inspect((_raw(),)).results[0]
     assert protocol_result.status == "not_comparable"
     assert protocol_result.reason == "capability_identity_mismatch"
     assert shape_result.status == "not_comparable"
@@ -186,8 +202,10 @@ def test_controlled_import_probe_detects_real_constructor_and_fit_signature_nega
     assert missing_evals.fit_signature is False
 
 
-def test_incomplete_actual_protocol_rows_remain_not_comparable():
-    matrix = ModelCapabilityInspector._with_probes(_import_ok).inspect(AUTHORITATIVE_CATALOG)
+def test_incomplete_actual_protocol_rows_remain_not_comparable(tmp_path):
+    matrix = ModelCapabilityInspector._with_probes(
+        _import_ok, protected_roots=(tmp_path,),
+    ).inspect(AUTHORITATIVE_CATALOG)
     assert matrix.n_supported == 1
     assert sum(
         item.preflight_allowed
@@ -320,12 +338,13 @@ def test_catalog_probe_is_workspace_and_backend_independent(monkeypatch, tmp_pat
         if item.model_module.endswith("custom.pytorch_lstm")
         and item.action == "train" and item.execution_family == "static"
     )
-    matrix = ModelCapabilityInspector._with_probes(_import_ok).inspect((declaration,))
+    matrix = ModelCapabilityInspector._with_probes(_import_ok, protected_roots=(tmp_path,)).inspect((declaration,))
     assert matrix.results[0].status == "not_comparable"
     assert matrix.results[0].reason == "protocol_adapter_not_available"
     unavailable = ImportObservation(False, False, False, False, False, False, True, "dependency_missing")
     catalog_matrix = ModelCapabilityInspector._with_probes(
         lambda _module, _class: unavailable,
+        protected_roots=(tmp_path,),
     ).inspect_catalog()
     assert catalog_matrix.n_declarations == len(AUTHORITATIVE_CATALOG)
     assert Path.cwd() == original_cwd

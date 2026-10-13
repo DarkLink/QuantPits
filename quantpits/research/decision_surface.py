@@ -927,19 +927,25 @@ def _bootstrap_authority(
         if row.get("size_bytes") != len(data) or _digest(data, "raw_bytes") != expected:
             raise _ComponentIncomparable("BOOTSTRAP_MEMBER_DIGEST_MISMATCH")
     from quantpits.research.definition_store import revalidate_definition_bundle_request
+    from quantpits.research.forward_observation import FreshChampionSegmentCandidate
+    if type(definition) is FreshChampionSegmentCandidate:
+        compiled, _ = definition._validated_snapshot()
+        definition_request = compiled._fresh_store_request()
+    else:
+        definition_request = definition.to_store_request()
     request = revalidate_definition_bundle_request(
-        definition.compiled_definitions.to_store_request()
+        definition_request
     )
     definition_request = dict(request.request_digest)
     if (
         manifest.get("bootstrap_set_id") != identifier
-        or manifest.get("definition_set_id") != definition.definition_set_id
+        or manifest.get("definition_set_id") != request.definition_set_id
         or manifest.get("definition_request_digest") != definition_request
         or manifest.get("definition_evidence_request_digest")
         != dict(evidence.evidence_receipt.request_digest)
         or manifest.get("definition_evidence_manifest_digest")
         != dict(evidence.evidence_receipt.manifest_digest)
-        or source.get("definition_set_id") != definition.definition_set_id
+        or source.get("definition_set_id") != request.definition_set_id
         or source.get("definition_evidence_cycle_id") != evidence.evidence_cycle_id
         or source.get("phase37a_seal_digest") != manifest.get("phase37a_seal_digest")
         or source.get("phase37a_manifest_digest") != manifest.get("phase37a_manifest_digest")
@@ -983,21 +989,40 @@ def _bootstrap_authority(
 def _git_blob_projection(engine: Path, commit: Any) -> Dict[str, Any]:
     if type(commit) is not str or re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
         raise _ComponentIncomparable("ENGINE_COMMIT_INVALID")
+    # Read the ordered inventory in one process. --batch frames binary blobs
+    # by size, so embedded newlines cannot change member boundaries.
+    requests = "".join("%s:%s\n" % (commit, path) for path in CURATED_CODE_PATHS).encode("utf-8")
+    try:
+        completed = subprocess.run(
+            ["git", "--no-replace-objects", "cat-file", "--batch"],
+            input=requests, cwd=str(engine), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, check=False, timeout=10,
+        )
+    except _PROCESS_CONTROL:
+        raise
+    except Exception as exc:
+        raise _ComponentIncomparable("ENGINE_GIT_READ_FAILED") from exc
+    if completed.returncode != 0:
+        raise _ComponentIncomparable("ENGINE_CURATED_BLOB_INCOMPARABLE")
+    data = completed.stdout
     rows = []
+    offset = 0
     for logical in CURATED_CODE_PATHS:
-        try:
-            completed = subprocess.run(
-                ["git", "--no-replace-objects", "cat-file", "blob", "%s:%s" % (commit, logical)],
-                cwd=str(engine), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                check=False, timeout=10,
-            )
-        except _PROCESS_CONTROL:
-            raise
-        except Exception as exc:
-            raise _ComponentIncomparable("ENGINE_GIT_READ_FAILED") from exc
-        if completed.returncode != 0 or len(completed.stdout) > _MAX_GIT_BLOB:
+        end = data.find(b"\n", offset, offset + 256)
+        if end < 0:
             raise _ComponentIncomparable("ENGINE_CURATED_BLOB_INCOMPARABLE")
-        rows.append({"path": logical, "digest": _digest(completed.stdout, "raw_bytes")})
+        fields = data[offset:end].split(b" ")
+        if (len(fields) != 3 or re.fullmatch(rb"[0-9a-f]{40,64}", fields[0]) is None
+                or fields[1] != b"blob" or not fields[2].isdigit()):
+            raise _ComponentIncomparable("ENGINE_CURATED_BLOB_INCOMPARABLE")
+        size = int(fields[2])
+        offset = end + 1
+        if size > _MAX_GIT_BLOB or offset + size >= len(data) or data[offset + size:offset + size + 1] != b"\n":
+            raise _ComponentIncomparable("ENGINE_CURATED_BLOB_INCOMPARABLE")
+        rows.append({"path": logical, "digest": _digest(data[offset:offset + size], "raw_bytes")})
+        offset += size + 1
+    if offset != len(data):
+        raise _ComponentIncomparable("ENGINE_CURATED_BLOB_INCOMPARABLE")
     return {"protocol": "CURATED_ECONOMIC_CODE_SURFACE_V1", "members": rows}
 
 

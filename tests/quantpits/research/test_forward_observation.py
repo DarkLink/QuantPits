@@ -964,6 +964,36 @@ def test_fresh_safe_summary_is_private_and_fixed_false(tmp_path):
         assert private not in text
 
 
+@pytest.mark.parametrize("split_root", [False, True])
+def test_summary_compiles_once_and_rechecks_mutation_between_calls(tmp_path, monkeypatch, split_root):
+    from quantpits.research import forward_definitions
+    if split_root:
+        production, research, activation, _, _ = _fresh_split_bundle(tmp_path)
+        candidate = observe_fresh_champion_segment_candidate(production, research, CYCLE, activation)
+    else:
+        root = tmp_path / "workspace"
+        root.mkdir()
+        activation, _ = _bundle(root, frozen=True)
+        candidate = observe_frozen_shadow_forward_definition_candidate(root, CYCLE, activation)
+    expected = candidate.to_safe_summary_dict()
+    original = forward_definitions.compile_shadow_forward_definitions
+    calls = []
+
+    def compile_current(raw):
+        calls.append(raw)
+        return original(raw)
+
+    monkeypatch.setattr(forward_definitions, "compile_shadow_forward_definitions", compile_current)
+    assert candidate.to_safe_summary_dict() == expected
+    assert len(calls) == 1
+    assert candidate.to_safe_summary_dict() == expected
+    assert len(calls) == 2  # A later call must not reuse prior validation.
+    observed = candidate._observed_candidate if split_root else candidate
+    object.__setattr__(observed.compiled_definitions, "definition_set_id", "shadow.changed")
+    with pytest.raises(ForwardObservationContractError):
+        candidate.to_safe_summary_dict()
+
+
 @pytest.mark.parametrize("source", ["production_cycle", "production_config", "research_activation"])
 def test_production_cycle_config_and_research_activation_mutation_fail_closed(
     tmp_path, monkeypatch, source,

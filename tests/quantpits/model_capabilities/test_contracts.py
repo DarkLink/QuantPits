@@ -1,6 +1,5 @@
 import ast
 from dataclasses import replace
-from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -56,14 +55,15 @@ def _protocol_ok(_declaration):
     )
 
 
-@lru_cache(maxsize=1)
-def _blocked_matrix():
+def _blocked_matrix(protected_root):
     declaration = next(
         item for item in AUTHORITATIVE_CATALOG
         if item.model_module.endswith("custom.pytorch_lstm")
         and item.action == "train" and item.execution_family == "static"
     )
-    return ModelCapabilityInspector._with_probes(_import_ok).inspect((declaration,))
+    return ModelCapabilityInspector._with_probes(
+        _import_ok, protected_roots=(protected_root,),
+    ).inspect((declaration,))
 
 
 @pytest.mark.parametrize("field,value", [
@@ -94,11 +94,11 @@ def test_capability_identity_rejects_closest_invalid_representations(field, valu
         RawModelCapabilityDeclaration.from_dict(missing)
 
 
-def test_execution_preflight_rejects_replay_replace_and_harness_positive():
+def test_execution_preflight_rejects_replay_replace_and_harness_positive(tmp_path):
     import quantpits.model_capabilities as public_api
 
     assert not hasattr(public_api, "ProtocolMeasurements")
-    matrix = _blocked_matrix()
+    matrix = _blocked_matrix(tmp_path)
     result = matrix.results[0]
     assert result.status == "not_comparable"
     assert result.preflight_allowed is False
@@ -128,13 +128,15 @@ def test_execution_preflight_rejects_replay_replace_and_harness_positive():
     assert aggregate_replay.preflight_allowed is False
 
 
-def test_aggregate_counts_derive_from_raw_inventory_and_terminal_rows():
+def test_aggregate_counts_derive_from_raw_inventory_and_terminal_rows(tmp_path):
     declaration = next(
         item for item in AUTHORITATIVE_CATALOG
         if item.model_module.endswith("custom.pytorch_lstm")
         and item.action == "train" and item.execution_family == "static"
     )
-    matrix = ModelCapabilityInspector().inspect((declaration, {"required": True}))
+    matrix = ModelCapabilityInspector._with_probes(
+        _import_ok, protected_roots=(tmp_path,),
+    ).inspect((declaration, {"required": True}))
     assert matrix.n_declarations == 2
     assert len(matrix.results) == 1
     assert matrix.n_unassigned_declarations == 1
@@ -147,8 +149,8 @@ def test_aggregate_counts_derive_from_raw_inventory_and_terminal_rows():
     assert rendered["n_unassigned_declarations"] == 1
 
 
-def test_impossible_terminal_status_and_capability_combinations_are_rejected():
-    result = _blocked_matrix().results[0]
+def test_impossible_terminal_status_and_capability_combinations_are_rejected(tmp_path):
+    result = _blocked_matrix(tmp_path).results[0]
     with pytest.raises(ModelCapabilityContractError):
         replace(result, did_probe=False)
     replay = result.from_dict(result.to_public_dict())
@@ -178,10 +180,12 @@ def test_impossible_terminal_status_and_capability_combinations_are_rejected():
         )
 
 
-def test_aggregate_rejects_foreign_member_and_inventory_fingerprint():
-    first = _blocked_matrix()
+def test_aggregate_rejects_foreign_member_and_inventory_fingerprint(tmp_path):
+    first = _blocked_matrix(tmp_path)
     foreign_raw = _raw(model_module="public.models.foreign")
-    foreign = ModelCapabilityInspector._with_probes(_import_ok, _protocol_ok).inspect((foreign_raw,))
+    foreign = ModelCapabilityInspector._with_probes(
+        _import_ok, _protocol_ok, protected_roots=(tmp_path,),
+    ).inspect((foreign_raw,))
     with pytest.raises(ModelCapabilityContractError):
         _capability_matrix(first.raw_fingerprints, foreign.results, ())
     with pytest.raises(ModelCapabilityContractError):

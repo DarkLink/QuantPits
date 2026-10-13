@@ -17,7 +17,8 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from functools import lru_cache
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -200,17 +201,18 @@ def _compute_slide_dates(anchor_date: str, train_w: float, valid_w: float,
     """Replicate train_utils.compute_slide_dates() logic."""
     from quantpits.utils.constants import AVERAGE_CALENDAR_DAYS_PER_YEAR
 
-    def _add_year(input_date: str, n: float) -> Tuple[str, str]:
-        dt = datetime.strptime(input_date, "%Y-%m-%d")
+    anchor_dt = datetime.strptime(anchor_date, "%Y-%m-%d")
+
+    def _add_year(n: float) -> Tuple[str, str]:
         delta = int(n * AVERAGE_CALENDAR_DAYS_PER_YEAR)
-        target = dt + timedelta(days=delta)
+        target = anchor_dt + timedelta(days=delta)
         next_day = target + timedelta(days=1)
         return target.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d")
 
     total = train_w + valid_w + test_w
-    _, start_time = _add_year(anchor_date, -total)
-    fit_end, valid_start = _add_year(anchor_date, -(valid_w + test_w))
-    valid_end, test_start = _add_year(anchor_date, -test_w)
+    _, start_time = _add_year(-total)
+    fit_end, valid_start = _add_year(-(valid_w + test_w))
+    valid_end, test_start = _add_year(-test_w)
 
     return {
         "start_time": start_time, "fit_start_time": start_time,
@@ -773,6 +775,22 @@ def _build_what_if(anchor_date: str, current_train: float, current_valid: float,
 
     anchor_dt = datetime.strptime(anchor_date, "%Y-%m-%d")
 
+    # Many window configurations share the same training/test date ranges.
+    # Keep reuse local to this enumeration so later input changes are observed.
+    @lru_cache(maxsize=None)
+    def regimes_in_range(start: str, end: str) -> Dict[str, float]:
+        return _get_regimes_in_range(start, end, regime_map)
+
+    @lru_cache(maxsize=None)
+    def returns_in_range(start: str, end: str) -> pd.Series:
+        return _slice_returns(returns, {"start": start, "end": end}, "start", "end")
+
+    @lru_cache(maxsize=None)
+    def boundary_quality(valid_start: str, test_start: str) -> float:
+        return _compute_boundary_quality({
+            "valid_start_time": valid_start, "test_start_time": test_start,
+        }, regime_map)
+
     candidates: List[dict] = []
     for train_w in range(WHATIF_TRAIN_MIN, WHATIF_TRAIN_MAX + 1):
         for valid_w_int in range(WHATIF_VALID_MIN * 2, WHATIF_VALID_MAX * 2 + 1):
@@ -787,8 +805,8 @@ def _build_what_if(anchor_date: str, current_train: float, current_valid: float,
                     continue
 
                 dates = _compute_slide_dates(anchor_date, train_w, valid_w, test_w)
-                train_regimes = _get_regimes_in_range(
-                    dates["fit_start_time"], dates["fit_end_time"], regime_map,
+                train_regimes = regimes_in_range(
+                    dates["fit_start_time"], dates["fit_end_time"],
                 )
 
                 # Coverage score: % of full-history regime types in training
@@ -796,8 +814,8 @@ def _build_what_if(anchor_date: str, current_train: float, current_valid: float,
 
                 # Similarity: train vs candidate's own test window.
                 # Scaled by test_window_adequacy to penalise short tests.
-                train_ret = _slice_returns(returns, dates, "fit_start_time", "fit_end_time")
-                test_ret = _slice_returns(returns, dates, "test_start_time", "test_end_time")
+                train_ret = returns_in_range(dates["fit_start_time"], dates["fit_end_time"])
+                test_ret = returns_in_range(dates["test_start_time"], dates["test_end_time"])
                 raw_similarity = _moment_similarity(train_ret, test_ret)
                 test_adequacy = min(test_w / 2.0, 1.0)
                 similarity = round(raw_similarity * test_adequacy, 3)
@@ -806,8 +824,8 @@ def _build_what_if(anchor_date: str, current_train: float, current_valid: float,
                 # distribution match the test period distribution?
                 # Uses Jensen-Shannon distance — penalises training
                 # windows dominated by regimes unlike the current market.
-                test_regimes = _get_regimes_in_range(
-                    dates["test_start_time"], dates["test_end_time"], regime_map,
+                test_regimes = regimes_in_range(
+                    dates["test_start_time"], dates["test_end_time"],
                 )
                 regime_relevance = _regime_distribution_similarity(
                     train_regimes, test_regimes,
@@ -826,18 +844,19 @@ def _build_what_if(anchor_date: str, current_train: float, current_valid: float,
                 recency = round(np.sqrt(end_recency * start_freshness), 3)
 
                 # Boundary quality: penalty if near a regime transition
-                boundary_quality = _compute_boundary_quality(dates, regime_map)
+                boundary_score = boundary_quality(dates["valid_start_time"], dates["test_start_time"])
 
                 # Stability: Jaccard similarity of regimes across nearby anchors
                 stability = _approximate_stability(
                     anchor_date, train_w, valid_w, test_w, regime_map, n_all,
+                    regime_lookup=regimes_in_range,
                 )
 
                 composite = round(
                     WEIGHT_COVERAGE * coverage +
                     WEIGHT_SIMILARITY * similarity +
                     WEIGHT_RECENCY * recency +
-                    WEIGHT_BOUNDARY * boundary_quality +
+                    WEIGHT_BOUNDARY * boundary_score +
                     WEIGHT_STABILITY * stability +
                     0.10 * regime_relevance,  # bonus for regime-aligned training
                     4,
@@ -848,8 +867,8 @@ def _build_what_if(anchor_date: str, current_train: float, current_valid: float,
                               and test_w == current_test)
 
                 # New regimes gained vs current
-                current_train_regimes = _get_regimes_in_range(
-                    current_dates["fit_start_time"], current_dates["fit_end_time"], regime_map,
+                current_train_regimes = regimes_in_range(
+                    current_dates["fit_start_time"], current_dates["fit_end_time"],
                 )
                 new_regimes = sorted(set(train_regimes.keys()) - set(current_train_regimes.keys()))
 
@@ -863,7 +882,7 @@ def _build_what_if(anchor_date: str, current_train: float, current_valid: float,
                         "coverage": round(coverage, 3),
                         "similarity": round(similarity, 3),
                         "recency": recency,
-                        "boundary_quality": round(boundary_quality, 3),
+                        "boundary_quality": round(boundary_score, 3),
                         "stability": round(stability, 3),
                         "regime_relevance": round(regime_relevance, 3),
                         "composite": composite,
@@ -971,7 +990,8 @@ def _compute_boundary_quality(dates: dict, regime_map: List[dict]) -> float:
 
 def _approximate_stability(anchor_date: str, train_w: float, valid_w: float,
                            test_w: float, regime_map: List[dict],
-                           n_all: int, num_samples: int = 12) -> float:
+                           n_all: int, num_samples: int = 12, *,
+                           regime_lookup: Optional[Callable[[str, str], Dict[str, float]]] = None) -> float:
     """Stability via Jaccard similarity of regime sets across nearby anchors.
 
     Higher = regime composition in training is consistent week-over-week.
@@ -982,9 +1002,12 @@ def _approximate_stability(anchor_date: str, train_w: float, valid_w: float,
     for i in range(num_samples):
         past = anchor_dt - timedelta(days=7 * i * 2)  # every 2 weeks
         dates = _compute_slide_dates(past.strftime("%Y-%m-%d"), train_w, valid_w, test_w)
-        regimes = _get_regimes_in_range(
-            dates["fit_start_time"], dates["fit_end_time"], regime_map,
-        )
+        if regime_lookup is None:
+            regimes = _get_regimes_in_range(
+                dates["fit_start_time"], dates["fit_end_time"], regime_map,
+            )
+        else:
+            regimes = regime_lookup(dates["fit_start_time"], dates["fit_end_time"])
         regime_sets.append(regimes)
 
     if len(regime_sets) < 2:

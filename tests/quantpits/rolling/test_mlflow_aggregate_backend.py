@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,7 @@ from quantpits.rolling.errors import (
     RollingExecutionBackendError,
 )
 from quantpits.utils.workspace import fingerprint_value
+from quantpits.utils.workspace import WorkspaceContext
 
 from tests.quantpits.rolling.aggregate_support import (
     FakeCandidateBackend,
@@ -304,10 +306,16 @@ def _real_backend_case(tmp_path, fault_hook=None):
 def test_candidate_lock_rejects_hardlink_and_special_nodes(
     tmp_path, node_kind,
 ):
-    (
-        context, _repository, _source, aggregate, backend,
-        _prediction, _manifest,
-    ) = _real_backend_case(tmp_path)
+    # Lock admission needs physical workspace/backend nodes, not trained runs.
+    root = tmp_path / "workspace"
+    (root / "data").mkdir(parents=True)
+    database = root / "mlflow.db"
+    database.touch()
+    context = WorkspaceContext.from_root(root, mlflow_uri="sqlite:///%s" % database)
+    backend = QlibMlflowAggregateBackend(context)
+    backend._assert_tracking = lambda: None
+    aggregate = SimpleNamespace(execution_scope=SimpleNamespace(
+        run_identity=SimpleNamespace(workspace_fingerprint=backend.workspace_identity(None))))
     lock_dir = context.data_dir / "locks"
     lock_dir.mkdir(exist_ok=True)
     lock = lock_dir / "rolling_aggregate_candidate.lock"
@@ -319,7 +327,7 @@ def test_candidate_lock_rejects_hardlink_and_special_nodes(
         os.mkfifo(lock)
     called = []
 
-    with pytest.raises(RollingAggregateBackendError):
+    with pytest.raises(RollingAggregateBackendError, match="one canonical regular node"):
         backend.with_candidate_lock(
             aggregate, lambda: called.append(True),
             create_if_missing=True,

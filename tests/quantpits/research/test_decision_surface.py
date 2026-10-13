@@ -164,6 +164,91 @@ def test_unrelated_git_change_does_not_change_curated_code_surface(tmp_path):
     assert module._git_blob_projection(repo, first) == module._git_blob_projection(repo, second)
 
 
+def test_git_projection_reads_binary_and_empty_members_in_one_process(tmp_path, monkeypatch):
+    repo, _ = _synthetic_engine(tmp_path)
+    (repo / CURATED_CODE_PATHS[0]).write_bytes(b"first\n\x00last\n")
+    (repo / CURATED_CODE_PATHS[1]).write_bytes(b"")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "binary and empty members")
+    commit = _git(repo, "rev-parse", "HEAD")
+    run = subprocess.run
+    commands = []
+
+    def observe_run(command, **kwargs):
+        commands.append(command)
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", observe_run)
+    projection = module._git_blob_projection(repo, commit)
+    assert projection == {
+        "protocol": "CURATED_ECONOMIC_CODE_SURFACE_V1",
+        "members": [
+            {"path": path, "digest": TypedDigest.raw((repo / path).read_bytes()).to_dict()}
+            for path in CURATED_CODE_PATHS
+        ],
+    }
+    assert commands == [["git", "--no-replace-objects", "cat-file", "--batch"]]
+
+
+@pytest.mark.parametrize("replacement", ["missing", "tree", "oversized"])
+def test_git_projection_denies_invalid_committed_member(tmp_path, monkeypatch, replacement):
+    repo, _ = _synthetic_engine(tmp_path)
+    target = repo / CURATED_CODE_PATHS[-1]
+    target.unlink()
+    if replacement == "tree":
+        target.mkdir()
+        (target / "member").write_bytes(b"tree member")
+    elif replacement == "oversized":
+        monkeypatch.setattr(module, "_MAX_GIT_BLOB", 32)
+        target.write_bytes(b"x" * 33)
+    _git(repo, "add", "--all")
+    _git(repo, "commit", "-m", "invalid curated member")
+    with pytest.raises(module._ComponentIncomparable) as error:
+        module._git_blob_projection(repo, _git(repo, "rev-parse", "HEAD"))
+    assert error.value.reason_code == "ENGINE_CURATED_BLOB_INCOMPARABLE"
+
+
+@pytest.mark.parametrize("damage", ["truncated", "extra", "invalid_header"])
+def test_git_projection_denies_corrupt_batch_framing(tmp_path, monkeypatch, damage):
+    repo, commit = _synthetic_engine(tmp_path)
+    run = subprocess.run
+
+    def corrupt_batch(command, **kwargs):
+        result = run(command, **kwargs)
+        if damage == "truncated":
+            result.stdout = result.stdout[:-1]
+        elif damage == "extra":
+            result.stdout += b"extra\n"
+        else:
+            result.stdout = b"invalid header\n" + result.stdout
+        return result
+
+    monkeypatch.setattr(module.subprocess, "run", corrupt_batch)
+    with pytest.raises(module._ComponentIncomparable) as error:
+        module._git_blob_projection(repo, commit)
+    assert error.value.reason_code == "ENGINE_CURATED_BLOB_INCOMPARABLE"
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(), GeneratorExit()])
+def test_git_projection_propagates_process_control(tmp_path, monkeypatch, exc):
+    def interrupted(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(module.subprocess, "run", interrupted)
+    with pytest.raises(type(exc)):
+        module._git_blob_projection(tmp_path, "a" * 40)
+
+
+def test_git_projection_timeout_denies_comparability(tmp_path, monkeypatch):
+    def timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(module.subprocess, "run", timeout)
+    with pytest.raises(module._ComponentIncomparable) as error:
+        module._git_blob_projection(tmp_path, "a" * 40)
+    assert error.value.reason_code == "ENGINE_GIT_READ_FAILED"
+
+
 def _lineage(*, child_suffix="A", universe_digest="1" * 64):
     members = ["MODEL_%d" % index for index in range(4)]
     models = []

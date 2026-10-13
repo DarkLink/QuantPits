@@ -1010,25 +1010,24 @@ def _fresh_segment_join(
         raise ForwardDefinitionEvidenceContractError(
             "fresh observation returned foreign candidate authority",
         )
+    summary = candidate.to_safe_summary_dict()
     if (
-        candidate.fresh_segment_candidate_ready is not True
-        or candidate.sealed_reference_join_verified is not True
-        or candidate.publication_capability is not False
-        or candidate.definition_bound is not False
-        or candidate.intent_capability is not False
-        or candidate.epoch_started is not False
-        or candidate.prospective_claim is not False
-        or candidate.promotion_capability is not False
-        or candidate.did_write is not False
+        summary["fresh_segment_candidate_ready"] is not True
+        or summary["sealed_reference_join_verified"] is not True
+        or any(summary[field] is not False for field in (
+            "publication_capability", "definition_bound", "intent_capability",
+            "epoch_started", "prospective_claim", "promotion_capability", "did_write",
+        ))
     ):
         raise ForwardDefinitionEvidenceContractError(
             "fresh candidate authority claims are invalid",
         )
-    request = candidate.compiled_definitions.to_store_request()
+    compiled, _ = candidate._validated_snapshot()
+    request = compiled._fresh_store_request()
     if (
         activation.name != request.definition_set_id + ".json"
-        or request.definition_set_id != candidate.definition_set_id
-        or dict(request.request_digest) != dict(candidate.compiled_request_digest)
+        or request.definition_set_id != summary["definition_set_id"]
+        or dict(request.request_digest) != summary["compiled_request_digest"]
     ):
         raise ForwardDefinitionEvidenceContractError(
             "fresh candidate and C0 request do not join",
@@ -1045,15 +1044,14 @@ def _fresh_segment_join(
         )
     reference = dict(candidate.reference_receipt)
     reference_bytes = _canonical(reference)
-    if TypedDigest.canonical(reference).to_dict() != dict(
-        candidate.reference_receipt_digest
-    ):
+    reference_digest = TypedDigest.canonical(reference).to_dict()
+    if reference_digest != summary["reference_receipt_digest"]:
         raise ForwardDefinitionEvidenceContractError(
             "fresh reference receipt is not stable",
         )
     evidence_request = _EvidenceRequest(
-        request.definition_set_id, candidate.evidence_cycle_id,
-        reference_bytes, receipt_bytes, candidate.reference_receipt_digest,
+        request.definition_set_id, reference["evidence_cycle_id"],
+        reference_bytes, receipt_bytes, reference_digest,
         request.request_digest, receipt.manifest_digest, receipt.operation_id,
     )
     return candidate, receipt, evidence_request

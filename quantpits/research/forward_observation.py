@@ -999,7 +999,8 @@ class ObservedForwardDefinitionCandidate:
             ).to_dict()
             or type(receipt["selected_omitted_position"]) is not int
             or omitted != (receipt["selected_omitted_position"],)
-            or receipt["compiled_request_digest"] != dict(fresh.request_digest)
+            # fresh was compiled from the checked payload in this call.
+            or receipt["compiled_request_digest"] != dict(fresh._fresh_store_request().request_digest)
         ):
             raise ForwardObservationContractError("compiled request no longer matches receipt")
         if (
@@ -1058,8 +1059,8 @@ class ObservedForwardDefinitionCandidate:
 
     @property
     def compiled_capability(self) -> bool:
-        fresh, _ = self._validated()
-        return fresh.compiled_capability
+        self._validated()
+        return True
 
     @property
     def publication_capability(self) -> bool:
@@ -1083,25 +1084,30 @@ class ObservedForwardDefinitionCandidate:
 
     def to_store_request(self) -> Any:
         fresh, _ = self._validated()
-        return fresh.to_store_request()
+        return fresh._fresh_store_request()
 
     def to_safe_summary_dict(self) -> Dict[str, Any]:
         fresh, receipt = self._validated()
-        compiled = fresh.to_summary_dict()
+        return self._summary_from_validated(fresh, receipt)
+
+    @staticmethod
+    def _summary_from_validated(fresh: Any, receipt: Mapping[str, Any]) -> Dict[str, Any]:
+        """Render this call's validated copy without compiling it again."""
+        protocol = fresh.protocol.to_dict()
         return {
             "status": "complete", "schema_version": 1,
             "definition_set_id": fresh.definition_set_id,
-            "protocol_id": compiled["protocol_id"],
-            "execution_assumption_id": compiled["execution_assumption_id"],
-            "champion_strategy_id": compiled["champion_strategy_id"],
-            "challenger_strategy_id": compiled["challenger_strategy_id"],
+            "protocol_id": protocol["protocol_id"],
+            "execution_assumption_id": protocol["execution_assumption_id"],
+            "champion_strategy_id": fresh.champion.to_dict()["strategy_id"],
+            "challenger_strategy_id": fresh.challenger.to_dict()["strategy_id"],
             "evidence_cycle_id": receipt["evidence_cycle_id"],
             "selected_omitted_position": receipt["selected_omitted_position"],
             "evidence_seal_digest": receipt["evidence_seal_digest"],
             "evidence_manifest_digest": receipt["evidence_manifest_digest"],
             "source_reference_inventory_digest": receipt["source_reference_inventory_digest"],
             "compiled_request_digest": receipt["compiled_request_digest"],
-            "reference_receipt_digest": dict(self._reference_receipt_digest),
+            "reference_receipt_digest": TypedDigest.canonical(receipt).to_dict(),
             "sealed_reference_join_verified": True, "compiled_capability": True,
             "publication_capability": False, "epoch_started": False,
             "prospective_claim": False, "promotion_capability": False,
@@ -1132,22 +1138,27 @@ class FreshChampionSegmentCandidate:
             canonical_json_bytes(candidate.to_safe_summary_dict()),
         )
 
-    def _validated(self) -> ObservedForwardDefinitionCandidate:
+    def _validated_snapshot(self) -> Tuple[Any, Dict[str, Any]]:
         if type(self) is not FreshChampionSegmentCandidate or getattr(self, "_authority", None) is not _AUTHORITY:
             raise ForwardObservationContractError("fresh candidate authority is absent")
         candidate = getattr(self, "_observed_candidate", None)
         if type(candidate) is not ObservedForwardDefinitionCandidate:
             raise ForwardObservationContractError("fresh candidate contains foreign authority")
         binding = _FRESH_BINDINGS.get(self)
-        if binding is None or (
-            _authority_identity(candidate) != binding[0]
-            or canonical_json_bytes(candidate.to_safe_summary_dict()) != binding[1]
-        ):
+        if binding is None or _authority_identity(candidate) != binding[0]:
             raise ForwardObservationContractError(
                 "fresh candidate differs from its original inspector observation",
             )
-        candidate._validated()
-        return candidate
+        fresh, receipt = candidate._validated()
+        if canonical_json_bytes(candidate._summary_from_validated(fresh, receipt)) != binding[1]:
+            raise ForwardObservationContractError(
+                "fresh candidate differs from its original inspector observation",
+            )
+        return fresh, receipt
+
+    def _validated(self) -> ObservedForwardDefinitionCandidate:
+        self._validated_snapshot()
+        return self._observed_candidate
 
     def __copy__(self) -> Any:
         raise ForwardObservationContractError("fresh candidate replay is not authoritative")
@@ -1164,27 +1175,33 @@ class FreshChampionSegmentCandidate:
 
     @property
     def definition_set_id(self) -> str:
-        return self._validated().definition_set_id
+        fresh, _ = self._validated_snapshot()
+        return fresh.definition_set_id
 
     @property
     def evidence_cycle_id(self) -> str:
-        return self._validated().evidence_cycle_id
+        _, receipt = self._validated_snapshot()
+        return receipt["evidence_cycle_id"]
 
     @property
     def selected_omitted_position(self) -> int:
-        return self._validated().selected_omitted_position
+        _, receipt = self._validated_snapshot()
+        return receipt["selected_omitted_position"]
 
     @property
     def reference_receipt(self) -> Mapping[str, Any]:
-        return self._validated().reference_receipt
+        _, receipt = self._validated_snapshot()
+        return MappingProxyType(receipt)
 
     @property
     def reference_receipt_digest(self) -> Mapping[str, Any]:
-        return self._validated().reference_receipt_digest
+        _, receipt = self._validated_snapshot()
+        return MappingProxyType(TypedDigest.canonical(receipt).to_dict())
 
     @property
     def compiled_request_digest(self) -> Mapping[str, Any]:
-        return MappingProxyType(dict(self._validated().reference_receipt["compiled_request_digest"]))
+        _, receipt = self._validated_snapshot()
+        return MappingProxyType(dict(receipt["compiled_request_digest"]))
 
     @property
     def fresh_segment_candidate_ready(self) -> bool:
@@ -1193,7 +1210,8 @@ class FreshChampionSegmentCandidate:
 
     @property
     def sealed_reference_join_verified(self) -> bool:
-        return self._validated().sealed_reference_join_verified
+        self._validated()
+        return True
 
     @property
     def publication_capability(self) -> bool:
@@ -1231,7 +1249,8 @@ class FreshChampionSegmentCandidate:
         return False
 
     def to_safe_summary_dict(self) -> Dict[str, Any]:
-        summary = self._validated().to_safe_summary_dict()
+        fresh, receipt = self._validated_snapshot()
+        summary = ObservedForwardDefinitionCandidate._summary_from_validated(fresh, receipt)
         return {
             **summary,
             "status": "READY",

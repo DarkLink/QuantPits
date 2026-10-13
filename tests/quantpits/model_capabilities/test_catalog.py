@@ -36,15 +36,15 @@ def test_repository_wrapper_inventory_equals_declared_inventory():
         assert class_name in {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
 
 
-def test_raw_declaration_assignment_is_single_and_conservative():
-    empty = ModelCapabilityInspector._with_probes(_not_importable).inspect(())
+def test_raw_declaration_assignment_is_single_and_conservative(tmp_path):
+    empty = ModelCapabilityInspector._with_probes(_not_importable, protected_roots=(tmp_path,)).inspect(())
     assert empty.n_declarations == 0
     assert empty.results == ()
     assert empty.unassigned == ()
 
     first = AUTHORITATIVE_CATALOG[0]
     raw = (first, {"required": True}, AUTHORITATIVE_CATALOG[-1])
-    matrix = ModelCapabilityInspector._with_probes(_not_importable).inspect(raw)
+    matrix = ModelCapabilityInspector._with_probes(_not_importable, protected_roots=(tmp_path,)).inspect(raw)
     assert matrix.n_declarations == 3
     assert matrix.n_unassigned_declarations == 1
     assert len(matrix.results) == 2
@@ -71,12 +71,12 @@ def test_catalog_rows_are_atomic_and_cover_action_family_vocabularies():
     })
 
 
-def test_catalog_inventory_drift_remains_unassigned(monkeypatch):
+def test_catalog_inventory_drift_remains_unassigned(monkeypatch, tmp_path):
     import quantpits.model_capabilities.inspector as inspector_module
 
     inventory = repository_wrapper_inventory() + ("quantpits.utils.model_wrappers.custom.pytorch_unlisted",)
     monkeypatch.setattr(inspector_module, "repository_wrapper_inventory", lambda: inventory)
-    matrix = ModelCapabilityInspector._with_probes(_not_importable).inspect_catalog()
+    matrix = ModelCapabilityInspector._with_probes(_not_importable, protected_roots=(tmp_path,)).inspect_catalog()
     assert matrix.n_declarations == len(AUTHORITATIVE_CATALOG) + 1
     assert matrix.n_unassigned_declarations == 1
     assert matrix.unassigned[0].reason == "invalid_raw_declaration"

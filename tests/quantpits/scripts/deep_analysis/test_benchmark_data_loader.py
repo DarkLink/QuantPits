@@ -154,6 +154,16 @@ class TestBuildRegimeMap:
 
 
 class TestComputeSlideDates:
+    @pytest.mark.parametrize("anchor,windows", [
+        ("2024-02-29", (5, 1.5, 2)),
+        ("2025-01-01", (2.25, 1.25, 0.5)),
+        ("2000-03-01", (10, 0, 0)),
+    ])
+    def test_matches_training_date_contract(self, anchor, windows):
+        from quantpits.utils.train_utils import compute_slide_dates
+
+        assert _compute_slide_dates(anchor, *windows) == compute_slide_dates(anchor, *windows)
+
     def test_contiguity(self):
         """Train/valid/test boundaries must be contiguous."""
         dates = _compute_slide_dates("2026-06-12", 5, 2, 2)
@@ -298,6 +308,75 @@ class TestWhatIf:
         assert len(result["top_candidates"]) >= 1
         assert len(result["top_candidates"]) <= 20
         assert result["search_space"]["total_configs_evaluated"] > 100
+
+    @pytest.mark.parametrize("returns_kind", ["regular", "constant", "irregular"])
+    def test_range_reuse_preserves_results_and_reobserves_changed_inputs(self, monkeypatch, returns_kind):
+        from quantpits.scripts.deep_analysis import benchmark_data_loader as loader
+
+        monkeypatch.setattr(loader, "WHATIF_TRAIN_MAX", 5)
+        monkeypatch.setattr(loader, "WHATIF_VALID_MAX", 2)
+        monkeypatch.setattr(loader, "WHATIF_TEST_MAX", 2)
+        weekly = _make_weekly_close(_make_close_series())
+        regime_map = _build_regime_map(weekly)
+        returns = weekly.pct_change().dropna()
+        if returns_kind == "constant":
+            returns.iloc[:] = 0.0
+        elif returns_kind == "irregular":
+            returns.iloc[-20:-10] = np.nan
+            returns = pd.concat([returns, returns.iloc[-5:]]).sample(frac=1, random_state=7)
+        anchor = weekly.index[-1].strftime("%Y-%m-%d")
+        dates = _compute_slide_dates(anchor, 5, 2, 2)
+        original = loader._get_regimes_in_range
+        original_slice = loader._slice_returns
+        original_boundary = loader._compute_boundary_quality
+        reads = []
+        slices = []
+        boundaries = []
+
+        def observe_range(start, end, regimes):
+            reads.append((start, end))
+            return original(start, end, regimes)
+
+        def observe_slice(series, dates, start_key, end_key):
+            slices.append((dates[start_key], dates[end_key]))
+            return original_slice(series, dates, start_key, end_key)
+
+        def observe_boundary(dates, regimes):
+            boundaries.append((dates["valid_start_time"], dates["test_start_time"]))
+            return original_boundary(dates, regimes)
+
+        monkeypatch.setattr(loader, "_get_regimes_in_range", observe_range)
+        monkeypatch.setattr(loader, "_slice_returns", observe_slice)
+        monkeypatch.setattr(loader, "_compute_boundary_quality", observe_boundary)
+        previous = None
+        for changed in (False, True):
+            if changed:
+                for segment in regime_map:
+                    segment["composite"] = "Changed-Regime"
+                    segment["start"] = (pd.Timestamp(segment["start"]) + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+                returns.iloc[-30:] = np.linspace(0.01, 0.04, 30)
+            reads.clear()
+            slices.clear()
+            boundaries.clear()
+            actual = loader._build_what_if(anchor, 5, 2, 2, "slide", regime_map, returns, dates)
+            reused_reads = len(reads)
+            assert reused_reads > 0 and reused_reads == len(set(reads))
+            reused_slices, reused_boundaries = len(slices), len(boundaries)
+            assert reused_slices > 0 and reused_slices == len(set(slices))
+            assert reused_boundaries > 0 and reused_boundaries == len(set(boundaries))
+            reads.clear()
+            slices.clear()
+            boundaries.clear()
+            with monkeypatch.context() as uncached:
+                uncached.setattr(loader, "lru_cache", lambda **_kwargs: lambda function: function)
+                expected = loader._build_what_if(anchor, 5, 2, 2, "slide", regime_map, returns, dates)
+            assert actual == expected
+            assert reused_reads < len(reads)
+            assert reused_slices < len(slices)
+            assert reused_boundaries < len(boundaries)
+            if changed:
+                assert actual != previous
+            previous = actual
 
     def test_pareto_frontier(self):
         """Pareto frontier should contain non-dominated configs."""

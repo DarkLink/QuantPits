@@ -388,18 +388,20 @@ def _definition_authority(paths: Tuple[Path, ...], cycle_id: str) -> Tuple[Any, 
         raise ModelArtifactCapsuleContractError(
             "definition observation returned foreign authority",
         )
-    compiled_request = candidate.compiled_definitions.to_store_request()
+    # Read related fields from one freshly validated copy within this join.
+    compiled, reference = candidate._validated_snapshot()
+    compiled_request = compiled._fresh_store_request()
     if (
-        candidate.definition_set_id != adopted.definition_receipt.definition_set_id
-        or candidate.evidence_cycle_id != cycle_id
-        or dict(candidate.compiled_request_digest)
+        compiled.definition_set_id != adopted.definition_receipt.definition_set_id
+        or reference["evidence_cycle_id"] != cycle_id
+        or reference["compiled_request_digest"]
         != dict(adopted.definition_receipt.request_digest)
         or dict(compiled_request.request_digest)
         != dict(adopted.definition_receipt.request_digest)
     ):
         raise _Blocked("DEFINITION_EVIDENCE_JOIN_FAILED")
-    champion = candidate.compiled_definitions.champion.to_dict()
-    challenger = candidate.compiled_definitions.challenger.to_dict()
+    champion = compiled.champion.to_dict()
+    challenger = compiled.challenger.to_dict()
     champion_ids = tuple(row.get("source_id") for row in champion.get("source_members", ()))
     challenger_ids = tuple(row.get("source_id") for row in challenger.get("source_members", ()))
     if (
@@ -420,7 +422,7 @@ def _definition_authority(paths: Tuple[Path, ...], cycle_id: str) -> Tuple[Any, 
     if len(set(positions)) != 3:
         raise _Blocked("CHALLENGER_SUBSET_INVALID")
     authority = {
-        "definition_set_id": candidate.definition_set_id,
+        "definition_set_id": compiled.definition_set_id,
         "definition_request_digest": dict(adopted.definition_receipt.request_digest),
         "definition_evidence_request_digest": dict(adopted.evidence_receipt.request_digest),
         "definition_evidence_manifest_digest": dict(adopted.evidence_receipt.manifest_digest),

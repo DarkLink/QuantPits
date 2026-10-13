@@ -430,6 +430,9 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
     logical["definitions.json"] = canonical({k: v for k, v in definitions.items() if k != "request_digest"})
     _need(body["semantic_members"] == _inventory(logical))
     compiled = compile_shadow_forward_definitions(definitions["definitions"])
+    # Compilation already checked this local payload; retain its request digest
+    # for the provenance joins below without compiling it again.
+    definition_request_digest = dict(compiled._fresh_store_request().request_digest)
     provenance = body["input_provenance"]
     provenance_keys = ("selectors definition bootstrap cycle_seal signal model rankings calendar future_calendar price "
                        "implementation engine_commit engine_tree execution_assumption").split()
@@ -513,7 +516,7 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
     _keys(provenance, provenance_keys)
     _need(body["input_digest"] == _hash(provenance)
           and body["preparation_digest"] == _hash({"input_digest": body["input_digest"], "roles": body["roles"]}))
-    _need(provenance["definition"] == dict(compiled.request_digest)
+    _need(provenance["definition"] == definition_request_digest
           and provenance["execution_assumption"] == compiled.execution_assumption.to_dict())
     selectors = provenance["selectors"]
     _keys(selectors, ("definition_set_id", "definition_evidence_cycle_id", "bootstrap_set_id", "bootstrap_source_cycle_id",
@@ -548,7 +551,7 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
           and bootstrap["storage_claim"] == bootstrap_module.STORAGE_CLAIM
           and bootstrap["bootstrap_set_id"] == selectors["bootstrap_set_id"]
           and bootstrap["definition_set_id"] == compiled.definition_set_id
-          and bootstrap["definition_request_digest"] == dict(compiled.request_digest)
+          and bootstrap["definition_request_digest"] == definition_request_digest
           and bootstrap["member_count"] == 3 and len(bootstrap["members"]) == 3
           and bootstrap["source_state_interpretation"] == "SEALED_PRODUCTION_PORTFOLIO_AT_BOOTSTRAP_SOURCE_CYCLE_V1"
           and bootstrap["matched_economics_checked"] is True and bootstrap["portfolio_bootstrap_claim"] is True
