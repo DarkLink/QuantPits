@@ -491,6 +491,26 @@ def test_cycle_admission_allows_only_scoped_deep_analysis_partial(tmp_path):
         module._cycle_authority(root, cycle_id)
 
 
+def test_cycle_problem_occurrences_are_preserved_without_duplicate_source_claim(tmp_path):
+    problem = {"code": "deep_analysis_incomplete", "evidence_class": "deep_analysis",
+               "detail": "one incomplete source", "blocks_complete": True}
+    root, cycle_id, _ = _sealed_cycle(tmp_path, status="sealed_partial", problems=(problem, problem))
+    assert module._cycle_authority(root, cycle_id)[1]["problems"] == [problem, problem]
+
+
+@pytest.mark.parametrize("status,problems", [
+    ("sealed_complete", ({"code": "deep_analysis_missing", "evidence_class": "deep_analysis",
+                          "detail": "missing", "blocks_complete": True},)),
+    ("sealed_partial", ()),
+    ("sealed_complete", ({"code": "", "evidence_class": "deep_analysis",
+                          "detail": "invalid leaf", "blocks_complete": False},)),
+])
+def test_cycle_checks_problem_leaves_and_status_even_for_complete_claims(tmp_path, status, problems):
+    root, cycle_id, _ = _sealed_cycle(tmp_path, status=status, problems=problems)
+    with pytest.raises(module._ComponentIncomparable, match="CYCLE_PROBLEM"):
+        module._cycle_authority(root, cycle_id)
+
+
 @pytest.mark.parametrize("mutation", ["extra", "bool_schema", "request_digest"])
 def test_cycle_admission_rejects_extra_inventory_and_resealed_semantic_drift(
     tmp_path, mutation,

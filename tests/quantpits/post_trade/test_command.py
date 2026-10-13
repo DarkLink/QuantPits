@@ -319,6 +319,9 @@ def test_bundle_missing_trading_day_requires_explicit_acknowledgement(tmp_path):
     logical = summary.prepared.plan.metadata["settlement_logical_partitions"]
     assert logical["2026-01-05"] == {
         "status": "assumed_empty", "row_count": 0, "fingerprint": None,
+        "source_kind": "assumed_empty",
+        "source_path": "data/2026-01-02-2026-01-05-table.xlsx",
+        "source_fingerprint": summary.prepared.catalog.settlement_bundle.fingerprint,
     }
 
 

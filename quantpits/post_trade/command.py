@@ -14,7 +14,7 @@ import pandas as pd
 from quantpits.post_trade.contracts import (
     ParsedPostTradeInput, PostTradeInputCatalog, PostTradeInputError,
     PostTradeIntakeIssue, PostTradePlanError,
-    PostTradeScope,
+    PostTradeScope, settlement_logical_partitions,
 )
 from quantpits.post_trade.contracts import PostTradeInputMissingError, PostTradeSourceRef
 from quantpits.post_trade.intake import (
@@ -177,7 +177,7 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
         inputs.extend(InputRef(
             x.display_path, kind="data", fingerprint=x.fingerprint,
             required=False, description="settlement",
-        ) for x in catalog.settlement_sources)
+        ) for x in catalog.settlement_sources if x.status != "assumed_empty")
     for stream in ("order", "trade"):
         inputs.extend(InputRef(x.display_path, kind="data", fingerprint=x.fingerprint, required=False, description=stream) for x in catalog.sources_for(stream))
     states = []
@@ -225,7 +225,8 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
         "requested_date_from": catalog.date_from, "requested_date_to": catalog.date_to,
         "state_cursor": config.state_cursor, "legacy_execution_cursor": config.legacy_execution_cursor,
         "source_counts": {
-            "settlement": 1 if catalog.settlement_bundle is not None else len(catalog.settlement_sources),
+            "settlement": (1 if catalog.settlement_bundle is not None
+                           else sum(item.status != "assumed_empty" for item in catalog.settlement_sources)),
             "order": len(catalog.order_sources), "trade": len(catalog.trade_sources),
         },
         "source_status_counts": {
@@ -240,23 +241,14 @@ def _build_plan(ctx: WorkspaceContext, options: PostTradeRunOptions, config: Pos
             for stream in ("settlement", "order", "trade")
         },
         "allow_missing_settlement": options.allow_missing_settlement,
+        "settlement_logical_day_count": len(catalog.settlement_sources),
         "settlement_source_mode": "bundle" if catalog.settlement_bundle is not None else "daily",
         "settlement_bundle": ({
             "path": catalog.settlement_bundle.display_path,
             "coverage_start": catalog.settlement_bundle.coverage_start,
             "coverage_end": catalog.settlement_bundle.coverage_end,
         } if catalog.settlement_bundle is not None else None),
-        "settlement_logical_partitions": {
-            item.trade_date: {
-                "status": (
-                    "assumed_empty" if item.status == "assumed_empty" else "observed"
-                ),
-                "row_count": item.row_count,
-                "fingerprint": item.fingerprint,
-            }
-            for item in catalog.settlement_sources
-            if catalog.settlement_bundle is not None
-        },
+        "settlement_logical_partitions": settlement_logical_partitions(catalog),
         "calendar_resolution": "deferred" if options.scope in {"all", "state"} else "not_required",
     }
     return CommandPlan(command="post-trade", workspace=ctx.root.name, run_id=options.run_id or generate_run_id("post_trade"), mode=options.scope, args=cli_args, inputs=tuple(inputs), outputs=tuple(outputs), states=tuple(states), steps=tuple(steps), warnings=tuple(warnings), metadata=metadata)

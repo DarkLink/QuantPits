@@ -374,6 +374,8 @@ def _artifact_rows(manifest: Mapping[str, Any]) -> Tuple[Mapping[str, Any], ...]
 
 def _member_metadata(rows: Sequence[Mapping[str, Any]]) -> Tuple[Dict[str, Any], ...]:
     result = []
+    recorders = set()
+    locators = set()
     for role, row in zip(ROLES, rows):
         members = row.get("members")
         if type(members) is not list:
@@ -392,6 +394,10 @@ def _member_metadata(rows: Sequence[Mapping[str, Any]]) -> Tuple[Dict[str, Any],
             or type(member.get("path")) is not str
         ):
             raise _Blocked("SIGNAL_MEMBER_INCOMPARABLE")
+        if row.get("recorder_id") in recorders or member["path"] in locators:
+            raise _Blocked("SIGNAL_ARTIFACT_DUPLICATE")
+        recorders.add(row.get("recorder_id"))
+        locators.add(member["path"])
         result.append({
             "role": role, "preservation_status": member["preservation_status"],
             "logical_locator": member["path"], "raw_digest": digest,
@@ -409,7 +415,7 @@ def _source_receipt(
     seal_digest: Mapping[str, Any], members: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     problems = manifest.get("problems")
-    return {
+    receipt = {
         "schema_version": SCHEMA_VERSION,
         "source_claim": "EXACT_PHASE37A_SIGNAL_INPUTS_V1",
         "cycle_id": cycle_id,
@@ -433,12 +439,70 @@ def _source_receipt(
         "definition_bound": False,
         "same_champion_segment": False,
     }
+    if any(row["code"] == "referenced_file_missing" and row["evidence_class"] == "post_trade"
+           for row in problems):
+        # This newly admitted legacy case never had a publishable receipt.
+        # Preserve the original restrictions and explicitly missing day detail;
+        # ordinary existing capsule receipts keep their original identity.
+        receipt["phase37a_problems"] = problems
+        receipt["post_trade_context"] = {
+            "settlement_day_detail_status": "legacy_not_recorded",
+            "interpretation": "SEALED_SUCCESSFUL_STATE_ALLOW_MISSING_SETTLEMENT",
+            "production_replay_complete": False,
+        }
+    return receipt
+
+
+def _signal_content_context(cycle_path: Path, manifest: Mapping[str, Any], cycle_id: str) -> Tuple[str, bytes]:
+    anchor = manifest.get("cycle_identity", {}).get("evidence_as_of")
+    if anchor != cycle_id:
+        raise _Blocked("SIGNAL_ANCHOR_INVALID")
+    ranking, _ = _phase37._read_regular(cycle_path / "ranking.csv", private=True)
+    if TypedDigest.raw(ranking).to_dict() != manifest["ranking"]["ranking_digest"]:
+        raise _Blocked("RANKING_CONTEXT_INVALID")
+    return anchor, ranking
+
+
+def _validate_signal_contents(context: Tuple[str, bytes], values: Sequence[bytes]) -> None:
+    from quantpits.evidence.ranking import canonical_full_ranking
+    from quantpits.research.replay import _prediction_frame, _ranking_from_csv
+
+    anchor, ranking_bytes = context
+    ranking = _ranking_from_csv(ranking_bytes)
+    scores = []
+    failures = []
+    for role, data in zip(ROLES, values):
+        try:
+            prediction = _prediction_frame(data, role)
+            rows = prediction.get(anchor)
+            if not rows:
+                raise _Blocked("SIGNAL_ANCHOR_INVALID")
+            scores.append(dict(rows))
+        except _PROCESS_CONTROL:
+            raise
+        except _Blocked as exc:
+            failures.append(exc.reason_code)
+        except Exception:
+            failures.append("SIGNAL_CONTENT_INVALID")
+    if failures:
+        raise _Blocked(failures[0])
+    try:
+        observed = canonical_full_ranking(tuple(row["instrument"] for row in ranking.rows), scores[-1])
+        if observed.to_csv_bytes() != ranking_bytes:
+            raise _Blocked("SIGNAL_RANKING_MISMATCH")
+    except _PROCESS_CONTROL:
+        raise
+    except _Blocked:
+        raise
+    except Exception as exc:
+        raise _Blocked("SIGNAL_RANKING_MISMATCH") from exc
 
 
 class _Request:
     def __init__(
         self, cycle_id: str, metadata: Sequence[Mapping[str, Any]],
         data: Optional[Sequence[bytes]], receipt: Mapping[str, Any], *, _authority: Any,
+        signal_context: Optional[Tuple[str, bytes]] = None,
     ) -> None:
         if _authority is not _AUTHORITY:
             raise SignalInputCapsuleContractError("requests are inspector-owned")
@@ -446,6 +510,7 @@ class _Request:
         self.metadata = tuple(dict(row) for row in metadata)
         self.data = None if data is None else tuple(data)
         self.receipt = dict(receipt)
+        self.signal_context = signal_context
         identity = {
             "protocol": CAPSULE_KIND,
             "cycle_id": cycle_id,
@@ -472,6 +537,10 @@ class _Request:
                 TypedDigest.raw(value).to_dict() for value in self.data
             ],
             "receipt": self.receipt,
+            "signal_context": None if self.signal_context is None else {
+                "anchor": self.signal_context[0],
+                "ranking_digest": TypedDigest.raw(self.signal_context[1]).to_dict(),
+            },
             "capsule_id": self.capsule_id,
             "request_digest": self.request_digest,
         })
@@ -517,10 +586,13 @@ def _derive_request(
     try:
         if not cycle_guard.supported:
             raise _Blocked("SOURCE_CONTINUITY_UNSUPPORTED")
-        cycle_path, manifest, _seal = _phase37._cycle_authority(production, cycle_id, allow_partial_ranking=True)
+        cycle_path, manifest, _seal = _phase37._cycle_authority(
+            production, cycle_id, allow_partial_ranking=True, signal_inputs_only=True,
+        )
         _run_context(cycle_path, manifest)
         rows = _artifact_rows(manifest)
         metadata = _member_metadata(rows)
+        signal_context = _signal_content_context(cycle_path, manifest, cycle_id)
         live_paths = tuple(
             row["logical_locator"] for row in metadata
             if row["preservation_status"] == "workspace_file"
@@ -561,7 +633,10 @@ def _derive_request(
             if failures:
                 raise _Blocked(failures[0])
             data = tuple(values)
-        request = _Request(cycle_id, metadata, data, receipt, _authority=_AUTHORITY)
+            if signal_context is not None:
+                _validate_signal_contents(signal_context, data)
+        request = _Request(cycle_id, metadata, data, receipt, _authority=_AUTHORITY,
+                           signal_context=signal_context)
         if existing_target is not None and existing_target.name != request.capsule_id:
             raise _Conflict("capsule identifier differs")
         if (
@@ -816,6 +891,8 @@ def _verify_bundle(target: Path, request: _Request, *, use_request_data: bool) -
             if use_request_data and request.data is not None and data != request.data[index]:
                 raise _Conflict("signal differs")
             members.append((name, data))
+        if request.signal_context is not None:
+            _validate_signal_contents(request.signal_context, tuple(data for _name, data in members[1:]))
         expected_manifest = _manifest(request, members)
         manifest, _ = _read_member_at(fd, MANIFEST_NAME, 16 * 1024 * 1024)
         if manifest != expected_manifest:

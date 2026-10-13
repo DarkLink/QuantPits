@@ -375,7 +375,14 @@ def parse_pending_sources_with_catalog(
                 raise SourceChangedError("Previously ingested source changed: %s" % source.display_path)
             verify_source(source)
             frame = getattr(adapter, methods[stream])(source.path)
+            if stream == "settlement":
+                source = replace(source, row_count=len(frame))
             parsed[(stream, source.trade_date)] = ParsedPostTradeInput(source, frame, len(frame))
+    if catalog.settlement_bundle is None:
+        catalog = replace(catalog, settlement_sources=tuple(
+            parsed[("settlement", source.trade_date)].source
+            for source in catalog.settlement_sources
+        ))
     return parsed, catalog
 
 

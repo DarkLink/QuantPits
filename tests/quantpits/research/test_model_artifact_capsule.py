@@ -193,6 +193,7 @@ def test_phase37_partial_is_scoped_to_deep_analysis_and_preserved_as_partial():
         "blocks_complete": True,
     }]
     module._validate_phase37a_status("sealed_partial", allowed)
+    module._validate_phase37a_status("sealed_partial", allowed + allowed)
     for status, problems in (
         ("sealed_complete", allowed),
         ("sealed_partial", [{
@@ -201,7 +202,6 @@ def test_phase37_partial_is_scoped_to_deep_analysis_and_preserved_as_partial():
             "detail": "model lineage is absent",
             "blocks_complete": True,
         }]),
-        ("sealed_partial", allowed + allowed),
         (True, []),
         ([], []),
     ):

@@ -243,6 +243,7 @@ def test_mixed_embedded_and_workspace_sources_are_freshly_read(tmp_path, monkeyp
         lambda *_args, **kw: (cycle, manifest, {}),
     )
     monkeypatch.setattr(module, "_run_context", lambda *_args: None)
+    monkeypatch.setattr(module, "_signal_content_context", lambda *_args: None)
     request = module._derive_request(production, cycle_id, read_live=True)
     assert request.data == values
     assert tuple(row["role"] for row in request.metadata) == module.ROLES
@@ -266,6 +267,7 @@ def test_ordinary_member_failure_still_observes_later_requested_members(tmp_path
     }
     monkeypatch.setattr(module._phase37, "_cycle_authority", lambda *_, **kw: (cycle, manifest, {}))
     monkeypatch.setattr(module, "_run_context", lambda *_: None)
+    monkeypatch.setattr(module, "_signal_content_context", lambda *_: None)
     observed = []
     def read_live(_root, logical, _expected):
         observed.append(logical)

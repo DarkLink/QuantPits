@@ -1078,6 +1078,8 @@ class ProductionCycleEvidenceSealer:
         self, manifests: Mapping[str, Mapping[str, Any]], draft: _BundleDraft,
         lineage_artifacts: Sequence[Mapping[str, Any]],
     ) -> list:
+        from quantpits.post_trade.audit import legacy_assumed_empty_settlement_inputs
+
         observed = []
         seen = set()
         proven_ensemble_recorders = {
@@ -1088,11 +1090,17 @@ class ProductionCycleEvidenceSealer:
             and isinstance(item.get("artifact_tree_digest"), Mapping)
         }
         for evidence_class, manifest in manifests.items():
+            logical_empty_inputs = (
+                legacy_assumed_empty_settlement_inputs(manifest)
+                if evidence_class == "post_trade" else ()
+            )
             for collection, kind, ref in _manifest_refs(manifest):
                 identity = (evidence_class, collection, kind, ref)
                 if identity in seen:
                     continue
                 seen.add(identity)
+                if collection == "inputs" and kind == "data" and ref in logical_empty_inputs:
+                    continue
                 try:
                     relative = _relative_existing(self.root, ref)
                 except FileNotFoundError:
@@ -1115,7 +1123,7 @@ class ProductionCycleEvidenceSealer:
                         continue
                     draft.problems.append(_problem(
                         "referenced_file_missing", evidence_class,
-                        "referenced filesystem evidence is missing", blocking=True,
+                        "%s/%s: %s" % (collection, kind, ref), blocking=True,
                     ))
                     continue
                 except PathBoundaryError as exc:

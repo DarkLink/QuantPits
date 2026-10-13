@@ -44,10 +44,35 @@ float conversion. Whitespace, exponent-form strings or JSON numbers,
 non-finite values, and negative holding amount/value remain invalid.
 
 Run-manifest references retain their `inputs`/`outputs` collection and `kind`.
+Post-trade logical empty days are recorded in the run audit and do not name
+imaginary consumed daily settlement files. An interval bundle remains a
+physical input even when it contains an empty logical day. Missing filesystem
+diagnostics identify the affected collection, kind and locator; repeated
+diagnostic categories retain their occurrences.
+
 An absent M3 `outputs` reference of kind `record` is treated as a logical
 recorder locator only when the same exact recorder and its contained artifact
 tree were independently verified; every unproven or filesystem reference must
 still exist and be comparable.
+
+`signal_input_capsule prepare/publish/adopt` can retain exactly four source
+predictions and one ensemble prediction from a partial seal. For old v1 daily
+audits without day partitions, missing settlement references can be scoped to
+signal retention only when the embedded successful, committed state-only M1
+audit explicitly allows missing settlement and its original source list and
+processed range agree. Every missing M1 reference must be accounted for by an
+optional, unfingerprinted logical empty settlement input; unrelated missing
+inputs or outputs still block admission. This interpretation uses sealed
+bytes, never mutable account state. The original seal and objects are fully
+verified before applying consumer scope.
+
+The legacy signal receipt retains the original problem inventory and marks
+day detail as `legacy_not_recorded`. It preserves the original `sealed_partial`
+status; successful critical signal retention does not establish complete
+broker evidence, production replay, a new epoch or research publication
+authority. Required missing files, invalid signal identities or anchors,
+changed prediction bytes, inconsistent rankings and damaged seals remain
+blocking. No empty Excel file, account rerun or seal rewrite is required.
 
 Deep Analysis remains an explicit optional source. Point
 `--deep-analysis-run` at one operator-created run capsule containing exactly

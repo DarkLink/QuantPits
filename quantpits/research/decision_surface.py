@@ -678,7 +678,46 @@ def _referenced_bytes(
     return data
 
 
-def _cycle_authority(root: Path, cycle_id: str, *, allow_partial_ranking: bool = False) -> Tuple[Path, Dict[str, Any], Dict[str, Any]]:
+def _signal_missing_settlement_is_scoped(cycle: Path, manifest: Mapping[str, Any]) -> bool:
+    """Match every missing M1 reference to its sealed logical empty inputs."""
+    from quantpits.evidence.sealing import _manifest_refs
+    from quantpits.post_trade.audit import legacy_assumed_empty_settlement_inputs
+
+    raw = _run_manifest(cycle, manifest, "post_trade")
+    empty = set(legacy_assumed_empty_settlement_inputs(raw))
+    referenced = manifest.get("referenced_evidence")
+    if not empty or type(referenced) is not list:
+        return False
+    observed = set()
+    for row in referenced:
+        if type(row) is not dict:
+            return False
+        if row.get("evidence_class") != "post_trade":
+            continue
+        identity = row.get("collection"), row.get("kind"), row.get("locator")
+        observation = row.get("observation")
+        if (
+            identity in observed or row.get("locator_type") != "workspace_file"
+            or type(observation) is not dict or observation.get("status") != "observed"
+        ):
+            return False
+        observed.add(identity)
+    expected = set(_manifest_refs(raw))
+    absent = expected - observed
+    missing = [row for row in manifest["problems"] if (
+        row["code"], row["evidence_class"], row["blocks_complete"]
+    ) == ("referenced_file_missing", "post_trade", True)]
+    return (
+        bool(absent) and observed.issubset(expected) and len(absent) == len(missing)
+        and all(collection == "inputs" and kind == "data" and path in empty
+                for collection, kind, path in absent)
+    )
+
+
+def _cycle_authority(
+    root: Path, cycle_id: str, *, allow_partial_ranking: bool = False,
+    signal_inputs_only: bool = False,
+) -> Tuple[Path, Dict[str, Any], Dict[str, Any]]:
     cycle = root / "data" / "evidence" / "v1" / "cycles" / cycle_id
     try:
         cycle_info = os.lstat(str(cycle))
@@ -709,26 +748,21 @@ def _cycle_authority(root: Path, cycle_id: str, *, allow_partial_ranking: bool =
     problems = manifest.get("problems")
     if type(problems) is not list:
         raise _ComponentIncomparable("CYCLE_PROBLEM_INVENTORY_INVALID")
-    if manifest["status"] == "sealed_partial":
-        identities = set()
-        for row in problems:
-            if (
-                type(row) is not dict
-                or set(row) != {"code", "evidence_class", "detail", "blocks_complete"}
-                or type(row.get("code")) is not str
-                or type(row.get("evidence_class")) is not str
-                or type(row.get("detail")) is not str
-                or type(row.get("blocks_complete")) is not bool
-            ):
-                raise _ComponentIncomparable("CYCLE_PROBLEM_INVENTORY_INVALID")
-            identity = (row["code"], row["evidence_class"], row["blocks_complete"])
-            if identity in identities:
-                raise _ComponentIncomparable("CYCLE_PROBLEM_INVENTORY_DUPLICATE")
-            identities.add(identity)
-        blocking = {item for item in identities if item[2]}
-        allowed = _ALLOWED_PARTIAL | ({("ranking_coverage_partial", "ranking", True)} if allow_partial_ranking else set())
-        if not blocking.issubset(allowed):
-            raise _ComponentIncomparable("CYCLE_BLOCKING_PROBLEM_NOT_SCOPED")
+    blocking = set()
+    for row in problems:
+        if (
+            type(row) is not dict
+            or set(row) != {"code", "evidence_class", "detail", "blocks_complete"}
+            or type(row.get("code")) is not str or not row["code"]
+            or type(row.get("evidence_class")) is not str or not row["evidence_class"]
+            or type(row.get("detail")) is not str
+            or type(row.get("blocks_complete")) is not bool
+        ):
+            raise _ComponentIncomparable("CYCLE_PROBLEM_INVENTORY_INVALID")
+        if row["blocks_complete"]:
+            blocking.add((row["code"], row["evidence_class"], True))
+    if manifest["status"] != ("sealed_partial" if blocking else "sealed_complete"):
+        raise _ComponentIncomparable("CYCLE_PROBLEM_STATUS_MISMATCH")
     replay_core = {
         key: value for key, value in manifest.items()
         if key not in {"capture_time", "status", "request_content_digest", "workspace_identity"}
@@ -796,6 +830,17 @@ def _cycle_authority(root: Path, cycle_id: str, *, allow_partial_ranking: bool =
     artifact = _digest({"objects": objects, "named_files": named})
     if _typed_digest(seal.get("artifact_root_digest"), "artifact_root") != artifact:
         raise _ComponentIncomparable("CYCLE_ARTIFACT_ROOT_DIGEST_MISMATCH")
+    # Integrity is checked before consumer scope. Diagnostics retain all
+    # occurrences; a repeated category is not a repeated source identity.
+    allowed = _ALLOWED_PARTIAL | (
+        {("ranking_coverage_partial", "ranking", True)} if allow_partial_ranking else set()
+    )
+    missing_settlement = ("referenced_file_missing", "post_trade", True)
+    if signal_inputs_only and missing_settlement in blocking:
+        if _signal_missing_settlement_is_scoped(cycle, manifest):
+            allowed = allowed | {missing_settlement}
+    if not blocking.issubset(allowed):
+        raise _ComponentIncomparable("CYCLE_BLOCKING_PROBLEM_NOT_SCOPED")
     return cycle, manifest, seal
 
 

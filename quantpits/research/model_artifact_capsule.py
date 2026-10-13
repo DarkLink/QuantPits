@@ -888,10 +888,6 @@ def _validate_phase37a_status(status: Any, problems: Any) -> None:
                 "Phase37A problem inventory is invalid",
             )
         identity = row["code"], row["evidence_class"], row["blocks_complete"]
-        if identity in identities:
-            raise ModelArtifactCapsuleContractError(
-                "Phase37A problem inventory is duplicated",
-            )
         identities.add(identity)
     blocking = {identity for identity in identities if identity[2]}
     derived = "sealed_partial" if blocking else "sealed_complete"

@@ -659,6 +659,7 @@ def _write_run_audit(prepared, summary, *, started_at, journal=None, warning=Non
 
 
 def _settlement_operator_result(prepared):
+    from quantpits.post_trade.contracts import settlement_logical_partitions
     bundle = prepared.catalog.settlement_bundle
     return {
         "settlement_source_mode": (
@@ -670,17 +671,7 @@ def _settlement_operator_result(prepared):
             "coverage_end": bundle.coverage_end,
             "fingerprint": bundle.fingerprint,
         } if bundle is not None else None),
-        "settlement_dates": {
-            item.trade_date: {
-                "status": (
-                    "assumed_empty" if item.status == "assumed_empty" else "observed"
-                ),
-                "row_count": item.row_count,
-                "fingerprint": item.fingerprint,
-            }
-            for item in prepared.catalog.settlement_sources
-            if bundle is not None
-        },
+        "settlement_dates": settlement_logical_partitions(prepared.catalog),
     }
 
 

@@ -285,7 +285,9 @@ def test_common_partial_real_seal_capsule_c3_c4(publication, prepared_inputs, mo
     cycle = args[0] / 'data/evidence/v1/cycles' / args[4]
     reference_path, reference, _ = _REAL_CYCLE(args[0], '2026-08-28')
     manifest = copy.deepcopy(reference)
+    # This fixture observes a new prediction cycle, including its exact anchor.
     manifest['cycle_identity']['cycle_id'] = args[4]
+    manifest['cycle_identity']['evidence_as_of'] = args[4]
     manifest['data_identity'] = copy.deepcopy(prepared_inputs[2]['data_identity'])
     manifest['engine_identity'] = copy.deepcopy(prepared_inputs[2]['engine_identity'])
     # One unheld and one held eligible member are missing; full inventory survives.
@@ -342,7 +344,7 @@ def test_common_partial_real_seal_capsule_c3_c4(publication, prepared_inputs, mo
     # Restore the real adoption function replaced by the base C3 fixture.
     monkeypatch.setattr(capsule, 'adopt_signal_input_capsule', _REAL_SIGNAL_ADOPT)
     plan = capsule.prepare_signal_input_capsule(args[0], args[1], ANCHOR, args[10])
-    assert plan.status == 'PREPARED', plan.to_safe_dict()
+    assert plan.status == 'PREPARED', str(plan.to_safe_dict())
     args[11] = plan.capsule_id
     retained = capsule.publish_signal_input_capsule(args[0], args[1], ANCHOR, args[10], args[11],
         dict(plan.request_digest), capsule.AUTHORIZATION_ACTION)
@@ -375,15 +377,19 @@ def test_common_partial_real_seal_capsule_c3_c4(publication, prepared_inputs, mo
         assert rejected.status == 'PRECONDITION_BLOCKED'
         object_path.write_bytes(raw)
         object_path.chmod(0o600)
-    for kind in ('unknown_problem', 'wrong_origin'):
+    for kind in ('unknown_problem', 'wrong_origin', 'stale_anchor'):
         changed = copy.deepcopy(manifest)
         if kind == 'unknown_problem':
             changed['problems'].append(dict(code='unknown', evidence_class='ranking', blocks_complete=True, detail=''))
-        else:
+        elif kind == 'wrong_origin':
             changed['model_and_ensemble_lineage']['source_models'][0]['source_recorder_id'] = 'WRONG'
+        else:
+            changed['cycle_identity']['evidence_as_of'] = reference['cycle_identity']['evidence_as_of']
         reseal(cycle, changed)
         rejected = capsule.prepare_signal_input_capsule(args[0], args[1], ANCHOR, args[10])
         assert rejected.status == 'PRECONDITION_BLOCKED'
+        if kind == 'stale_anchor':
+            assert rejected.reason_code == 'SIGNAL_ANCHOR_INVALID'
         reseal(cycle, manifest)
     seal_bytes = (cycle / 'seal.json').read_bytes()
     altered = json.loads(seal_bytes)

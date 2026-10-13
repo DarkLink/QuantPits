@@ -3,8 +3,80 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
+from typing import Any, Mapping, Tuple
 
 from quantpits.runtime import OutputRef, RunManifest, manifest_path, write_run_manifest
+from quantpits.post_trade.contracts import settlement_logical_partitions
+
+
+def legacy_assumed_empty_settlement_inputs(manifest: Mapping[str, Any]) -> Tuple[str, ...]:
+    """Interpret the old committed state audit, without consulting live state.
+
+    Old daily audits included resolved empty days as optional, unfingerprinted
+    settlement inputs and omitted their logical partitions. Optionality alone
+    is insufficient: require the successful state-only processing scope and
+    the entire original daily source range to agree.
+    """
+    records = manifest.get("records")
+    args = manifest.get("args")
+    inputs = manifest.get("inputs")
+    if (
+        type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1
+        or manifest.get("command") not in {"post-trade", "prod_post_trade"}
+        or manifest.get("status") != "success"
+        or type(records) is not dict or type(args) is not list
+        or any(type(arg) is not str for arg in args)
+        or "--allow-missing-settlement" not in args
+        or "--dry-run" in args
+        or any(arg == "--settlement-bundle" or arg.startswith("--settlement-bundle=") for arg in args)
+        or type(inputs) is not list or any(type(row) is not dict for row in inputs)
+        or records.get("scope") != "state" or records.get("state_committed") is not True
+        or records.get("transaction_status") not in {"state_committed", "completed"}
+        or records.get("settlement_source_mode") != "daily"
+        or records.get("settlement_bundle_coverage") is not None
+        or records.get("settlement_logical_partitions") != {}
+        or "settlement_logical_day_count" in records
+        or records.get("execution_ingestion_status") != "not_run"
+        or any(type(records.get(key)) is not int or records[key] != 0
+               for key in ("order_source_count", "trade_source_count", "ingested_source_count"))
+        or any(row.get("description") in {"order", "trade", "settlement_bundle"} for row in inputs)
+    ):
+        return ()
+    refs = [row for row in inputs if row.get("description") == "settlement"]
+    dates, empty_paths = [], []
+    for row in refs:
+        path = row.get("path")
+        match = re.fullmatch(r"data/(\d{4}-\d{2}-\d{2})-table\.xlsx", path) if type(path) is str else None
+        if match is None or row.get("kind") != "data" or row.get("required") is not False:
+            return ()
+        day = match.group(1)
+        try:
+            datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            return ()
+        dates.append(day)
+        fingerprint = row.get("fingerprint")
+        if fingerprint is None:
+            empty_paths.append(path)
+        elif type(fingerprint) is not str or re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+            return ()
+    if (
+        not empty_paths or len(set(dates)) != len(dates)
+        or any(type(records.get(key)) is not int or records[key] != len(dates)
+               for key in ("processed_date_count", "settlement_source_count"))
+        or records.get("processed_date_from") != min(dates)
+        or records.get("processed_date_to") != max(dates)
+    ):
+        return ()
+    outputs = manifest.get("outputs", [])
+    if type(outputs) is not list or any(type(row) is not dict for row in outputs):
+        return ()
+    for path in empty_paths:
+        if (sum(row.get("path") == path for row in inputs) != 1
+                or any(row.get("path") == path for row in outputs)):
+            return ()
+    return tuple(empty_paths)
 
 
 def display_path(ctx, path):
@@ -61,8 +133,9 @@ def write_post_trade_manifest(
         "processed_date_to": journal.processed_dates[-1] if journal and journal.processed_dates else None,
         "settlement_source_count": (
             1 if prepared.catalog.settlement_bundle is not None
-            else len(prepared.catalog.settlement_sources)
+            else sum(item.status != "assumed_empty" for item in prepared.catalog.settlement_sources)
         ),
+        "settlement_logical_day_count": len(prepared.catalog.settlement_sources),
         "settlement_source_mode": (
             "bundle" if prepared.catalog.settlement_bundle is not None else "daily"
         ),
@@ -71,17 +144,7 @@ def write_post_trade_manifest(
             "start": prepared.catalog.settlement_bundle.coverage_start,
             "end": prepared.catalog.settlement_bundle.coverage_end,
         } if prepared.catalog.settlement_bundle is not None else None),
-        "settlement_logical_partitions": {
-            item.trade_date: {
-                "status": (
-                    "assumed_empty" if item.status == "assumed_empty" else "observed"
-                ),
-                "row_count": item.row_count,
-                "fingerprint": item.fingerprint,
-            }
-            for item in prepared.catalog.settlement_sources
-            if prepared.catalog.settlement_bundle is not None
-        },
+        "settlement_logical_partitions": settlement_logical_partitions(prepared.catalog),
         "order_source_count": len(prepared.catalog.order_sources),
         "trade_source_count": len(prepared.catalog.trade_sources),
         "ingested_source_count": len(getattr(ingestion, "ingested_sources", ())) if ingestion else 0,

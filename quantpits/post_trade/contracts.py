@@ -80,6 +80,27 @@ class PostTradeInputCatalog:
         return any(issue.severity == "error" for issue in self.issues)
 
 
+def settlement_logical_partitions(catalog: PostTradeInputCatalog) -> dict:
+    """Describe resolved days separately from consumed physical sources."""
+    bundle = catalog.settlement_bundle
+    return {
+        item.trade_date: {
+            "status": "observed" if item.status == "present" else item.status,
+            "row_count": item.row_count,
+            "fingerprint": item.fingerprint,
+            "source_kind": item.source_kind,
+            "source_path": (
+                bundle.display_path if bundle is not None
+                else None if item.status == "assumed_empty" else item.display_path
+            ),
+            "source_fingerprint": (
+                bundle.fingerprint if bundle is not None else item.fingerprint
+            ),
+        }
+        for item in catalog.settlement_sources
+    }
+
+
 @dataclass(frozen=True)
 class ParsedPostTradeInput:
     source: PostTradeSourceRef

@@ -312,11 +312,11 @@ def test_bundle_dry_run_evidence_exposes_logical_dates(mock_env):
     prepared.catalog.settlement_bundle.fingerprint = "a" * 64
     observed = MagicMock(
         trade_date="2026-03-02", status="present", row_count=2,
-        fingerprint="b" * 64,
+        fingerprint="b" * 64, source_kind="bundle_partition",
     )
     assumed = MagicMock(
         trade_date="2026-03-03", status="assumed_empty", row_count=0,
-        fingerprint=None,
+        fingerprint=None, source_kind="assumed_empty",
     )
     prepared.catalog.settlement_sources = (observed, assumed)
 
@@ -327,6 +327,8 @@ def test_bundle_dry_run_evidence_exposes_logical_dates(mock_env):
     assert evidence["settlement_dates"]["2026-03-02"]["row_count"] == 2
     assert evidence["settlement_dates"]["2026-03-03"] == {
         "status": "assumed_empty", "row_count": 0, "fingerprint": None,
+        "source_kind": "assumed_empty", "source_path": "data/week-table.xlsx",
+        "source_fingerprint": "a" * 64,
     }
 
 @patch('quantpits.scripts.prod_post_trade.get_trade_dates')

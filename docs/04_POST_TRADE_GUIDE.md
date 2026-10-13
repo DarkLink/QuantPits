@@ -308,6 +308,8 @@ python quantpits/scripts/prod_post_trade.py --help
 > [!WARNING]
 ### 可恢复事务与运行审计
 
+daily 和 bundle 的严格预检、dry-run 输出及 RunManifest 都记录逐日 settlement 状态、行数和来源指纹。`assumed_empty` 表示显式确认的逻辑空日，行数为 0；daily 空日的 `source_path` 为 null，不生成已消费交割文件的 InputRef。bundle 空日仍关联实际区间文件及其指纹。轻量计划尚未解析的行数为 null，不代表零行。`settlement_source_count` 统计物理来源，`settlement_logical_day_count` 统计逻辑日期；空日仍计入日期范围。
+
 账户状态使用 workspace-local transaction journal：所有目标 bytes 先写入 `data/.post_trade_transactions/<run_id>/staged/`，journal 持久化后才替换目标。每个 artifact 都记录 baseline/target SHA-256；恢复只接受当前内容等于 baseline 或 target，第三版本会进入 `conflicted`，不会覆盖人工修改。`cashflow.json` 在派生日志之后提交，`prod_config.json` 始终最后提交。
 
 这是一套单 workspace、本地文件系统的可恢复协议，不是分布式事务。execution ingestion 仍有独立 receipt 提交域；RunManifest 会分别记录 execution、state transaction 和 classification 状态。journal 同时保留 light plan、严格解析/估值后的 resolved execution，以及实际 classification 输出的 SHA-256 fingerprint。真实运行默认写 `output/manifests/post-trade/<run_id>.json` 与 `data/operator_log.jsonl`，公开审计信息只包含日期范围、计数、相对路径和 fingerprint，不包含账户金额、持仓、券商原始行或本机绝对路径。
