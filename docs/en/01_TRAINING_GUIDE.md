@@ -45,6 +45,13 @@ current registry only when every selected model succeeds and produces a verified
 A producer should publish `ready` only after validating the output recorder and persisted
 `pred.pkl`. Failed or skipped operations must not replace an existing current pointer.
 
+In static TRA training, `MTSDatasetH` builds prediction samples from learning data. Training retains `DropnaLabel`;
+after fitting, prediction and `SignalRecord` use a separate prediction dataset with only that
+processor removed, so the latest dates can produce signals without realized labels. Other learning
+and inference processors and model parameters retain their configured values. Unknown labels stay
+missing. Regular `DatasetH` and `TSDatasetH` reuse their original dataset, and coverage checks still
+inspect the persisted `pred.pkl`.
+
 V2 uses strict version dispatch. Once `schema_version: 2` is declared, matching `models` and
 `model_records` mappings are mandatory; readers never fall back to top-level V1 fields. A `ready`
 entry must describe actual prediction start/end/rows, while predict-only entries also carry their

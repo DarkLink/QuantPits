@@ -43,6 +43,11 @@ python -m quantpits.tools.audit_training_records \
 生产者只有在输出 recorder 与持久化 `pred.pkl` 验证完成后才应发布 `ready` 条目。失败或
 跳过的模型不得替换已有 current pointer。
 
+静态 TRA 训练使用的 `MTSDatasetH` 从学习数据构造预测样本。训练仍保留 `DropnaLabel`，拟合完成后
+的预测和 `SignalRecord` 使用移除此处理器的独立预测数据集，使没有已实现标签的最新日期
+也能产生信号；其余学习／推理处理器及模型参数保持配置值。未知标签保留为空，不填零。
+普通 `DatasetH`／`TSDatasetH` 继续使用原数据集，预测覆盖校验仍依据实际保存的 `pred.pkl`。
+
 V2 使用严格版本分派：一旦声明 `schema_version: 2`，一致的 `models` 与 `model_records`
 映射就是必需项，不会退回顶层 V1 字段。`ready` 记录必须包含实际预测的 start/end/rows；
 predict-only 还必须记录直接 source recorder、experiment 与 operation。融合运行时会再次

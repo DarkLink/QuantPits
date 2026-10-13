@@ -7,7 +7,35 @@ from datetime import datetime
 # We will import train_single_model inside the test functions or use a fixture
 
 @pytest.fixture
-def mock_qlib():
+def mock_training_output_entry(monkeypatch):
+    """History units isolate the output boundary, not real signal coverage.
+
+    The pipeline regressions use real persisted predictions and the actual
+    builder. This stub only supplies the training entry for mocked history
+    and convergence observations, leaving every other operation untouched.
+    """
+    from quantpits.training import records
+
+    real_builder = records.build_model_record_entry
+
+    def build_entry(**kwargs):
+        if kwargs["operation"] != "train":
+            return real_builder(**kwargs)
+        name, mode = records.split_model_key(kwargs["key"])
+        anchor = kwargs["requested_anchor"]
+        return records.ModelRecordEntry(
+            key=kwargs["key"], model_name=name, training_mode=mode,
+            operation="train", status="ready", recorder_id=kwargs["recorder"].info["id"],
+            experiment_name=kwargs["experiment_name"], requested_anchor=anchor,
+            prediction_start=anchor, prediction_end=anchor, prediction_rows=1,
+            dataset_test_end=anchor,
+        )
+
+    monkeypatch.setattr(records, "build_model_record_entry", build_entry)
+
+
+@pytest.fixture
+def mock_qlib(mock_training_output_entry):
     with patch('qlib.utils.init_instance_by_config') as mock_init, \
          patch('qlib.workflow.R') as mock_r:
         

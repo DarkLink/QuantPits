@@ -1463,7 +1463,18 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             
             # 预测
             print(f"[{model_name}] Predicting...")
-            pred = model.predict(dataset=dataset)
+            # MTSDatasetH materializes the training handler's _learn view,
+            # so its DropnaLabel also hides the newest inference-only rows.
+            # Keep fit data intact and rebuild only when prediction processors
+            # differ; normal datasets and MTS without DropnaLabel are reused.
+            prediction_dataset_cfg = _prepare_predict_only_dataset_config(dataset_cfg)
+            prediction_dataset = dataset
+            if prediction_dataset_cfg != dataset_cfg:
+                if cache_mgr is not None:
+                    prediction_dataset = cache_mgr.create_dataset(prediction_dataset_cfg)
+                else:
+                    prediction_dataset = init_instance_by_config(prediction_dataset_cfg)
+            pred = model.predict(dataset=prediction_dataset)
             
             # 保存模型对象（供 static_train.py --predict-only 加载）
             print(f"[{model_name}] Saving model to recorder...")
@@ -1480,7 +1491,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
                 if r_cfg['kwargs'].get('model') == '<MODEL>':
                     r_cfg['kwargs']['model'] = model
                 if r_cfg['kwargs'].get('dataset') == '<DATASET>':
-                    r_cfg['kwargs']['dataset'] = dataset
+                    r_cfg['kwargs']['dataset'] = prediction_dataset
                 
                 r_obj = init_instance_by_config(r_cfg, recorder=recorder)
                 r_obj.generate()
@@ -1546,7 +1557,6 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             rid = recorder.info['id']
             print(f"[{model_name}] Finished! Recorder ID: {rid}")
             
-            result['success'] = True
             result['record_id'] = rid
             result['performance'] = performance
             from quantpits.training.records import build_model_record_entry
@@ -1559,8 +1569,14 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
                 workspace_root=workspace_root or env.ROOT_DIR,
                 config_fingerprint=fingerprint_value(params),
             ).to_dict()
+
+        # Both persisted prediction validation and recorder context completion
+        # must succeed before this model can be reported as successful.
+        result['success'] = True
     
     except Exception as e:
+        result['success'] = False
+        result.pop('record_entry', None)
         result['error'] = str(e)
         print(f"!!! Error running {model_name}: {e}")
         import traceback

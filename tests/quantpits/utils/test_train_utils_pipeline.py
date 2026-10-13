@@ -1,3 +1,4 @@
+import copy
 import os
 import yaml
 import pytest
@@ -136,19 +137,36 @@ def test_train_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
             "record": [{"class": "SigAnaRecord", "kwargs": {"model": "<MODEL>", "dataset": "<DATASET>"}}]
         }
     }
+    prediction = pd.DataFrame(
+        {"score": [1.0]},
+        index=pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2026-03-01"), "S1")], names=["datetime", "instrument"]
+        ),
+    )
+    mock_recorder.info["artifact_uri"] = (workspace / "mlruns/test/artifacts").as_uri()
+    mock_recorder.list_tags.return_value = {"model": "M1", "anchor_date": "2026-03-01"}
+
+    def load_object(name, ic_error=False):
+        if name == "pred.pkl":
+            return prediction
+        if name == "sig_analysis/ic.pkl":
+            if ic_error:
+                raise ValueError("IC Error")
+            return pd.Series([0.1, 0.2])
+        raise FileNotFoundError(name)
     
     with patch('quantpits.utils.train_utils.inject_config', return_value=task_config):
         with patch('qlib.utils.init_instance_by_config', side_effect=[mock_model, mock_dataset, MagicMock(), mock_model, mock_dataset, MagicMock()]):
             with patch('qlib.workflow.R') as mock_R:
                 mock_R.get_recorder.return_value = mock_recorder
-                mock_model.predict.return_value = pd.DataFrame({"score": [1]})
-                mock_recorder.load_object.side_effect = [pd.Series([0.1, 0.2])]
+                mock_model.predict.return_value = prediction
+                mock_recorder.load_object.side_effect = load_object
                 
                 res = train_utils.train_single_model("M1", str(yaml_file), params, "E")
                 assert res['success']
                 
                 # Test Failure Case: IC Error
-                mock_recorder.load_object.side_effect = Exception("IC Error")
+                mock_recorder.load_object.side_effect = lambda name: load_object(name, ic_error=True)
                 res_ic_err = train_utils.train_single_model("M1", str(yaml_file), params, "E")
                 assert res_ic_err['success']
                 assert 'IC_Mean' not in res_ic_err['performance']
@@ -251,6 +269,294 @@ def test_prepare_predict_only_dataset_leaves_regular_dataset_unchanged(mock_env_
     assert prepared["kwargs"]["handler"]["kwargs"]["learn_processors"] == [
         "DropnaLabel"
     ]
+
+
+class _FiniteSignalModel:
+    """Observe real dataset rows without fitting a costly statistical model."""
+
+    def __init__(self):
+        self.fit_dataset = None
+        self.predict_datasets = []
+        self.fit_labels = None
+        self.seed = 7
+        self.truncate_prediction_tail = False
+
+    @staticmethod
+    def _segment_rows(dataset, segment):
+        from qlib.data.dataset.handler import DataHandlerLP
+
+        prepared = dataset.prepare(segment, col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+        if isinstance(prepared, pd.DataFrame):
+            return prepared.index, prepared["feature"].values, prepared["label"].values
+        rows = np.array([slc.stop - 1 for slc in prepared._batch_slices])
+        index = prepared.restore_index(rows).swaplevel().sort_values()
+        values = pd.DataFrame(
+            {"feature": prepared._data[rows, 0], "label": prepared._label[rows]},
+            index=prepared.restore_index(rows).swaplevel(),
+        ).sort_index()
+        return index, values[["feature"]].values, values[["label"]].values
+
+    def fit(self, dataset, evals_result=None):
+        self.fit_dataset = dataset
+        self.fit_labels = self._segment_rows(dataset, "train")[2]
+
+    def predict(self, dataset):
+        self.predict_datasets.append(dataset)
+        if hasattr(dataset, "_batch_slices"):
+            index, values, _ = self._segment_rows(dataset, "test")
+            prediction = pd.Series(values[:, 0], index=index)
+        else:
+            from qlib.data.dataset.handler import DataHandlerLP
+
+            features = dataset.prepare("test", col_set="feature", data_key=DataHandlerLP.DK_I)
+            prediction = pd.Series(features.iloc[:, 0], index=features.index)
+        if self.truncate_prediction_tail:
+            dates = prediction.index.get_level_values("datetime")
+            prediction = prediction.loc[dates < dates.max()]
+        return prediction
+
+
+@pytest.fixture
+def finite_signal_training(mock_env_constants, monkeypatch):
+    """Real tiny handlers, cache, SignalRecord, MLflow persistence and coverage."""
+    from mlflow.tracking import MlflowClient
+    from qlib.utils import init_instance_by_config as real_init
+    from qlib.workflow.recorder import MLflowRecorder
+    from quantpits.utils.handler_cache import HandlerCacheManager
+
+    train_utils, workspace = mock_env_constants
+    dates = pd.bdate_range(end="2026-10-09", periods=18)
+    index = pd.MultiIndex.from_product(
+        [dates, ["S1", "S2", "S3"]], names=["datetime", "instrument"]
+    )
+    frame = pd.DataFrame(
+        {
+            ("feature", "VALUE"): np.arange(len(index), dtype=float),
+            ("feature", "OTHER"): np.tile([1.0, 3.0, 9.0], len(dates)),
+            ("label", "LABEL"): np.tile([0.1, 0.4, -0.2], len(dates)),
+        },
+        index=index,
+    )
+    # The final six feature days have no observable forward label. One older
+    # training sample is also unlabeled, so training-time DropnaLabel matters.
+    frame.loc[(slice(dates[-6], dates[-1]), slice(None)), ("label", "LABEL")] = np.nan
+    frame.loc[(dates[2], "S1"), ("label", "LABEL")] = np.nan
+    frame.loc[(dates[-1], "S1"), ("feature", "VALUE")] = np.nan
+    data_file = workspace / "data/finite_signal.pkl"
+    frame.to_pickle(data_file)
+    yaml_file = workspace / "config/finite_signal.yaml"
+    yaml_file.write_text("fixture", encoding="utf-8")
+
+    def run(dataset_class="MTSDatasetH", use_cache=False, dropna_label=True,
+            rebuild_error=None, truncate_prediction=False, recorder_exit_error=None):
+        learn_processors = [{"class": "CSRankNorm", "kwargs": {"fields_group": "label"}}]
+        if dropna_label:
+            learn_processors.insert(0, {"class": "DropnaLabel"})
+        dataset_cfg = {
+            "class": dataset_class,
+            "module_path": {
+                "MTSDatasetH": "qlib.contrib.data.dataset",
+                "PurgedMTSDatasetH": "quantpits.data.cpcv_dataset",
+                "DatasetH": "qlib.data.dataset",
+            }[dataset_class],
+            "kwargs": {
+                "handler": {
+                    "class": "DataHandlerLP",
+                    "module_path": "qlib.data.dataset.handler",
+                    "kwargs": {
+                        "data_loader": {
+                            "class": "StaticDataLoader",
+                            "module_path": "qlib.data.dataset.loader",
+                            "kwargs": {"config": str(data_file)},
+                        },
+                        "infer_processors": [
+                            {
+                                "class": "RobustZScoreNorm",
+                                "kwargs": {
+                                    "fields_group": "feature",
+                                    "fit_start_time": str(dates[0].date()),
+                                    "fit_end_time": str(dates[7].date()),
+                                    "clip_outlier": True,
+                                },
+                            },
+                            {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
+                        ],
+                        "learn_processors": learn_processors,
+                    },
+                },
+                "segments": {
+                    "train": [str(dates[0].date()), str(dates[7].date())],
+                    "valid": [str(dates[8].date()), str(dates[10].date())],
+                    "test": [str(dates[11].date()), str(dates[-1].date())],
+                },
+            },
+        }
+        if dataset_class != "DatasetH":
+            dataset_cfg["kwargs"].update(horizon=6, seq_len=3, batch_size=3, shuffle=False)
+        task_config = {
+            "task": {
+                "model": {"class": "FiniteSignalModel", "kwargs": {"seed": 7, "n_epochs": 1}},
+                "dataset": dataset_cfg,
+                "record": [{
+                    "class": "SignalRecord",
+                    "module_path": "qlib.workflow.record_temp",
+                    "kwargs": {"model": "<MODEL>", "dataset": "<DATASET>"},
+                }],
+            },
+        }
+        original_dataset_cfg = copy.deepcopy(dataset_cfg)
+        original_model_cfg = copy.deepcopy(task_config["task"]["model"])
+        model = _FiniteSignalModel()
+        model.truncate_prediction_tail = truncate_prediction
+        tracking_uri = (workspace / "mlruns").as_uri()
+        client = MlflowClient(tracking_uri=tracking_uri)
+        experiment_id = client.create_experiment(
+            "finite_signal", artifact_location=(workspace / "output/finite_signal").as_uri()
+        )
+        mlflow_run = client.create_run(experiment_id, tags={"mlflow.runName": "finite_signal"})
+        recorder = MLflowRecorder(experiment_id, tracking_uri, mlflow_run=mlflow_run)
+        constructed = []
+
+        def init(config, *args, **kwargs):
+            if isinstance(config, dict) and config.get("class") == "FiniteSignalModel":
+                return model
+            if isinstance(config, dict) and config.get("class") == dataset_class:
+                if constructed and rebuild_error is not None:
+                    raise rebuild_error
+                dataset = real_init(config, *args, **kwargs)
+                constructed.append(dataset)
+                return dataset
+            return real_init(config, *args, **kwargs)
+
+        monkeypatch.setattr("qlib.utils.init_instance_by_config", init)
+        monkeypatch.setattr(train_utils, "inject_config", lambda *args, **kwargs: task_config)
+        workflow = MagicMock()
+        workflow.get_recorder.return_value = recorder
+        workflow.set_tags.side_effect = recorder.set_tags
+        workflow.log_params.side_effect = recorder.log_params
+        if recorder_exit_error is not None:
+            workflow.start.return_value.__exit__.side_effect = recorder_exit_error
+        monkeypatch.setattr("qlib.workflow.R", workflow)
+        cache = HandlerCacheManager(max_size_mb=16) if use_cache else None
+        params = {
+            "freq": "week", "market": "finite", "anchor_date": str(dates[-1].date()),
+            "fit_start_time": str(dates[0].date()), "fit_end_time": str(dates[7].date()),
+            "test_end_time": str(dates[-1].date()), "topk": 22, "n_drop": 3,
+        }
+        case = {
+            "model": model, "recorder": recorder, "constructed": constructed,
+            "cache": cache, "task_config": task_config, "original_dataset_cfg": original_dataset_cfg,
+            "original_model_cfg": original_model_cfg, "params": params, "dates": dates,
+            "raw_frame": frame, "workspace": workspace,
+        }
+        try:
+            case["result"] = train_utils.train_single_model(
+                "finite", str(yaml_file), params, "finite_signal", cache_mgr=cache,
+                history_file=False, workspace_root=str(workspace),
+            )
+        finally:
+            client.set_terminated(recorder.id)
+        return case
+
+    return run
+
+
+@pytest.mark.parametrize("dataset_class", ["MTSDatasetH", "PurgedMTSDatasetH"])
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_train_mts_preserves_unlabeled_anchor_after_fit(finite_signal_training, dataset_class, use_cache):
+    case = finite_signal_training(dataset_class, use_cache)
+    model, recorder, dates = case["model"], case["recorder"], case["dates"]
+    prediction = recorder.load_object("pred.pkl")
+    # Assert real persisted coverage first: this fails on the original reuse
+    # of the DropnaLabel training dataset, before any ready-record assertion.
+    assert prediction.index.get_level_values("datetime").max() == dates[-1]
+    assert len(prediction) == 21
+    assert np.isfinite(prediction["score"]).all()
+    assert case["result"]["success"], case["result"]
+    entry = case["result"]["record_entry"]
+    assert entry["operation"] == "train"
+    assert entry["prediction_end"] == entry["requested_anchor"] == "2026-10-09"
+    assert entry["prediction_rows"] == len(prediction)
+    assert model.fit_labels.shape == (23, 1)
+    assert np.isfinite(model.fit_labels).all()
+    assert len(case["constructed"]) == 2
+    train_dataset, prediction_dataset = case["constructed"]
+    assert model.fit_dataset is train_dataset
+    assert model.predict_datasets == [prediction_dataset, prediction_dataset]
+    assert model.seed == 7 and model.topk == 22 and model.n_drop == 3
+    assert case["task_config"]["task"]["model"] == case["original_model_cfg"]
+    assert case["task_config"]["task"]["dataset"] == case["original_dataset_cfg"]
+    assert [type(p).__name__ for p in train_dataset.handler.learn_processors] == ["DropnaLabel", "CSRankNorm"]
+    assert [type(p).__name__ for p in prediction_dataset.handler.learn_processors] == ["CSRankNorm"]
+    assert [type(p).__name__ for p in prediction_dataset.handler.infer_processors] == ["RobustZScoreNorm", "Fillna"]
+    pd.testing.assert_frame_equal(train_dataset.handler._infer, prediction_dataset.handler._infer)
+    pd.testing.assert_frame_equal(
+        train_dataset.handler._learn,
+        prediction_dataset.handler._learn.loc[train_dataset.handler._learn.index],
+    )
+    tail = prediction_dataset._index.get_level_values("datetime") >= dates[-6]
+    assert np.isnan(prediction_dataset._label[tail]).all()
+    raw_labels = recorder.load_object("label.pkl")
+    assert raw_labels.loc[(slice(dates[-6], dates[-1]), slice(None))].isna().all().all()
+    assert raw_labels.index.get_level_values("datetime").max() == dates[-1]
+    if use_cache:
+        assert case["cache"].stats["misses"] == 2
+
+
+@pytest.mark.parametrize("dataset_class", ["DatasetH", "MTSDatasetH", "PurgedMTSDatasetH"])
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_train_reuses_dataset_when_prediction_config_unchanged(finite_signal_training, dataset_class, use_cache):
+    case = finite_signal_training(dataset_class, use_cache, dropna_label=dataset_class == "DatasetH")
+    assert case["result"]["success"], case["result"]
+    assert len(case["constructed"]) == 1
+    model = case["model"]
+    assert model.predict_datasets == [model.fit_dataset, model.fit_dataset]
+    assert case["result"]["record_entry"]["prediction_end"] == "2026-10-09"
+    if use_cache:
+        assert case["cache"].stats["misses"] == 1
+
+
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_train_prediction_dataset_rebuild_failure_is_not_success(finite_signal_training, use_cache):
+    case = finite_signal_training(use_cache=use_cache, rebuild_error=RuntimeError("prediction rebuild failed"))
+    assert case["model"].fit_dataset is not None
+    assert not case["result"]["success"]
+    assert case["result"]["record_id"] is None
+    assert "record_entry" not in case["result"]
+    assert case["result"]["error"] == "prediction rebuild failed"
+    assert not case["model"].predict_datasets
+    assert case["recorder"].list_artifacts() == []
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("use_cache", [False, True])
+@pytest.mark.parametrize("phase", ["rebuild", "recorder_exit"])
+def test_train_signal_interrupt_propagates(finite_signal_training, interrupt, use_cache, phase):
+    error_arg = "rebuild_error" if phase == "rebuild" else "recorder_exit_error"
+    with pytest.raises(interrupt):
+        finite_signal_training(use_cache=use_cache, **{error_arg: interrupt("stop after fit")})
+
+
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_train_bad_persisted_anchor_does_not_report_success(finite_signal_training, use_cache):
+    case = finite_signal_training(use_cache=use_cache, truncate_prediction=True)
+    prediction = case["recorder"].load_object("pred.pkl")
+    assert prediction.index.get_level_values("datetime").max() == case["dates"][-2]
+    assert not case["result"]["success"]
+    assert "record_entry" not in case["result"]
+    assert case["result"]["record_id"] == case["recorder"].info["id"]
+    assert "persisted prediction end differs from requested anchor" in case["result"]["error"]
+
+
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_train_recorder_exit_failure_does_not_report_success(finite_signal_training, use_cache):
+    case = finite_signal_training(use_cache=use_cache, recorder_exit_error=RuntimeError("recorder exit failed"))
+    prediction = case["recorder"].load_object("pred.pkl")
+    assert prediction.index.get_level_values("datetime").max() == case["dates"][-1]
+    assert not case["result"]["success"]
+    assert "record_entry" not in case["result"]
+    assert case["result"]["record_id"] == case["recorder"].info["id"]
+    assert case["result"]["error"] == "recorder exit failed"
 
 def test_show_model_list(mock_env_constants, capsys):
     train_utils, _ = mock_env_constants
