@@ -1,24 +1,24 @@
-# D1：首对前向 intent 结算
+# 纸面账户首期结算
 
-D1 将一个明确的 C4 首对 intent，按其原 prior、intent 和 execution assumption，用对应交易日的 next-open 数据执行 B0 会计，保存两臂完整 transition 和 after-state。它不加载模型、不重新规划订单、不更新 Production，也不实现 D2 续跑或 D3 收益报告。
+结算从完整本地 intent 读取原现金／持仓、订单与成交假设，按原定 `trade_date` 的 next-open 行情记账。周一晚上或下周再结算都可以；不会把成交日改成今天。模块不加载模型、不重选订单，也不写 Production。
 
 ## 输入与只读准备
 
-先取得 C4 的 exact `intent_store_root / epoch_id`、原 request digest，以及首次 **COMMITTED** 返回的 safe JSON 文件。ADOPTED、VERIFIED、UNCERTAIN 记录不能代替首次成功记录。记录须与 C4 request、manifest、operation、target binding、日期及全部本地时间 gate 匹配。该记录只代表单 owner 本机观察，没有外部可信时间戳。
+提供明确的 `intent_store_root / epoch_id` 和原 request digest 即可；`publication_success_record_path` 是可选核对材料。本次 reader 必须验证完整 request、所有数据成员、manifest、completion 和账户／来源关联。缺 stdout 保存 `publication_success.json=null` 与 `source_basis=VERIFIED_LOCAL_INTENT_BUNDLE_V1`，不会合成旧 COMMITTED。显式提供 stdout 时仍核对其原始 COMMITTED 身份、digest、账户和记录；ADOPTED／VERIFIED 不能冒充它。
 
-创建专用、物理路径的 settlement store root，权限为 0700；原 safe JSON 权限为 0600。所有路径须为绝对路径，不接受符号链接别名。开发测试使用临时工作区；以下命令形式不构成私有结算授权。
+创建专用物理 settlement root，权限 0700；可选 stdout 文件须 0600。路径为绝对路径且无符号链接别名。以下示例由 owner 选定账户和写入范围后运行。
 
 ```bash
 python -m quantpits.scripts.settle_forward_intent prepare \
   --intent-store-root /absolute/research/intent_pairs \
   --epoch-id EPOCH_ID \
   --expected-intent-request-digest C4_REQUEST_SHA256 \
-  --publication-success-record-path /absolute/research/c4_success.json \
+
   --qlib-provider-root /absolute/qlib/provider \
   --settlement-store-root /absolute/research/settlements
 ```
 
-`prepare` 不创建文件，返回 `READY` 和 D1 `request_digest`。请求包含原始发布身份、原成功记录 bytes 摘要、两臂会计输入、实际日历和价格 receipt、结果及实现指纹；路径、inode、mtime 和当前采样时刻不进入语义摘要。价格内容修订会改变请求；只有文件时间改变不会改变请求。
+`prepare` 不创建文件，返回 READY 和结算 request digest。请求绑定原发布身份、可选 stdout bytes 的摘要、两臂会计输入、实际日历／价格 receipt、结果与实现指纹；缺 stdout 的明确本地依据也进入摘要。完成记录保存本次 `source_verified_at_utc` 和实际 `settled_at_utc`，不补造原发布最后成功时间。路径、inode、mtime 和当前采样时刻不进入语义摘要；价格内容修订会改变请求。
 
 日期取自已验证 C4。必须已到原 next-open UTC，实际 `calendars/day.txt` 必须包含该交易日，截止 anchor 的历史前缀须与 C4 一致，anchor 后下一 session 须仍为原 trade date。允许后续日历扩展。尚未开盘、交易日尚未进入实际日历、非空请求集合全无有效价格时返回 `WAITING_FOR_DATA`，不封存整对 no-fill。
 
@@ -50,7 +50,7 @@ safe JSON 仅输出日期、摘要、操作身份、固定两臂状态和计数�
 
 ## 持久内容与离线消费
 
-槽包含 `request.json`、`source_intent.json`、原 bytes 的 `publication_success.json`、实际 `calendar_day.txt`、`next_open_prices.json`、`settlements.json`、`manifest.json`、`completion.json`。数据成员单个不超过 4 MiB、合计不超过 32 MiB，manifest/completion 各不超过 1 MiB。摘要顺序为 logical 数据 → request → 成员 inventory/manifest → completion，无循环 hash。
+槽包含 `request.json`、`source_intent.json`、可选原 stdout bytes（或 JSON null）的 `publication_success.json`、实际 `calendar_day.txt`、`next_open_prices.json`、`settlements.json`、`manifest.json`、`completion.json`。数据成员单个不超过 4 MiB、合计不超过 32 MiB，manifest/completion 各不超过 1 MiB。摘要顺序沿用 logical 数据 → request → inventory/manifest → completion。
 
 `source_intent.json` 保存 C4 同次 reader 已验证的 request、manifest、completion 和原 calendar bytes，以及两臂 canonical prior/intents/assumption。它记录来源引用，离线检查不声称重新采用全部外部 C4 来源。C4 `d1_metadata` 是只读副本，不授予发布资格。
 
@@ -66,15 +66,15 @@ Python API 位于 `quantpits.research.forward_settlement`：
 
 ## 连续周期接入
 
-D2 使用独立的 [连续周期入口](research_forward_continuation.md)。本模块共享 NEXT_OPEN 观察、两臂 B0 重算和 create-only 写入，严格区分首期 v1 与连续期 v2 来源及原成功记录。`inspect_first_forward_settlement` 新增只读 `continuation_metadata` 副本，提供同次验明的本期 request、来源 intent request/completion，供 D2 显式接续；该副本不授予发布资格，不声称已经验证整条历史链。首期 safe JSON 与 v1 文件合同保持不变。
+续期使用[账户接续入口](research_forward_continuation.md)，共用行情观察、两臂会计重算和事务写入。首期及续期 API 的旧位置参数保持兼容；省略 stdout 时建议用 keyword `qlib_provider_root=...`，不要把 provider 移到旧 stdout 参数位置。`continuation_metadata` 是同次读验的副本，不授予发布资格或全链完成事实。
 
 
 ## 记录复制与格式兼容
 
 新写入的 `completion.schema_version=2` 使用 `FORWARD_RECORD_BINDING_V2`：`target_binding_digest` 绑定记录种类、epoch、周期/index、request 和 manifest 摘要。连续记录的 `store_bindings` 使用 `FORWARD_CHAIN_STORE_V2`，区分 intent/settlement 角色，并绑定首期 request/manifest/operation、冻结 selectors、definition request 和 schedule。它们不包含路径、device、inode、mtime 或主机身份。request/bundle 自身的版本及 safe stdout 的 schema 不变，不能仅凭 request 的版本 2 判断是否可迁移。
 
-可将四个运行 store 与必要的原 COMMITTED stdout 原样复制到新目录，恢复目录 0700、文件 0600 权限，再显式指定新根。reader/inspect/adopt 不改写记录、不刷新首次成功时间，也不产生新的 prospective claim。D1 消费复制后的 intent 和原 stdout；D3 可读取复制链；D2 从已结算 after-state 接续，无需重建 bootstrap 或 epoch。Production、provider、定义和模型仍按现有参数提供，这不包含整个工作区或 MLflow URI 的迁移。
+可将四个运行 store 原样复制到新目录，原 COMMITTED stdout 若存在可同时保留，恢复目录 0700、文件 0600 权限，再显式指定新根。reader/inspect/adopt 不改写记录、不刷新首次成功时间，也不产生新的 prospective claim。结算消费复制后的完整 intent；stdout 可选；D3 可读取复制链；D2 从已结算 after-state 接续，无需重建 bootstrap 或 epoch。Production、provider、定义和模型仍按现有参数提供，这不包含整个工作区或 MLflow URI 的迁移。
 
-V1 completion 在原位置继续按旧物理绑定读取，后续新记录写 V2；新 V2 settlement 可保留未经改写的 V1 来源 completion，并以自身已校验的内容绑定支持复制；V1 intent 本身仍受原目录限制。复制 V1 后会返回 `LEGACY_PHYSICAL_BINDING_MISMATCH`，本功能不迁移或重写旧记录。未知、缺失或类型混乱的版本被拒绝。操作期间仍检查规范路径、目录身份、文件指纹、来源变动和 create-only 冲突。两个独立副本不共享全局锁，恢复后应选定一个活动副本。代码回退须保留 V2 reader，不得降级改写已发布记录；这不是经济规则变更或新的生产审批门槛。
+V1 completion 在原位置继续按旧物理绑定读取，后续新记录写 V2；新 V2 settlement 可保留未经改写的 V1 来源 completion，并以自身已校验的内容绑定支持复制；V1 intent 本身仍受原目录限制。复制 V1 后会返回 `LEGACY_PHYSICAL_BINDING_MISMATCH`，本功能不迁移或重写旧记录。未知、缺失或类型混乱的版本被拒绝。操作期间仍检查规范路径、目录身份、文件指纹、来源变动和 create-only 冲突。两个独立副本不共享全局锁，恢复后应选定一个活动副本。代码回退须保留能读取 V2、PAPER_ACCOUNTING_TIME_V1、可选 stdout 和 HOLD 的 reader，不得降级改写已发布记录；这不是经济规则变更或新的生产审批门槛。
 
-D1 可消费包含 `source_change` V1 观察的 intent，也可继续消费旧 maintenance 记录。生产与研究源码差异不阻断已验证订单结算；输入、原始成功记录及账户关联校验仍执行。
+结算可消费新的纸面时间记录、旧严格时间／maintenance 记录及 `source_change` V1 观察。源码差异不阻断已验证订单结算；缺 stdout 不放宽内容、账户或来源校验。

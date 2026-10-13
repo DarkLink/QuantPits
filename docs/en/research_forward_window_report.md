@@ -1,6 +1,6 @@
-# Forward common-window report (D3)
+# Paper-account ledger and return reports
 
-`quantpits.research.forward_window_report.build_forward_window_report` reads one explicitly requested epoch: C4/D1 for the first cycle and D2 for subsequent intent/settlement pairs. It observes every requested index from 1 through N, checks actual source and predecessor joins, and generates private, reproducible derived reports. It does not run models, live provider valuation, production accounts, or settlement, and grants no prospective, epoch-start, or promotion capability.
+`quantpits.research.forward_window_report.build_forward_window_report` reads an explicit account’s first and continuing intent/settlement records. It verifies sources/predecessors and displays actual accounting records, late generation, late settlement and explicit HOLD. Original stdout and strict prospective qualification are not required. It does not replan, settle or update Production.
 
 ## Request and CLI
 
@@ -72,10 +72,16 @@ Zero or negative post NAV remains visible with `NONPOSITIVE_NAV`. A positive B s
 
 Overlap uses actual ranking Top-K, BUY/SELL instruments, after-state holdings, and quantities. K comes from the frozen definition. Set comparisons contain intersection/union counts and Jaccard; two empty sets yield 1 with `empty_both=true`. Identical arms and legitimate zero orders remain valid. The report preserves price provenance, execution assumptions, frozen definitions, and actual continuation references. Corporate actions are UNMODELED and external cash flows are excluded. Synthetic execution assumptions do not describe broker execution attribution. Bootstrap-to-first-open holding returns are outside the window. Original technical records support local time observations only, never proof that a synthetic fixture was a real forward run.
 
+## Timing and HOLD disclosure
+
+Each row’s accounting_time retains preparation start, actual creation/data verification, settlement and source verification timestamps separately. Facts absent from old records remain null. AFTER_OPEN_SIMULATION depends on original creation/verification versus original opening; late settlement does not reclassify earlier prospective stock selection. settlement_delay_seconds is actual elapsed time after opening, not an unlock gate. Without stdout, original_success=LOCAL_BUNDLE_VERIFIED_WITHOUT_STDOUT does not fabricate historical commit success.
+
+Requests enumerate saved records; skipped trading weeks receive no invented rows. JSON, CSV and Markdown display HOLD and the caller’s holding assumption. period_start_trade_date/period_end_trade_date describe actual adjacent valuation endpoints. Interval returns and actual execution costs remain available across HOLD, but missing intermediate valuations make max_drawdown null with HOLD_INTERVAL_NOT_SAMPLED/DRAWDOWN_HISTORY_INCOMPLETE. COMPLETE refers to the requested ledger and endpoint valuations, not full daily valuation through HOLD. Unmodeled corporate-action disclosure remains.
+
 ## Outputs and identities
 
 - `report.json`: all requested rows, actual request/manifest/operation references and member raw digests, cross-bundle joins, `source_context`, arm metrics, reasons, and capabilities.
-- `cycles.csv`: exactly two rows per request, CHAMPION then CHALLENGER. Stable columns: `cycle_index,current_cycle_id,trade_date,next_open_utc,status,row_reason_codes,role,portfolio_id,valuation_status,nav_before,nav_after,cash_after,total_fee,slippage_cost,gross_buy,gross_sell,filled_count,no_fill_count,normalized_nav,period_return,drawdown,cost,cost_rate,gross_turnover,reason_codes`. Null is an empty cell; reasons use `|`.
+- `cycles.csv`: exactly CHAMPION and CHALLENGER rows per actual request. Existing amount/ratio columns remain; appended fields are `created_at_utc,generation_relation,settled_at_utc,settlement_delay_seconds,hold_start_date,hold_end_date,hold_assumption,hold_reason,period_start_trade_date,period_end_trade_date`. Null is empty; reasons use `|`.
 - `report.md`: requested scope, common base, gaps, returns/costs, and per-arm samples, with explicit nulls. Detailed overlap and price provenance are in JSON.
 
 Calculations use a local high-precision Decimal context. Amounts are deterministic decimal strings; ratios use 24 fractional digits with ROUND_HALF_EVEN and trailing zeros removed. Rounding never feeds subsequent calculations. JSON/CSV/Markdown share numeric strings. `request_digest` excludes local roots; `semantic_digest` excludes `private_bindings` and `report_generated_at`, retaining actual source identities and implementation SHA256 values. Editing report JSON grants no publication or reuse authority. Legacy first-cycle v1 bundles do not require absent D2 fields; existing readers validate continuing v2 physical bindings and schedules.

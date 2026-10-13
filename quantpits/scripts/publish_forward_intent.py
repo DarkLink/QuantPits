@@ -13,24 +13,25 @@ def main(argv=None):
     parser = _SafeParser(prog="publish_forward_intent", add_help=False)
     parser.add_argument("action", nargs="?", choices=("prepare", "publish", "inspect"))
     parser.add_argument("--help", action="store_true")
-    for name in _ARGUMENTS + _EXTRA + ("expected-request-digest",):
+    for name in _ARGUMENTS + _EXTRA + ("expected-request-digest", "publication-mode"):
         parser.add_argument("--" + name)
     try:
         args = parser.parse_args(argv)
         if args.help:
             _emit(dict(schema_version=1, status="help", actions=["prepare", "publish", "inspect"],
-                       preparation_arguments=list(_ARGUMENTS + _EXTRA),
+                       preparation_arguments=list(_ARGUMENTS + tuple(n for n in _EXTRA if n != "decision-deadline-utc")),
+                       optional_arguments=["decision-deadline-utc", "publication-mode"], default_publication_mode="PAPER",
                        inspect_arguments=["intent-store-root", "epoch-id", "expected-request-digest"],
                        publish_extra_arguments=["expected-request-digest"], did_write=False))
             return 0
         if args.action is None:
             raise ValueError("action required")
-        required = ("intent-store-root", "epoch-id", "expected-request-digest") if args.action == "inspect" else _ARGUMENTS + _EXTRA
+        required = ("intent-store-root", "epoch-id", "expected-request-digest") if args.action == "inspect" else _ARGUMENTS + tuple(n for n in _EXTRA if n != "decision-deadline-utc")
         if args.action == "publish":
             required += ("expected-request-digest",)
         if any(getattr(args, name.replace("-", "_")) is None for name in required):
             raise ValueError("arguments required")
-        if args.action == "inspect" and any(getattr(args, name.replace("-", "_")) is not None for name in _ARGUMENTS + _EXTRA[2:]):
+        if args.action == "inspect" and any(getattr(args, name.replace("-", "_")) is not None for name in _ARGUMENTS + _EXTRA[2:] + ("publication-mode",)):
             raise ValueError("unexpected inspect arguments")
         if args.action == "prepare" and args.expected_request_digest is not None:
             raise ValueError("unexpected digest")
@@ -47,6 +48,7 @@ def main(argv=None):
     else:
         values = [getattr(args, name.replace("-", "_")) for name in _ARGUMENTS]
         kwargs = {name.replace("-", "_"): getattr(args, name.replace("-", "_")) for name in _EXTRA}
+        kwargs["publication_mode"] = args.publication_mode or "PAPER"
         function = publication.prepare_first_forward_intent_publication
         if args.action == "publish":
             function = publication.publish_first_forward_intent_pair

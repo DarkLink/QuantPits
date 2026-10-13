@@ -20,14 +20,17 @@ def main(argv=None):
     parser = _SafeParser(prog='continue_forward', add_help=False)
     parser.add_argument('action', nargs='?', choices=_ACTIONS)
     parser.add_argument('--help', action='store_true')
-    names = tuple(dict.fromkeys(_CURRENT + _JOIN + _SETTLE + ('expected-request-digest',)))
+    names = tuple(dict.fromkeys(_CURRENT + _JOIN + _SETTLE + ('expected-request-digest', 'publication-mode', 'hold-start-date', 'hold-end-date', 'hold-reason',)))
     for name in names:
         parser.add_argument('--' + name)
     try:
         args = parser.parse_args(argv)
         if args.help:
             _emit(dict(schema_version=1, status='help', actions=list(_ACTIONS),
-                intent_arguments=list(_CURRENT + _JOIN), settlement_arguments=list(_SETTLE),
+                intent_arguments=list(_CURRENT + tuple(n for n in _JOIN if n != 'decision-deadline-utc')),
+                settlement_arguments=list(n for n in _SETTLE if n != 'publication-success-record-path'),
+                optional_intent_arguments=['decision-deadline-utc', 'publication-mode', 'hold-start-date', 'hold-end-date', 'hold-reason'],
+                optional_settlement_arguments=['publication-success-record-path'], default_publication_mode='PAPER',
                 inspect_arguments=['intent-store-root OR settlement-store-root', 'epoch-id', 'cycle-index', 'expected-request-digest'],
                 publish_extra_arguments=['expected-request-digest'], did_write=False))
             return 0
@@ -36,12 +39,15 @@ def main(argv=None):
         action, kind = args.action.split('-')
         required = (kind + '-store-root', 'epoch-id', 'cycle-index') if action == 'inspect' else (
             _CURRENT + _JOIN if kind == 'intent' else _SETTLE)
+        optional = (() if action == 'inspect' else ('publication-success-record-path',) if kind == 'settlement'
+                    else ('decision-deadline-utc', 'publication-mode', 'hold-start-date', 'hold-end-date', 'hold-reason'))
+        required = tuple(n for n in required if n not in optional)
         if action != 'prepare':
             required += ('expected-request-digest',)
         values = {name: getattr(args, name.replace('-', '_')) for name in names}
-        if any(values[name] is None for name in required) or any(value is not None and name not in required for name, value in values.items()):
+        if any(values[name] is None for name in required) or any(value is not None and name not in required + optional for name, value in values.items()):
             raise ValueError('arguments invalid')
-        kwargs = {name.replace('-', '_'): values[name] for name in required}
+        kwargs = {name.replace('-', '_'): values[name] for name in required + optional if values[name] is not None}
         for name in ('cycle_index', 'predecessor_cycle_index'):
             if name in kwargs:
                 raw = kwargs[name]

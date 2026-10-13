@@ -405,3 +405,43 @@ def test_guard_close_attempts_all_and_preserves_interruption(tmp_path, monkeypat
         assert 'secret' not in json.dumps(m.safe_summary(report))
     assert len(closed) == 2 and len({id(g) for g in closed}) == 2
     assert all(g.fd == -1 for g in closed)
+
+
+def test_mixed_strict_paper_and_hold_report(continuation, monkeypatch):
+    from tests.quantpits.research.test_forward_continuation import _hold_fixture
+    args, kw, previous, prepared, tmp = continuation
+    published = publish_intent(continuation)
+    second, _ = settle(continuation, published, monkeypatch, with_stdout=False)
+    request = dict(schema_version=1, first_intent_store_root=str(kw['first_intent_store_root']),
+        first_settlement_store_root=str(kw['predecessor_settlement_store_root']),
+        continuing_intent_store_root=str(kw['intent_store_root']), continuing_settlement_store_root=str(kw['settlement_store_root']),
+        epoch_id=kw['epoch_id'], requested_cycles=[
+            dict(cycle_index=1, current_cycle_id='2026-09-04', expected_intent_request_digest=kw['expected_first_intent_request_digest'], expected_settlement_request_digest=previous.request_digest),
+            dict(cycle_index=2, current_cycle_id='2026-09-11', expected_intent_request_digest=published.request_digest, expected_settlement_request_digest=second.request_digest)])
+    args = _cycle(args, '2026-09-25', prepared[2], prepared[3], monkeypatch)
+    kw = dict(kw, cycle_index=3, predecessor_cycle_index=2, predecessor_settlement_store_root=kw['settlement_store_root'],
+        expected_predecessor_request_digest=second.request_digest, next_open_utc='2026-09-28T01:30:00Z',
+        hold_start_date='2026-09-14', hold_end_date='2026-09-25', hold_reason='One trading week without orders: continuous holding assumption.')
+    kw.pop('decision_deadline_utc')
+    kw.pop('publication_mode')
+    monkeypatch.setattr(m.c4, '_clock', lambda: (datetime(2026, 9, 29, 12, tzinfo=timezone.utc), 20.))
+    fixture = args, kw, second, prepared, tmp
+    published = publish_intent(fixture)
+    third, _ = settle(fixture, published, monkeypatch, settled_at=datetime(2026, 9, 30, 12, tzinfo=timezone.utc), with_stdout=False)
+    request['requested_cycles'].append(dict(cycle_index=3, current_cycle_id='2026-09-25', expected_intent_request_digest=published.request_digest, expected_settlement_request_digest=third.request_digest))
+    report = build(request)
+    assert report['status'] == 'COMPLETE', report['reason_codes']
+    assert report['requested_count'] == report['settled_count'] == 3
+    assert [r['current_cycle_id'] for r in report['rows']] == ['2026-09-04', '2026-09-11', '2026-09-25']
+    first, second_row, third_row = report['rows']
+    assert first['accounting_time']['generation_relation'] == 'BEFORE_OPEN'
+    assert second_row['original_success'] == third_row['original_success'] == 'LOCAL_BUNDLE_VERIFIED_WITHOUT_STDOUT'
+    assert third_row['accounting_time']['generation_relation'] == 'AFTER_OPEN_SIMULATION'
+    assert third_row['period_start_trade_date'] == '2026-09-14' and third_row['period_end_trade_date'] == '2026-09-28'
+    assert third_row['hold']['assumption'] == m.d2.HOLD_ASSUMPTION
+    assert report['metrics']['arms'][0]['window_return'] is not None
+    assert all(a['max_drawdown'] is None and 'DRAWDOWN_HISTORY_INCOMPLETE' in a['reason_codes'] for a in report['metrics']['arms'])
+    assert 'HOLD_INTERVAL_NOT_SAMPLED' in report['warnings']
+    for text in (m.render_csv(report), m.render_markdown(report)):
+        assert 'AFTER_OPEN_SIMULATION' in text and '2026-09-14' in text and m.d2.HOLD_ASSUMPTION in text
+    assert '2026-09-18' not in [r['current_cycle_id'] for r in report['rows']]

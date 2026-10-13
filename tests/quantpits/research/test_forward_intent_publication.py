@@ -18,7 +18,7 @@ def publication(prepared_inputs, tmp_path, monkeypatch):
     monkeypatch.setattr(m, '_clock', lambda: (datetime(2026, 9, 6, tzinfo=timezone.utc), 100.0))
     kwargs = dict(intent_store_root=root, epoch_id='epoch.first',
                   decision_deadline_utc='2026-09-07T01:00:00Z', next_open_utc='2026-09-07T01:30:00Z',
-                  market_timezone='Asia/Shanghai', opening_policy=m.OPENING_POLICY)
+                  market_timezone='Asia/Shanghai', opening_policy=m.OPENING_POLICY, publication_mode='STRICT_PREOPEN')
     return prepared_inputs[0], kwargs
 
 
@@ -413,3 +413,57 @@ def test_portable_digest_payload_has_no_physical_identity(monkeypatch):
     assert stores['intent'] != stores['settlement']
     assert set(payloads[-1]) == {'domain', 'epoch_id', 'role', 'chain'}
     assert set(payloads[-1]['chain']) == {'first_intent', 'frozen_selectors', 'definition_request_digest', 'schedule'}
+
+
+@pytest.mark.parametrize('scenario', ['after_deadline', 'after_open', 'crossing_open', 'over_budget', 'clock_adjustment', 'backward', 'invalid_wall'])
+def test_paper_publication_records_time_without_old_gates(publication, monkeypatch, scenario):
+    args, kw = publication
+    kw = dict(kw)
+    kw.pop('publication_mode')
+    if scenario != 'after_deadline':
+        kw.pop('decision_deadline_utc')
+    plan = _prepare((args, kw))
+    base = datetime(2026, 9, 7, 1, 15, tzinfo=timezone.utc)
+    if scenario == 'after_open':
+        base = datetime(2026, 9, 8, 14, tzinfo=timezone.utc)
+    if scenario == 'crossing_open':
+        base = datetime(2026, 9, 7, 1, 25, tzinfo=timezone.utc)
+    offsets = [0, 700, 701, 702, 703] if scenario in ('over_budget', 'crossing_open') else [0, 1, 2, 3, 4]
+    walls = [base + timedelta(seconds=v) for v in offsets]
+    monos = [100. + v for v in offsets]
+    if scenario == 'clock_adjustment':
+        walls[1:] = [v + timedelta(seconds=10) for v in walls[1:]]
+    elif scenario == 'backward':
+        walls[1:] = [v - timedelta(seconds=10) for v in walls[1:]]
+    elif scenario == 'invalid_wall':
+        walls = [v.replace(tzinfo=None) for v in walls]
+    clocks = iter(zip(walls, monos))
+    monkeypatch.setattr(m, '_clock', lambda: next(clocks))
+    result = m.publish_first_forward_intent_pair(*args, **kw, expected_request_digest=plan.request_digest)
+    assert result.status == 'COMMITTED', result.to_safe_summary_dict()
+    safe = result.to_safe_summary_dict()
+    assert not safe['prospective_claim'] and not safe['epoch_started']
+    assert safe['recorded_time_claim']['policy'] == m.PAPER_TIME_POLICY
+    assert not safe['recorded_time_claim']['original_success_record_required']
+    assert safe['accounting_time']['generation_relation'] == (
+        'AFTER_OPEN_SIMULATION' if scenario in ('after_open', 'crossing_open') else 'UNKNOWN' if scenario in ('clock_adjustment', 'backward', 'invalid_wall') else 'BEFORE_OPEN')
+    observed = m.inspect_first_forward_intent_pair(kw['intent_store_root'], kw['epoch_id'], expected_request_digest=result.request_digest)
+    assert observed.status == 'VERIFIED' and observed.d1_inputs == result.d1_inputs
+    assert observed.to_safe_summary_dict()['accounting_time'] == safe['accounting_time']
+    from quantpits.research import forward_settlement as settlement
+    import struct
+    provider = args[3]
+    (provider / 'calendars/day.txt').write_bytes(b'2026-08-28\n2026-09-04\n2026-09-07\n')
+    for directory in (provider / 'features').iterdir():
+        for field, value in [('open', 10.), ('factor', 1.)]:
+            (directory / (field + '.day.bin')).write_bytes(struct.pack('<ffff', 0., value, value, value))
+    root = kw['intent_store_root'].parent / 'paper_settlements'
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(settlement, '_clock', lambda: datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    params = dict(intent_store_root=kw['intent_store_root'], epoch_id=kw['epoch_id'],
+        expected_intent_request_digest=result.request_digest, qlib_provider_root=provider, settlement_store_root=root)
+    prepared = settlement.prepare_first_forward_settlement(**params)
+    assert prepared.status == 'READY', prepared.to_safe_summary_dict()
+    settled = settlement.publish_first_forward_settlement(**params, expected_request_digest=prepared.request_digest)
+    assert settled.status == 'COMMITTED', settled.to_safe_summary_dict()
+    assert all(s.after_state.as_of_date == '2026-09-07' for s in settled.after_states)

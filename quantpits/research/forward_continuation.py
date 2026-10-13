@@ -17,6 +17,7 @@ from quantpits.research import forward_settlement as d1
 _need, _keys, _digest = c4._need, c4._keys, c4._digest
 RULE = "WEEKLY_LAST_SESSION_V1"
 OPENING_POLICY = "VERIFIED_PREDECESSOR_AFTER_STATE_V1"
+HOLD_ASSUMPTION = "NO_ORDERS_CONTINUOUS_HOLD_USER_ASSUMPTION_V1"
 SOURCE_METADATA = ("request.json", "manifest.json", "completion.json", "calendar_day.txt",
                    "definitions.json", "calendar_future.txt")
 
@@ -76,7 +77,16 @@ def _schedule(day_bytes, future_bytes, continuation, anchor, trade):
     target_week = _week(later[0])
     _need(any(_week(d) > target_week for d in later), "SCHEDULE_UNAVAILABLE")
     expected = max(d for d in later if _week(d) == target_week)
-    _need(anchor == expected, "GAP_DETECTED")
+    hold = continuation.get("hold")
+    if hold is None:
+        _need(anchor == expected, "GAP_DETECTED")
+    else:
+        _need(anchor > expected, "HOLD_NOT_REQUIRED")
+        _need(hold["start_date"] == continuation["predecessor"]["trade_date"]
+              and hold["end_date"] == anchor, "HOLD_RANGE_INVALID")
+        _need(hold["start_date"] in future and anchor in future
+              and max(d for d in future if _week(d) == _week(anchor)) == anchor
+              and any(_week(d) > _week(anchor) for d in future), "SCHEDULE_UNAVAILABLE")
     _need(anchor in day and anchor in future, "SCHEDULE_UNAVAILABLE")
     _need(trade == next(d for d in future if d > anchor), "SCHEDULE_INVALID")
 
@@ -88,7 +98,7 @@ def _reference(observation):
 
 def _validate_continuation(value, epoch, compiled, selectors):
     _keys(value, ("cycle_index", "epoch_id", "first_intent", "frozen_selectors", "definition_request_digest",
-                  "predecessor", "schedule"))
+                  "predecessor", "schedule") + (("hold",) if "hold" in value else ()))
     index = _index(value["cycle_index"])
     _need(value["epoch_id"] == epoch, "EPOCH_JOIN_INVALID")
     _keys(value["first_intent"], ("request_digest", "manifest_digest", "operation_id"))
@@ -116,6 +126,16 @@ def _validate_continuation(value, epoch, compiled, selectors):
               predecessor["current_cycle_id"] == schedule["first_anchor"], "FIRST_INTENT_JOIN_INVALID")
     else:
         _need(predecessor["current_cycle_id"] > schedule["first_anchor"], "PREDECESSOR_DATE_INVALID")
+    if "hold" in value:
+        hold = _keys(value["hold"], ("start_date", "end_date", "boundary", "assumption", "reason"))
+        _need(hold["assumption"] == HOLD_ASSUMPTION and hold["boundary"] == "AFTER_START_THROUGH_END",
+              "HOLD_ASSUMPTION_INVALID")
+        for key in ("start_date", "end_date"):
+            c3.surface._date(hold[key], key)
+        _need(hold["start_date"] == predecessor["trade_date"] <= hold["end_date"] == selectors["current_cycle_id"],
+              "HOLD_RANGE_INVALID")
+        _need(type(hold["reason"]) is str and bool(hold["reason"].strip()) and len(hold["reason"]) <= 512,
+              "HOLD_ASSUMPTION_INVALID")
     rows = predecessor["roles"]
     _need(type(rows) is list and [r["role"] for r in rows] == list(c3.ROLES), "PREDECESSOR_ROLE_INVALID")
     for row in rows:
@@ -148,6 +168,54 @@ def _watch(guards, root, paths):
     guard = c3.surface.SourceMutationObserver(root, paths)
     guards.append(guard)
     _need(guard.supported, "INPUT_OBSERVATION_UNSUPPORTED")
+
+
+def _hold_selection(selection, predecessor, anchor):
+    names = ("hold_start_date", "hold_end_date", "hold_reason")
+    values = [selection.get(n) for n in names]
+    if all(v is None for v in values):
+        return None
+    _need(all(v is not None for v in values), "HOLD_ARGUMENT_INVALID")
+    start, end, reason = values
+    _need(start == predecessor["trade_date"] and end == anchor, "HOLD_RANGE_INVALID")
+    return dict(start_date=start, end_date=end, boundary="AFTER_START_THROUGH_END",
+                assumption=HOLD_ASSUMPTION, reason=reason)
+
+
+def _check_hold_records(selection, guards):
+    """A chosen HOLD cannot hide published or uncertain later records in this account."""
+    epoch, previous = selection["epoch_id"], selection["predecessor_cycle_index"]
+    roots = {name: _target(selection[name + "_store_root"], epoch, selection["cycle_index"])[0]
+             for name in ("intent", "settlement")}
+    names = sorted({p.name for root in roots.values() for p in root.iterdir()})
+    for name in names:
+        _need(name.isdigit() and str(int(name)) == name and int(name) >= 2, "HOLD_RECORD_UNCERTAIN")
+        index = int(name)
+        if index <= previous:
+            continue
+        try:
+            for root in roots.values():
+                _watch(guards, root, (name,))
+            raw, _ = c3.surface._read_regular(roots["intent"] / name / "manifest.json",
+                                             maximum=c4.RECORD_LIMIT, private=True)
+            observed = inspect_next_forward_intent_pair(selection["intent_store_root"], epoch, index,
+                expected_request_digest=c4._json(raw)["request_digest"])
+            _need(observed.status == "VERIFIED", "HOLD_RECORD_UNCERTAIN")
+            target = roots["settlement"] / name
+            _need(os.path.lexists(str(target)), "HOLD_PENDING_INTENT")
+            raw, _ = c3.surface._read_regular(target / "manifest.json", maximum=c4.RECORD_LIMIT, private=True)
+            settled = inspect_next_forward_settlement(selection["settlement_store_root"], epoch, index,
+                expected_request_digest=c4._json(raw)["request_digest"])
+            _need(settled.status == "VERIFIED" and settled.continuation_metadata["request"]["source_request_digest"]
+                  == observed.request_digest, "HOLD_RECORD_UNCERTAIN")
+            # A later settled record also prevents reverting to an older after-state.
+            raise c4._Invalid("HOLD_LATER_RECORD_EXISTS")
+        except c4._PROCESS_CONTROL:
+            raise
+        except Exception as exc:
+            if getattr(exc, "code", None) in ("HOLD_PENDING_INTENT", "HOLD_LATER_RECORD_EXISTS"):
+                raise
+            raise c4._Invalid("HOLD_RECORD_UNCERTAIN") from exc
 
 
 def _observe_predecessor(selection, guards, compiled, bootstrap_id, model_id, source_cycle, evidence_cycle, anchor):
@@ -219,6 +287,10 @@ def _observe_predecessor(selection, guards, compiled, bootstrap_id, model_id, so
             current_cycle_id=previous_body["current_cycle_id"], trade_date=previous_body["trade_date"],
             intent=source_ref, settlement=_reference(previous), roles=[dict(role=s.role,
                 portfolio_id=s.after_state.portfolio_id, after_state_digest=s.after_state.digest) for s in states]))
+    hold = _hold_selection(selection, value["predecessor"], anchor)
+    if hold is not None:
+        value["hold"] = hold
+        _check_hold_records(selection, guards)
     _validate_continuation(value, epoch, compiled, dict(frozen, current_cycle_id=anchor, signal_capsule_id="current"))
     _need(selection["market_timezone"] == first_body["time_policy"]["market_timezone"], "SCHEDULE_INVALID")
     return tuple(s.after_state for s in states), value
@@ -260,7 +332,10 @@ def _intent_run(args, selection, deadline, next_open, expected=None):
                     safe["status"] = "ADOPTED"
                 return c4._result(c4.FirstIntentPublicationResult, safe, inputs)
         bindings = _bindings(selection["intent_store_root"], selection["settlement_store_root"], epoch, index)
-        policy = c4._policy(deadline, next_open, selection["market_timezone"], OPENING_POLICY, continuing=True)
+        mode = selection.get("publication_mode", "PAPER")
+        _need(mode in ("PAPER", "STRICT_PREOPEN"), "TIME_POLICY_INVALID")
+        policy = c4._policy(deadline, next_open, selection["market_timezone"], OPENING_POLICY,
+                            continuing=True, paper=mode == "PAPER")
         gate = c4._TimeGate(policy)
         gate.check("BEFORE_PREPARATION")
         prepared = c3._prepare_forward_intent(*args, _guard_owner=owner, _continuation=selection)
@@ -278,6 +353,8 @@ def _intent_run(args, selection, deadline, next_open, expected=None):
                 trade_date=prepared.to_safe_summary_dict()["trade_date"], predecessor_join_observed=True,
                 target_binding_digest=c4._portable_binding("intent", body, c4._raw(manifest)), time_observations=gate.observations,
                 order_counts=[len(p.intents.intents) for p in prepared.pair.plans])
+            safe["continuation_context"] = dict(predecessor_trade_date=body["continuation"]["predecessor"]["trade_date"],
+                hold=body["continuation"].get("hold"), selected_anchor=body["current_cycle_id"], trade_date=body["trade_date"])
             if os.path.lexists(str(target)):
                 safe.update(status="CONFLICT", reason_codes=["CONFLICT"])
             elif expected is not None:
@@ -312,7 +389,8 @@ def prepare_next_forward_intent_publication(
     signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id, *,
     intent_store_root, settlement_store_root, epoch_id, cycle_index, first_intent_store_root,
     expected_first_intent_request_digest, predecessor_settlement_store_root, predecessor_cycle_index,
-    expected_predecessor_request_digest, decision_deadline_utc, next_open_utc, market_timezone,
+    expected_predecessor_request_digest, decision_deadline_utc=None, next_open_utc, market_timezone,
+    publication_mode="PAPER", hold_start_date=None, hold_end_date=None, hold_reason=None,
 ):
     return _intent_api(locals())
 
@@ -323,7 +401,8 @@ def publish_next_forward_intent_pair(
     signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id, *,
     intent_store_root, settlement_store_root, epoch_id, cycle_index, first_intent_store_root,
     expected_first_intent_request_digest, predecessor_settlement_store_root, predecessor_cycle_index,
-    expected_predecessor_request_digest, decision_deadline_utc, next_open_utc, market_timezone, expected_request_digest,
+    expected_predecessor_request_digest, decision_deadline_utc=None, next_open_utc, market_timezone,
+    publication_mode="PAPER", hold_start_date=None, hold_end_date=None, hold_reason=None, expected_request_digest,
 ):
     if expected_request_digest is None:
         return c4._result(c4.FirstIntentPublicationResult, _intent_summary(None, reason_codes=["DIGEST_INVALID"]))
@@ -406,13 +485,13 @@ def _settlement_run(intent_root, epoch, index, expected_intent, success, provide
 
 
 def prepare_next_forward_settlement(intent_store_root, epoch_id, cycle_index, expected_intent_request_digest,
-                                    publication_success_record_path, qlib_provider_root, *, settlement_store_root):
+                                    publication_success_record_path=None, qlib_provider_root=None, *, settlement_store_root):
     return _settlement_run(intent_store_root, epoch_id, cycle_index, expected_intent_request_digest,
                            publication_success_record_path, qlib_provider_root, settlement_store_root)
 
 
 def publish_next_forward_settlement(intent_store_root, epoch_id, cycle_index, expected_intent_request_digest,
-                                    publication_success_record_path, qlib_provider_root, *, settlement_store_root,
+                                    publication_success_record_path=None, qlib_provider_root=None, *, settlement_store_root,
                                     expected_request_digest):
     if expected_request_digest is None:
         return d1._result(d1._summary(reason_codes=["DIGEST_INVALID"], cycle_index=None, whole_chain_verified=False))

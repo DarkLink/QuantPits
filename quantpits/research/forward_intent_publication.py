@@ -33,6 +33,7 @@ MEMBER_LIMIT = 4 * 1024 * 1024
 TOTAL_LIMIT = 32 * 1024 * 1024
 RECORD_LIMIT = 1024 * 1024
 TIME_POLICY = "LOCAL_PREOPEN_OBSERVATION_V1"
+PAPER_TIME_POLICY = "PAPER_ACCOUNTING_TIME_V1"
 OPENING_POLICY = "MATCHED_BOOTSTRAP_UNTRADED_V1"
 _PROCESS_CONTROL = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
@@ -99,13 +100,67 @@ def _stamp(value):
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _policy(deadline, next_open, zone, opening, *, continuing=False):
-    deadline, next_open = _utc(deadline), _utc(next_open)
+def _policy(deadline, next_open, zone, opening, *, continuing=False, paper=False):
+    next_open = _utc(next_open)
+    deadline = _utc(deadline) if deadline is not None else None
     _need(type(zone) is str and gettz(zone) is not None and not zone.startswith("/"), "TIME_POLICY_INVALID")
-    _need(deadline <= next_open and opening == ("VERIFIED_PREDECESSOR_AFTER_STATE_V1" if continuing else OPENING_POLICY), "TIME_POLICY_INVALID")
+    _need(opening == ("VERIFIED_PREDECESSOR_AFTER_STATE_V1" if continuing else OPENING_POLICY), "TIME_POLICY_INVALID")
+    if paper:
+        return dict(policy=PAPER_TIME_POLICY, decision_deadline_utc=_stamp(deadline) if deadline else None,
+            next_open_utc=_stamp(next_open), market_timezone=zone, opening_policy=opening)
+    _need(deadline is not None and deadline <= next_open, "TIME_POLICY_INVALID")
     return {"policy": TIME_POLICY, "decision_deadline_utc": _stamp(deadline),
             "next_open_utc": _stamp(next_open), "market_timezone": zone,
             "opening_policy": opening, "budget_seconds": 600, "clock_tolerance_seconds": 2}
+
+
+def _validate_policy(policy, *, continuing=False):
+    _need(type(policy) is dict and policy.get("policy") in (TIME_POLICY, PAPER_TIME_POLICY), "TIME_POLICY_INVALID")
+    _need(policy == _policy(policy["decision_deadline_utc"], policy["next_open_utc"],
+        policy["market_timezone"], policy["opening_policy"], continuing=continuing,
+        paper=policy["policy"] == PAPER_TIME_POLICY), "TIME_POLICY_INVALID")
+
+
+def _time_claim(record):
+    return dict(policy=record["time_policy"]["policy"], bundle_verified_at_utc=record["bundle_verified_at_utc"],
+        scope="DATA_BUNDLE_ONLY", original_success_record_required=record["time_policy"]["policy"] == TIME_POLICY)
+
+
+def _validate_time_record(record):
+    policy = record["time_policy"]
+    if policy["policy"] == TIME_POLICY:
+        started, verified = _utc(record["preparation_started_at_utc"]), _utc(record["bundle_verified_at_utc"])
+        _need(started <= verified < _utc(policy["decision_deadline_utc"])
+              and (verified - started).total_seconds() <= 602)
+    else:
+        rows = record["accounting_time_observations"]
+        _need(type(rows) is list and [r["event"] for r in rows] == ["BEFORE_PREPARATION", "PREPARATION_VERIFIED",
+              "BEFORE_WRITE", "DATA_BUNDLE_VERIFIED"], "TIME_EVIDENCE_INVALID")
+        for row in rows:
+            _keys(row, ("event", "at_utc", "elapsed_seconds", "problem_codes"))
+            if row["at_utc"] is not None:
+                _utc(row["at_utc"])
+            _need(row["elapsed_seconds"] is None or (type(row["elapsed_seconds"]) in (int, float)
+                  and math.isfinite(row["elapsed_seconds"])), "TIME_EVIDENCE_INVALID")
+            _need(type(row["problem_codes"]) is list and all(p in ("WALL_CLOCK_INVALID", "MONOTONIC_CLOCK_INVALID",
+                  "WALL_CLOCK_BACKWARD", "MONOTONIC_CLOCK_BACKWARD", "CLOCK_ADJUSTMENT_OBSERVED")
+                  for p in row["problem_codes"]), "TIME_EVIDENCE_INVALID")
+        _need(record["preparation_started_at_utc"] == rows[0]["at_utc"]
+              and record["bundle_verified_at_utc"] == rows[-1]["at_utc"], "TIME_EVIDENCE_INVALID")
+
+
+def _accounting_time(record):
+    rows = record.get("accounting_time_observations", [])
+    # Legacy completions retain preparation/verification, not the creation event.
+    created = rows[2]["at_utc"] if rows else None
+    verified = record["bundle_verified_at_utc"]
+    problems = sorted({p for r in rows for p in r["problem_codes"]})
+    known = [v for v in (created, verified) if v is not None]
+    relation = "UNKNOWN" if not known or problems else ("AFTER_OPEN_SIMULATION"
+        if max(_utc(v) for v in known) >= _utc(record["time_policy"]["next_open_utc"]) else "BEFORE_OPEN")
+    return dict(created_at_utc=created, preparation_started_at_utc=record["preparation_started_at_utc"],
+        bundle_verified_at_utc=verified, generation_relation=relation, time_problem_codes=problems,
+        publication_time_policy=record["time_policy"]["policy"])
 
 
 def _clock():
@@ -121,6 +176,24 @@ class _TimeGate:
 
     def check(self, event):
         wall, mono = _clock()
+        if self.policy["policy"] == PAPER_TIME_POLICY:
+            valid_wall = isinstance(wall, datetime) and wall.tzinfo is not None and wall.utcoffset().total_seconds() == 0
+            valid_mono = type(mono) in (int, float) and math.isfinite(mono)
+            problems = ([] if valid_wall else ["WALL_CLOCK_INVALID"]) + ([] if valid_mono else ["MONOTONIC_CLOCK_INVALID"])
+            if self.first is None:
+                self.first = (wall if valid_wall else None, mono if valid_mono else None)
+            elapsed = mono - self.first[1] if valid_mono and self.first[1] is not None else None
+            if self.previous is not None:
+                if valid_wall and self.previous[0] is not None and wall < self.previous[0]:
+                    problems.append("WALL_CLOCK_BACKWARD")
+                if valid_mono and self.previous[1] is not None and mono < self.previous[1]:
+                    problems.append("MONOTONIC_CLOCK_BACKWARD")
+            if valid_wall and self.first[0] is not None and elapsed is not None and abs((wall - self.first[0]).total_seconds() - elapsed) > 2:
+                problems.append("CLOCK_ADJUSTMENT_OBSERVED")
+            stamp = _stamp(wall) if valid_wall else None
+            self.previous = (wall if valid_wall else None, mono if valid_mono else None)
+            self.observations.append(dict(event=event, at_utc=stamp, elapsed_seconds=elapsed, problem_codes=problems))
+            return stamp
         _need(isinstance(wall, datetime) and wall.tzinfo is not None
               and wall.utcoffset().total_seconds() == 0 and math.isfinite(mono), "CLOCK_INVALID")
         if self.first is None:
@@ -532,7 +605,7 @@ def _validate(members, manifest, epoch, expected, *, continuing=False):
           and provenance["calendar"] == _raw(members["calendar_day.txt"])
           and provenance["future_calendar"] == _raw(members["calendar_future.txt"]))
     policy = body["time_policy"]
-    _need(policy == _policy(policy["decision_deadline_utc"], policy["next_open_utc"], policy["market_timezone"], policy["opening_policy"], continuing=continuing))
+    _validate_policy(policy, continuing=continuing)
     _need(_utc(policy["next_open_utc"]).astimezone(gettz(policy["market_timezone"])).date().isoformat() == trade, "NEXT_OPEN_DATE_MISMATCH")
     prior_doc = _keys(_json(members["priors.json"]), ("schema_version", "opening_policy", "bootstrap_manifest", "roles"))
     plan_doc = _keys(_json(members["plans.json"]), ("schema_version", "roles"))
@@ -712,9 +785,11 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cy
         _need(body["continuation"]["cycle_index"] == cycle_index, "CYCLE_INDEX_INVALID")
     record = None
     if completion:
-        record = _keys(_json(data["completion.json"]), ("schema_version", "event", "operation_id", "epoch_id",
+        record = _json(data["completion.json"])
+        _keys(record, ("schema_version", "event", "operation_id", "epoch_id",
             "current_cycle_id", "request_digest", "manifest_digest", "time_policy", "bundle_verified_at_utc",
-            "preparation_started_at_utc", "target_binding_digest") + (("store_bindings",) if cycle_index is not None else ()))
+            "preparation_started_at_utc", "target_binding_digest") + (("store_bindings",) if cycle_index is not None else ())
+            + (("accounting_time_observations",) if body["time_policy"]["policy"] == PAPER_TIME_POLICY else ()))
         _need(_completion_version(record) in (1, 2) and record["event"] == "DATA_BUNDLE_VERIFIED_BEFORE_COMPLETION_CREATION"
               and record["epoch_id"] == epoch and record["current_cycle_id"] == body["current_cycle_id"]
               and record["request_digest"] == expected and record["manifest_digest"] == _raw(data["manifest.json"])
@@ -723,9 +798,7 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cy
         if cycle_index is not None:
             _intent_store_bindings(record, body, root, identity)
         _need(str(uuid.UUID(record["operation_id"])) == record["operation_id"])
-        started, verified = _utc(record["preparation_started_at_utc"]), _utc(record["bundle_verified_at_utc"])
-        _need(started <= verified < _utc(body["time_policy"]["decision_deadline_utc"])
-              and (verified - started).total_seconds() <= 602)
+        _validate_time_record(record)
     # Reopen every canonical member after schema checks; no old-fd success.
     for name, original in data.items():
         observed, fingerprint = c3.surface._read_regular(target / name,
@@ -742,10 +815,13 @@ def _read_bundle(root, target, identity, epoch, expected, *, completion=True, cy
     if cycle_index is not None:
         summary.update(cycle_index=cycle_index, cycle_intent_published=False,
                        predecessor_join_observed=False, whole_chain_verified=False, planning_roles=body["roles"])
+        if "hold" in body["continuation"]:
+            summary["continuation_context"] = dict(predecessor_trade_date=body["continuation"]["predecessor"]["trade_date"],
+                hold=body["continuation"]["hold"], selected_anchor=body["current_cycle_id"], trade_date=body["trade_date"])
     if record:
-        summary.update(operation_id=record["operation_id"], recorded_time_claim={
-            "policy": TIME_POLICY, "bundle_verified_at_utc": record["bundle_verified_at_utc"],
-            "scope": "DATA_BUNDLE_ONLY", "original_success_record_required": True})
+        summary.update(operation_id=record["operation_id"], recorded_time_claim=_time_claim(record))
+        if body["time_policy"]["policy"] == PAPER_TIME_POLICY:
+            summary["accounting_time"] = _accounting_time(record)
     return summary, inputs, data
 
 
@@ -833,6 +909,8 @@ def _publish_bundle(root, target, identity, epoch, members, manifest, digest, ga
             request_digest=digest, manifest_digest=_raw(manifest), time_policy=gate.policy,
             bundle_verified_at_utc=verified, preparation_started_at_utc=gate.observations[0]["at_utc"],
             target_binding_digest=_portable_binding("intent", body, _raw(manifest)))
+        if gate.policy["policy"] == PAPER_TIME_POLICY:
+            record_doc["accounting_time_observations"] = gate.observations[:]
         if cycle_index is not None:
             record_doc["store_bindings"] = store_bindings
         record = canonical(record_doc)
@@ -847,7 +925,8 @@ def _publish_bundle(root, target, identity, epoch, members, manifest, digest, ga
         gate.check("FINAL_PUBLICATION_VERIFIED")
         summary = observed
         observed.update(status="COMMITTED", did_write=True, write_state="COMMITTED",
-                        prospective_claim=True, epoch_started=cycle_index is None, time_observations=gate.observations)
+                        prospective_claim=gate.policy["policy"] == TIME_POLICY,
+                        epoch_started=cycle_index is None and gate.policy["policy"] == TIME_POLICY, time_observations=gate.observations)
         if cycle_index is not None:
             observed.update(cycle_intent_published=True, predecessor_join_observed=True)
         return observed, inputs
@@ -876,7 +955,7 @@ def _publish_bundle(root, target, identity, epoch, members, manifest, digest, ga
                         summary.update(cycle_intent_published=False, predecessor_join_observed=False)
 
 
-def _run(args, root_value, epoch, deadline, next_open, zone, opening, expected=None):
+def _run(args, root_value, epoch, deadline, next_open, zone, opening, expected=None, publication_mode="PAPER"):
     cls = FirstIntentPublicationPlan if expected is None else FirstIntentPublicationResult
     owner = c3._PreparationGuards()
     summary = _summary()
@@ -891,7 +970,8 @@ def _run(args, root_value, epoch, deadline, next_open, zone, opening, expected=N
                 if observed.status == "VERIFIED":
                     summary["status"] = "ADOPTED"
                 return _result(cls, summary, inputs)
-        policy = _policy(deadline, next_open, zone, opening)
+        _need(publication_mode in ("PAPER", "STRICT_PREOPEN"), "TIME_POLICY_INVALID")
+        policy = _policy(deadline, next_open, zone, opening, paper=publication_mode == "PAPER")
         gate = _TimeGate(policy)
         gate.check("BEFORE_PREPARATION")
         prepared = c3._prepare_first_forward_intent(*args, _guard_owner=owner)
@@ -933,12 +1013,14 @@ def prepare_first_forward_intent_publication(
     qlib_provider_root, current_cycle_id, activation_path,
     definition_store_root, evidence_store_root, bootstrap_store_root, bootstrap_set_id,
     signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id,
-    *, intent_store_root, epoch_id, decision_deadline_utc, next_open_utc, market_timezone, opening_policy,
+    *, intent_store_root, epoch_id, decision_deadline_utc=None, next_open_utc, market_timezone, opening_policy,
+    publication_mode="PAPER",
 ) -> FirstIntentPublicationPlan:
     return _run((production_workspace_root, research_workspace_root, engine_root, qlib_provider_root,
         current_cycle_id, activation_path, definition_store_root, evidence_store_root, bootstrap_store_root,
         bootstrap_set_id, signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id),
-        intent_store_root, epoch_id, decision_deadline_utc, next_open_utc, market_timezone, opening_policy)
+        intent_store_root, epoch_id, decision_deadline_utc, next_open_utc, market_timezone, opening_policy,
+        publication_mode=publication_mode)
 
 
 def publish_first_forward_intent_pair(
@@ -946,7 +1028,8 @@ def publish_first_forward_intent_pair(
     qlib_provider_root, current_cycle_id, activation_path,
     definition_store_root, evidence_store_root, bootstrap_store_root, bootstrap_set_id,
     signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id,
-    *, intent_store_root, epoch_id, decision_deadline_utc, next_open_utc, market_timezone, opening_policy,
+    *, intent_store_root, epoch_id, decision_deadline_utc=None, next_open_utc, market_timezone, opening_policy,
+    publication_mode="PAPER",
     expected_request_digest,
 ) -> FirstIntentPublicationResult:
     if expected_request_digest is None:
@@ -955,4 +1038,4 @@ def publish_first_forward_intent_pair(
         current_cycle_id, activation_path, definition_store_root, evidence_store_root, bootstrap_store_root,
         bootstrap_set_id, signal_capsule_store_root, signal_capsule_id, model_capsule_store_root, model_capsule_id),
         intent_store_root, epoch_id, decision_deadline_utc, next_open_utc, market_timezone, opening_policy,
-        expected_request_digest)
+        expected_request_digest, publication_mode=publication_mode)

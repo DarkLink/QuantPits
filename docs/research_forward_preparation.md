@@ -38,7 +38,7 @@ stdout 仅一行 canonical safe JSON，包含日期、固定 role、状态、计
 
 每臂请求本臂 scored ∪ holdings 的 anchor close；联合观察一次后准确分配到 B1。未评分已持有者仍请求价格并保留，未评分未持有者不买入，池外无价退出继续 pending。day/day_future 的历史 session 顺序必须一致，trade date 取 anchor 后首个 future session。价格来源为 `CURRENT_PROVIDER_ANCHOR_OBSERVATION`；历史物化关系仍为 `unverified`。calendar 与 seal 的 byte-match 单独报告，calendar 正常扩展不等于历史价格重现。现有 reader 为 hash 读取完整 close/factor 文件；决策仅解释 anchor 值，不读取 open 文件、不使用 next-open。
 
-B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单保留。C3 不结算，也不验证结算后的现金或 no-deficit-worsening。历史日期的技术准备不能回填 prospective evidence；C4 需另选尚未开盘的周期并重新观察输入。
+B1 的合法缺价、pending forced exit、buy shortage、负现金和零订单保留。C3 不结算，也不验证结算后的现金或 no-deficit-worsening。历史日期的技术准备不能回填 prospective evidence；默认纸面保存可选择历史 anchor 并重新观察其实际输入，开盘后生成须明确标记事后模拟。
 
 旧 `inspect_decision_surface` 新增 `--reference-source research|production`，默认仍为 `research`；fresh split-root 布局显式选 `production`，不会按存在性 fallback。此次容量修复仅适用于 fresh definition evidence 的只读 ADOPT；prepare/publish writer 的全树预算未改变。
 
@@ -74,4 +74,4 @@ device、inode、mode、mtime、ctime 等仅用于本次调用的本地前后检
 
 C3/C4/D2 默认将任意源码差异或源码等价比较不可用作为观察信息；只要其余模型、配置、信号与账户校验通过，就可以继续纸面记账。历史生产封存代码不必等于当前研究代码，当前工作文件仍与实际加载来源核对，并记录工作文件内容指纹，不能仅用 HEAD 代表执行内容。真实信号损坏、排名重建矛盾、模型/配置变化和错误前序仍拒绝。旧公开 decision-surface API 保留原比较语义；新日常路径不授予严格同段或维护许可。
 
-新 request 的 `input_provenance.source_change` 使用独立 `schema_version=1` / `SOURCE_DIFFERENCE_OBSERVATION_ONLY_V1`：`production_comparison` 保存两期生产源码比较，`production_commit`/`production_digest` 保存本期预测生产来源，`execution_commit`/`execution_tree`/`execution_implementation_digest`/`execution_code_digest` 保存当前研究执行来源；`production_execution_comparison` 为 EQUAL、DIFFERENT 或 INCOMPARABLE，不可观察时保存原因。它参与 input/request digest，不决定账户断段。旧 `maintenance_admission` 记录继续按旧合同读取。completion V2 的可迁移绑定与该字段版本独立；回退程序须保留可读取新字段的 reader，不改写历史记录。时间、原始 stdout、防重复及写入中断规则保持原合同。
+新 request 的 `input_provenance.source_change` 使用独立 `schema_version=1` / `SOURCE_DIFFERENCE_OBSERVATION_ONLY_V1`：`production_comparison` 保存两期生产源码比较，`production_commit`/`production_digest` 保存本期预测生产来源，`execution_commit`/`execution_tree`/`execution_implementation_digest`/`execution_code_digest` 保存当前研究执行来源；`production_execution_comparison` 为 EQUAL、DIFFERENT 或 INCOMPARABLE，不可观察时保存原因。它参与 input/request digest，不决定账户断段。旧 `maintenance_admission` 记录继续按旧合同读取。completion V2 的可迁移绑定与该字段版本独立；回退程序须保留可读取新字段的 reader，不改写历史记录。首期／续期保存与结算采用新的[纸面时间及可选 stdout 语义](research_forward_publication.md)；旧严格记录、防重复及中断合同保持兼容。

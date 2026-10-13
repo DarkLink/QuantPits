@@ -108,7 +108,7 @@ def continuation(publication, prepared_inputs, tmp_path, monkeypatch):
         first_intent_store_root=first_kw['intent_store_root'], expected_first_intent_request_digest=first.request_digest,
         predecessor_settlement_store_root=first_settlements, predecessor_cycle_index=1,
         expected_predecessor_request_digest=settled.request_digest, decision_deadline_utc='2026-09-14T01:00:00Z',
-        next_open_utc='2026-09-14T01:30:00Z', market_timezone='Asia/Shanghai')
+        next_open_utc='2026-09-14T01:30:00Z', market_timezone='Asia/Shanghai', publication_mode='STRICT_PREOPEN')
     return args, kw, settled, prepared_inputs, tmp_path
 
 
@@ -127,11 +127,11 @@ def publish_intent(fixture):
     return result
 
 
-def settle(fixture, published, monkeypatch):
+def settle(fixture, published, monkeypatch, *, settled_at=None, with_stdout=True):
     args, kw, _, _, tmp = fixture
     trade = published.to_safe_summary_dict()['trade_date']
     _calendar(args[3] / 'calendars/day.txt', [d for d in DATES if d <= trade])
-    now = datetime.fromisoformat(trade + 'T02:00:00+00:00')
+    now = settled_at or datetime.fromisoformat(trade + 'T02:00:00+00:00')
     monkeypatch.setattr(m.d1, '_clock', lambda: now)
     path = tmp / ('success_%s.json' % kw['cycle_index'])
     path.write_bytes(m.c4.canonical(published.to_safe_summary_dict()))
@@ -139,6 +139,9 @@ def settle(fixture, published, monkeypatch):
     params = dict(intent_store_root=kw['intent_store_root'], epoch_id=kw['epoch_id'], cycle_index=kw['cycle_index'],
         expected_intent_request_digest=published.request_digest, publication_success_record_path=path,
         qlib_provider_root=args[3], settlement_store_root=kw['settlement_store_root'])
+    if not with_stdout:
+        params.pop('publication_success_record_path')
+        path.unlink()
     plan = m.prepare_next_forward_settlement(**params)
     assert plan.status == 'READY', plan.to_safe_summary_dict()
     result = m.publish_next_forward_settlement(**params, expected_request_digest=plan.request_digest)
@@ -888,3 +891,107 @@ def test_logical_stores_still_require_nonoverlapping_directories(tmp_path):
     for intent, settlement in ((left, left), (left, right), (right, left)):
         with pytest.raises(m.c4._Invalid, match='STORE_BINDING_INVALID'):
             m._bindings(intent, settlement, 'epoch', 2, body={})
+
+
+def test_paper_continuation_without_deadline_or_stdout(continuation, monkeypatch):
+    args, kw, previous, _, _ = continuation
+    kw = dict(kw)
+    kw.pop('decision_deadline_utc')
+    kw.pop('publication_mode')
+    monkeypatch.setattr(m.c4, '_clock', lambda: (datetime(2026, 9, 16, 12, tzinfo=timezone.utc), 10.))
+    published = publish_intent((args, kw))
+    assert published.to_safe_summary_dict()['accounting_time']['generation_relation'] == 'AFTER_OPEN_SIMULATION'
+    assert not published.to_safe_summary_dict()['prospective_claim']
+    _calendar(args[3] / 'calendars/day.txt', DATES)
+    monkeypatch.setattr(m.d1, '_clock', lambda: datetime(2026, 9, 23, 12, tzinfo=timezone.utc))
+    params = dict(intent_store_root=kw['intent_store_root'], settlement_store_root=kw['settlement_store_root'],
+        epoch_id=kw['epoch_id'], cycle_index=2, expected_intent_request_digest=published.request_digest, qlib_provider_root=args[3])
+    plan = m.prepare_next_forward_settlement(**params)
+    assert plan.status == 'READY', plan.to_safe_summary_dict()
+    settled = m.publish_next_forward_settlement(**params, expected_request_digest=plan.request_digest)
+    assert settled.status == 'COMMITTED', settled.to_safe_summary_dict()
+    assert [s.prior_digest for s in settled.after_states] == [s.after_state.digest for s in previous.after_states]
+    assert settled.to_safe_summary_dict()['trade_date'] == '2026-09-14'
+    observed = m.inspect_next_forward_settlement(kw['settlement_store_root'], kw['epoch_id'], 2,
+        expected_request_digest=settled.request_digest)
+    assert observed.after_states == settled.after_states
+
+
+def _hold_fixture(continuation, monkeypatch):
+    args, kw, previous, prepared, tmp = continuation
+    args = _cycle(args, '2026-09-18', prepared[2], prepared[3], monkeypatch)
+    kw = dict(kw, next_open_utc='2026-09-21T01:30:00Z', hold_start_date='2026-09-07',
+        hold_end_date='2026-09-18', hold_reason='Skipped rebalance; explicitly assume continuous holding.')
+    kw.pop('decision_deadline_utc')
+    kw.pop('publication_mode')
+    monkeypatch.setattr(m.c4, '_clock', lambda: (datetime(2026, 9, 23, 12, tzinfo=timezone.utc), 10.))
+    return args, kw, previous, prepared, tmp
+
+
+def test_hold_uses_own_after_states_and_actual_record_indices(continuation, monkeypatch):
+    fixture = _hold_fixture(continuation, monkeypatch)
+    args, kw, previous, _, _ = fixture
+    plan = prepare_intent(fixture)
+    context = plan.to_safe_summary_dict()['continuation_context']
+    assert context['predecessor_trade_date'] == '2026-09-07'
+    assert context['hold']['start_date'] == '2026-09-07' and context['hold']['end_date'] == '2026-09-18'
+    published = publish_intent(fixture)
+    assert [i.prior.to_dict() for i in published.d1_inputs] == [s.after_state.to_dict() for s in previous.after_states]
+    settled, params = settle(fixture, published, monkeypatch, settled_at=datetime(2026, 9, 24, 12, tzinfo=timezone.utc))
+    assert settled.to_safe_summary_dict()['trade_date'] == '2026-09-21'
+    assert [s.prior_digest for s in settled.after_states] == [s.after_state.digest for s in previous.after_states]
+    assert [p.name for p in (kw['intent_store_root'] / kw['epoch_id']).iterdir()] == ['2']
+    assert [p.name for p in (kw['settlement_store_root'] / kw['epoch_id']).iterdir()] == ['2']
+    adopted = m.publish_next_forward_settlement(**params, expected_request_digest=settled.request_digest)
+    assert adopted.status == 'ADOPTED' and adopted.after_states == settled.after_states
+
+
+@pytest.mark.parametrize('kind', ['unsettled', 'incomplete', 'corrupt', 'settled', 'orphan_settlement', 'incomplete_settlement'])
+def test_hold_cannot_hide_later_account_records(continuation, monkeypatch, kind):
+    published = publish_intent(continuation)
+    args, kw = continuation[:2]
+    target = kw['intent_store_root'] / kw['epoch_id'] / '2'
+    if kind == 'incomplete':
+        (target / 'completion.json').unlink()
+    elif kind == 'corrupt':
+        (target / 'plans.json').write_bytes(b'{}')
+    elif kind in ('settled', 'orphan_settlement', 'incomplete_settlement'):
+        settle(continuation, published, monkeypatch)
+        if kind == 'orphan_settlement':
+            shutil.rmtree(target)
+        elif kind == 'incomplete_settlement':
+            (kw['settlement_store_root'] / kw['epoch_id'] / '2' / 'completion.json').unlink()
+    before = {p.name: p.read_bytes() for p in target.iterdir()} if target.exists() else {}
+    fixture = _hold_fixture(continuation, monkeypatch)
+    result = m.prepare_next_forward_intent_publication(*fixture[0], **fixture[1])
+    expected = 'HOLD_PENDING_INTENT' if kind == 'unsettled' else 'HOLD_LATER_RECORD_EXISTS' if kind == 'settled' else 'HOLD_RECORD_UNCERTAIN'
+    assert result.to_safe_summary_dict()['reason_codes'] == [expected]
+    assert ({p.name: p.read_bytes() for p in target.iterdir()} if target.exists() else {}) == before
+    assert not result.to_safe_summary_dict()['did_write']
+
+
+@pytest.mark.parametrize('change,code', [
+    ({'hold_start_date': '2026-09-04'}, 'HOLD_RANGE_INVALID'),
+    ({'hold_end_date': '2026-09-11'}, 'HOLD_RANGE_INVALID'),
+    ({'hold_reason': None}, 'HOLD_ARGUMENT_INVALID'),
+    ({'hold_reason': ''}, 'HOLD_ASSUMPTION_INVALID'),
+])
+def test_hold_requires_explicit_consistent_range(continuation, monkeypatch, change, code):
+    fixture = _hold_fixture(continuation, monkeypatch)
+    result = m.prepare_next_forward_intent_publication(*fixture[0], **dict(fixture[1], **change))
+    assert result.to_safe_summary_dict()['reason_codes'] == [code]
+    assert not list((fixture[1]['intent_store_root'] / fixture[1]['epoch_id']).iterdir())
+
+
+def test_hold_missing_price_retains_position_and_partial_nav(continuation, monkeypatch):
+    fixture = _hold_fixture(continuation, monkeypatch)
+    args, kw, previous, _, _ = fixture
+    published = publish_intent(fixture)
+    holding = previous.after_states[0].after_state.positions[0]
+    (args[3] / 'features' / holding.instrument.lower() / 'open.day.bin').unlink()
+    settled, _ = settle(fixture, published, monkeypatch,
+        settled_at=datetime(2026, 9, 24, 12, tzinfo=timezone.utc), with_stdout=False)
+    assert settled.to_safe_summary_dict()['roles'][0]['valuation_status'] == 'PARTIAL'
+    retained = next(p for p in settled.after_states[0].after_state.positions if p.instrument == holding.instrument)
+    assert retained == holding
+    assert not settled.to_safe_summary_dict()['roles'][0]['nav_available']

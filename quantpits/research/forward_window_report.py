@@ -25,7 +25,9 @@ ARM_VALUES = ('portfolio_id valuation_status nav_before nav_after cash_after tot
               'gross_buy gross_sell filled_count no_fill_count normalized_nav period_return drawdown '
               'cost cost_rate gross_turnover').split()
 CSV_FIELDS = ('cycle_index current_cycle_id trade_date next_open_utc status row_reason_codes role'.split()
-              + ARM_VALUES + ['reason_codes'])
+              + ARM_VALUES + ['reason_codes', 'created_at_utc', 'generation_relation', 'settled_at_utc',
+                  'settlement_delay_seconds', 'hold_start_date', 'hold_end_date', 'hold_assumption',
+                  'hold_reason', 'period_start_trade_date', 'period_end_trade_date'])
 WARNINGS = ['LOCAL_OBSERVATIONS_NO_EXTERNAL_TRUSTED_TIMESTAMP', 'SYNTHETIC_EXECUTION_ASSUMPTION',
             'CORPORATE_ACTION_UNMODELED', 'NO_EXTERNAL_CASHFLOW', 'DISCRETE_NEXT_OPEN_DRAWDOWN',
             'NAV_ALREADY_INCLUDES_COST', 'BOOTSTRAP_TO_FIRST_OPEN_EXCLUDED']
@@ -155,6 +157,11 @@ def _join(row, intent, settlement, previous, first):
     row['source_context'] = dict(time_policy=body['time_policy'], input_provenance=body['input_provenance'],
         continuation=body.get('continuation'), execution_assumption=intent.d1_inputs[0].execution_assumption.to_dict(),
         price_observation=None)
+    completion = _doc(intent, 'completion.json')
+    row['accounting_time'] = c4._accounting_time(completion)
+    row['hold'] = body.get('continuation', {}).get('hold')
+    row['period_start_trade_date'] = body.get('continuation', {}).get('predecessor', {}).get('trade_date', body['trade_date'])
+    row['period_end_trade_date'] = body['trade_date']
     row.update(date_verified=body['current_cycle_id'] == row['current_cycle_id'],
                trade_date=body['trade_date'], next_open_utc=body['time_policy']['next_open_utc'])
     if not row['date_verified']:
@@ -172,7 +179,12 @@ def _join(row, intent, settlement, previous, first):
                          and t['transition']['assumption'] == i.execution_assumption.to_dict()
                          for t, i in zip(transitions, intent.d1_inputs)))
     row['joins']['source'] = source_ok
-    row['original_success'] = 'ORIGINAL_SUCCESS_VERIFIED' if source_ok else 'SOURCE_MISMATCH'
+    stdout_present = _doc(settlement, 'publication_success.json') is not None
+    row['original_success'] = ('ORIGINAL_SUCCESS_VERIFIED' if stdout_present else 'LOCAL_BUNDLE_VERIFIED_WITHOUT_STDOUT') if source_ok else 'SOURCE_MISMATCH'
+    settled_at = _doc(settlement, 'completion.json')['settled_at_utc']
+    row['accounting_time'].update(settled_at_utc=settled_at,
+        source_verified_at_utc=_doc(settlement, 'completion.json').get('source_verified_at_utc'),
+        settlement_delay_seconds=(c4._utc(settled_at) - c4._utc(body['time_policy']['next_open_utc'])).total_seconds())
     if not source_ok:
         row['reason_codes'].append('SOURCE_INTENT_JOIN_INVALID')
     if row['cycle_index'] == 1:
@@ -275,6 +287,9 @@ def _metrics(rows):
         for row_index, row in enumerate(rows):
             arm = row['arms'][index]
             connected = connected and row['status'] == 'SETTLED'
+            if row.get('hold'):
+                samples_complete = False
+                arm['reason_codes'].append('HOLD_INTERVAL_NOT_SAMPLED')
             post = None if arm['nav_after'] is None or arm['valuation_status'] != 'COMPLETE' else Decimal(arm['nav_after'])
             if base is not None and connected and post is not None:
                 normalized = post / base
@@ -308,12 +323,13 @@ def _metrics(rows):
             else:
                 turnover += (Decimal(arm['gross_buy']) + Decimal(arm['gross_sell'])) / pre
         metrics['arms'].append(dict(role=role, window_return=_ratio(last) if complete else None,
-            max_drawdown=_ratio(minimum) if complete else None,
+            max_drawdown=_ratio(minimum) if complete and samples_complete else None,
             total_cost=_text(total_cost) if costs_ok else None,
             cost_rate=_ratio(total_cost / base) if costs_ok and base is not None else None,
             cumulative_gross_turnover=_ratio(turnover) if turnover_ok else None,
             reason_codes=list(dict.fromkeys(reasons + ([] if costs_ok else ['COST_COVERAGE_INCOMPLETE'])
-                + ([] if turnover_ok else ['TURNOVER_COVERAGE_OR_DENOMINATOR_INVALID'])))))
+                + ([] if turnover_ok else ['TURNOVER_COVERAGE_OR_DENOMINATOR_INVALID'])
+                + ([] if samples_complete else ['DRAWDOWN_HISTORY_INCOMPLETE'])))))
     if complete:
         metrics['return_difference'] = _ratio((Decimal(rows[-1]['arms'][1]['nav_after']) - Decimal(rows[-1]['arms'][0]['nav_after'])) / base)
     for row_index, row in enumerate(rows):
@@ -344,7 +360,8 @@ def _build(request):
                 joins=dict(source=None, predecessor=None, frozen=None), date_verified=False,
                 trade_date=None, next_open_utc=None, original_success='original_success_unchecked',
                 arms=[_empty_arm(r) for r in ROLES], overlap=None, source_context=None,
-                period_return_difference=None, normalized_difference=None)
+                period_return_difference=None, normalized_difference=None, accounting_time=None, hold=None,
+                period_start_trade_date=None, period_end_trade_date=None)
             rows.append(row)
             pair = []
             for kind, rootkey in zip(('intent', 'settlement'), ROOTS[:2] if index == 1 else ROOTS[2:]):
@@ -415,7 +432,7 @@ def _build(request):
         promotion_capability=False, time_evidence_scope='LOCAL_OBSERVATIONS_ONLY',
         reason_codes=list(dict.fromkeys(reasons + [c for r in rows for c in r['reason_codes']])), basis=basis,
         window=dict(start=rows[0]['next_open_utc'], end=rows[-1]['next_open_utc'], sampling='PRETRADE_BASE_THEN_POSTTRADE_NEXT_OPEN'),
-        metrics=metrics, rows=rows, warnings=WARNINGS[:])
+        metrics=metrics, rows=rows, warnings=WARNINGS[:] + (['HOLD_INTERVAL_NOT_SAMPLED'] if any(r['hold'] for r in rows) else []))
     report['semantic_digest'] = _hash({k: v for k, v in report.items() if k not in ('private_bindings', 'report_generated_at')})
     return report
 
@@ -436,6 +453,10 @@ def render_csv(report):
             value.update(row_reason_codes='|'.join(row['reason_codes']), role=arm['role'],
                          reason_codes='|'.join(arm['reason_codes']))
             value.update({k: arm[k] for k in ARM_VALUES})
+            times, hold = row.get('accounting_time') or {}, row.get('hold') or {}
+            value.update({k: times.get(k) for k in ('created_at_utc', 'generation_relation', 'settled_at_utc', 'settlement_delay_seconds')})
+            value.update({'hold_' + k: hold.get(k) for k in ('start_date', 'end_date', 'assumption', 'reason')})
+            value.update({k: row.get(k) for k in ('period_start_trade_date', 'period_end_trade_date')})
             writer.writerow(value)
     return stream.getvalue()
 
@@ -474,6 +495,15 @@ def render_markdown(report):
                       change['production_unavailable_reason'] or change['production_comparison']['reason_code'])
         else:
             values = (row['current_cycle_id'], 'NOT_RECORDED', 'NOT_RECORDED', 'Legacy or unavailable source observation')
+        lines.append('| ' + ' | '.join(map(cell, values)) + ' |')
+    lines += ['', '| Cycle | Created UTC | Generation relation | Settled UTC | Return interval | HOLD assumption |',
+              '| --- | --- | --- | --- | --- | --- |']
+    for row in report['rows']:
+        times, hold = row.get('accounting_time') or {}, row.get('hold') or {}
+        interval = '%s → %s' % (cell(row.get('period_start_trade_date')), cell(row.get('period_end_trade_date')))
+        hold_text = ('(%s, %s]: %s; %s' % (hold['start_date'], hold['end_date'], hold['assumption'], hold['reason'])) if hold else None
+        values = (row['current_cycle_id'], times.get('created_at_utc'), times.get('generation_relation'),
+                  times.get('settled_at_utc'), interval, hold_text)
         lines.append('| ' + ' | '.join(map(cell, values)) + ' |')
     lines += ['', *report['warnings'], 'Original records only support local observations; this report grants no prospective, epoch-start or promotion capability.', '']
     return '\n'.join(lines)

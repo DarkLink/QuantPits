@@ -19,12 +19,12 @@ def main(argv=None):
         args = parser.parse_args(argv)
         if args.help:
             _emit(dict(schema_version=1, status="help", actions=["prepare", "publish", "inspect"],
-                preparation_arguments=list(_BASE + _INPUTS), inspect_arguments=list(_BASE + ("expected-request-digest",)),
+                preparation_arguments=list(_BASE + tuple(n for n in _INPUTS if n != "publication-success-record-path")), optional_arguments=["publication-success-record-path"], inspect_arguments=list(_BASE + ("expected-request-digest",)),
                 publish_extra_arguments=["expected-request-digest"], did_write=False))
             return 0
         if args.action is None:
             raise ValueError("action required")
-        required = _BASE + (("expected-request-digest",) if args.action == "inspect" else _INPUTS)
+        required = _BASE + (("expected-request-digest",) if args.action == "inspect" else tuple(n for n in _INPUTS if n != "publication-success-record-path"))
         if args.action == "publish":
             required += ("expected-request-digest",)
         if any(getattr(args, n.replace("-", "_")) is None for n in required):

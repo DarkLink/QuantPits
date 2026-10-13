@@ -691,3 +691,61 @@ def test_versions_and_record_kind_in_settlement_and_embedded_source(settlement):
         with pytest.raises(m.c4._Invalid):
             m._source(changed, success, settlement['epoch_id'])
     assert inspect(settlement, result.request_digest).status == 'VERIFIED'
+
+
+def test_local_bundle_settlement_without_stdout_is_idempotent(settlement, monkeypatch):
+    target = settlement['intent_store_root'] / settlement['epoch_id']
+    before = {p.name: p.read_bytes() for p in target.iterdir()}
+    settlement.pop('publication_success_record_path').unlink()
+    monkeypatch.setattr(m, '_clock', lambda: datetime(2026, 9, 15, 14, tzinfo=timezone.utc))
+    result = publish(settlement)
+    assert result.to_safe_summary_dict()['trade_date'] == '2026-09-07'
+    assert result.to_safe_summary_dict()['source_basis'] == 'VERIFIED_LOCAL_INTENT_BUNDLE_V1'
+    assert result.to_safe_summary_dict()['source_verified_at_utc'] == '2026-09-15T14:00:00.000000Z'
+    saved = settlement['settlement_store_root'] / settlement['epoch_id']
+    assert (saved / 'publication_success.json').read_bytes() == m.canonical(None)
+    adopted = m.publish_first_forward_settlement(**settlement, expected_request_digest=result.request_digest)
+    assert adopted.status == 'ADOPTED' and adopted.after_states == result.after_states
+    assert {p.name: p.read_bytes() for p in target.iterdir()} == before
+    assert inspect(settlement, result.request_digest).after_states == result.after_states
+
+
+@pytest.mark.parametrize('fault', ['missing', 'digest', 'account'])
+def test_no_stdout_preserves_source_validation(settlement, fault):
+    settlement.pop('publication_success_record_path').unlink()
+    target = settlement['intent_store_root'] / settlement['epoch_id']
+    if fault == 'missing':
+        (target / 'plans.json').unlink()
+    elif fault == 'digest':
+        settlement['expected_intent_request_digest'] = 'f' * 64
+    else:
+        settlement['epoch_id'] = 'another.account'
+    result = m.prepare_first_forward_settlement(**settlement)
+    assert result.status == 'PRECONDITION_BLOCKED'
+    assert not result.after_states and not result.to_safe_summary_dict()['did_write']
+    assert not list(settlement['settlement_store_root'].iterdir())
+
+
+def test_explicit_stdout_null_cannot_masquerade_as_missing(settlement):
+    settlement['publication_success_record_path'].write_bytes(m.canonical(None))
+    result = m.prepare_first_forward_settlement(**settlement)
+    assert result.status == 'PRECONDITION_BLOCKED'
+    assert result.to_safe_summary_dict()['reason_codes'] == ['ORIGINAL_SUCCESS_REQUIRED']
+
+
+@pytest.mark.parametrize('with_stdout', [True, False])
+def test_legacy_v1_first_settles_in_evening_without_rewriting(settlement, monkeypatch, with_stdout):
+    from tests.quantpits.research.legacy_forward_records import convert_intent
+    convert_intent(settlement['intent_store_root'], settlement['epoch_id'], settlement['publication_success_record_path'])
+    target = settlement['intent_store_root'] / settlement['epoch_id']
+    before = {p.name: p.read_bytes() for p in target.iterdir()}
+    if not with_stdout:
+        settlement.pop('publication_success_record_path').unlink()
+    monkeypatch.setattr(m, '_clock', lambda: datetime(2026, 9, 7, 14, tzinfo=timezone.utc))
+    result = publish(settlement)
+    assert result.to_safe_summary_dict()['trade_date'] == '2026-09-07'
+    assert all(s.after_state.as_of_date == '2026-09-07' for s in result.after_states)
+    assert result.to_safe_summary_dict()['settled_at_utc'] == '2026-09-07T14:00:00.000000Z'
+    assert {p.name: p.read_bytes() for p in target.iterdir()} == before
+    adopted = m.publish_first_forward_settlement(**settlement, expected_request_digest=result.request_digest)
+    assert adopted.status == 'ADOPTED' and adopted.after_states == result.after_states

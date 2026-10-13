@@ -1,6 +1,6 @@
-# 前向共同窗口报告（D3）
+# 纸面账户账本与收益报告
 
-`quantpits.research.forward_window_report.build_forward_window_report` 只读消费一个显式 epoch 的 C4/D1 首期和 D2 后续 intent/settlement。它逐一读取从 index 1 到指定 N 的完整请求，验证实际 source 与 predecessor，生成可重算的 private 派生报告。它不运行模型、provider 估值、生产账户流水线或重新结算，不产生 epoch-start、prospective 或 promotion 资格。
+`quantpits.research.forward_window_report.build_forward_window_report` 只读消费显式账户的首期和后续 intent／settlement。逐一验证来源与前序，并展示实际保存的记账记录、晚生成、晚结算及显式 HOLD；不要求旧 stdout 或严格事前实验资格。不会重新规划、结算或写 Production。
 
 ## 显式请求与 CLI
 
@@ -72,10 +72,16 @@ post 为零或负时保留真实金额及 `NONPOSITIVE_NAV`，正 B 下仍可计
 
 重叠指标消费实际 ranking Top-K、BUY/SELL 标的、after-state 持仓及数量；K 来自冻结定义。集合输出交/并数量和 Jaccard；两个空集合定义为 1 且 `empty_both=true`。合法相同两臂与零订单均保留。保存价格观察 provenance、execution assumption、冻结定义和实际 continuation 引用；corporate action 为 UNMODELED，无外部现金流。本结果不等同券商实际成交归因，也不覆盖 bootstrap 到首期 next-open 之前的持有收益。技术记录只能证明本机时间观察，不把 synthetic fixture 当作真实前向运行。
 
+## 时间与 HOLD 说明
+
+每行 `accounting_time` 分别保存实际创建、写前数据读验、实际结算和本次来源读验时间；旧记录没有的事实为 null。`generation_relation` 的 AFTER_OPEN_SIMULATION 由原创建时间与原开盘时刻决定，晚结算不会将旧事前选股改称事后模拟。`settlement_delay_seconds` 是实际结算距原开盘的秒数，不是解锁门槛。缺原 stdout 时 `original_success=LOCAL_BUNDLE_VERIFIED_WITHOUT_STDOUT`，不补造旧提交成功。
+
+请求索引按实际保存记录排列，HOLD 跳过的交易周不另建请求行。JSON、CSV、Markdown 展示区间及调用者持有假设。`period_start_trade_date / period_end_trade_date` 表示相邻实际估值之间的收益区间；HOLD 的跨期收益与累计实际成交成本可计算，但区间内无净值样本，`max_drawdown=null` 并显示 HOLD_INTERVAL_NOT_SAMPLED／DRAWDOWN_HISTORY_INCOMPLETE。报告 COMPLETE 只表示所请求账本与端点估值完整，不表示 HOLD 内日频估值完整；公司行为未建模披露保持。
+
 ## 文件与可复核身份
 
 - `report.json`：完整 requested rows、每节点实际 request/manifest/operation 三元引用与原成员 raw digests、跨 bundle joins、`source_context`、两臂指标、原因和能力。
-- `cycles.csv`：每请求固定 CHAMPION、CHALLENGER 两行。列序为 `cycle_index,current_cycle_id,trade_date,next_open_utc,status,row_reason_codes,role,portfolio_id,valuation_status,nav_before,nav_after,cash_after,total_fee,slippage_cost,gross_buy,gross_sell,filled_count,no_fill_count,normalized_nav,period_return,drawdown,cost,cost_rate,gross_turnover,reason_codes`。null 为空单元格，原因用 `|` 连接。
+- `cycles.csv`：每实际请求固定 CHAMPION、CHALLENGER 两行。原金额／比例列保持，末尾增加 `created_at_utc,generation_relation,settled_at_utc,settlement_delay_seconds,hold_start_date,hold_end_date,hold_assumption,hold_reason,period_start_trade_date,period_end_trade_date`。null 为空，原因用 `|` 连接。
 - `report.md`：范围、共同基数、缺口、收益/成本和逐臂逐期值；null 明示。证券重叠和完整价格 provenance 在 JSON 中。
 
 计算使用局部高精度 Decimal；金额为确定性十进制字符串，比例输出 24 位小数 ROUND_HALF_EVEN 后去尾零，舍入不进入后续计算。JSON/CSV/Markdown 使用相同数值字符串。`request_digest` 不含本地 roots；`semantic_digest` 排除 `private_bindings` 和 `report_generated_at`，保留实际来源身份及实现文件 SHA256。报告是派生诊断文件，修改其 JSON 不会赋予任何发布或复用权限。旧 v1 首期不要求原来不存在的 D2 字段，后续 v2 的物理 binding 和 schedule 由既有 reader 验证。

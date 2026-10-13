@@ -1,24 +1,24 @@
-# D1: settlement of the first forward intent pair
+# Settling the first paper-account orders
 
-D1 settles one exact C4 intent pair using its original prior states, intents and execution assumption, with the corresponding next-open observations and existing B0 accounting. It saves both full transitions and after-states. It does not load models, replan orders, update Production, implement D2 continuation, or produce D3 investment returns.
+Settlement reads the original cash/positions, orders and execution assumption from a complete local intent bundle and uses next-open prices for its original trade_date. Settling in the evening or a later week does not move the trade date to today. No model inference, order replanning or Production update occurs.
 
 ## Inputs and read-only preparation
 
-Provide the exact C4 `intent_store_root / epoch_id`, its request digest, and the safe JSON returned by the original **COMMITTED** publication. ADOPTED, VERIFIED and UNCERTAIN records cannot substitute for that original success. Request, manifest, operation, target binding, dates and every local time gate must match. This is single-owner local observation evidence, without an external trusted timestamp.
+Provide the explicit `intent_store_root / epoch_id` and original request digest. `publication_success_record_path` is optional corroboration. Current inspection verifies the complete request, every data member, manifest, completion and account/source joins. Missing stdout is persisted as `publication_success.json=null` with `source_basis=VERIFIED_LOCAL_INTENT_BUNDLE_V1`; no COMMITTED output is synthesized. Supplied stdout must match the original COMMITTED operation, digests, account and actual records. ADOPTED/VERIFIED cannot masquerade as original publication output.
 
-Use a dedicated physical settlement root with mode 0700 and a success record with mode 0600. Paths must be absolute and contain no symlink aliases. Development uses temporary workspaces; these command examples do not authorize private settlement.
+Use a dedicated physical settlement root with mode 0700; an optional stdout file must have mode 0600. Paths must be absolute without symlink aliases. Owners select the real account and write scope before running these examples.
 
 ```bash
 python -m quantpits.scripts.settle_forward_intent prepare \
   --intent-store-root /absolute/research/intent_pairs \
   --epoch-id EPOCH_ID \
   --expected-intent-request-digest C4_REQUEST_SHA256 \
-  --publication-success-record-path /absolute/research/c4_success.json \
+
   --qlib-provider-root /absolute/qlib/provider \
   --settlement-store-root /absolute/research/settlements
 ```
 
-`prepare` writes nothing and returns READY with the D1 request digest. The request binds original publication identity, the exact success-record bytes, both accounting inputs, observed calendar and price receipt, results and implementation fingerprints. Physical paths, inode, mtime and current sampling time are excluded. Price revisions change the request; metadata-only touches do not.
+`prepare` writes nothing and returns READY with the settlement request digest. The request binds original publication identity, optional stdout bytes, accounting inputs, observed calendar/prices, results and implementation fingerprints. Missing stdout has an explicit local-bundle basis. Completion records this source verification at `source_verified_at_utc` and actual settlement at `settled_at_utc`; it does not invent original final publication timing. Paths, inode, mtime and current time are excluded from the semantic request; price revisions change the request.
 
 Dates come from verified C4 content. Local UTC must have reached the saved next open. The actual `calendars/day.txt` must contain the trade date, preserve the historical prefix through the anchor and retain the original next session. Later calendar extensions are allowed. Before opening, before the trade date enters the actual calendar, or when a nonempty requested union has no valid observation, D1 returns WAITING_FOR_DATA without creating a no-fill settlement.
 
@@ -50,7 +50,7 @@ Safe JSON exposes dates, digests, operation identity, ordered arm statuses/count
 
 ## Stored evidence and offline consumption
 
-The slot contains `request.json`, `source_intent.json`, exact original `publication_success.json` bytes, actual `calendar_day.txt`, `next_open_prices.json`, `settlements.json`, `manifest.json` and `completion.json`. Data members are limited to 4 MiB each and 32 MiB total; manifest and completion are each limited to 1 MiB. Digest order is logical data → request → member inventory/manifest → completion, without circular hashing.
+The slot contains request.json, source_intent.json, publication_success.json (original stdout bytes or JSON null), calendar_day.txt, next_open_prices.json, settlements.json, manifest.json and completion.json. Limits remain 4 MiB per data member, 32 MiB total, and 1 MiB per manifest/completion. Digest ordering remains logical data → request → inventory/manifest → completion.
 
 `source_intent.json` retains the request, manifest, completion and original calendar bytes from the same successful C4 reader observation, plus canonical prior/intents/assumption for each arm. Offline inspection checks these saved references; it does not claim to re-adopt all external C4 sources. C4's `d1_metadata` returns defensive copies and confers no publication authority.
 
@@ -66,15 +66,15 @@ The offline reader checks exact inventory, canonical schemas, source joins, floa
 
 ## Continuing cycles
 
-D2 has a separate [continuation entry point](research_forward_continuation.md). This module shares NEXT_OPEN observation, both-arm B0 recomputation and create-only writes while strictly distinguishing first v1 and continuing v2 sources and their original success records. `inspect_first_forward_settlement` additionally exposes a defensive `continuation_metadata` copy containing the request and source intent request/completion verified in that same read. This metadata grants no publication authority and makes no claim about the entire history. First-cycle safe JSON and persisted v1 contracts remain unchanged.
+See the [continuation entry point](research_forward_continuation.md), sharing price observation, both-arm accounting and transactional writes. Existing positional API arguments remain compatible. When omitting stdout, pass the provider as `qlib_provider_root=...`; do not shift it into the old stdout position. `continuation_metadata` is a same-read defensive copy, not publication authority or whole-history verification.
 
 
 ## Copying records and format compatibility
 
 New `completion.schema_version=2` records use `FORWARD_RECORD_BINDING_V2`. Their `target_binding_digest` binds record kind, epoch, cycle/index, request digest and manifest digest. Continuing `store_bindings` use `FORWARD_CHAIN_STORE_V2`, binding the intent/settlement role, first request/manifest/operation, frozen selectors, definition request and schedule. Neither binding includes paths, device, inode, mtime or host identity. Request/bundle versions and the safe stdout schema are unchanged; request version 2 alone does not indicate portability.
 
-Copy the four runtime stores and required original COMMITTED stdout bytes, restore directory mode 0700 and file mode 0600, and explicitly select the new roots. Reading, inspection and adoption neither rewrite records nor renew the original publication time or prospective claim. D1 consumes copied intents and original stdout; D3 reads copied chains; D2 continues from verified after-states without resetting bootstrap or epoch. Production, provider, definitions and models remain explicit inputs. This does not migrate an entire workspace or MLflow URIs.
+Copy the four runtime stores and optionally preserve any original COMMITTED stdout bytes, restore directory mode 0700 and file mode 0600, and explicitly select the new roots. Reading, inspection and adoption neither rewrite records nor renew the original publication time or prospective claim. Settlement consumes complete copied intents with optional stdout; D3 reads copied chains; D2 continues from verified after-states without resetting bootstrap or epoch. Production, provider, definitions and models remain explicit inputs. This does not migrate an entire workspace or MLflow URIs.
 
-V1 completions retain physical binding checks at their original location, with subsequent new records written as V2. A new V2 settlement can retain an unchanged V1 source completion and still be copied: its own verified content binding identifies the new settlement. The V1 intent itself remains bound to its original directory. Copied V1 records return `LEGACY_PHYSICAL_BINDING_MISMATCH`; no automatic conversion or rewriting occurs. Unknown, missing or ill-typed versions are rejected. Canonical-path, directory identity, file fingerprint, source mutation and create-only checks remain active during operations. Independent copies do not share a global lock; select one active copy after recovery. A code rollback must retain a V2 reader and must not downgrade published records. This format change does not change economic rules or introduce a production approval gate.
+V1 completions retain physical binding checks at their original location, with subsequent new records written as V2. A new V2 settlement can retain an unchanged V1 source completion and still be copied: its own verified content binding identifies the new settlement. The V1 intent itself remains bound to its original directory. Copied V1 records return `LEGACY_PHYSICAL_BINDING_MISMATCH`; no automatic conversion or rewriting occurs. Unknown, missing or ill-typed versions are rejected. Canonical-path, directory identity, file fingerprint, source mutation and create-only checks remain active during operations. Independent copies do not share a global lock; select one active copy after recovery. Rollback must retain readers for V2, PAPER_ACCOUNTING_TIME_V1, optional stdout and HOLD without downgrading published records. This format change does not change economic rules or introduce a production approval gate.
 
-D1 consumes intents containing `source_change` V1 observations and legacy maintenance records. Production/research source differences do not block settlement of verified intents; input, original success-record and account joins remain checked.
+Settlement accepts new paper-time records, historical strict/maintenance records and source_change V1 observations. Source-code differences do not block verified orders; omitting stdout does not weaken content, account or source checks.
