@@ -233,7 +233,14 @@ candidates, identity mismatch, missing/corrupt artifacts, short coverage, non-co
 orphans, or drift cannot become `valid`. `classify_rolling_recovery(requests, evidence_set)` emits
 only a proposal that preserves requested identity, order, and cardinality; only `valid` units enter
 its reusable subset, and it has no execute, state-transition, publication, repair, or `apply()`
-capability. Phase 34's authoritative
+capability.
+
+Model-capability probes monitor repository writes, excluding `.git`, `plan`, and `workspaces`.
+Errors list paths with changed metadata; write events still fail when final metadata matches.
+This observation does not identify the writer. Concurrent writes by another agent or verification
+process can also trigger it, so run these checks while the protected directories are stable.
+
+Phase 34's authoritative
 `build_rolling_execution_scope(prepared, resolved, selected_window_keys, targets, windows)` revalidates
 the Prepared target tuple, the matching Resolved Plan, and an explicit ordered subset of resolved
 windows; unknown, duplicate, and out-of-order selections are rejected. Internally,

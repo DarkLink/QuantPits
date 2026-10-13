@@ -289,6 +289,45 @@ def test_probe_observer_detects_repository_cache_and_symlink_escape(tmp_path):
         ).inspect((_raw(),))
 
 
+def test_probe_observer_reports_writes_from_an_independent_process(tmp_path):
+    import subprocess
+    import sys
+
+    protected = tmp_path / "repository"
+    protected.mkdir()
+    cache = protected / "cache.bin"
+    cache.write_bytes(b"before")
+    with pytest.raises(RuntimeError, match="protected root") as raised:
+        with ZeroWriteObserver((protected,)):
+            subprocess.run(
+                [sys.executable, "-B", "-c",
+                 "import sys; from pathlib import Path; Path(sys.argv[1]).write_bytes(b'after')",
+                 str(cache)],
+                check=True, capture_output=True,
+            )
+    assert str(cache) in str(raised.value)
+    assert "cannot attribute writes" in str(raised.value)
+    assert cache.read_bytes() == b"after"
+
+
+def test_probe_observer_detects_write_events_even_when_metadata_is_restored(tmp_path):
+    from quantpits.model_capabilities.probes import snapshot_nodes
+
+    protected = tmp_path / "repository"
+    protected.mkdir()
+    cache = protected / "cache.bin"
+    cache.write_bytes(b"before")
+    original = cache.stat()
+    before = snapshot_nodes(protected)
+    with pytest.raises(RuntimeError, match="write events without a final metadata change"):
+        with ZeroWriteObserver((protected,)):
+            cache.write_bytes(b"during")
+            cache.write_bytes(b"before")
+            os.utime(str(cache), ns=(original.st_atime_ns, original.st_mtime_ns))
+            assert snapshot_nodes(protected) == before
+    assert cache.read_bytes() == b"before"
+
+
 def test_default_inspector_observer_covers_repository_public_boundary(tmp_path):
     repository = tmp_path / "repository"
     for relative in (".git", "plan", "workspaces", "quantpits", "docs", "tests", "output"):

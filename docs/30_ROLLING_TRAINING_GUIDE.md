@@ -212,6 +212,11 @@ recovery provenance，调用方不能通过 public constructor 拼装可复用�
 identity mismatch、缺 artifact、corrupt、coverage short、不可比较、orphan 或观察漂移都不能成为 `valid`。
 `classify_rolling_recovery(requests, evidence_set)` 只生成保持 requested identity/order/cardinality 的 proposal；仅
 `valid` unit 可进入 reusable subset，proposal 没有 execute、state transition、publication、repair 或 `apply()` 能力。
+
+模型能力探针会监测整个仓库的写入（排除 `.git`、`plan`、`workspaces`）。检测到写入时，错误会
+列出元数据发生变化的路径；只有写入事件而最终元数据相同时也仍失败。此观察不能确定写入者，
+其他 Agent 或验证进程的并发写入也会触发，因此应在受保护目录没有并发变动时运行这类验证。
+
 Phase 34 的权威入口 `build_rolling_execution_scope(prepared, resolved, selected_window_keys, targets, windows)`
 会重验 Prepared target tuple、匹配的 Resolved Plan，以及 resolved windows 的显式有序子集；unknown、duplicate、
 out-of-order selection 均拒绝。内部 `bind_rolling_execution_run_identity(resolved, selected_window_keys, windows)`

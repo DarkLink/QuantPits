@@ -654,7 +654,20 @@ class ZeroWriteObserver:
         if observer_error is not None:
             raise observer_error
         if self._before != after or event_write:
-            raise RuntimeError("capability probe wrote to a protected root")
+            changed_paths = []
+            for root, before_nodes, after_nodes in zip(self._roots, self._before, after):
+                before_by_path = {node[0]: node for node in before_nodes}
+                after_by_path = {node[0]: node for node in after_nodes}
+                for relative in sorted(set(before_by_path) | set(after_by_path)):
+                    if before_by_path.get(relative) != after_by_path.get(relative):
+                        changed_paths.append(str(root / relative))
+            detail = ", ".join(changed_paths[:10]) if changed_paths else "write events without a final metadata change"
+            if len(changed_paths) > 10:
+                detail += " (+%d more paths)" % (len(changed_paths) - 10)
+            raise RuntimeError(
+                "capability probe observed writes to a protected root: %s; "
+                "the observer cannot attribute writes to the probe or concurrent processes" % detail
+            )
         return False
 
 
