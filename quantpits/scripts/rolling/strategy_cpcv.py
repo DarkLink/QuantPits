@@ -29,6 +29,7 @@ from dateutil.relativedelta import relativedelta
 
 from quantpits.scripts.rolling.strategy_slide import parse_step_to_relativedelta
 from quantpits.utils.constants import MONTHS_PER_YEAR
+from quantpits.utils.model_artifacts import load_owned_model
 
 
 # ==========================================================================
@@ -662,13 +663,15 @@ def predict_latest(model_name, model_info, state, rolling_exp_name,
         yaml_file = resolve_legacy_workflow_path(model_info['yaml_file'])
         folds = trained_window.get('cpcv_folds', [])
 
-        fi = 0
+        # Loading errors are failures, not an end-of-fold marker. Preserve the
+        # planned fold count, or discover artifacts for legacy windows without it.
+        fold_count = len(folds) if folds else sum(
+            name.startswith("model_fold_") and name.endswith(".pkl")
+            for name in rec.list_artifacts()
+        )
         fold_predictions = []
-        while True:
-            try:
-                fold_model = rec.load_object(f"model_fold_{fi}.pkl")
-            except Exception:
-                break  # No more fold models
+        for fi in range(fold_count):
+            fold_model = load_owned_model(rec, f"model_fold_{fi}.pkl")
 
             # Build dataset with test range extended to anchor_date
             fold_params = dict(params_base)
@@ -694,7 +697,6 @@ def predict_latest(model_name, model_info, state, rolling_exp_name,
 
             fold_pred = fold_model.predict(dataset=dataset)
             fold_predictions.append(fold_pred)
-            fi += 1
 
         if not fold_predictions:
             print(f"  [{model_name}] No fold models found in recorder")
@@ -812,11 +814,7 @@ def repair_truncated(model_name, model_info, comp, window_map,
     try:
         fold_predictions = []
         for fi in range(len(folds)):
-            try:
-                fold_model = rec.load_object(f"model_fold_{fi}.pkl")
-            except Exception:
-                print(f"    ⚠️  Window {widx}: cannot load model_fold_{fi}.pkl")
-                continue
+            fold_model = load_owned_model(rec, f"model_fold_{fi}.pkl")
 
             task_config = inject_config_for_fold(
                 yaml_file, fold_params, folds[fi],

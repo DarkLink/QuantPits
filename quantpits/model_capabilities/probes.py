@@ -430,6 +430,7 @@ from qlib.data.dataset import DatasetH
 from qlib.data.dataset.handler import DataHandler
 from qlib.data.dataset.loader import StaticDataLoader
 from qlib.workflow import R
+from quantpits.utils.model_artifacts import load_owned_model
 
 root = Path.cwd()
 qlib.init(
@@ -479,7 +480,7 @@ with R.start(experiment_name="Phase34CapabilityProbe"):
         raise RuntimeError("non-local probe artifact backend")
     artifact_path = Path(unquote(parsed.path if parsed.scheme else artifact_uri)) / "model.pkl"
     artifact = artifact_path.read_bytes()
-    reloaded = recorder.load_object("model.pkl")
+    reloaded = load_owned_model(recorder, "model.pkl")
     observed_artifact = artifact_path.read_bytes()
 prediction = reloaded.predict(dataset=dataset, segment="test")
 observed_dates = prediction.index.get_level_values("datetime")

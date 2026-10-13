@@ -18,6 +18,11 @@ static/CPCV 的真实执行通过同一个 typed execution kernel 发布记录�
 本节完整契约当前只适用于 static/CPCV；Rolling/CPCV-rolling 仍使用既有独立流程。其真实变更
 命令仅共享 workspace training execution lease，尚未接入 State V3 与 publication coordinator。
 
+Qlib artifact 加固后的模型复用通过实际 API 签名兼容：自己的明确模型制品使用显式
+`trusted=True`，旧 API 保持原调用，数据制品仍默认加载。初次 fit 后应验证保存来源的
+reload／predict-only；无需因此修改模型参数或重训历史模型。依赖来源与缺失回溯规则见
+[Predict-Only 指南](05_PREDICT_ONLY_GUIDE.md)。
+
 ### Training Record V2
 
 新写入的训练记录使用 `schema_version: 2`。`model_records` 是权威身份表，每个

@@ -26,6 +26,13 @@
 > current-record replacement. `--show-state` and `--dry-run` do not acquire that lease. Phase 34
 > adds a standalone exact-unit execution/evidence kernel without switching the existing CLI to it;
 > publication, current-record replacement, and closure remain later boundaries.
+
+Rolling model reload supports Qlib's artifact hardening: our own selected model artifacts use explicit
+`trusted=True`, older APIs retain their original call, and prediction/report data keep default loading.
+CPCV prediction and truncation repair require every required fold to load. A loading error is not an
+end-of-fold marker and never causes prediction replacement using only a subset. See the
+[Predict-Only guide](05_PREDICT_ONLY_GUIDE.md) for runtime provenance and post-upgrade validation.
+
 > `--dry-run` is a strict filesystem-only Prepared Plan: it renders configuration and input
 > fingerprints, the action, ordered targets, state classification, and expected effects without
 > initializing Qlib, resolving exact window/fold dates, or creating OperatorLog, state, manifest, or

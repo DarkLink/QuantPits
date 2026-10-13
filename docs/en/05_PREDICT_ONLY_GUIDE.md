@@ -74,6 +74,26 @@ All other learn processors, all infer processors, and the workspace YAML remain 
 predictions must still pass requested-anchor coverage validation; an output that ends before the
 anchor is not published.
 
+Qlib's artifact hardening update (upstream `7c95268c`) restricts the classes allowed by the default
+pickle loader, including classes in historical model artifacts. At explicit model read points in
+static, CPCV, and rolling workflows, `quantpits.utils.model_artifacts.load_owned_model` passes
+`trusted=True` for `model.pkl` and `model_fold_*.pkl` saved by this pipeline in the selected recorder.
+Older APIs retain their original call based on the actual signature. This loader can execute code
+from a pickle; it applies only to our own models with trusted provenance and storage. Prediction,
+label, IC, and report data retain default loading. Model YAML needs no trusted flag.
+
+Static predict-only queries the selected recorder's artifact list before loading. It follows existing
+`source_record_id` / `source_experiment` parent tags only when `model.pkl` is confirmed absent.
+Corruption, import, device, and backend failures retain their actual diagnostics and source identity
+instead of selecting an older model. Rolling CPCV does not generate or overwrite a complete
+prediction with only the successful subset when a required fold cannot be loaded.
+
+When upgrading dependencies, check the actual Python, `qlib.__file__`, Qlib commit, and any relevant
+dirty source changes. With editable installs, separate workspaces and MLflow backends can still share
+the same runtime dependencies. This compatibility change requires no historical retraining, bulk
+MLflow migration, or paper-account reset. After an initial fit, verify reload / predict-only from the
+explicit saved source before the next production cycle; validate GPU prediction in the actual runtime.
+
 ---
 
 ## Comprehensive Parameter Overrides

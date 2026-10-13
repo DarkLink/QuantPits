@@ -46,7 +46,7 @@ def test_reviewed_prediction_outputs_and_failure_boundary(mock_env_constants, tm
         model.fit.side_effect = AssertionError('prediction must not train')
         dataset = MagicMock()
         source = MagicMock()
-        source.list_artifacts.return_value = ['model_fold_0.pkl']
+        source.list_artifacts.return_value = ['model.pkl', 'model_fold_0.pkl']
         source.load_object.return_value = model
         def tags():
             if ancestry == 'interrupt':

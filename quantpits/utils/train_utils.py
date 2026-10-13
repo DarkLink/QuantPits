@@ -36,6 +36,7 @@ import tempfile
 
 from quantpits.utils import env
 from quantpits.utils.workspace import fingerprint_value
+from quantpits.utils.model_artifacts import load_owned_model
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = env.ROOT_DIR
@@ -2045,8 +2046,8 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
         if fold_count > 0:
             print(f"  Found {fold_count} fold models in recorder {current_id}")
             for fi in range(fold_count):
-                fm = source_recorder.load_object(
-                    f"model_fold_{fi}.pkl"
+                fm = load_owned_model(
+                    source_recorder, f"model_fold_{fi}.pkl"
                 )
                 _flatten_rnn_params(fm)
                 fold_models.append(fm)
@@ -2901,27 +2902,33 @@ def predict_single_model(model_name, model_info, params, experiment_name,
         # 1. 从源 recorder 加载模型
         print(f"[{model_name}] Loading model from source recorder...")
         
-        # 稳健加载：如果在当前 recorder 里没找到 model.pkl，则根据 source_record_id tag 向上溯源
+        # 仅在 artifact 清单确认 model.pkl 缺失时沿明确 parent tags 回溯。
+        # 加载／后端错误不能被当作缺失，也不能切换到另一份模型。
         current_id = source_record_id
         current_exp = source_experiment
         model = None
         for _ in range(10):
-            source_recorder = R.get_recorder(
-                recorder_id=current_id,
-                experiment_name=current_exp
-            )
             try:
-                model = source_recorder.load_object("model.pkl")
-                _flatten_rnn_params(model)
-                break
-            except Exception:
-                tags = source_recorder.list_tags()
-                if 'source_record_id' in tags and 'source_experiment' in tags:
-                    print(f"    [Fallback] model.pkl 不在 {current_id} 中，正在向上溯源到 {tags['source_record_id']}...")
-                    current_id = tags['source_record_id']
-                    current_exp = tags['source_experiment']
-                else:
-                    raise ValueError(f"model.pkl not found in {current_id} and no parent tags available.")
+                source_recorder = R.get_recorder(
+                    recorder_id=current_id,
+                    experiment_name=current_exp
+                )
+                if "model.pkl" in source_recorder.list_artifacts():
+                    model = load_owned_model(source_recorder, "model.pkl")
+                    _flatten_rnn_params(model)
+                    break
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Cannot load model.pkl from experiment={current_exp}, "
+                    f"recorder={current_id}: {type(exc).__name__}: {exc}"
+                ) from exc
+            tags = source_recorder.list_tags()
+            if 'source_record_id' in tags and 'source_experiment' in tags:
+                print(f"    [Fallback] model.pkl 不在 {current_id} 中，正在向上溯源到 {tags['source_record_id']}...")
+                current_id = tags['source_record_id']
+                current_exp = tags['source_experiment']
+            else:
+                raise ValueError(f"model.pkl not found in {current_id} and no parent tags available.")
                     
         if model is None:
             raise ValueError(f"Exceeded max traceback depth of 10 for {model_name}.")

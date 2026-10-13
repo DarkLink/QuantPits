@@ -68,6 +68,23 @@ TRA 使用的 Qlib `MTSDatasetH` 在内部读取 learn 数据。predict-only 构
 处理器、全部 infer 处理器及工作区 YAML 均保持不变。持久化预测仍须通过 requested anchor
 覆盖校验，未覆盖锚点时不会发布该模型的新记录。
 
+Qlib 的 artifact 加固更新（上游 `7c95268c`）将默认 pickle 加载改为限制类集合，历史模型类也
+会被拒绝。引擎在 static、CPCV 和 rolling 的明确模型读取点，通过
+`quantpits.utils.model_artifacts.load_owned_model` 为本流水线保存且已选定 recorder 的
+`model.pkl`／`model_fold_*.pkl` 显式传入 `trusted=True`；较旧 API 按实际签名保持原调用。
+此加载方式会执行 pickle 中的代码，适用范围是自己生成、来源及存储可信的模型制品。
+pred、label、IC、report 等数据仍使用默认读取，无需给模型 YAML 添加 trusted 标记。
+
+static predict-only 先查询所选 recorder 的 artifact 清单，仅在确认 `model.pkl` 不存在时
+沿既有 `source_record_id`／`source_experiment` 父链回溯。损坏、类导入、设备或后端错误会保留
+实际诊断及出错来源，不会切换到更老模型。rolling CPCV 的所需 fold 加载失败时不会用已成功的
+部分 fold 生成或覆盖完整预测。
+
+升级依赖时核对实际 Python、`qlib.__file__`、Qlib commit 及必要的 dirty 说明；editable 安装下，
+工作区和 MLflow backend 隔离不代表运行依赖隔离。加载适配不要求重训历史模型、迁移全部
+MLflow 记录或重置 paper 账户。首次 fit 成功后仍应从明确保存来源验证 reload／predict-only，
+再启动下一轮生产；真实 GPU 预测需在实际运行环境验证。
+
 ---
 
 ## 完整参数

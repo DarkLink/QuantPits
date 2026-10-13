@@ -20,6 +20,12 @@ This complete contract currently applies to static/CPCV only. Rolling and CPCV-r
 their existing independent lifecycle. Their real mutating commands share only the workspace training
 execution lease and are not yet backed by State V3 or the publication coordinator.
 
+Model reuse after Qlib's artifact hardening checks the actual API signature: our own selected model
+artifacts use explicit `trusted=True`, older APIs retain their original call, and data artifacts keep
+default loading. Verify reload / predict-only from the saved source after the first fit. No model
+parameter change or historical retraining is required for this adaptation. See the
+[Predict-Only guide](05_PREDICT_ONLY_GUIDE.md) for dependency provenance and missing-model fallback.
+
 ### Training Record V2
 
 New records use `schema_version: 2`. `model_records` is the authoritative identity map: every

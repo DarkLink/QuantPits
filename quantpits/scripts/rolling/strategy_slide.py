@@ -17,6 +17,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 from quantpits.utils.constants import MONTHS_PER_YEAR
+from quantpits.utils.model_artifacts import load_owned_model
 
 
 # ==========================================================================
@@ -377,7 +378,7 @@ def repair_truncated(model_name, model_info, comp, window_map,
           f"auto-repairing...")
 
     try:
-        model = rec.load_object("model.pkl")
+        model = load_owned_model(rec, "model.pkl")
     except Exception as e:
         print(f"    ⚠️  Window {widx}: cannot load model weights ({e}), skipping repair")
         return pred, False
@@ -511,7 +512,7 @@ def predict_latest(model_name, model_info, state, rolling_exp_name,
             recorder_id=latest['record_id'],
             experiment_name=rolling_exp_name,
         )
-        model = rec.load_object("model.pkl")
+        model = load_owned_model(rec, "model.pkl")
 
         from quantpits.rolling.legacy import resolve_legacy_workflow_path
         yaml_file = resolve_legacy_workflow_path(model_info['yaml_file'])

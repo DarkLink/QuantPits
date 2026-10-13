@@ -23,6 +23,12 @@
 > lease，避免并发覆盖 current record。`--show-state` 与 `--dry-run` 不获取该 lease。Phase 34 已新增独立的
 > exact-unit execution/evidence kernel，但没有把现有 CLI 自动切换过去；publication/current-record/closure
 > 仍属后续边界。
+
+Rolling 的模型 reload 已适配 Qlib artifact 加固更新：自己的明确模型制品使用显式
+`trusted=True`，较旧 API 保持原调用，pred／report 等数据仍默认读取。CPCV 预测与截断修复
+要求所需 fold 全部加载成功；加载错误不会被当作 fold 列表结束，也不会用部分 fold 覆盖预测。
+运行依赖来源及升级后的验证顺序见 [Predict-Only 指南](05_PREDICT_ONLY_GUIDE.md)。
+
 > `--dry-run` 是严格的文件系统 Prepared Plan：显示配置、输入指纹、动作、ordered targets、state
 > 分类与预期副作用，但不初始化 Qlib、不计算实际 window/fold 日期，也不创建 OperatorLog、state、
 > manifest 或 lock；精确窗口在真实执行中解析。

@@ -205,6 +205,7 @@ def test_predict_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
     with patch('qlib.utils.init_instance_by_config', side_effect=[mock_model, mock_dataset, MagicMock()]) as mock_init:
         with patch('qlib.workflow.R') as mock_R:
             mock_R.get_recorder.return_value = mock_recorder
+            mock_recorder.list_artifacts.return_value = ["model.pkl"]
             mock_recorder.load_object.side_effect = [mock_model, pd.Series([0.5])]
             with patch('quantpits.utils.train_utils.inject_config', return_value=task_config):
                 with patch('os.path.exists', return_value=True):
