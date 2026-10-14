@@ -100,6 +100,48 @@ def test_init_qlib(monkeypatch, tmp_path):
 
 # ── set_root_dir() tests ──────────────────────────────────────
 
+@pytest.mark.parametrize("backend", ["file", "sqlite"])
+def test_reactivate_workspace_keeps_selected_backend(monkeypatch, tmp_path, backend):
+    workspace = tmp_path / "Workspace"
+    workspace.mkdir()
+    if backend == "file":
+        (workspace / "mlruns").mkdir()
+        selected_uri = "file://%s" % (workspace / "mlruns")
+    else:
+        # SQLite recorders also store artifacts in mlruns; those directories
+        # must not redirect metadata reads to a file-store on reactivation.
+        (workspace / "mlruns/1/rid/artifacts").mkdir(parents=True)
+        selected_uri = "sqlite:///%s" % (workspace / "mlflow.db")
+    alias = tmp_path / "WorkspaceAlias"
+    alias.symlink_to(workspace, target_is_directory=True)
+    monkeypatch.setattr(sys, "argv", ["script.py"])
+    monkeypatch.setenv("QLIB_WORKSPACE_DIR", str(alias))
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", selected_uri)
+
+    from quantpits.utils import env
+    importlib.reload(env)
+    initialized = []
+
+    class MockQlib:
+        @staticmethod
+        def init(**kwargs):
+            initialized.append(kwargs)
+
+    class MockConstant:
+        REG_CN = "cn"
+        REG_US = "us"
+
+    monkeypatch.setitem(sys.modules, "qlib", MockQlib())
+    monkeypatch.setitem(sys.modules, "qlib.constant", MockConstant())
+    env.set_root_dir(str(workspace))
+    env.init_qlib()
+
+    assert env.mlflow_backend == selected_uri
+    assert os.environ["MLFLOW_TRACKING_URI"] == selected_uri
+    assert initialized[0]["exp_manager"]["kwargs"]["uri"] == selected_uri
+    assert not (workspace / "mlflow.db").exists()
+
+
 def test_set_root_dir_updates_env(monkeypatch, tmp_path):
     """set_root_dir() should update env.ROOT_DIR and os.environ."""
     ws1 = tmp_path / "Workspace1"

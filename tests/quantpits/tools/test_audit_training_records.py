@@ -1,4 +1,5 @@
 import json
+import pytest
 
 import quantpits.tools.audit_training_records as audit_module
 from quantpits.tools.audit_training_records import main
@@ -17,7 +18,9 @@ def test_default_prediction_recorder_getter_uses_keyword_only_qlib_api(monkeypat
         calls.append((recorder_id, experiment_name, kwargs))
         return recorder
 
-    monkeypatch.setattr(R, "get_recorder", get_recorder)
+    # The wrapper has no provider until Qlib is initialized. This API mock
+    # must remain independent of initialization performed by other tests.
+    monkeypatch.setattr(R, "get_recorder", get_recorder, raising=False)
 
     assert _qlib_recorder_getter("source-recorder", "source-experiment") is recorder
     assert calls == [("source-recorder", "source-experiment", {})]
@@ -60,8 +63,9 @@ def test_optional_mlflow_and_prediction_verification_is_read_only(tmp_path):
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("explicit_backend", [False, True])
 def test_default_prediction_verification_initializes_qlib_for_explicit_workspace(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, explicit_backend,
 ):
     (tmp_path / "mlflow.db").write_bytes(b"metadata")
     entry = ModelRecordEntry(
@@ -100,11 +104,16 @@ def test_default_prediction_verification_initializes_qlib_for_explicit_workspace
     monkeypatch.setattr(
         audit_module, "_qlib_recorder_getter", lambda rid, exp: Recorder()
     )
-    args = build_parser().parse_args([
+    cli_args = [
         "--workspace", str(tmp_path), "--verify-mlflow", "--verify-predictions",
-    ])
+    ]
+    if explicit_backend:
+        (tmp_path / "mlruns/1/rid/artifacts").mkdir(parents=True)
+        cli_args.extend(["--mlflow-uri", "sqlite:///%s" % (tmp_path / "mlflow.db")])
+    args = build_parser().parse_args(cli_args)
 
     assert run(args, client=Client()) == 0
     assert len(initialized) == 1
     assert initialized[0].root == tmp_path.resolve()
+    assert initialized[0].mlflow_uri == "sqlite:///%s" % (tmp_path / "mlflow.db")
     assert path.read_bytes() == before

@@ -218,14 +218,20 @@ def set_root_dir(path: str):
 
     Args:
         path: Absolute path to the new workspace root directory.
+
+    Reactivating the same resolved workspace preserves its selected tracking
+    URI. Switching workspaces discards the prior workspace's URI.
     """
     global ROOT_DIR, mlruns_dir, mlflow_backend, _qlib_initialized
+    same_workspace = resolve_workspace_root(path) == resolve_workspace_root(ROOT_DIR)
     ROOT_DIR = os.path.abspath(path)
     os.environ["QLIB_WORKSPACE_DIR"] = ROOT_DIR
 
-    # Clear the old URI so _resolve_mlflow_backend re-evaluates the new workspace
-    # instead of treating the old value as a user-supplied override.
-    os.environ.pop("MLFLOW_TRACKING_URI", None)
+    # A real switch must not inherit another workspace's URI. Reactivation
+    # must retain an explicit URI, even when mlruns is empty or only holds
+    # artifacts belonging to a SQLite metadata backend.
+    if not same_workspace:
+        os.environ.pop("MLFLOW_TRACKING_URI", None)
     mlflow_backend = _resolve_mlflow_backend(ROOT_DIR)
     mlruns_dir = (
         os.path.abspath(os.path.join(ROOT_DIR, "mlruns"))

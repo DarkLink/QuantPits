@@ -48,6 +48,12 @@ a read-only Qlib recorder runtime explicitly to `--workspace`; runtime initializ
 nor migrates a missing backend and does not write to the workspace. Full training publishes the
 current registry only when every selected model succeeds and produces a verified entry.
 
+For a custom backend, pass its actual URI with `--mlflow-uri`, for example
+`--mlflow-uri "sqlite:///$PWD/mlflow.db"` from the target workspace. SQLite model and prediction
+artifacts may also reside in `mlruns/`; that directory alone does not identify the metadata backend.
+Training reactivation of the same resolved workspace preserves the selected `MLFLOW_TRACKING_URI`;
+switching to another workspace still resolves its backend afresh.
+
 A producer should publish `ready` only after validating the output recorder and persisted
 `pred.pkl`. Failed or skipped operations must not replace an existing current pointer.
 

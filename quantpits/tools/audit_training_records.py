@@ -21,6 +21,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Audit training-record identity without mutation")
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--record-file", default="latest_train_records.json")
+    parser.add_argument("--mlflow-uri", help="Explicit tracking backend URI for recorder verification")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--preview", action="store_true", help="Include the in-memory V2 migration preview")
     parser.add_argument("--verify-mlflow", action="store_true")
@@ -175,7 +176,9 @@ def run(args, *, client=None, recorder_getter=None):
         records = json.loads(path.read_text(encoding="utf-8"))
         report = audit_training_records(records)
         if args.verify_mlflow or args.verify_predictions:
-            ctx = WorkspaceContext.from_root(workspace)
+            ctx = WorkspaceContext.from_root(
+                workspace, mlflow_uri=getattr(args, "mlflow_uri", None),
+            )
             if args.verify_predictions and recorder_getter is None:
                 _init_qlib_for_audit(ctx)
             external = _external_issues(

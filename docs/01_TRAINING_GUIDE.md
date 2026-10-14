@@ -45,6 +45,11 @@ python -m quantpits.tools.audit_training_records \
 缺失的 backend，也不会写入 workspace。全量训练只有在所有目标都成功并生成 verified entry
 时才更新 current registry。
 
+审计自定义后端时，用 `--mlflow-uri` 显式指定实际 URI，例如
+`--mlflow-uri "sqlite:///$PWD/mlflow.db"`（在目标 workspace 下执行）。SQLite 的模型／预测制品
+也可存放在 `mlruns/`，不能仅凭该目录存在判断元数据后端。训练启动重新激活同一规范路径的
+workspace 时会保留已选的 `MLFLOW_TRACKING_URI`；切换到另一 workspace 时仍重新解析后端。
+
 生产者只有在输出 recorder 与持久化 `pred.pkl` 验证完成后才应发布 `ready` 条目。失败或
 跳过的模型不得替换已有 current pointer。
 
