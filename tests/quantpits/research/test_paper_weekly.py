@@ -653,3 +653,123 @@ def test_missing_bootstrap_cash_is_rejected_without_creating_a_balance(tmp_path)
     with pytest.raises(PaperError, match="explicit current_cash"):
         w.bootstrap(source, DATES[0])
     assert not w.store.path.exists()
+
+
+def test_frozen_plan_survives_current_suggestion_change_and_next_cycle_uses_it(tmp_path, monkeypatch):
+    from quantpits.utils.strategy import TopkDropoutOrderGenerator
+    w, _, provider, _, old_plan = boot_plan(tmp_path)
+    original_bytes = w.store.path.read_bytes()
+    original = TopkDropoutOrderGenerator.generate_buy_orders
+    generated = []
+    def revised_suggestions(self, *args, **kwargs):
+        rows = original(self, *args, **kwargs)
+        for row in rows:
+            row["estimated_amount"] = float(decimal(row["estimated_amount"]) + decimal("0.01"))
+        generated.append(rows)
+        return rows
+    monkeypatch.setattr(TopkDropoutOrderGenerator, "generate_buy_orders", revised_suggestions)
+    assert w.store.read()["plans"]["week"] == old_plan
+    assert w.plan("week", DATES[0], DATES[1]) == {"status": "REUSED", "plan": old_plan}
+    assert w.store.path.read_bytes() == original_bytes
+    calendar(provider, 3)
+    requested = {p["instrument"] for p in old_plan["prior"]["positions"]} | {p["instrument"] for p in old_plan["buys"]}
+    expected = settle_plan(old_plan, old_plan["prior"], PaperMarket(provider).execution_quotes(DATES[1], requested),
+                           old_plan["market_rules"])
+    actual = w.settle("week")["settlement"]
+    assert actual == expected
+    assert w.settle("week") == {"status": "REUSED", "settlement": actual}
+    assert w.value(DATES[2])["valuation"]["status"] == "COMPLETE"
+    assert w.report(DATES[2])["paper"]["status"] == "COMPLETE"
+    assert generated == []
+    new_plan = w.plan("next", DATES[2], DATES[3])["plan"]
+    assert len(generated) == 1
+    assert generated[0]
+    suggestions = {r["instrument"]: amount(r["estimated_amount"]) for r in generated[0]}
+    assert {r["instrument"]: r["suggested_amount"] for r in new_plan["buys"] if r["suggested_quantity"]} == suggestions
+    assert w.store.read()["plans"] == {"week": old_plan, "next": new_plan}
+    calendar(provider, 5)
+    assert w.settle("next")["status"] == "SETTLED"
+    assert w.value(DATES[4])["valuation"]["status"] == "COMPLETE"
+    assert w.report(DATES[4])["paper"]["status"] == "COMPLETE"
+    assert w.store.read()["records"][0]["result"] == actual
+    assert len(generated) == 1
+
+
+def test_old_plan_read_and_execution_do_not_call_current_position_analysis(tmp_path, monkeypatch):
+    from quantpits.utils.strategy import TopkDropoutOrderGenerator
+    w, _, provider, _, old_plan = boot_plan(tmp_path)
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("current position analysis unavailable")
+    monkeypatch.setattr(TopkDropoutOrderGenerator, "analyze_positions_with_universe", unavailable)
+    assert w.store.read()["plans"]["week"] == old_plan
+    assert w.plan("week", DATES[0], DATES[1])["plan"] == old_plan
+    calendar(provider, 3)
+    w.settle("week")
+    w.value(DATES[2])
+    assert w.report(DATES[2])["paper"]["status"] == "COMPLETE"
+    before = w.store.path.read_bytes()
+    with pytest.raises(RuntimeError, match="current position analysis unavailable"):
+        w.plan("next", DATES[2], DATES[3])
+    assert w.store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("path,value", [
+    (("buys", 0, "suggested_amount"), "NaN"),
+    (("buys", 0, "suggested_amount"), "-1.00"),
+    (("buys", 0, "suggested_amount"), "1.001"),
+    (("buys", 0, "suggested_amount"), 10.0),
+    (("buys", 0, "suggested_quantity"), True),
+    (("buys", 0, "suggested_quantity"), 125),
+    (("buys", 0, "instrument"), "SH600999"),
+    (("buys", 0, "anchor_close"), "10.01"),
+    (("buys", 0, "score"), "-123"),
+    (("buys", 0, "role"), "BACKUP"),
+    (("sells", 0, "suggested_quantity"), 201),
+    (("target_buys",), 4),
+    (("predecessor_record_count",), 1),
+    (("source", "anchor"), DATES[1]),
+    (("prior", "cash"), "201"),
+    (("ranking", 0, "raw_score"), "-123"),
+    (("universe", 0), BUY[1]),
+    (("schema_version",), True),
+])
+def test_frozen_plan_structural_corruption_is_rejected_after_rehash(tmp_path, path, value):
+    w, _, _, _, _ = boot_plan(tmp_path)
+    document = json.loads(w.store.path.read_text())
+    member = document["plans"]["week"]
+    for key in path[:-1]:
+        member = member[key]
+    member[path[-1]] = value
+    document.pop("digest")
+    document["digest"] = fingerprint_value(document)
+    write_json(w.store.path, document)
+    with pytest.raises(PaperError):
+        w.store.read()
+
+
+def test_duplicate_frozen_candidates_are_rejected_after_rehash(tmp_path):
+    w, _, _, _, _ = boot_plan(tmp_path)
+    document = json.loads(w.store.path.read_text())
+    buys = document["plans"]["week"]["buys"]
+    buys[1]["instrument"] = buys[0]["instrument"]
+    document.pop("digest")
+    document["digest"] = fingerprint_value(document)
+    write_json(w.store.path, document)
+    with pytest.raises(PaperError, match="unique instruments"):
+        w.store.read()
+
+
+def test_fractional_frozen_scores_preserve_float_representation(tmp_path):
+    w, source, provider, signal = make_workspace(tmp_path)
+    frame = pd.read_pickle(signal)
+    frame["score"] *= 0.1
+    frame.to_pickle(signal)
+    w.bootstrap(source, DATES[0])
+    plan = w.plan("fractional", DATES[0], DATES[1])["plan"]
+    assert any(decimal(r["score"]) != decimal(next(
+        ranked["raw_score"] for ranked in plan["ranking"] if ranked["instrument"] == r["instrument"]
+    )) for r in plan["buys"])
+    assert w.store.read()["plans"]["fractional"] == plan
+    calendar(provider, 3)
+    assert w.settle("fractional")["status"] == "SETTLED"
+    assert w.value(DATES[2])["valuation"]["status"] == "COMPLETE"
