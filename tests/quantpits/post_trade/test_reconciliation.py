@@ -33,24 +33,39 @@ def test_bonus_share_trade_row_is_not_execution_fill():
     assert reconcile_quantities(pd.DataFrame(), corporate_action, (), trade_date="2026-07-09") == ()
 
 
-@pytest.mark.parametrize("label", ["本方卖出", "全额卖出"])
-def test_gtja_sell_order_labels_reconcile_with_standard_fills(label):
+@pytest.mark.parametrize("label, side, standard_label", [
+    ("本方卖出", "sell", "深圳A股普通股票竞价卖出"),
+    ("全额卖出", "sell", "深圳A股普通股票竞价卖出"),
+    ("对方买入", "buy", "深圳A股普通股票竞价买入"),
+    ("对方卖出", "sell", "深圳A股普通股票竞价卖出"),
+])
+def test_gtja_order_labels_reconcile_with_standard_fills(label, side, standard_label):
     order = _frame(10).assign(交易类别=label)
-    trade = _frame(10).assign(交易类别="深圳A股普通股票竞价卖出")
+    trade = _frame(10).assign(交易类别=standard_label)
     event = SettlementEvent(
-        "2026-01-02", "SZ000001", "sell", Decimal("10"),
-        Decimal("10"), Decimal("100"), Decimal("95"), 1,
-        "深圳A股普通股票竞价卖出",
+        "2026-01-02", "SZ000001", side, Decimal("10"),
+        Decimal("10"), Decimal("100"),
+        Decimal("-105" if side == "buy" else "95"), 1, standard_label,
     )
     # A fully cancelled instruction contributes no fill quantity.
-    order = pd.concat([order, _frame(0)], ignore_index=True)
+    cancelled = _frame(0).assign(
+        交易类别=label, 证券代码="000002", 委托数量=100, 撤单数量=100, 委托状态="已撤",
+    )
+    order = pd.concat([order, cancelled], ignore_index=True)
     assert reconcile_quantities(order, trade, (event,)) == (
-        (("2026-01-02", "SZ000001", "sell"), Decimal("10")),
+        (("2026-01-02", "SZ000001", side), Decimal("10")),
     )
     with pytest.raises(ExecutionReconciliationError, match="do not reconcile"):
         reconcile_quantities(order, trade.assign(成交数量=9), (event,))
 
 
-def test_unknown_sell_like_label_is_rejected():
+@pytest.mark.parametrize("label", ["对方买入", "对方卖出", "未知买入", "未知卖出"])
+def test_zero_fill_cancelled_order_does_not_require_direction(label):
+    order = _frame(0).assign(交易类别=label, 委托数量=100, 撤单数量=100, 委托状态="已撤")
+    assert reconcile_quantities(order, pd.DataFrame(), ()) == ()
+
+
+@pytest.mark.parametrize("label", ["未知买入", "未知卖出"])
+def test_unknown_execution_like_label_is_rejected(label):
     with pytest.raises(ExecutionReconciliationError, match="Unsupported filled execution side"):
-        reconcile_quantities(_frame(10).assign(交易类别="未知卖出"), _frame(10), (_event(10),))
+        reconcile_quantities(_frame(10).assign(交易类别=label), _frame(10), (_event(10),))

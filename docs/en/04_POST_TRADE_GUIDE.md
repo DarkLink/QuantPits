@@ -2,7 +2,7 @@
 
 GTJA settlement parsing retains known cash adjustments, including `利息归本`, even without a stock code. Such rows keep an empty code in settlement logs and affect cash only; they do not create stock positions.
 
-Order/trade/settlement quantity reconciliation recognizes GTJA order labels `本方卖出` and `全额卖出` as sell instructions. It reconciles actual filled quantities, excludes zero-fill cancellations, and still rejects unknown directions.
+Order/trade/settlement quantity reconciliation recognizes the GTJA order label `对方买入` as buy and `对方卖出`, `本方卖出`, and `全额卖出` as sell. These labels describe execution modes and retain their buy/sell direction. Reconciliation uses actual filled quantities, excludes zero-fill cancellations, and still rejects quantity mismatches or unknown filled execution directions.
 
 ## Overview
 

@@ -9,9 +9,9 @@ from quantpits.post_trade.contracts import ExecutionReconciliationError
 from quantpits.post_trade.state import SettlementEvent, decimal_value, normalize_date, normalize_instrument
 from quantpits.scripts.brokers.base import BUY_TYPES, POSITION_ADJUSTMENT_TYPES, SELL_TYPES
 
-BUY_LABELS = set(BUY_TYPES) | {"证券买入", "买入"}
-# GTJA order exports also label sell instructions by execution mode.
-SELL_LABELS = set(SELL_TYPES) | {"证券卖出", "卖出", "本方卖出", "全额卖出"}
+# GTJA order execution-mode labels retain their buy/sell direction.
+BUY_LABELS = set(BUY_TYPES) | {"证券买入", "买入", "对方买入"}
+SELL_LABELS = set(SELL_TYPES) | {"证券卖出", "卖出", "本方卖出", "全额卖出", "对方卖出"}
 
 
 def normalize_side(value) -> str:
