@@ -12,6 +12,16 @@ import pandas as pd
 import pytest
 
 
+def _stored_artifact(case, recorder, name):
+    """Mutate the temporary store, not a possibly detached download copy."""
+    uri = urlparse(recorder.get_artifact_uri())
+    assert uri.scheme == "file" and not uri.netloc
+    path = (Path(unquote(uri.path)) / name).resolve()
+    assert case["workspace"].resolve() in path.parents
+    assert path.is_file()
+    return path
+
+
 @pytest.fixture
 def reload_case(mock_env_constants, monkeypatch):
     from mlflow.tracking import MlflowClient
@@ -137,7 +147,7 @@ def test_existing_broken_model_keeps_real_qlib_error_and_never_uses_parent(reloa
     child = case["recorder"]("reload_source")
     child.save_objects(**{"model.pkl": object()})
     child.set_tags(source_record_id=case["source"].id, source_experiment="reload_source")
-    path = Path(unquote(urlparse(child.get_artifact_uri()).path)) / "model.pkl"
+    path = _stored_artifact(case, child, "model.pkl")
     path.write_bytes(b"!broken pickle" if damage == "corrupt" else b"cquantpits_missing_model_module\nMissingModel\n.")
     case["selected"][("reload_source", child.id)] = child
     case["info"]["record_id"] = child.id
@@ -224,7 +234,7 @@ def test_second_fold_failure_never_becomes_complete_output(reload_case, monkeypa
     case = reload_case
     source = case["source"]
     if failure == "corrupt":
-        Path(source.download_artifact("model_fold_1.pkl")).write_bytes(b"!broken fold")
+        _stored_artifact(case, source, "model_fold_1.pkl").write_bytes(b"!broken fold")
     else:
         original_load = source.load_object
         error = KeyboardInterrupt("stop") if failure == "keyboard" else SystemExit("stop")
@@ -262,7 +272,7 @@ def test_second_fold_failure_never_becomes_complete_output(reload_case, monkeypa
 def test_legacy_rolling_fold_discovery_does_not_use_load_failure_as_terminator(reload_case, corrupt):
     case = reload_case
     if corrupt:
-        Path(case["source"].download_artifact("model_fold_1.pkl")).write_bytes(b"!broken fold")
+        _stored_artifact(case, case["source"], "model_fold_1.pkl").write_bytes(b"!broken fold")
     prediction, _ = _rolling_reload(case, "cpcv", "predict", legacy_folds=True)
     if corrupt:
         assert prediction is None
@@ -276,7 +286,7 @@ def test_legacy_rolling_fold_discovery_does_not_use_load_failure_as_terminator(r
 def test_missing_required_rolling_fold_does_not_reduce_requested_set(reload_case, operation):
     case = reload_case
     # Delete only a temporary artifact, retaining the window's two required folds.
-    Path(case["source"].download_artifact("model_fold_1.pkl")).unlink()
+    _stored_artifact(case, case["source"], "model_fold_1.pkl").unlink()
     prediction, repaired = _rolling_reload(case, "cpcv", operation)
     assert not repaired
     if operation == "predict":

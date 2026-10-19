@@ -350,6 +350,10 @@ def finite_signal_training(mock_env_constants, monkeypatch):
 
     def run(dataset_class="MTSDatasetH", use_cache=False, dropna_label=True,
             rebuild_error=None, truncate_prediction=False, recorder_exit_error=None):
+        if dataset_class != "DatasetH":
+            # Qlib's real MTS datasets import torch; lightweight [test] CI
+            # deliberately omits it. Keep DatasetH coverage active there.
+            pytest.importorskip("torch", reason="MTS integration requires optional torch")
         learn_processors = [{"class": "CSRankNorm", "kwargs": {"fields_group": "label"}}]
         if dropna_label:
             learn_processors.insert(0, {"class": "DropnaLabel"})
@@ -531,16 +535,21 @@ def test_train_prediction_dataset_rebuild_failure_is_not_success(finite_signal_t
 
 @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
 @pytest.mark.parametrize("use_cache", [False, True])
-@pytest.mark.parametrize("phase", ["rebuild", "recorder_exit"])
-def test_train_signal_interrupt_propagates(finite_signal_training, interrupt, use_cache, phase):
+@pytest.mark.parametrize("phase,dataset_class", [
+    ("rebuild", "MTSDatasetH"),
+    ("recorder_exit", "MTSDatasetH"),
+    ("recorder_exit", "DatasetH"),
+])
+def test_train_signal_interrupt_propagates(finite_signal_training, interrupt, use_cache, phase, dataset_class):
     error_arg = "rebuild_error" if phase == "rebuild" else "recorder_exit_error"
     with pytest.raises(interrupt):
-        finite_signal_training(use_cache=use_cache, **{error_arg: interrupt("stop after fit")})
+        finite_signal_training(dataset_class, use_cache=use_cache, **{error_arg: interrupt("stop after fit")})
 
 
+@pytest.mark.parametrize("dataset_class", ["DatasetH", "MTSDatasetH"])
 @pytest.mark.parametrize("use_cache", [False, True])
-def test_train_bad_persisted_anchor_does_not_report_success(finite_signal_training, use_cache):
-    case = finite_signal_training(use_cache=use_cache, truncate_prediction=True)
+def test_train_bad_persisted_anchor_does_not_report_success(finite_signal_training, use_cache, dataset_class):
+    case = finite_signal_training(dataset_class, use_cache=use_cache, truncate_prediction=True)
     prediction = case["recorder"].load_object("pred.pkl")
     assert prediction.index.get_level_values("datetime").max() == case["dates"][-2]
     assert not case["result"]["success"]
@@ -549,9 +558,11 @@ def test_train_bad_persisted_anchor_does_not_report_success(finite_signal_traini
     assert "persisted prediction end differs from requested anchor" in case["result"]["error"]
 
 
+@pytest.mark.parametrize("dataset_class", ["DatasetH", "MTSDatasetH"])
 @pytest.mark.parametrize("use_cache", [False, True])
-def test_train_recorder_exit_failure_does_not_report_success(finite_signal_training, use_cache):
-    case = finite_signal_training(use_cache=use_cache, recorder_exit_error=RuntimeError("recorder exit failed"))
+def test_train_recorder_exit_failure_does_not_report_success(finite_signal_training, use_cache, dataset_class):
+    case = finite_signal_training(dataset_class, use_cache=use_cache,
+                                  recorder_exit_error=RuntimeError("recorder exit failed"))
     prediction = case["recorder"].load_object("pred.pkl")
     assert prediction.index.get_level_values("datetime").max() == case["dates"][-1]
     assert not case["result"]["success"]
