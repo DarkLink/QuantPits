@@ -26,6 +26,10 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 
 ---
 
+For a read-only overview across actual/paper accounts, use `python -m quantpits.scripts.compare_accounts`.
+It needs no workspace activation or `env` import and initializes neither Qlib nor MLflow. See the
+[account comparison guide](account_comparison.md) for configuration, accounting rules, and exit codes.
+
 ## Core Design Philosophy
 
 Production account valuation and model-feature/backtest prices have separate purpose boundaries. Post-trade records explicit `account_valuation` provenance and keeps market date, observation time, and account effective date distinct. Broker asset snapshots are read-only reconciliation evidence and do not change settlement/order/trade authority.

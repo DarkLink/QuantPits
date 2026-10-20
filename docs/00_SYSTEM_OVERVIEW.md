@@ -26,6 +26,9 @@
 
 ---
 
+多个实盘／paper 账户的只读总览使用 `python -m quantpits.scripts.compare_accounts`，不要求激活
+workspace 或导入 `env`，也不初始化 Qlib／MLflow；组配置、财务口径和退出码见[账户对比指南](account_comparison.md)。
+
 ## 核心设计理念
 
 生产账户估值与模型特征/回测价格属于不同用途边界。Post-Trade 使用显式 `account_valuation` provenance，并将市场日期、观察时间和账户生效日期分开记录；券商资产快照仅用于只读对账，不改变 settlement/order/trade 的权威边界。
