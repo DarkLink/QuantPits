@@ -65,6 +65,20 @@ def load_workspace_config(workspace_path):
     
     return config
 
+
+def load_training_config(workspace_path):
+    """Keep legacy strategy/account values, but own the training anchor in model config."""
+    config = load_workspace_config(workspace_path)
+    model_path = Path(workspace_path) / "config" / "model_config.json"
+    with model_path.open(encoding="utf-8") as handle:
+        model = json.load(handle)
+    # An absent model date must not fall back to the account cursor.
+    config.pop("current_date", None)
+    if "current_date" in model:
+        config["current_date"] = model["current_date"]
+    return config
+
+
 def load_workspace_config_artifacts(workspace_path):
     """Validate workspace configs and return structured validation artifacts.
 

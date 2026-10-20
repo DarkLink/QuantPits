@@ -3,7 +3,7 @@ import json
 import yaml
 import pytest
 from pathlib import Path
-from quantpits.utils.config_loader import load_workspace_config, load_rolling_config
+from quantpits.utils.config_loader import load_workspace_config, load_rolling_config, load_training_config
 
 @pytest.fixture
 def mock_workspace(tmp_path):
@@ -40,6 +40,23 @@ def test_load_workspace_config_full(mock_workspace):
     assert config["TopK"] == 20          # Promoted/Override
     assert config["current_cash"] == 500000 # From prod_config
     assert config["backtest"]["account"] == 1000000
+
+
+def test_training_date_ownership_preserves_legacy_account_loader(mock_workspace):
+    workspace, config_dir = mock_workspace
+    (config_dir / "model_config.json").write_text(json.dumps({
+        "train_date_mode": "fixed", "current_date": "2026-07-10",
+    }))
+    account = config_dir / "prod_config.json"
+    account.write_text(json.dumps({"current_date": "2026-07-03", "current_full_cash": 12345}))
+    before = account.read_bytes()
+    assert load_workspace_config(workspace)["current_date"] == "2026-07-03"
+    training = load_training_config(workspace)
+    assert training["current_date"] == "2026-07-10"
+    assert training["current_full_cash"] == 12345
+    (config_dir / "model_config.json").write_text('{"train_date_mode":"fixed"}')
+    assert "current_date" not in load_training_config(workspace)
+    assert account.read_bytes() == before
 
 def test_load_rolling_config_formats(mock_workspace):
     workspace, config_dir = mock_workspace

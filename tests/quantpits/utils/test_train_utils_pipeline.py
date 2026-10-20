@@ -21,7 +21,7 @@ def test_calculate_dates_slide(mock_env_constants):
         "data_slice_mode": "slide", "test_set_window": 1, "valid_set_window": 1,
         "train_set_windows": 3, "freq": "day", "current_full_cash": 200000.0
     }
-    with patch('quantpits.utils.config_loader.load_workspace_config', return_value=config_dict):
+    with patch('quantpits.utils.config_loader.load_training_config', return_value=config_dict):
         with patch('qlib.data.D') as mock_d:
             mock_d.calendar.return_value = [pd.Timestamp("2026-03-01")]
             params = train_utils.calculate_dates()
@@ -37,7 +37,7 @@ def test_calculate_dates_fixed(mock_env_constants):
         "valid_start_time": "2015-01-01", "valid_end_time": "2016-01-01",
         "test_start_time": "2016-01-01", "test_end_time": "2026-01-01"
     }
-    with patch('quantpits.utils.config_loader.load_workspace_config', return_value=config_dict):
+    with patch('quantpits.utils.config_loader.load_training_config', return_value=config_dict):
         params = train_utils.calculate_dates()
         assert params["anchor_date"] == "2026-01-01"
         assert params["fit_end_time"] == "2015-01-01"
@@ -57,7 +57,7 @@ def test_calculate_dates_slide_with_purged_cv_block(mock_env_constants):
         },
         "start_time": "2015-01-01",
     }
-    with patch('quantpits.utils.config_loader.load_workspace_config',
+    with patch('quantpits.utils.config_loader.load_training_config',
                return_value=config_dict):
         with patch('qlib.data.D') as mock_d:
             # Generate 500 valid trading dates across multiple years

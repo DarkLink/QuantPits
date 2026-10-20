@@ -1383,7 +1383,7 @@ def test_calculate_dates_non_last_trade_date(mock_env_constants):
         "valid_start_time": "2018-01-01", "valid_end_time": "2019-01-01",
         "test_start_time": "2019-01-01", "test_end_time": "2025-12-31",
     }
-    with patch("quantpits.utils.config_loader.load_workspace_config", return_value=config_dict):
+    with patch("quantpits.utils.config_loader.load_training_config", return_value=config_dict):
         params = train_utils.calculate_dates()
         assert params["anchor_date"] == "2025-12-31"
 
@@ -1398,7 +1398,7 @@ def test_calculate_dates_freq_week(mock_env_constants):
         "valid_set_window": 1, "train_set_windows": 3,
         "freq": "week", "current_full_cash": 100000.0,
     }
-    with patch("quantpits.utils.config_loader.load_workspace_config", return_value=config_dict):
+    with patch("quantpits.utils.config_loader.load_training_config", return_value=config_dict):
         with patch("qlib.data.D") as mock_d:
             mock_d.calendar.return_value = [pd.Timestamp("2026-01-15")]
             params = train_utils.calculate_dates()

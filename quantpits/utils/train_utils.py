@@ -530,12 +530,12 @@ def compute_cpcv_folds(anchor_date, config, freq="day"):
     }
 
 
-def calculate_dates():
-    """根据统一配置计算训练日期窗口"""
+def calculate_dates(*, ctx=None, config=None):
+    """Compute training windows from model dates, preserving no-argument callers."""
     from qlib.data import D
-    from quantpits.utils.config_loader import load_workspace_config
+    from quantpits.utils.config_loader import load_training_config
 
-    config = load_workspace_config(ROOT_DIR)
+    config = dict(config) if config is not None else load_training_config(ctx.root if ctx else ROOT_DIR)
 
     train_date_mode = config.get('train_date_mode', 'last_trade_date')
     data_slice_mode = config.get('data_slice_mode', 'slide')
@@ -550,7 +550,15 @@ def calculate_dates():
         last_trade_date = D.calendar(future=False)[-1:][0]
         anchor_date = last_trade_date.strftime('%Y-%m-%d')
     else:
-        anchor_date = config.get('current_date', datetime.now().strftime('%Y-%m-%d'))
+        anchor_date = config.get('current_date')
+        try:
+            if not isinstance(anchor_date, str):
+                raise ValueError("missing model date")
+            parsed = datetime.strptime(anchor_date, '%Y-%m-%d')
+            if parsed.strftime('%Y-%m-%d') != anchor_date:
+                raise ValueError("non-canonical model date")
+        except ValueError as exc:
+            raise ValueError("fixed training date requires model_config.current_date in YYYY-MM-DD format") from exc
 
     cpcv_result = None  # populated when purged_cv config block is present
 

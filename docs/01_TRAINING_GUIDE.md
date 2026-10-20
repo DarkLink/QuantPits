@@ -82,6 +82,12 @@ baseline、可选 resume state 和必要的 source record；不会初始化 Qlib
 `data/operator_log.jsonl`。`--run-id` 可固定身份，`--no-manifest` 只关闭 manifest。
 两个命令均支持 `--workspace PATH`。
 
+持有训练执行 lease 后，service 会在首个 runner 和 cache 前准备实际输出 experiment。
+新实验的 artifact location 固定为 workspace 内的
+`output/mlflow_artifacts/<experiment_name>`，不受启动 cwd 影响。已有 workspace 内实验保留
+原 ID 和路径；同名输出实验指向 workspace 外时提前报错，不迁移或改名。此检查只针对输出，
+旧模型来源仍沿用原读取合同；轻量计划不会创建 backend、experiment 或 artifact 目录。
+
 Safeguard 通过后，service 只初始化一次 Qlib，并把精确日期、顺序固定的 target、source
 recorder、输出 experiment 和 current-record baseline 绑定为 `execution_fingerprint`。runner
 一次只能处理一个已计划 target，不能重新扫描 registry 或扩大模型集合。Predict-only 在准备
@@ -93,6 +99,14 @@ cache 或启动 runner 前还会从 workspace-bound MLflow backend 重新核对�
 prepared/committed、manifest closure 与 terminal status。中断后的同身份 `--resume` 会根据
 transaction preimage/postimage fingerprint 确定性 roll-forward 或完成审计，不会仅凭文件存在
 推断成功；遇到未知第三版本时 fail closed。
+
+如果日期／日历解析尚未成功，service 观察到没有执行 state、target evidence 和本请求的
+publication，会在失败 manifest 中记录请求身份及 `pre_execution_failure`。修正运行条件后，
+使用相同参数和 `--run-id` 重试，不加 `--resume`；原失败字节先保存在
+`data/training_attempts/<run_id>/pre-execution-<sha256>.json`，再释放原 manifest 路径。
+已有 state 时继续按原规则 `--resume`，验证来源、日期和请求后可归档残留的早期失败记录，
+已成功成员仍可复用。无 state 且缺少上述观察身份的历史失败不会自动认定为未执行；
+不同请求／来源、成功记录或发布状态不明时均拒绝自动替换。
 
 Phase 27 将恢复证据进一步拆清：未指定 `--run-id` 的 `--resume` 会采用持久化 state 中的
 logical run ID；每个成功 target 在 publication 前写入不可变、带 SHA-256 的 JSON evidence。
@@ -336,6 +350,11 @@ python quantpits/scripts/static_train.py --list --tag tree
 ## 日期处理
 
 训练日期和频次由 `config/model_config.json` 控制：
+
+固定模式必须提供有效的 `model_config.current_date`（`YYYY-MM-DD`）。账户
+`prod_config.current_date` 仍是交割处理游标，改变它不会改变训练／预测窗口，也不必同步
+占位账户日期。`last_trade_date` 继续使用实际 provider 的已发生交易日历；日期分离不会让
+predict-only 隐式重训，仍加载所选来源的旧模型。旧 `calculate_dates()` 调用同样遵循此规则。
 
 | 参数 | 说明 |
 |------|------|

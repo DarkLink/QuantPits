@@ -91,6 +91,13 @@ Real execution writes `output/manifests/{static_train|cv_train}/<run_id>.json` b
 `data/operator_log.jsonl`. Use `--run-id` for an explicit identity or `--no-manifest` to disable only
 the manifest. Both commands support `--workspace PATH`.
 
+Under the training execution lease, the service prepares the actual output experiment before
+the first runner or cache. New experiments use the workspace-local artifact location
+`output/mlflow_artifacts/<experiment_name>`, independent of the launch cwd. Existing contained
+experiments retain their IDs and locations. An output experiment pointing outside the workspace
+fails before model work; it is not moved or renamed. This check applies to outputs; existing model
+sources retain their read contract. Lightweight plans create no backend, experiment, or artifact directory.
+
 After safeguard approval, the service initializes Qlib once and binds exact dates, ordered targets,
 source recorders, the output experiment, and the current-record baseline into an
 `execution_fingerprint`. A runner receives exactly one planned target and cannot rediscover or
@@ -103,6 +110,16 @@ Real execution uses locked, compare-and-swap protected Training State V3. Its ph
 execution, publication preparation/commit, manifest closure, and terminal status. A same-identity
 `--resume` classifies transaction preimages/postimages and deterministically rolls forward or closes
 audit evidence; an unknown third version fails closed.
+
+When date/calendar resolution fails before execution, the service observes the absence of execution
+state, target evidence, and publication for this request, then records the request identity and
+`pre_execution_failure` in the failed manifest. After correcting runtime conditions, retry the same
+arguments and `--run-id` without `--resume`. Exact failed bytes are first archived in
+`data/training_attempts/<run_id>/pre-execution-<sha256>.json`, then the canonical manifest path is freed.
+When state exists, use the usual `--resume`: validated source/date/request identity permits archiving
+a residual early failure while successful members remain reusable. Historical failures without state
+and the observation identity are not assumed to be unexecuted. Different requests or sources,
+successful manifests, and uncertain publication remain conflicts.
 
 Phase 27 separates recovery evidence more explicitly. `--resume` without `--run-id` adopts the
 persisted logical run ID. Every successful target writes immutable, SHA-256-addressed JSON evidence
@@ -355,6 +372,13 @@ python quantpits/scripts/static_train.py --list --tag tree
 ## Date Handling
 
 Training dates and frequency are controlled by `config/model_config.json`:
+
+Fixed mode requires a valid `model_config.current_date` in `YYYY-MM-DD` format. The account's
+`prod_config.current_date` remains the post-trade cursor: changing it does not change training or
+prediction windows, and placeholder account dates need not be synchronized. `last_trade_date` still
+uses the actual provider's observed trading calendar. This separation does not trigger fitting in
+predict-only mode, which continues to load the selected old source model. Legacy `calculate_dates()`
+callers follow the same date rule.
 
 | Parameter | Description |
 |------|------|

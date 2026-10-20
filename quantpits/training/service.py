@@ -40,6 +40,7 @@ from quantpits.training.state import TrainingRunState, TrainingStateRepository
 from quantpits.utils.operator_log import OperatorLog
 from quantpits.utils.workspace import fingerprint_file
 from quantpits.training.persistence import sha256_bytes
+from quantpits.training.attempts import observe_resolution_failure, retire_resolution_failure
 
 
 def _noop_cache(_run):
@@ -129,7 +130,7 @@ def _verify_source_recorder(run, target):
 class TrainingExecutionHooks:
     activate_workspace: Callable[[str], None]
     init_qlib: Callable[[], None]
-    calculate_dates: Callable[[], Mapping[str, Any]]
+    calculate_dates: Optional[Callable[[], Mapping[str, Any]]]
     prepare_cache: Callable[[ResolvedTrainingRun], Any] = _noop_cache
     run_static_target: Callable[[TrainingTargetRequest], TrainingTargetResult] = run_static_target
     run_cpcv_target: Callable[[TrainingTargetRequest], TrainingTargetResult] = run_cpcv_target
@@ -138,6 +139,7 @@ class TrainingExecutionHooks:
     verify_reusable_target: Callable[[ResolvedTrainingRun, TrainingTargetEvidence], None] = _noop_verify_reusable
     fault_hook: Callable[[str, Optional[str]], None] = _noop_fault
     clock: Callable[[], datetime] = datetime.now
+    prepare_output_experiment: Callable[[ResolvedTrainingRun], Any] = _noop_cache
 
 
 @dataclass(frozen=True)
@@ -168,9 +170,45 @@ def prepare_default_cache(run: ResolvedTrainingRun):
     return manager
 
 
-def _lazy_calculate_dates():
+def _lazy_calculate_dates(ctx):
     from quantpits.utils.train_utils import calculate_dates
-    return calculate_dates()
+    return calculate_dates(ctx=ctx)
+
+
+def _prepare_output_experiment(run):
+    """Bootstrap only the actual writer experiment, under the execution lease."""
+    from mlflow.tracking import MlflowClient
+    from qlib.workflow import R
+    from quantpits.runtime.mlflow_integrity import (
+        MlflowWorkspaceIntegrityError, ensure_writable_experiment,
+    )
+
+    uri = R.get_uri()
+    if uri != run.prepared.ctx.mlflow_uri:
+        raise TrainingRecorderIntegrityError("output experiment tracking URI differs from prepared workspace")
+
+    class Client:
+        def __init__(self):
+            self.client = MlflowClient(tracking_uri=uri)
+
+        def experiments_by_name(self, name):
+            experiment = self.client.get_experiment_by_name(name)
+            return [] if experiment is None else [experiment]
+
+        def create_experiment(self, name, artifact_location):
+            return self.client.create_experiment(name, artifact_location=artifact_location)
+
+    try:
+        ensure_writable_experiment(
+            run.output_experiment_name, workspace_root=run.prepared.ctx.root,
+            client=Client(), artifact_root=run.prepared.ctx.output_path(
+                "mlflow_artifacts", run.output_experiment_name,
+            ),
+        )
+    except MlflowWorkspaceIntegrityError as exc:
+        raise TrainingRecorderIntegrityError(
+            "output experiment %r: %s" % (run.output_experiment_name, exc)
+        ) from exc
 
 
 def _default_promote(workspace, models):
@@ -182,11 +220,12 @@ def default_execution_hooks(*, activate_workspace, init_qlib, calculate_dates=No
     return TrainingExecutionHooks(
         activate_workspace=activate_workspace,
         init_qlib=init_qlib,
-        calculate_dates=calculate_dates or _lazy_calculate_dates,
+        calculate_dates=calculate_dates,
         prepare_cache=prepare_default_cache,
         promote_static=_default_promote,
         verify_source_target=_verify_source_recorder,
         verify_reusable_target=_verify_reusable_recorder,
+        prepare_output_experiment=_prepare_output_experiment,
     )
 
 
@@ -224,7 +263,9 @@ class TrainingExecutionService:
     def _resolve(self, prepared):
         self.hooks.activate_workspace(str(prepared.ctx.root))
         self.hooks.init_qlib()
-        run = resolve_training_run(prepared, self.hooks.calculate_dates())
+        params = (self.hooks.calculate_dates() if self.hooks.calculate_dates is not None
+                  else _lazy_calculate_dates(prepared.ctx))
+        run = resolve_training_run(prepared, params)
         self._verify_input_baselines(prepared)
         return run
 
@@ -430,6 +471,8 @@ class TrainingExecutionService:
                 aggregate_error_code=None,
             )
             state_baseline = state_repo.save(executing_state, expected=state_baseline)
+        if runnable:
+            self.hooks.prepare_output_experiment(run)
         cache = self.hooks.prepare_cache(run) if runnable else None
         current = TrainingRecordRepository.for_workspace(run.prepared.ctx).load().entry_map
         results = []
@@ -881,6 +924,7 @@ class TrainingExecutionService:
         manifest_rel = None
         manifest_fp = None
         run = None
+        resolution_started = False
         results = ()
         published_keys = frozenset()
         already_published = frozenset()
@@ -903,6 +947,9 @@ class TrainingExecutionService:
                 outcome_map = {}
                 recovered_prior = None
                 try:
+                    self._verify_input_baselines(prepared)
+                    retire_resolution_failure(prepared)
+                    resolution_started = True
                     run = self._resolve(prepared)
                     prior, state_baseline = state_repo.load_locked()
                     if prepared.resume_state is not None:
@@ -944,6 +991,9 @@ class TrainingExecutionService:
                             run,
                             prepared=replace(run.prepared, plan_fingerprint=prior.plan_fingerprint),
                             execution_fingerprint=prior.execution_fingerprint,
+                        )
+                        retire_resolution_failure(
+                            run.prepared, validated_run=run, validated_state=prior,
                         )
                     coordinator = TrainingPublicationCoordinator.find_for_run(
                         run, clock=self.hooks.clock,
@@ -1384,11 +1434,24 @@ class TrainingExecutionService:
                                 ), expected=observed_state)
                         except Exception:
                             pass
-                    if not prepared.options.no_manifest and manifest_rel is None:
+                    if (
+                        not prepared.options.no_manifest and manifest_rel is None
+                        and resolution_started
+                    ):
                         failure_records = self._records(run, public, receipt)
                         failure_records.setdefault(
                             "plan_fingerprint", prepared.plan_fingerprint
                         )
+                        if run is None:
+                            failure_records.update({
+                                "family": prepared.options.family,
+                                "action": prepared.options.action,
+                                "target_keys": [item.key for item in prepared.targets],
+                            })
+                            if resolution_started:
+                                observation = observe_resolution_failure(prepared)
+                                if observation is not None:
+                                    failure_records["pre_execution_failure"] = observation
                         result = CommandResult(
                             plan=prepared.plan, status="failed", started_at=logical_started,
                             finished_at=logical_finished or finished,

@@ -226,7 +226,8 @@ def _requested_date_policy(model_config: Mapping[str, Any]) -> RequestedDatePoli
     if not isinstance(value, str):
         raise TrainingDatePolicyError("configured training date requires model_config.current_date")
     try:
-        datetime.strptime(value, "%Y-%m-%d")
+        if datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d") != value:
+            raise ValueError("non-canonical model date")
     except ValueError as exc:
         raise TrainingDatePolicyError("model_config.current_date must be YYYY-MM-DD") from exc
     return RequestedDatePolicy(mode, value, "configured")
@@ -371,6 +372,7 @@ def prepare_training_run(
         outputs.append(OutputRef(manifest_rel, kind="manifest", overwrite=True))
     steps = (
         CommandStep("resolve-calendar-and-dates", "resolve exact train/test windows after Qlib initialization", expensive=True),
+        CommandStep("prepare-output-experiment", "verify or create the workspace-contained writer experiment before model work"),
         CommandStep("initialize-handler-cache", "prepare reusable handler cache", can_skip=options.cache_size_mb == 0, skip_reason="disabled" if options.cache_size_mb == 0 else ""),
         CommandStep("resolve-source-recorders", "verify per-model source recorder identity", can_skip=options.action != "predict_only", skip_reason="not predict-only" if options.action != "predict_only" else ""),
         CommandStep("train-or-predict-targets", "execute %d deterministic target(s)" % len(targets), expensive=True),
@@ -388,6 +390,7 @@ def prepare_training_run(
             StateRef("data/run_state.json", "read_write", "locked V3 resume and publication state"),
             StateRef("data/locks/training_execution.lock", "read_write", "workspace execution lease"),
             StateRef("data/training_transactions/<run_id>/", "read_write", "publication intent and receipt"),
+            StateRef("data/training_attempts/<run_id>/", "read_write", "exact-byte audit of proven resolution failures"),
         ),
         steps=steps, config_fingerprints=dict(sorted(
             (key, value) for key, value in fingerprints.items() if value is not None
