@@ -12,6 +12,9 @@ import yaml
 
 from quantpits.evidence.inspection import SourceMutationObserver
 from quantpits.post_trade.state import normalize_date, normalize_instrument
+from quantpits.research.account_differences import (
+    actual_executions, explain_accounts, paper_executions, saved_suggestions, suggestion_digest,
+)
 from quantpits.research.historical_cycle import _stable_read
 from quantpits.research.paper_accounting import ZERO, amount, cash_context, date, decimal
 from quantpits.research.paper_market import strict_json
@@ -282,6 +285,7 @@ def _source(source):
     result = {"status": "recorded"}
     for key in ("kind", "workspace", "anchor", "path", "recorder_id", "experiment_id", "mlflow_uri", "sha256"):
         if key in source:
+            _text(source[key], "source." + key)
             result[key] = source[key]
     lineage = source.get("lineage", [])
     if not isinstance(lineage, list):
@@ -293,46 +297,101 @@ def _source(source):
         snapshot = item["snapshot"]
         facts = {key: snapshot[key] for key in ("command", "run_id", "status", "anchor_date", "models") if key in snapshot}
         result["lineage"].append({"path": item.get("path"), "sha256": item.get("sha256"), "summary": facts})
+        if snapshot.get("command") == "ensemble_fusion":
+            records = snapshot.get("records") or {}
+            for combo in records.get("combos", []):
+                if source.get("recorder_id") and combo.get("recorder_id") == source["recorder_id"]:
+                    result["combo_name"] = combo.get("name")
+                    evidence = combo.get("output_evidence") or {}
+                    if evidence.get("recorder_id") == source["recorder_id"]:
+                        result["experiment_name"] = evidence.get("experiment_name")
+                    if not result.get("experiment_name"):
+                        result["experiment_name"] = records.get("experiment_name")
     return result
+
+
+def _source_gap(result, logical, exc, selected=None):
+    result["source_gaps"].append({"path": logical, "date": selected, "detail": "%s: %s" % (type(exc).__name__, exc)})
+
+
+def _paper_source(result, source, selected):
+    try:
+        return _source(source)
+    except Exception as exc:
+        _source_gap(result, "data/paper/account.json:source", exc, selected)
+        return {"status": "unavailable"}
 
 
 def _order_sources(member, reader, result, since, selected, cursor):
     summaries = []
-    for logical in reader.manifests():
-        manifest = reader.json(logical)
-        if manifest.get("command") != "order_gen" or manifest.get("workspace") not in (member.ctx.root.name, str(member.ctx.root)):
-            raise AccountComparisonError("order manifest identity mismatch: %s" % logical)
-        if manifest.get("status") != "success":
-            continue
-        records = manifest["records"]
-        anchor, trade = date(records["anchor_date"]), date(records["trade_date"])
-        if anchor >= trade:
-            raise AccountComparisonError("order signal anchor must precede trade date")
-        if not (since < trade <= selected or cursor is not None and trade > cursor):
-            continue
-        source = records.get("source")
-        if source is not None and not isinstance(source, dict):
-            raise AccountComparisonError("invalid order manifest source")
-        artifacts = []
-        for output in manifest["outputs"]:
-            path = output["path"]
-            if Path(path).name.startswith(("buy_suggestion_", "sell_suggestion_")):
-                if reader.read(path) is not None:
-                    columns, _rows = reader.csv(path)
+    try:
+        manifests = reader.manifests()
+    except Exception as exc:
+        _source_gap(result, "output/manifests/order_gen", exc)
+        manifests = []
+    for logical in manifests:
+        try:
+            manifest = reader.json(logical)
+            if manifest.get("command") != "order_gen" or manifest.get("workspace") not in (member.ctx.root.name, str(member.ctx.root)):
+                raise AccountComparisonError("order manifest identity mismatch: %s" % logical)
+            if manifest.get("status") != "success":
+                continue
+            records = manifest["records"]
+            anchor, trade = date(records["anchor_date"]), date(records["trade_date"])
+            if anchor >= trade:
+                raise AccountComparisonError("order signal anchor must precede trade date")
+            if not (since < trade <= selected or cursor is not None and trade > cursor):
+                continue
+            source = records.get("source")
+            if source is not None and not isinstance(source, dict):
+                raise AccountComparisonError("invalid order manifest source")
+            for key in ("mode", "record_id", "experiment_name", "requested_name", "resolved_name"):
+                if source and key in source:
+                    _text(source[key], "order source." + key)
+            summary = {"manifest": logical, "run_id": manifest["run_id"], "version_id": manifest["run_id"],
+                       "anchor": anchor, "trade_date": trade, "status": "outputs_unavailable",
+                       "relationship": "suggested_source_not_fill_proof", "artifacts": [], "artifact_facts": [],
+                       "suggestions": [], "source": {"status": "recorded", "workspace": str(member.ctx.root),
+                       "anchor": anchor, "reference": source, "combo_name": source.get("resolved_name"),
+                       "experiment_name": source.get("experiment_name"), "recorder_id": source.get("record_id")}
+                       if source else {"status": "not_recorded"}}
+            summaries.append(summary)
+            if not source:
+                _source_gap(result, logical, ValueError("order suggestion source is not recorded"), trade)
+            for output in manifest["outputs"]:
+                path = output["path"]
+                if not Path(path).name.startswith(("buy_suggestion_", "sell_suggestion_")):
+                    continue
+                try:
+                    raw = reader.read(path)
+                    if raw is None:
+                        raise AccountComparisonError("saved suggestion file is missing")
+                    columns, rows = reader.csv(path)
                     if not ({"instrument", "证券代码"} & columns):
                         raise AccountComparisonError("invalid saved order suggestion columns")
-                    artifacts.append(path)
-        summaries.append({"manifest": logical, "run_id": manifest["run_id"], "anchor": anchor,
-                          "trade_date": trade, "status": "suggestions_generated" if artifacts else "outputs_unavailable",
-                          "relationship": "suggested_source_not_fill_proof",
-                          "artifacts": artifacts, "source": {"status": "recorded", "workspace": str(member.ctx.root),
-                          "anchor": anchor, "reference": source} if source else {"status": "not_recorded"}})
+                    verification = suggestion_digest(output, raw)
+                    if "execution" in result:
+                        side = "BUY" if Path(path).name.startswith("buy_") else "SELL"
+                        summary["suggestions"].extend(saved_suggestions(rows, columns, side, trade, path, verification))
+                    summary["artifacts"].append(path)
+                    summary["artifact_facts"].append(dict(verification, path=path))
+                except Exception as exc:
+                    _source_gap(result, path, exc, trade)
+            summary["status"] = "suggestions_generated" if summary["artifacts"] else "outputs_unavailable"
+            if not summary["artifacts"]:
+                _source_gap(result, logical, ValueError("saved suggestion outputs unavailable"), trade)
+        except Exception as exc:
+            _source_gap(result, logical, exc)
     summaries.sort(key=lambda s: (s["trade_date"], s["manifest"]))
+    for summary in summaries:
+        summary["selection_status"] = ("ambiguous_multiple_successful_versions"
+            if sum(s["trade_date"] == summary["trade_date"] for s in summaries) > 1 else "single_saved_version_not_adoption_proof")
     result["sources"] = {"settled_period": [s for s in summaries if since < s["trade_date"] <= selected],
                          "pending_current": [], "order_suggestions": summaries}
     future = [s for s in summaries if cursor is not None and s["trade_date"] > cursor]
     result["current"]["suggestions"] = future
-    result["current"]["next_signal"] = future[-1]["source"] if future else {"status": "not_recorded"}
+    result["current"]["next_signal"] = (future[0]["source"] if len(future) == 1 else
+        {"status": "ambiguous", "alternatives": [s["source"] for s in future]} if future else {"status": "not_recorded"})
     result["notes"].append("Order manifests record suggestions; broker order/fill status is unknown.")
 
 
@@ -375,6 +434,9 @@ def _read_actual(member, reader, result, since, selected):
         fees = _known_sum(rows, "费用合计")
     result["period"] = _period(result, since, selected, start, end, external, fees)
     _order_sources(member, reader, result, since, selected, cursor)
+    if "execution" in result:
+        result["execution"] = actual_executions(trade_columns, trades, since, selected,
+                                                result["sources"]["order_suggestions"], result["source_gaps"])
 
 
 def _paper_endpoint(result, selected, values):
@@ -422,13 +484,14 @@ def _read_paper(member, reader, result, since, selected):
     settled = {r["result"]["cycle_id"]: r["result"] for r in journal["records"] if r["kind"] == "SETTLEMENT"}
     pending = [p for key, p in journal["plans"].items() if key not in settled and key not in journal["cancelled_cycles"]]
     current_pending = [{"cycle_id": p["cycle_id"], "anchor": p["anchor"], "trade_date": p["trade_date"],
-                        "source": _source(p["source"])} for p in pending]
+                        "source": _paper_source(result, p["source"], p["trade_date"])} for p in pending]
     result["current"] = {"last_processed_date": latest_state(journal)["as_of_date"],
                          "last_valuation_date": result["available_dates"][-1], "pending": current_pending,
                          "next_signal": current_pending[0]["source"] if current_pending else {"status": "not_recorded"}}
     result["sources"] = {"settled_period": [
         {"cycle_id": cycle, "trade_date": row["after"]["as_of_date"],
-         "anchor": journal["plans"][cycle]["anchor"], "source": _source(journal["plans"][cycle]["source"])}
+         "anchor": journal["plans"][cycle]["anchor"],
+         "source": _paper_source(result, journal["plans"][cycle]["source"], row["after"]["as_of_date"])}
         for cycle, row in settled.items() if since < row["after"]["as_of_date"] <= selected
     ], "pending_current": current_pending, "order_suggestions": [],
         "bootstrap": {"date": journal["bootstrap"]["date"], "path": journal["bootstrap"]["source_path"],
@@ -439,23 +502,29 @@ def _read_paper(member, reader, result, since, selected):
     fees = amount(sum((decimal(r["total_fees"]) for r in settled.values()
                        if since < r["after"]["as_of_date"] <= selected), ZERO))
     result["period"] = _period(result, since, selected, start, end, external, fees)
+    if "execution" in result:
+        result["execution"] = paper_executions(journal, since, selected, result["sources"], result["source_gaps"])
     result["notes"].append("Paper cash distributions/taxes require explicit events; additional slippage is zero.")
 
 
 def _invalidate(result, exc):
     result.update(status="unstable" if isinstance(exc, UnstableAccountRead) else "error",
                   current=None, period=None, sources=None, available_dates=[], account_id=None)
+    if "execution" in result:
+        result["execution"] = None
     error = {"type": type(exc).__name__, "message": str(exc)}
     if error not in result["errors"]:
         result["errors"].append(error)
 
 
-def _read_member(member, since, selected, readers):
+def _read_member(member, since, selected, readers, explain=False):
     result = {"id": member.id, "label": member.label, "kind": member.kind, "workspace": str(member.ctx.root),
               "account_id": None, "status": "complete", "current": None, "period": None, "sources": None,
-              "available_dates": [], "gaps": [], "errors": [], "notes": [member.notes] if member.notes else [],
+              "available_dates": [], "gaps": [], "source_gaps": [], "errors": [], "notes": [member.notes] if member.notes else [],
               "inputs": [], "protected_roots": [str(member.ctx.root), str(member.ctx.qlib_data_dir)]}
     reader = None
+    if explain:
+        result["execution"] = None
     try:
         reader = _AccountReader(member.ctx.root)
         readers.append((result, reader))
@@ -488,7 +557,7 @@ def _pair(left, right):
     if not (_comparable(left) and _comparable(right)):
         return pair
     a, b = left["period"]["end"]["positions"], right["period"]["end"]["positions"]
-    common = set(a) & set(b)
+    common = sorted(set(a) & set(b))
     pair.update(status="complete", common_holdings=len(common), only_left=sorted(set(a) - set(b)),
                 only_right=sorted(set(b) - set(a)), quantity_differences=sorted(
                     i for i in common if decimal(a[i]["quantity"]) != decimal(b[i]["quantity"])),
@@ -497,7 +566,7 @@ def _pair(left, right):
 
 
 @cash_context
-def compare_accounts(group, *, since, selected):
+def compare_accounts(group, *, since, selected, explain=False):
     """Return every requested member, including errors and exact-date gaps."""
     date(since)
     date(selected)
@@ -505,7 +574,7 @@ def compare_accounts(group, *, since, selected):
         raise AccountComparisonError("--since must precede --date")
     readers = []
     try:
-        members = [_read_member(member, since, selected, readers) for member in group.members]
+        members = [_read_member(member, since, selected, readers, explain) for member in group.members]
         # Keep earlier accounts under observation while reading later members.
         for result, reader in readers:
             try:
@@ -513,13 +582,16 @@ def compare_accounts(group, *, since, selected):
             except Exception as exc:
                 _invalidate(result, exc)
         pairs = [_pair(left, right) for left, right in combinations(members, 2)]
-        return {"schema_version": 1, "name": group.name, "group": str(group.path), "group_sha256": group.config_sha256,
+        report = {"schema_version": 1, "name": group.name, "group": str(group.path), "group_sha256": group.config_sha256,
                 "since": since, "date": selected, "status": "complete" if all(m["status"] == "complete" for m in members) else "partial",
                 "members": members, "pairs": pairs,
                 "notes": ["Return is P&L excluding net external funding divided by starting NAV, not TWR.",
                           "Fees are displayed separately and are already included in NAV; do not subtract them twice.",
                           "Actual/paper differences include execution friction and cash entitlements, not just model effects.",
                           "Accounts are compared separately; their assets are not added into an actual total."]}
+        if explain:
+            report["explanations"] = explain_accounts(members, selected)
+        return report
     finally:
         for _result, reader in readers:
             reader.close()
