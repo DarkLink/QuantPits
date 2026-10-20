@@ -55,6 +55,7 @@ class TrainingRunOptions:
     json_plan: bool = False
     no_manifest: bool = False
     run_id: Optional[str] = None
+    anchor: Optional[str] = None
 
     def __post_init__(self):
         if self.family not in FAMILIES:
@@ -218,19 +219,20 @@ def _run_id(options: TrainingRunOptions) -> str:
     return options.run_id or "training-%s" % uuid.uuid4().hex[:12]
 
 
-def _requested_date_policy(model_config: Mapping[str, Any]) -> RequestedDatePolicy:
-    mode = str(model_config.get("train_date_mode", "last_trade_date"))
+def _requested_date_policy(model_config: Mapping[str, Any], anchor=None) -> RequestedDatePolicy:
+    mode = "explicit_anchor" if anchor is not None else str(model_config.get("train_date_mode", "last_trade_date"))
     if mode == "last_trade_date":
         return RequestedDatePolicy(mode, None, "deferred_to_qlib_calendar")
-    value = model_config.get("current_date")
+    value = anchor if anchor is not None else model_config.get("current_date")
+    field = "anchor" if anchor is not None else "model_config.current_date"
     if not isinstance(value, str):
-        raise TrainingDatePolicyError("configured training date requires model_config.current_date")
+        raise TrainingDatePolicyError("configured training date requires %s" % field)
     try:
         if datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d") != value:
             raise ValueError("non-canonical model date")
     except ValueError as exc:
-        raise TrainingDatePolicyError("model_config.current_date must be YYYY-MM-DD") from exc
-    return RequestedDatePolicy(mode, value, "configured")
+        raise TrainingDatePolicyError("%s must be YYYY-MM-DD" % field) from exc
+    return RequestedDatePolicy(mode, value, "explicit" if anchor is not None else "configured")
 
 
 def prepare_training_run(
@@ -242,7 +244,7 @@ def prepare_training_run(
     registry_path = ctx.config_path("model_registry.yaml")
     model_config_path = ctx.config_path("model_config.json")
     model_config = _read_json(model_config_path)
-    date_policy = _requested_date_policy(model_config)
+    date_policy = _requested_date_policy(model_config, options.anchor)
     registry = _registry(ctx)
     selected = _selected_models(options, registry)
     suffix = "cpcv" if options.family == "cpcv" else "static"
@@ -453,4 +455,5 @@ def options_from_namespace(args: argparse.Namespace, family: str) -> TrainingRun
         explain_plan=bool(getattr(args, "explain_plan", False) or getattr(args, "dry_run", False)),
         json_plan=bool(getattr(args, "json_plan", False)),
         no_manifest=bool(getattr(args, "no_manifest", False)), run_id=getattr(args, "run_id", None),
+        anchor=getattr(args, "anchor", None),
     )

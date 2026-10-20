@@ -170,9 +170,9 @@ def prepare_default_cache(run: ResolvedTrainingRun):
     return manager
 
 
-def _lazy_calculate_dates(ctx):
+def _lazy_calculate_dates(ctx, anchor=None):
     from quantpits.utils.train_utils import calculate_dates
-    return calculate_dates(ctx=ctx)
+    return calculate_dates(ctx=ctx, anchor=anchor)
 
 
 def _prepare_output_experiment(run):
@@ -264,7 +264,7 @@ class TrainingExecutionService:
         self.hooks.activate_workspace(str(prepared.ctx.root))
         self.hooks.init_qlib()
         params = (self.hooks.calculate_dates() if self.hooks.calculate_dates is not None
-                  else _lazy_calculate_dates(prepared.ctx))
+                  else _lazy_calculate_dates(prepared.ctx, prepared.options.anchor))
         run = resolve_training_run(prepared, params)
         self._verify_input_baselines(prepared)
         return run

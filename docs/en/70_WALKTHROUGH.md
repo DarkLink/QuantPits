@@ -6,6 +6,7 @@ This document is a **complete, hands-on walkthrough** for the QuantPits system, 
 > This guide is designed for **first-time users**. All commands can be copied and pasted directly. For detailed parameter references and internals, please refer to the corresponding module documentation (01-08).
 
 For independent paper bootstrap, period planning, open settlement and close valuation, see the [weekly paper guide](research_paper_weekly.md).
+For shared signals, actual/paper account advancement and recovery across workspaces, see [project cycle execution](project_cycle.md).
 
 ---
 

@@ -110,7 +110,7 @@ class OrderGenerationService:
         config = prepared.config.merged_config
         print(f"\n{'#' * 60}\n# Order Generation — 订单生成\n{'#' * 60}")
         self.hooks.init_qlib()
-        anchor_date = self.hooks.get_anchor_date()
+        anchor_date = options.anchor or self.hooks.get_anchor_date()
         generator = self.hooks.create_order_generator(prepared.config.strategy_config)
         params = self.hooks.get_strategy_params(prepared.config.strategy_config)
         top_k = params.get("topk", 20)
@@ -129,6 +129,8 @@ class OrderGenerationService:
         print("\nStage 1: 加载预测数据")
         print(f"预测来源   : {loaded.description}")
         latest = predictions.index.get_level_values("datetime").max()
+        if options.anchor and latest.strftime("%Y-%m-%d") != anchor_date:
+            raise OrderExecutionError("prediction end does not match explicit anchor")
         prediction_instruments = predictions.xs(latest, level="datetime").index.tolist()
         holding_instruments = [item["instrument"] for item in current_holding]
         if any(not isinstance(item, str) or not item for item in holding_instruments):
@@ -147,7 +149,10 @@ class OrderGenerationService:
             if universe.market != market or universe.anchor_date != anchor_date:
                 raise OrderExecutionError("universe snapshot does not match the requested market and anchor date")
         prices = self.hooks.get_price_data(anchor_date, market, instruments=instruments)
-        trade_date = self.hooks.get_next_trade_date(anchor_date)
+        trade_date = options.trade_date or self.hooks.get_next_trade_date(anchor_date)
+        if options.anchor:
+            from quantpits.order.execution import validate_order_dates
+            (self.hooks.validate_dates or validate_order_dates)(anchor_date, trade_date)
         print("\nStage 2: 获取价格数据")
         print(f"下一交易日 : {trade_date}")
         analysis = generator.analyze_positions_with_universe(

@@ -530,12 +530,19 @@ def compute_cpcv_folds(anchor_date, config, freq="day"):
     }
 
 
-def calculate_dates(*, ctx=None, config=None):
+def calculate_dates(*, ctx=None, config=None, anchor=None):
     """Compute training windows from model dates, preserving no-argument callers."""
     from qlib.data import D
     from quantpits.utils.config_loader import load_training_config
 
     config = dict(config) if config is not None else load_training_config(ctx.root if ctx else ROOT_DIR)
+    if anchor is not None:
+        if not isinstance(anchor, str) or datetime.strptime(anchor, '%Y-%m-%d').strftime('%Y-%m-%d') != anchor:
+            raise ValueError("anchor must be YYYY-MM-DD")
+        sessions = D.calendar(start_time=anchor, end_time=anchor, freq='day', future=False)
+        if len(sessions) != 1 or sessions[0].strftime('%Y-%m-%d') != anchor:
+            raise ValueError("explicit anchor is not an observed trading date")
+        config.update(train_date_mode='explicit_anchor', current_date=anchor)
 
     train_date_mode = config.get('train_date_mode', 'last_trade_date')
     data_slice_mode = config.get('data_slice_mode', 'slide')

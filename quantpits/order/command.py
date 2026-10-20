@@ -6,6 +6,7 @@ import argparse
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, fields, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -43,6 +44,9 @@ class OrderRunOptions:
     json_plan: bool = False
     run_id: str | None = None
     no_manifest: bool = False
+    anchor: str | None = None
+    trade_date: str | None = None
+    ensemble_record_file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,8 @@ class ResolvedOrderSource:
     experiment_name: str | None
     source_label: str
     warnings: tuple[str, ...] = ()
+    prediction_file: str | None = None
+    prediction_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +163,9 @@ def build_order_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="执行完整计算并打印订单计划，但不写入文件")
     parser.add_argument("--verbose", action="store_true", help="显示详细的排名和价格信息")
     parser.add_argument("--combo", type=str, default=None, help="指定要使用的融合组合名称")
+    parser.add_argument("--anchor", help="本期信号锚点 YYYY-MM-DD")
+    parser.add_argument("--trade-date", help="明确选择的下一执行日 YYYY-MM-DD")
+    parser.add_argument("--ensemble-record-file", help="固定融合映射/快照；指定组合缺失时失败")
     parser.add_argument("--explain-plan", action="store_true", help="仅打印执行计划，不初始化 Qlib，不写文件")
     parser.add_argument("--json-plan", action="store_true", help="以 JSON 输出执行计划；隐含 explain-plan")
     parser.add_argument("--run-id", type=str, default=None, help="显式指定运行 ID，用于计划身份")
@@ -225,7 +234,7 @@ def load_order_run_config(
         cashflow_config=cashflow_config,
         strategy_config=strategy_config,
         ensemble_config=_read_json(ctx.config_path("ensemble_config.json")),
-        ensemble_records=_read_json(ctx.config_path("ensemble_records.json")),
+        ensemble_records=_read_json(_workspace_path(ctx, options.ensemble_record_file, "config/ensemble_records.json")),
         train_records=_read_json(record_path),
     )
 
@@ -275,6 +284,8 @@ def resolve_order_source(options: OrderRunOptions, config: OrderRunConfig) -> Re
     combos = records.get("combos", {}) if isinstance(records.get("combos", {}), dict) else {}
     requested = options.combo
     resolved_name = requested or records.get("default_combo")
+    if options.ensemble_record_file and (not resolved_name or resolved_name not in combos):
+        raise OrderPlanError("explicit ensemble source has no requested/default combo: %s" % resolved_name)
     if requested and requested not in combos:
         warnings.append(f"combo '{requested}' was not found in ensemble records")
         resolved_name = None
@@ -286,6 +297,9 @@ def resolve_order_source(options: OrderRunOptions, config: OrderRunConfig) -> Re
         else:
             resolved_name = None
     record_id = _record_id(combos.get(resolved_name)) if resolved_name else None
+    if options.ensemble_record_file and not record_id:
+        raise OrderPlanError("explicit ensemble source has no recorder for selected combo")
+    prediction = records.get("predictions", {}).get(resolved_name, {}) if options.ensemble_record_file else {}
     if not record_id:
         warnings.append("no ensemble prediction record is available")
     return ResolvedOrderSource(
@@ -296,6 +310,8 @@ def resolve_order_source(options: OrderRunOptions, config: OrderRunConfig) -> Re
         experiment_name="Ensemble_Fusion" if record_id else None,
         source_label="ensemble",
         warnings=tuple(warnings),
+        prediction_file=prediction.get("path"),
+        prediction_sha256=prediction.get("sha256"),
     )
 
 
@@ -389,7 +405,7 @@ def build_order_command_plan(
     refs.extend(
         [
             _file_ref(ctx, ctx.config_path("cashflow.json"), kind="config", description="cashflow config"),
-            _file_ref(ctx, ctx.config_path("ensemble_records.json"), kind="record", description="ensemble recorder mapping"),
+            _file_ref(ctx, _workspace_path(ctx, options.ensemble_record_file, "config/ensemble_records.json"), kind="record", description="ensemble recorder mapping"),
         ]
     )
 
@@ -417,6 +433,9 @@ def build_order_command_plan(
         "source_mode": source.mode,
         "requested_model": options.model,
         "requested_combo": options.combo,
+        "anchor": options.anchor,
+        "trade_date": options.trade_date,
+        "ensemble_record_file": options.ensemble_record_file,
         "resolved_source_name": source.resolved_name,
         "source_record_available": bool(source.record_id),
         "record_file": _display_path(ctx, record_path),
@@ -466,6 +485,16 @@ def prepare_order_run(
     cli_args: Sequence[str],
     run_config: OrderRunConfig,
 ) -> PreparedOrderRun:
+    for field in ("anchor", "trade_date"):
+        value = getattr(options, field)
+        if value is not None:
+            try:
+                if datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d") != value:
+                    raise ValueError()
+            except (ValueError, TypeError) as exc:
+                raise OrderPlanError("%s must be YYYY-MM-DD" % field) from exc
+    if options.trade_date and (not options.anchor or options.trade_date <= options.anchor):
+        raise OrderPlanError("explicit trade date requires an earlier explicit anchor")
     validation_result = validate_workspace(ctx, include_optional=True, strict=False)
     source = resolve_order_source(options, run_config)
     output_path = _workspace_path(ctx, options.output_dir, "output")

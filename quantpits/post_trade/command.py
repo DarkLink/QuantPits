@@ -265,6 +265,17 @@ def prepare_post_trade_run(
     discovery = deps.discover_inputs or discover_inputs
     config = config_loader(ctx, options)
     state_start = (datetime.strptime(config.state_cursor, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    # A committed cursor can be ahead of an interrupted transaction's request.
+    # Preparation must still reach the existing native recovery branch.
+    from quantpits.post_trade.transaction import PostTradeTransactionManager
+    active = PostTradeTransactionManager(ctx).active() if options.scope in {"all", "state"} else ()
+    matching = [item for item in active if item.run_id == options.run_id]
+    if matching:
+        original = matching[0]
+        original_start = (datetime.strptime(original.cursor_before, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+        if options.scope != original.scope or (options.start_date and options.start_date != original_start) or (options.end_date and options.end_date != original.cursor_after):
+            raise PostTradePlanError("recovery request differs from the unfinished transaction")
+        state_start = original_start
     if options.scope in {"all", "state"} and options.start_date and options.start_date < state_start:
         raise PostTradePlanError(
             "start date %s precedes the next state date %s; historical state replay is not supported"

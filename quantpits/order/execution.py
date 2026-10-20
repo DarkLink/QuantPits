@@ -26,6 +26,16 @@ class TradingCalendarError(OrderExecutionError):
     """A next trading date could not be resolved."""
 
 
+def validate_order_dates(anchor, selected):
+    from qlib.data import D
+    for value, future in ((anchor, False), (selected, True)):
+        sessions = D.calendar(start_time=value, end_time=value, freq="day", future=future)
+        if len(sessions) != 1 or sessions[0].strftime("%Y-%m-%d") != value:
+            raise TradingCalendarError("selected date is outside the trading calendar: %s" % value)
+    if selected <= anchor:
+        raise TradingCalendarError("execution date must follow anchor")
+
+
 class UniverseObservationError(OrderExecutionError):
     """The exact anchor-date universe could not be observed safely."""
 
@@ -119,6 +129,7 @@ class OrderExecutionHooks:
     build_model_opinions: Callable[[Any], Any]
     persist_artifacts: Callable[[Any], Any]
     resolve_universe: Callable[[str, str], UniverseSnapshot] | None = None
+    validate_dates: Callable[[str, str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +234,16 @@ def normalize_prediction_data(value: Any) -> Any:
 
 
 def load_resolved_prediction(source: ResolvedOrderSource) -> LoadedOrderPrediction:
+    if source.prediction_file:
+        import io
+        import pandas as pd
+        from pathlib import Path
+        raw = Path(source.prediction_file).read_bytes()
+        if not source.prediction_sha256 or hashlib.sha256(raw).hexdigest() != source.prediction_sha256:
+            raise OrderSourceUnavailableError("fixed ensemble prediction digest mismatch")
+        frame = pd.read_csv(io.BytesIO(raw), parse_dates=["datetime"])
+        data = normalize_prediction_data(frame.set_index(["datetime", "instrument"]))
+        return LoadedOrderPrediction(data, source, source_description(source))
     if not source.record_id or not source.experiment_name:
         raise OrderSourceUnavailableError("prepared order source has no recorder id")
     try:
