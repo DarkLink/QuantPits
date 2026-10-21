@@ -71,6 +71,10 @@ Missing broker evidence blocks only the actual account's new orders. Independent
 
 Use a new cycle ID for changed dates, members or sources. Existing paper plans remain frozen; use native explicit cancel when needed. Never remove native state, transactions or leases to bypass recovery.
 
+Paper advancement saves a separate native close valuation for each trading date after the saved account frontier through `value-through`. Dates before a pending execution use the old positions; on its execution date the original cycle settles before the close valuation. No-activity and HOLD accounts still receive daily valuations. Holidays create no rows. `since` is the report baseline; historical gaps before the frontier are retained, and later positions are never used to backfill earlier values. New plans depend on every required advancement date.
+
+Known future calendar dates may be planned while actual data waits. An unavailable calendar retains the original frontier and pending IDs until the same request can be expanded. A failed or stale date holds subsequent dates for that account; independent accounts continue. Resume adopts completed native dates before proceeding. Previously saved cycles retain their original recorded scope.
+
 ## Reference rules
 
 Set project `rules: dated_rules.json`, optional per-account `rules`, or `pending_rules: {original_cycle_id: dated_rules.json}`. Explicit files use native paper rule schema and are frozen when consumed.

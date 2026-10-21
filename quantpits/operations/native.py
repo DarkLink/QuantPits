@@ -101,10 +101,13 @@ class NativeSteps:
                 if result is None:
                     return None
             elif kind == "value":
-                values = [v for v in journal["valuations"] if v["result"]["date"] == self.request["value_through"]]
-                if not values or values[-1]["result"]["status"] != "COMPLETE":
+                selected = step.get("date", self.request["value_through"])
+                values = [v["result"] for v in journal["valuations"] if v["result"]["date"] == selected]
+                if not values and journal["bootstrap"]["date"] == selected:
+                    values = [journal["bootstrap"]["valuation"]]
+                if not values or values[-1]["status"] != "COMPLETE":
                     return None
-                result = values[-1]["result"]
+                result = values[-1]
             else:
                 result = journal["plans"].get(step["native_cycle"])
                 if result is None:
@@ -351,7 +354,7 @@ class NativeSteps:
             if kind == "settle":
                 arguments += ["settle", "--cycle", step["native_cycle"]]
             elif kind == "value":
-                arguments += ["value", "--date", request["value_through"]]
+                arguments += ["value", "--date", step.get("date", request["value_through"])]
             else:
                 snapshot = self._signal_snapshot(step)
                 arguments += ["plan", "--cycle", step["native_cycle"], "--anchor", request["anchor"], "--trade-date", request["trade_date"],

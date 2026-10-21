@@ -30,6 +30,10 @@ def record(ctx, rid, experiment, frame):
 
 class DeterministicRunner(ProcessRunner):
     def run(self, ctx, module, arguments, log):
+        marker = log.parents[3] / "fail-value"
+        if marker.exists() and marker.read_text() == log.stem:
+            log.write_text("injected daily valuation process failure\n")
+            return 1
         if module.endswith("compare_accounts") and (log.parents[3] / "fail-report").exists():
             log.write_text("injected report process failure\n")
             return 1

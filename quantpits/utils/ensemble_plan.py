@@ -11,7 +11,7 @@ from quantpits.config_contracts.core import WorkspaceValidationResult
 from quantpits.config_contracts.runtime_bridge import input_refs_from_validation
 from quantpits.runtime import CommandPlan, CommandStep, InputRef, OutputRef, StateRef, generate_run_id
 from quantpits.utils.ensemble_utils import get_default_combo, parse_ensemble_config
-from quantpits.utils.train_utils import resolve_model_key
+from quantpits.utils.model_keys import resolve_model_key
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_file
 
 

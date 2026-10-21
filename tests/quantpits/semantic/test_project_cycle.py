@@ -10,12 +10,16 @@ import pytest
 from tests.quantpits.operations.scenario import broker, scenario
 
 
-def command(project, action="run", code=0, *, cycle="new_week", inputs=None):
+def command(project, action="run", code=0, *, cycle="new_week", inputs=None, parent_env="wrong",
+            anchor="2024-05-17", value_through="2024-05-17", trade_date="2024-05-21", since="2024-05-10"):
     environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", QLIB_WORKSPACE_DIR="/must/not/use/inherited",
                        MLFLOW_TRACKING_URI="sqlite:////must/not/use/inherited.db")
+    if parent_env == "missing":
+        for name in ("QLIB_WORKSPACE_DIR", "MLFLOW_TRACKING_URI", "QLIB_DATA_DIR", "QLIB_REGION"):
+            environment.pop(name, None)
     arguments = [action, "--project", str(project), "--cycle", cycle]
     if action in ("run", "plan"):
-        arguments += ["--anchor", "2024-05-17", "--value-through", "2024-05-17", "--trade-date", "2024-05-21", "--since", "2024-05-10"]
+        arguments += ["--anchor", anchor, "--value-through", value_through, "--trade-date", trade_date, "--since", since]
         if inputs:
             arguments += ["--inputs", str(inputs)]
     result = subprocess.run([sys.executable, "-m", "tests.quantpits.operations.cycle_worker", "cycle"] + arguments,
@@ -48,17 +52,18 @@ def rows(result):
     return {r["id"]: r for r in result["steps"]}
 
 
-def test_three_workspace_cycle_and_readonly_cli(tmp_path, monkeypatch):
+@pytest.mark.parametrize("parent_env", ["wrong", "missing"])
+def test_three_workspace_cycle_and_readonly_cli(tmp_path, monkeypatch, parent_env):
     project = scenario(tmp_path)
     # Full-suite collection can import legacy scripts that change cwd. The
     # subprocess worker must remain importable outside the repository as well.
     monkeypatch.chdir(tmp_path)
     before = files(tmp_path)
-    preview = command(project, "plan")
+    preview = command(project, "plan", parent_env=parent_env)
     assert files(tmp_path) == before
     assert rows(preview)["shared-fuse"]["source"] == "pending_generation"
     assert rows(preview)["paper_a-settle-0"]["native_cycle"] == "old_native_id"
-    result = command(project)
+    result = command(project, parent_env=parent_env)
     assert all(r["status"] == "done" for r in result["steps"])
     for producer in ("live", "paper_b"):
         root = tmp_path / producer
@@ -75,15 +80,16 @@ def test_three_workspace_cycle_and_readonly_cli(tmp_path, monkeypatch):
         assert journal["records"][0]["result"]["after"]["positions"][0]["quantity"] == quantity
         assert journal["plans"]["new_week"]["trade_date"] == "2024-05-21"
         assert journal["valuations"][-1]["result"]["date"] == "2024-05-17"
+        assert [v["result"]["date"] for v in journal["valuations"]] == ["2024-05-13", "2024-05-17"]
     actual = read(tmp_path / "live/config/prod_config.json")
     assert float(actual["current_cash"]) == 3007
     order = next((tmp_path / "live/output/manifests/order_gen").glob("*.json"))
     assert read(order)["records"]["trade_date"] == "2024-05-21"
     assert (project.parent / "cycles/new_week/reports").is_dir()
     before_status = files(tmp_path)
-    command(project, "status")
+    command(project, "status", parent_env=parent_env)
     assert files(tmp_path) == before_status
-    command(project, "resume")
+    command(project, "resume", parent_env=parent_env)
     assert Path.cwd() == tmp_path
     assert {k: v for k, v in files(tmp_path).items() if not k.endswith("execution.lock")} == {k: v for k, v in before_status.items() if not k.endswith("execution.lock")}
 
@@ -108,7 +114,7 @@ def test_missing_broker_only_waits_actual_and_resume_keeps_frozen_signal(tmp_pat
     assert len(list((tmp_path / "live/output/manifests/static_train").glob("*.json"))) == 1
 
 
-@pytest.mark.parametrize("step", ["live-post", "shared-predict", "shared-fuse", "paper_a-settle-0", "paper_a-new", "report"])
+@pytest.mark.parametrize("step", ["live-post", "shared-predict", "shared-fuse", "paper_a-settle-0", "paper_a-value-2024-05-13", "paper_a-new", "report"])
 def test_native_commit_to_project_progress_gap_is_adopted(tmp_path, step):
     project = scenario(tmp_path)
     (project.parent / "interrupt-after").write_text(step)
@@ -211,3 +217,87 @@ def test_bundle_input_uses_native_workspace_relative_contract(tmp_path):
     write_json(inputs, {"actual": {"live": {"settlement_bundle": "data/2024-05-13-2024-05-17-table.xlsx", "allow_missing_settlement": True}}})
     result = command(project, inputs=inputs)
     assert rows(result)["live-post"]["status"] == "done"
+
+
+WEEK = ["2024-05-10", "2024-05-13", "2024-05-14", "2024-05-15", "2024-05-16", "2024-05-17", "2024-05-20", "2024-05-21"]
+
+
+@pytest.mark.parametrize("holiday,hold", [(False, False), (True, True)])
+def test_daily_closes_use_pre_execution_and_post_execution_positions(tmp_path, holiday, hold):
+    from tests.quantpits.operations.scenario import write_json
+    sessions = [d for d in WEEK if not (holiday and d == "2024-05-15")]
+    project = scenario(tmp_path, sessions=sessions, pending_trade_date="2024-05-14",
+                       initial_holding=[{"instrument": "SH600002", "value": 100, "amount": 1000}])
+    for name in ("paper_a", "paper_b"):
+        old_plan = read(tmp_path / name / "data/paper/account.json")["plans"]["old_native_id"]
+        assert [p["instrument"] for p in old_plan["sells"]] == ["SH600002"]
+        assert [p["instrument"] for p in old_plan["buys"]] == ["SH600001"]
+    inputs = project.parent / "inputs.json"
+    write_json(inputs, {"hold": ["paper_a"] if hold else []})
+    preview = command(project, "plan", inputs=inputs, parent_env="missing")
+    paper = [s for s in preview["steps"] if s.get("member") == "paper_a"]
+    assert [(s["kind"], s.get("date")) for s in paper[:3]] == [
+        ("value", "2024-05-13"), ("settle", None), ("value", "2024-05-14")]
+    result = command(project, inputs=inputs, parent_env="missing")
+    for name in ("paper_a", "paper_b"):
+        journal = read(tmp_path / name / "data/paper/account.json")
+        values = [v["result"] for v in journal["valuations"]]
+        assert [v["date"] for v in values] == sessions[1:-2]
+        assert [(p["instrument"], p["quantity"]) for p in values[0]["positions"]] == [("SH600002", 100)]
+        assert [p["instrument"] for p in values[1]["positions"]] == ["SH600001"]
+        positions = [(p["instrument"], p["quantity"]) for p in values[1]["positions"]]
+        assert all([(p["instrument"], p["quantity"]) for p in v["positions"]] == positions for v in values[2:])
+        assert journal["records"][0]["result"]["cycle_id"] == "old_native_id"
+    if hold:
+        assert rows(result)["paper_a-hold"]["status"] == "held"
+        assert set(read(tmp_path / "paper_a/data/paper/account.json")["plans"]) == {"old_native_id"}
+
+
+@pytest.mark.parametrize("failure", ["process", "price"])
+def test_daily_failure_waits_before_advancing_and_resume_preserves_completed_dates(tmp_path, failure):
+    import struct
+    project = scenario(tmp_path, sessions=WEEK)
+    marker = project.parent / "fail-value"
+    price = tmp_path / "provider/features/sh600001/close.day.bin"
+    original = price.read_bytes()
+    if failure == "process":
+        marker.write_text("paper_a-value-2024-05-14")
+    else:
+        words = list(struct.unpack("<%sf" % (len(original) // 4), original))
+        words[1 + WEEK.index("2024-05-14")] = float("nan")
+        price.write_bytes(struct.pack("<%sf" % len(words), *words))
+    result = command(project, code=2, parent_env="missing")
+    entry = rows(result)["paper_a-value-2024-05-14"]
+    assert entry["status"] == ("failed" if failure == "process" else "waiting")
+    assert rows(result)["paper_a-new"]["status"] == "waiting"
+    journal = read(tmp_path / "paper_a/data/paper/account.json")
+    first = journal["valuations"][0]
+    assert first["result"]["date"] == "2024-05-13"
+    assert all(v["result"]["date"] <= "2024-05-14" for v in journal["valuations"])
+    if failure == "price":
+        assert journal["valuations"][-1]["result"]["status"] == "STALE"
+    else:
+        assert rows(result)["paper_b-new"]["status"] == "done"
+        marker.unlink()
+    before_log = (project.parent / "cycles/new_week/logs/paper_a-value-2024-05-13.log").read_bytes()
+    price.write_bytes(original)
+    resumed = command(project, "resume", parent_env="missing")
+    journal = read(tmp_path / "paper_a/data/paper/account.json")
+    assert journal["valuations"][0] == first
+    assert [v["result"]["date"] for v in journal["valuations"] if v["result"]["status"] == "COMPLETE"] == WEEK[1:-2]
+    assert (project.parent / "cycles/new_week/logs/paper_a-value-2024-05-13.log").read_bytes() == before_log
+    assert "exit_code" not in rows(resumed)["paper_a-value-2024-05-14"]
+
+
+def test_saved_valuation_frontier_preserves_older_history_gaps(tmp_path):
+    from quantpits.operations.config import load_project
+    from quantpits.research.paper_workflow import PaperWorkflow
+    project = scenario(tmp_path, sessions=WEEK)
+    for member in load_project(project).group.members:
+        if member.kind == "paper":
+            workflow = PaperWorkflow(member.ctx)
+            workflow.settle("old_native_id")
+            workflow.value("2024-05-16")  # an existing historic gap is outside this cycle's advancement
+    command(project, parent_env="missing")
+    for name in ("paper_a", "paper_b"):
+        assert [v["result"]["date"] for v in read(tmp_path / name / "data/paper/account.json")["valuations"]] == ["2024-05-16", "2024-05-17"]

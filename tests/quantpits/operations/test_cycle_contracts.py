@@ -103,3 +103,24 @@ def test_process_interrupt_propagates_and_reaps_child(tmp_path):
     result = subprocess.run([sys.executable, str(parent)], cwd=tmp_path, env=env, capture_output=True, timeout=20)
     assert result.returncode == 130
     assert (tmp_path / "proof").read_text() == "reaped"
+
+
+def test_unavailable_calendar_keeps_original_frontier_until_schedule_resolution(tmp_path):
+    from quantpits.operations.config import cycle_request
+    from quantpits.operations.cycle import build_steps, _resolve_paper_schedules
+    project = load_project(scenario(tmp_path))
+    request = cycle_request(project, cycle="waiting_calendar", anchor="2024-05-23", value_through="2024-05-23",
+                            trade_date="2024-05-24", since="2024-05-10")
+    steps = build_steps(project, request)
+    placeholders = [s for s in steps if s["kind"] == "paper_schedule"]
+    assert len(placeholders) == 2
+    assert all(s["boundary"]["valuation_frontier"] == "2024-05-10" for s in placeholders)
+    state = {"steps": steps, "request": request, "results": {s["id"]: {"status": "waiting"} for s in steps}}
+    assert not _resolve_paper_schedules(project, state)
+    provider = project.members["live"].ctx.qlib_data_dir
+    calendar = ["2024-05-10", "2024-05-13", "2024-05-17", "2024-05-20", "2024-05-21", "2024-05-22", "2024-05-23"]
+    (provider / "calendars/day.txt").write_text("\n".join(calendar) + "\n")
+    (provider / "calendars/day_future.txt").write_text("\n".join(calendar + ["2024-05-24"]) + "\n")
+    assert _resolve_paper_schedules(project, state)
+    assert [s["date"] for s in state["steps"] if s["kind"] == "value" and s["member"] == "paper_a"] == calendar[1:]
+    assert next(s for s in state["steps"] if s["id"] == "paper_a-settle-0")["native_cycle"] == "old_native_id"

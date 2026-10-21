@@ -8,12 +8,97 @@ from quantpits.operations.native import NativeSteps, next_day, ref, save_json, v
 from quantpits.operations.process import ProcessRunner
 from quantpits.research.paper_market import PaperMarket
 from quantpits.research.paper_workflow import PaperWorkflow
+from quantpits.research.paper_store import latest_state
 from quantpits.training.lease import TrainingExecutionLease
 from quantpits.utils.workspace import fingerprint_file, fingerprint_value
 
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _paper_boundary(workflow):
+    journal = workflow._journal()
+    last = journal["valuations"][-1]["result"] if journal["valuations"] else journal["bootstrap"]["valuation"]
+    return {"valuation_frontier": last["date"], "retry_frontier": last["status"] != "COMPLETE",
+            "state_date": latest_state(journal)["as_of_date"],
+            "pending": [{"cycle_id": p["cycle_id"], "trade_date": p["trade_date"]}
+                        for p in sorted(workflow._pending(journal), key=lambda p: (p["trade_date"], p["cycle_id"]))]}
+
+
+def _paper_sequence(member, request, boundary, run_prefix):
+    """Freeze dates from the account frontier; interleave native close/settle calls."""
+    final_id = member.id + "-value"
+    def step(key, kind, dependencies=(), **fields):
+        return dict(id=key, kind=kind, member=member.id, dependencies=list(dependencies),
+                    run_id=run_prefix + "-" + key, **fields)
+    through = request["value_through"]
+    frontier, state_date = boundary["valuation_frontier"], boundary["state_date"]
+    if max(frontier, state_date) > through:
+        return [step(final_id, "blocked", reason="account valuation/state frontier is after value-through")]
+    market = PaperMarket(member.ctx.qlib_data_dir)
+    if market.check_date(through) != "VERIFIED":
+        # No account steps have run yet. Resume can resolve the same bounded
+        # request when its calendar arrives, retaining the original frontier/IDs.
+        return [step(final_id, "paper_schedule", boundary=boundary)]
+    calendar = market.calendar if through <= market.calendar[-1] else market.future
+    dates = [d for d in calendar if state_date <= d <= through and
+             (d > frontier or (d == frontier and boundary["retry_frontier"]))]
+    if not dates:
+        dates = [through]  # observe an already saved endpoint without replaying it
+    pending = [(i, p) for i, p in enumerate(boundary["pending"]) if p["trade_date"] <= through]
+    result, dependencies = [], []
+    for selected in dates:
+        while pending and pending[0][1]["trade_date"] <= selected:
+            index, plan = pending.pop(0)
+            item = step(member.id + "-settle-" + str(index), "settle", dependencies,
+                        native_cycle=plan["cycle_id"])
+            result.append(item)
+            dependencies = [item["id"]]
+        key = final_id if selected == through else final_id + "-" + selected
+        item = step(key, "value", dependencies, date=selected)
+        result.append(item)
+        dependencies = [key]
+    return result
+
+
+def _capture_rules(project, steps):
+    for step in steps:
+        if step["kind"] not in ("settle", "paper_plan"):
+            continue
+        binding = project.accounts[step["member"]]
+        value = (binding.get("pending_rules", {}).get(step["native_cycle"]) if step["kind"] == "settle"
+                 else binding.get("rules", project.rules))
+        if value:
+            source = path_at(project.path.parent, value)
+            step["rules_source"] = str(source)
+            step["rules_sha256"] = fingerprint_file(source) if source.is_file() else None
+
+
+def _resolve_paper_schedules(project, state):
+    changed = False
+    for previous in tuple(state["steps"]):
+        if previous["kind"] != "paper_schedule":
+            continue
+        try:
+            member = project.members[previous["member"]]
+            sequence = _paper_sequence(member, state["request"], previous["boundary"],
+                                       previous["run_id"].rsplit("-" + previous["id"], 1)[0])
+            if sequence[0]["kind"] == "paper_schedule":
+                continue
+            _capture_rules(project, sequence)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            continue  # this account keeps waiting; independent branches can run
+        index = state["steps"].index(previous)
+        state["steps"][index:index + 1] = sequence
+        del state["results"][previous["id"]]
+        for item in sequence:
+            item["skip"] = item["id"] in state["request"]["inputs"].get("skip", [])
+            state["results"][item["id"]] = {"status": "pending"}
+        changed = True
+    if changed:
+        state["steps_identity"] = fingerprint_value(state["steps"])
+    return changed
 
 
 def build_steps(project, request):
@@ -33,19 +118,17 @@ def build_steps(project, request):
         if member.kind == "paper":
             try:
                 workflow = PaperWorkflow(member.ctx)
-                journal = workflow._journal()
-                pending = workflow._pending(journal)
-                for index, plan in enumerate(pending):
-                    if plan["trade_date"] <= request["value_through"]:
-                        deps.append(add(member.id + "-settle-" + str(index), "settle", member=member.id,
-                                        native_cycle=plan["cycle_id"]))
-                    else:
-                        deps.append(add(member.id + "-pending", "blocked", member=member.id,
-                                        reason="original pending %s is not due by value-through" % plan["cycle_id"]))
+                boundary = _paper_boundary(workflow)
+                steps.extend(_paper_sequence(member, request, boundary, prefix))
+                deps = [member.id + "-value"]
+                if member.id not in held:
+                    for plan in boundary["pending"]:
+                        if plan["trade_date"] > request["value_through"]:
+                            deps.append(add(member.id + "-pending", "blocked", deps, member=member.id,
+                                            reason="original pending %s is not due by value-through" % plan["cycle_id"]))
             except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
-                deps.append(add(member.id + "-account", "blocked", member=member.id, reason=str(exc)))
-            value = add(member.id + "-value", "value", deps, member=member.id)
-            old_dependencies[member.id] = [value]
+                deps = [add(member.id + "-value", "blocked", member=member.id, reason=str(exc))]
+            old_dependencies[member.id] = deps
         else:
             from quantpits.post_trade.transaction import PostTradeTransactionManager
             prod = read_json(member.ctx.config_path("prod_config.json"))
@@ -93,14 +176,7 @@ def build_steps(project, request):
         raise CycleError("skip must contain distinct known step IDs from plan")
     for step in steps:
         step["skip"] = step["id"] in skip
-        if step["kind"] in ("settle", "paper_plan"):
-            binding = project.accounts[step["member"]]
-            value = (binding.get("pending_rules", {}).get(step["native_cycle"]) if step["kind"] == "settle"
-                     else binding.get("rules", project.rules))
-            if value:
-                source = path_at(project.path.parent, value)
-                step["rules_source"] = str(source)
-                step["rules_sha256"] = fingerprint_file(source) if source.is_file() else None
+    _capture_rules(project, steps)
     return steps
 
 
@@ -111,6 +187,8 @@ def _preflight(project, request, step):
         return step["reason"]
     if kind in ("report", "hold"):
         return None
+    if kind == "paper_schedule":
+        return "WAITING_FOR_DATA: valuation calendar through %s" % request["value_through"]
     if step.get("rules_source") and not path_at(project.path.parent, step["rules_source"]).is_file():
         return "dated rules file is missing: " + step["rules_source"]
     member = project.members[step["member"]]
@@ -130,7 +208,7 @@ def _preflight(project, request, step):
         plan = PaperWorkflow(member.ctx)._journal()["plans"][step["native_cycle"]]
         selected = plan["trade_date"]
     elif kind in ("value", "post_trade", "post_recover"):
-        selected = request["value_through"] if kind == "value" else step["through"]
+        selected = step.get("date", request["value_through"]) if kind == "value" else step["through"]
     if market.check_date(selected, actual=True) != "VERIFIED":
         return "WAITING_FOR_DATA: %s" % selected
     if kind in ("paper_plan", "order"):
@@ -254,6 +332,8 @@ def execute(project, *, request=None, cycle=None, runner=None, fault=None):
             state["steps_identity"] = fingerprint_value(state["steps"])
             save_json(path, state)
         request = state["request"]
+        if _resolve_paper_schedules(project, state):
+            save_json(path, state)
         logs = contained(directory, "logs")
         logs.mkdir(parents=True, exist_ok=True)
         native = NativeSteps(project, request, runner or ProcessRunner(), directory)
@@ -310,11 +390,20 @@ def execute(project, *, request=None, cycle=None, runner=None, fault=None):
                         evidence = {"files": [ref(p) for p in files if p.is_file()]}
                     if evidence is None:
                         waiting = code == 2 and step["kind"] in ("settle", "value", "paper_plan", "report", "rules")
+                        reason = "native completion not verified; see logs/%s.log" % step["id"]
+                        if step["kind"] == "value" and code == 0:
+                            selected = step.get("date", request["value_through"])
+                            values = [v["result"] for v in native.paper(step)._journal()["valuations"] if v["result"]["date"] == selected]
+                            if values and values[-1]["status"] != "COMPLETE":
+                                waiting = True
+                                reason = "native valuation at %s is %s" % (selected, values[-1]["status"])
                         entry.update(status="waiting" if waiting else "failed", exit_code=code,
-                                     reason="native completion not verified; see logs/%s.log" % step["id"])
+                                     reason=reason)
                         save_json(path, state)
                         continue
                 entry.update(status="done", evidence=evidence, finished_at=now(), reason=None)
+                entry.pop("error_type", None)
+                entry.pop("exit_code", None)
                 save_json(path, state)
             except (KeyboardInterrupt, SystemExit):
                 entry.update(status="interrupted", reason="process control interruption; native recovery facts retained", finished_at=now())
