@@ -253,40 +253,155 @@ def test_daily_closes_use_pre_execution_and_post_execution_positions(tmp_path, h
         assert set(read(tmp_path / "paper_a/data/paper/account.json")["plans"]) == {"old_native_id"}
 
 
-@pytest.mark.parametrize("failure", ["process", "price"])
-def test_daily_failure_waits_before_advancing_and_resume_preserves_completed_dates(tmp_path, failure):
-    import struct
+def test_daily_process_failure_waits_before_advancing_and_resume_preserves_completed_dates(tmp_path):
     project = scenario(tmp_path, sessions=WEEK)
     marker = project.parent / "fail-value"
-    price = tmp_path / "provider/features/sh600001/close.day.bin"
-    original = price.read_bytes()
-    if failure == "process":
-        marker.write_text("paper_a-value-2024-05-14")
-    else:
-        words = list(struct.unpack("<%sf" % (len(original) // 4), original))
-        words[1 + WEEK.index("2024-05-14")] = float("nan")
-        price.write_bytes(struct.pack("<%sf" % len(words), *words))
+    marker.write_text("paper_a-value-2024-05-14")
     result = command(project, code=2, parent_env="missing")
     entry = rows(result)["paper_a-value-2024-05-14"]
-    assert entry["status"] == ("failed" if failure == "process" else "waiting")
+    assert entry["status"] == "failed"
     assert rows(result)["paper_a-new"]["status"] == "waiting"
     journal = read(tmp_path / "paper_a/data/paper/account.json")
     first = journal["valuations"][0]
     assert first["result"]["date"] == "2024-05-13"
     assert all(v["result"]["date"] <= "2024-05-14" for v in journal["valuations"])
-    if failure == "price":
-        assert journal["valuations"][-1]["result"]["status"] == "STALE"
-    else:
-        assert rows(result)["paper_b-new"]["status"] == "done"
-        marker.unlink()
+    assert rows(result)["paper_b-new"]["status"] == "done"
+    marker.unlink()
     before_log = (project.parent / "cycles/new_week/logs/paper_a-value-2024-05-13.log").read_bytes()
-    price.write_bytes(original)
     resumed = command(project, "resume", parent_env="missing")
     journal = read(tmp_path / "paper_a/data/paper/account.json")
     assert journal["valuations"][0] == first
     assert [v["result"]["date"] for v in journal["valuations"] if v["result"]["status"] == "COMPLETE"] == WEEK[1:-2]
     assert (project.parent / "cycles/new_week/logs/paper_a-value-2024-05-13.log").read_bytes() == before_log
     assert "exit_code" not in rows(resumed)["paper_a-value-2024-05-14"]
+
+
+def missing_close(tmp_path, selected):
+    import struct
+    price = tmp_path / "provider/features/sh600001/close.day.bin"
+    raw = price.read_bytes()
+    words = list(struct.unpack("<%sf" % (len(raw) // 4), raw))
+    words[1 + WEEK.index(selected)] = float("nan")
+    price.write_bytes(struct.pack("<%sf" % len(words), *words))
+    return price, price.read_bytes()
+
+
+@pytest.mark.parametrize("legacy_waiting", [False, True])
+def test_saved_stale_valuation_advances_without_repairing_history(tmp_path, legacy_waiting):
+    from tests.quantpits.operations.scenario import write_json
+    project = scenario(tmp_path, sessions=WEEK)
+    price, missing = missing_close(tmp_path, "2024-05-14")
+    step = "paper_a-value-2024-05-14"
+    if legacy_waiting:
+        # Commit the real native valuation, then retain the previous candidate's
+        # waiting metadata. No native result or completion proof is fabricated.
+        (project.parent / "interrupt-after").write_text(step)
+        command(project, code=130, parent_env="missing")
+        progress_path = project.parent / "cycles/new_week/progress.json"
+        progress = read(progress_path)
+        progress["results"][step].update(status="waiting", reason="native valuation at 2024-05-14 is STALE", exit_code=0)
+        write_json(progress_path, progress)
+        saved = read(tmp_path / "paper_a/data/paper/account.json")["valuations"]
+        log = project.parent / ("cycles/new_week/logs/" + step + ".log")
+        old_log = log.read_bytes()
+        before = files(tmp_path)
+        waiting = command(project, "status", code=2, parent_env="missing")
+        assert files(tmp_path) == before
+        assert rows(waiting)[step]["valuation"]["status"] == "STALE"
+        result = command(project, "resume", parent_env="missing")
+        assert read(progress_path)["steps_identity"] == progress["steps_identity"]
+        assert read(tmp_path / "paper_a/data/paper/account.json")["valuations"][:2] == saved
+        assert log.read_bytes() == old_log
+        assert "exit_code" not in rows(result)[step]
+    else:
+        result = command(project, parent_env="missing")
+    for name in ("paper_a", "paper_b"):
+        journal = read(tmp_path / name / "data/paper/account.json")
+        values = [v["result"] for v in journal["valuations"]]
+        assert [v["date"] for v in values] == WEEK[1:-2]
+        assert [v["status"] for v in values] == ["COMPLETE", "STALE", "COMPLETE", "COMPLETE", "COMPLETE"]
+        stale = values[1]
+        assert stale["nav"] is not None and stale["missing"] == []
+        assert stale["positions"][0]["price"] == "10.00"
+        assert stale["positions"][0]["price_date"] == "2024-05-13"
+        assert stale["positions"][0]["stale"] is True
+        assert rows(result)[name + "-value-2024-05-14"]["valuation"] == stale
+        assert rows(result)[name + "-new"]["status"] == "done"
+        assert journal["plans"]["new_week"]["trade_date"] == "2024-05-21"
+    before = files(tmp_path)
+    inspected = command(project, "status", parent_env="missing")
+    assert files(tmp_path) == before
+    assert rows(inspected)[step]["valuation"] == rows(result)[step]["valuation"]
+    command(project, "resume", parent_env="missing")
+    assert {k: v for k, v in files(tmp_path).items() if not k.endswith("execution.lock")} == {
+        k: v for k, v in before.items() if not k.endswith("execution.lock")}
+    assert price.read_bytes() == missing
+
+
+def test_new_cycle_starts_after_saved_stale_frontier(tmp_path):
+    from tests.quantpits.operations.scenario import write_json
+    project = scenario(tmp_path, sessions=WEEK)
+    price, missing = missing_close(tmp_path, "2024-05-14")
+    inputs = project.parent / "hold.json"
+    write_json(inputs, {"hold": ["live", "paper_a", "paper_b"]})
+    first = command(project, code=2, cycle="stale_week", anchor="2024-05-14", value_through="2024-05-14",
+                    trade_date="2024-05-15", inputs=inputs, parent_env="missing")
+    # The original comparison retains partial quality at a STALE endpoint;
+    # both account date steps have nevertheless been processed.
+    assert rows(first)["report"]["status"] == "waiting"
+    assert rows(first)["paper_a-value"]["status"] == "done"
+    assert rows(first)["paper_a-value"]["valuation"]["status"] == "STALE"
+    saved = {name: read(tmp_path / name / "data/paper/account.json")["valuations"] for name in ("paper_a", "paper_b")}
+    preview = command(project, "plan", cycle="next_week", parent_env="missing")
+    for name in saved:
+        assert [s["date"] for s in preview["steps"] if s.get("member") == name and s["kind"] == "value"] == WEEK[3:-2]
+    command(project, cycle="next_week", parent_env="missing")
+    for name, values in saved.items():
+        assert read(tmp_path / name / "data/paper/account.json")["valuations"][:2] == values
+    before = files(tmp_path)
+    inspected = command(project, "status", code=2, cycle="stale_week", parent_env="missing")
+    assert rows(inspected)["paper_a-value"]["valuation"]["status"] == "STALE"
+    assert files(tmp_path) == before
+    assert price.read_bytes() == missing
+
+
+def test_unknown_nav_stays_partial_and_waits(tmp_path):
+    project = scenario(tmp_path, sessions=WEEK)
+    price, missing = missing_close(tmp_path, "2024-05-13")
+    result = command(project, code=2, parent_env="missing")
+    for name in ("paper_a", "paper_b"):
+        value = rows(result)[name + "-value-2024-05-13"]
+        assert value["status"] == "waiting"
+        assert value["valuation"]["status"] == "PARTIAL"
+        assert value["valuation"]["nav"] is None
+        assert value["valuation"]["positions"][0]["price"] is None
+        assert value["valuation"]["missing"] == ["SH600001"]
+        journal = read(tmp_path / name / "data/paper/account.json")
+        assert len(journal["valuations"]) == 1
+        assert "new_week" not in journal["plans"]
+    before = files(tmp_path)
+    inspected = command(project, "status", code=2, parent_env="missing")
+    assert rows(inspected)["paper_a-value-2024-05-13"]["valuation"]["status"] == "PARTIAL"
+    assert files(tmp_path) == before
+    assert price.read_bytes() == missing
+
+
+def test_actual_calendar_waits_before_any_stale_observation(tmp_path):
+    project = scenario(tmp_path, sessions=WEEK)
+    price, missing = missing_close(tmp_path, "2024-05-14")
+    calendar = tmp_path / "provider/calendars/day.txt"
+    calendar.write_text("\n".join(WEEK[:2]) + "\n")
+    result = command(project, code=2, parent_env="missing")
+    for name in ("paper_a", "paper_b"):
+        entry = rows(result)[name + "-value-2024-05-14"]
+        assert entry["status"] == "waiting" and "WAITING_FOR_DATA" in entry["reason"]
+        assert "valuation" not in entry
+        journal = read(tmp_path / name / "data/paper/account.json")
+        assert [v["result"]["date"] for v in journal["valuations"]] == ["2024-05-13"]
+    calendar.write_text("\n".join(WEEK[:-2]) + "\n")
+    resumed = command(project, "resume", parent_env="missing")
+    assert rows(resumed)["paper_a-value-2024-05-14"]["valuation"]["status"] == "STALE"
+    assert price.read_bytes() == missing
 
 
 def test_saved_valuation_frontier_preserves_older_history_gaps(tmp_path):

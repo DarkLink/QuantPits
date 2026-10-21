@@ -39,6 +39,20 @@ def next_day(value):
     return (datetime.strptime(value, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+def valuation_processed(result):
+    """Accept known NAVs from an already validated native journal, including cached prices."""
+    return result["status"] in ("COMPLETE", "STALE") and result["nav"] is not None
+
+
+def _valuation_at(journal, selected):
+    values = [v["result"] for v in journal["valuations"] if v["result"]["date"] == selected]
+    if values:
+        return values[-1]
+    if journal["bootstrap"]["date"] == selected:
+        return journal["bootstrap"]["valuation"]
+    return None
+
+
 def native_manifest(ctx, command, run_id):
     path = contained(ctx.root, "output/manifests/%s/%s.json" % (command, run_id))
     if not path.is_file():
@@ -81,6 +95,10 @@ class NativeSteps:
     def paper(self, step):
         return PaperWorkflow(self.ctx(step))
 
+    def valuation(self, step):
+        journal = self.paper(step)._journal()
+        return _valuation_at(journal, step.get("date", self.request["value_through"]))
+
     def invoke(self, step, module, arguments):
         return self.runner.run(self.ctx(step), "quantpits.scripts." + module, arguments,
                                contained(self.directory, "logs/%s.log" % step["id"]))
@@ -102,12 +120,9 @@ class NativeSteps:
                     return None
             elif kind == "value":
                 selected = step.get("date", self.request["value_through"])
-                values = [v["result"] for v in journal["valuations"] if v["result"]["date"] == selected]
-                if not values and journal["bootstrap"]["date"] == selected:
-                    values = [journal["bootstrap"]["valuation"]]
-                if not values or values[-1]["status"] != "COMPLETE":
+                result = _valuation_at(journal, selected)
+                if result is None or not valuation_processed(result):
                     return None
-                result = values[-1]
             else:
                 result = journal["plans"].get(step["native_cycle"])
                 if result is None:

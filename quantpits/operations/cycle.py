@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from quantpits.operations.config import CycleError, contained, cycle_request, path_at, read_json
-from quantpits.operations.native import NativeSteps, next_day, ref, save_json, validate_write_context, verify_refs
+from quantpits.operations.native import NativeSteps, next_day, ref, save_json, validate_write_context, valuation_processed, verify_refs
 from quantpits.operations.process import ProcessRunner
 from quantpits.research.paper_market import PaperMarket
 from quantpits.research.paper_workflow import PaperWorkflow
@@ -20,7 +20,7 @@ def now():
 def _paper_boundary(workflow):
     journal = workflow._journal()
     last = journal["valuations"][-1]["result"] if journal["valuations"] else journal["bootstrap"]["valuation"]
-    return {"valuation_frontier": last["date"], "retry_frontier": last["status"] != "COMPLETE",
+    return {"valuation_frontier": last["date"], "retry_frontier": not valuation_processed(last),
             "state_date": latest_state(journal)["as_of_date"],
             "pending": [{"cycle_id": p["cycle_id"], "trade_date": p["trade_date"]}
                         for p in sorted(workflow._pending(journal), key=lambda p: (p["trade_date"], p["cycle_id"]))]}
@@ -274,10 +274,18 @@ def load_state(project, cycle):
     return value
 
 
-def summarize(state):
+def summarize(state, native=None):
     rows = []
     for step in state["steps"]:
-        rows.append(dict(step, **state["results"][step["id"]]))
+        row = dict(step, **state["results"][step["id"]])
+        if native is not None and step["kind"] == "value":
+            try:
+                value = native.valuation(step)
+                if value is not None:
+                    row["valuation"] = value
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                row["valuation_error"] = str(exc)
+        rows.append(row)
     statuses = [r["status"] for r in rows]
     status = "complete" if all(s in ("done", "held", "skipped") for s in statuses) else (
         "interrupted" if "interrupted" in statuses else ("failed" if "failed" in statuses else "waiting"))
@@ -298,7 +306,7 @@ def status(project, cycle):
             observed = native.observe(step, completed=True)
             if observed is None or observed != entry["evidence"]:
                 raise CycleError("completed result differs from its saved native proof")
-    return summarize(state)
+    return summarize(state, native)
 
 
 def execute(project, *, request=None, cycle=None, runner=None, fault=None):
@@ -392,11 +400,10 @@ def execute(project, *, request=None, cycle=None, runner=None, fault=None):
                         waiting = code == 2 and step["kind"] in ("settle", "value", "paper_plan", "report", "rules")
                         reason = "native completion not verified; see logs/%s.log" % step["id"]
                         if step["kind"] == "value" and code == 0:
-                            selected = step.get("date", request["value_through"])
-                            values = [v["result"] for v in native.paper(step)._journal()["valuations"] if v["result"]["date"] == selected]
-                            if values and values[-1]["status"] != "COMPLETE":
+                            value = native.valuation(step)
+                            if value is not None:
                                 waiting = True
-                                reason = "native valuation at %s is %s" % (selected, values[-1]["status"])
+                                reason = "native valuation at %s is %s" % (value["date"], value["status"])
                         entry.update(status="waiting" if waiting else "failed", exit_code=code,
                                      reason=reason)
                         save_json(path, state)
@@ -413,6 +420,6 @@ def execute(project, *, request=None, cycle=None, runner=None, fault=None):
                 entry.update(status="failed", reason=str(exc), error_type=type(exc).__name__, finished_at=now())
                 save_json(path, state)
                 # An ordinary member failure cannot suppress independent branches.
-        return summarize(state)
+        return summarize(state, native)
     finally:
         lease.release()
