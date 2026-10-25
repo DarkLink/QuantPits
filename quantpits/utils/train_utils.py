@@ -2777,7 +2777,7 @@ def predict_single_model(model_name, model_info, params, experiment_name,
     2. 从原 recorder 加载 model.pkl
     3. 用 inject_config() 构建新的 dataset（新的日期范围）
     4. model.predict(dataset)
-    5. 在新实验下创建 Recorder，保存 pred.pkl 和 SignalRecord
+    5. 保存该次预测及原生标签，供配置中的记录／分析消费
     6. 计算 IC 等指标
 
     Args:
@@ -2903,9 +2903,12 @@ def predict_single_model(model_name, model_info, params, experiment_name,
             print(f"[{model_name}] Predicting...")
             pred = model.predict(dataset=dataset)
 
-            # 运行 SignalRecord（生成 pred.pkl + sig_analysis/ic.pkl）
+            # 计算与保存显式交接；标准 SignalRecord 不再调用真实模型。
+            from quantpits.training.prediction_result import save_prediction_result
+            from qlib.workflow.record_temp import SignalRecord
             record_cfgs = task_config['task'].get('record', [])
             recorder = R.get_recorder()
+            save_prediction_result(pred, dataset, recorder)
 
             for r_cfg in record_cfgs:
                 if r_cfg['kwargs'].get('model') == '<MODEL>':
@@ -2914,7 +2917,8 @@ def predict_single_model(model_name, model_info, params, experiment_name,
                     r_cfg['kwargs']['dataset'] = dataset
 
                 r_obj = init_instance_by_config(r_cfg, recorder=recorder)
-                r_obj.generate()
+                if type(r_obj) is not SignalRecord:
+                    r_obj.generate()
 
             # 重点修复：必须把模型也存入新的 recorder 里面，
             # 否则下一个周期如果继续做仅预测，会因为上个仅预测的记录中没有 model.pkl 而失败
@@ -2939,7 +2943,6 @@ def predict_single_model(model_name, model_info, params, experiment_name,
             rid = recorder.info['id']
             print(f"[{model_name}] Finished! New Recorder ID: {rid}")
 
-            result['success'] = True
             result['record_id'] = rid
             result['performance'] = performance
             # Determine source mode from the resolved key (e.g. lstm@static → static)
@@ -2974,11 +2977,16 @@ def predict_single_model(model_name, model_info, params, experiment_name,
                 "mode": source_mode, "record_id": rid,
             })
             result["history_entry"] = pred_entry
-            if history_file is not False and not append_jsonl(history_file or PREDICTION_HISTORY_FILE, pred_entry):
-                print(f"[{model_name}] Warning: Could not write to "
-                      f"prediction_history.jsonl")
+
+        # Persisted coverage validation and recorder completion precede success.
+        if history_file is not False and not append_jsonl(history_file or PREDICTION_HISTORY_FILE, pred_entry):
+            print(f"[{model_name}] Warning: Could not write to prediction_history.jsonl")
+        result['success'] = True
 
     except Exception as e:
+        result['success'] = False
+        result.pop('record_entry', None)
+        result.pop('history_entry', None)
         result['error'] = str(e)
         print(f"!!! Error running predict-only for {model_name}: {e}")
         import traceback

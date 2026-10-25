@@ -64,6 +64,15 @@ and inference processors and model parameters retain their configured values. Un
 missing. Regular `DatasetH` and `TSDatasetH` reuse their original dataset, and coverage checks still
 inspect the persisted `pred.pkl`.
 
+Static `--predict-only` calls the model once per actually executed target attempt, then saves that
+result and Qlib's native labels. Series results become a `score` DataFrame as in SignalRecord;
+DataFrames retain their format. Missing or repeated standard `SignalRecord` configurations neither
+discard the result nor add inference calls. Configured `SigAnaRecord` and `PortAnaRecord` continue
+to consume the saved prediction; YAML analysis/backtests, prediction dates and the `model.pkl`
+retention policy stay unchanged. Unknown forward labels remain missing without dropping the
+prediction endpoint. Completed targets reuse existing evidence; retrying an uncommitted failed
+attempt may infer again. This does not introduce a cross-process computation cache.
+
 V2 uses strict version dispatch. Once `schema_version: 2` is declared, matching `models` and
 `model_records` mappings are mandatory; readers never fall back to top-level V1 fields. A `ready`
 entry must describe actual prediction start/end/rows, while predict-only entries also carry their

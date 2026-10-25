@@ -58,6 +58,13 @@ workspace 时会保留已选的 `MLFLOW_TRACKING_URI`；切换到另一 workspac
 也能产生信号；其余学习／推理处理器及模型参数保持配置值。未知标签保留为空，不填零。
 普通 `DatasetH`／`TSDatasetH` 继续使用原数据集，预测覆盖校验仍依据实际保存的 `pred.pkl`。
 
+静态 `--predict-only` 每次实际执行一个目标的 attempt 只调用一次模型推理，随后保存这份结果和
+Qlib 原生标签。Series 按 SignalRecord 语义转为 `score` DataFrame，DataFrame 保留原格式；
+缺少或重复配置标准 `SignalRecord` 都不会丢弃结果或增加推理。YAML 中的 `SigAnaRecord`、
+`PortAnaRecord` 继续消费保存的预测，原有分析／回测、预测日期范围和 `model.pkl` 保存政策不变。
+未知前向标签仍为空，不裁掉末日预测。已完成目标沿现有证据复用；未提交结果的失败按原请求恢复，
+重试 attempt 可以重新推理，本行为不提供跨进程计算缓存。
+
 V2 使用严格版本分派：一旦声明 `schema_version: 2`，一致的 `models` 与 `model_records`
 映射就是必需项，不会退回顶层 V1 字段。`ready` 记录必须包含实际预测的 start/end/rows；
 predict-only 还必须记录直接 source recorder、experiment 与 operation。融合运行时会再次

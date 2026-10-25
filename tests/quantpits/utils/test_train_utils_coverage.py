@@ -1126,6 +1126,7 @@ def test_predict_single_model_fallback_chain(mock_env_constants, tmp_path):
         names=["datetime", "instrument"],
     )
     prediction = pd.DataFrame({"score": [0.5]}, index=index)
+    model.predict.return_value = prediction
     output_recorder = MagicMock()
     output_recorder.info = {"id": "prediction_id", "artifact_uri": (workspace / "output/prediction").as_uri()}
     output_recorder.list_tags.return_value = {"model": "M1", "anchor_date": params["anchor_date"]}
@@ -1216,6 +1217,7 @@ def test_predict_single_model_ic_error(mock_env_constants, tmp_path):
         names=["datetime", "instrument"],
     )
     prediction = pd.DataFrame({"score": [0.5]}, index=index)
+    model.predict.return_value = prediction
     def load_output(name):
         if name == "sig_analysis/ic.pkl":
             raise FileNotFoundError("IC not found")

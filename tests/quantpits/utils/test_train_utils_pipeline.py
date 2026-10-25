@@ -5,10 +5,14 @@ import pytest
 import pandas as pd
 import numpy as np
 from unittest.mock import patch, mock_open, MagicMock
+# Initialize real dataset classes before individual tests mock Qlib's factory.
+from qlib.workflow.record_temp import SignalRecord
 
 @pytest.fixture
 def mock_qlib_objects():
     mock_model = MagicMock()
+    mock_model.predict.return_value = pd.DataFrame({"score": [0.5]}, index=pd.MultiIndex.from_tuples(
+        [(pd.Timestamp("2026-03-01"), "SYNTH")], names=["datetime", "instrument"]))
     mock_dataset = MagicMock()
     mock_recorder = MagicMock()
     mock_recorder.info = {'id': 'test_rid_123'}
@@ -176,8 +180,10 @@ def test_train_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
     assert not res_no_file['success']
 
 def test_predict_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
-    train_utils, _ = mock_env_constants
+    train_utils, workspace = mock_env_constants
     mock_model, mock_dataset, mock_recorder = mock_qlib_objects
+    mock_recorder.info["artifact_uri"] = (workspace / "output/prediction").as_uri()
+    mock_recorder.list_tags.return_value = {"model": "M1"}
     yaml_file = tmp_path / "test.yaml"
     yaml_file.write_text("dummy")
     params = {"anchor_date": "2026-03-01"}
@@ -206,7 +212,11 @@ def test_predict_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
         with patch('qlib.workflow.R') as mock_R:
             mock_R.get_recorder.return_value = mock_recorder
             mock_recorder.list_artifacts.return_value = ["model.pkl"]
-            mock_recorder.load_object.side_effect = [mock_model, pd.Series([0.5])]
+            mock_recorder.load_object.side_effect = lambda name: {
+                "model.pkl": mock_model,
+                "sig_analysis/ic.pkl": pd.Series([0.5]),
+                "pred.pkl": mock_model.predict.return_value,
+            }[name]
             with patch('quantpits.utils.train_utils.inject_config', return_value=task_config):
                 with patch('os.path.exists', return_value=True):
                     res = train_utils.predict_single_model("M1", {"yaml_file": str(yaml_file)}, params, "E", source)
@@ -281,6 +291,10 @@ class _FiniteSignalModel:
         self.fit_labels = None
         self.seed = 7
         self.truncate_prediction_tail = False
+        self.changing_predictions = False
+        self.dataframe_prediction = False
+        self.returned_predictions = []
+        self.invalid_prediction = False
 
     @staticmethod
     def _segment_rows(dataset, segment):
@@ -303,6 +317,8 @@ class _FiniteSignalModel:
 
     def predict(self, dataset):
         self.predict_datasets.append(dataset)
+        if self.invalid_prediction:
+            return np.array([1.0])
         if hasattr(dataset, "_batch_slices"):
             index, values, _ = self._segment_rows(dataset, "test")
             prediction = pd.Series(values[:, 0], index=index)
@@ -314,6 +330,12 @@ class _FiniteSignalModel:
         if self.truncate_prediction_tail:
             dates = prediction.index.get_level_values("datetime")
             prediction = prediction.loc[dates < dates.max()]
+        if self.changing_predictions:
+            count = len(self.predict_datasets)
+            prediction = prediction * (1 if count % 2 else -1) + count * 10
+        if self.dataframe_prediction:
+            prediction = prediction.to_frame("score")
+        self.returned_predictions.append(prediction.copy())
         return prediction
 
 
@@ -349,7 +371,9 @@ def finite_signal_training(mock_env_constants, monkeypatch):
     yaml_file.write_text("fixture", encoding="utf-8")
 
     def run(dataset_class="MTSDatasetH", use_cache=False, dropna_label=True,
-            rebuild_error=None, truncate_prediction=False, recorder_exit_error=None):
+            rebuild_error=None, truncate_prediction=False, recorder_exit_error=None,
+            predict_only=False, dataframe_prediction=False, record_classes=None,
+            save_error=None, invalid_prediction=False):
         if dataset_class != "DatasetH":
             # Qlib's real MTS datasets import torch; lightweight [test] CI
             # deliberately omits it. Keep DatasetH coverage active there.
@@ -413,6 +437,22 @@ def finite_signal_training(mock_env_constants, monkeypatch):
         original_model_cfg = copy.deepcopy(task_config["task"]["model"])
         model = _FiniteSignalModel()
         model.truncate_prediction_tail = truncate_prediction
+        model.changing_predictions = predict_only
+        model.dataframe_prediction = dataframe_prediction
+        model.invalid_prediction = invalid_prediction
+        if record_classes is not None:
+            task_config["task"]["record"] = [
+                {"class": name, "module_path": "qlib.workflow.record_temp", "kwargs": (
+                    {"model": "<MODEL>", "dataset": "<DATASET>"} if name == "SignalRecord" else {}
+                )} for name in record_classes
+            ]
+            for record in task_config["task"]["record"]:
+                if record["class"] == "PortAnaRecord":
+                    record["kwargs"] = {"config": {
+                        "strategy": {"class": "TopkDropoutStrategy", "module_path": "qlib.contrib.strategy",
+                                     "kwargs": {"signal": "<PRED>", "topk": 2, "n_drop": 1}},
+                        "backtest": {"start_time": str(dates[11].date()), "end_time": str(dates[-2].date())},
+                    }, "risk_analysis_freq": [], "indicator_analysis_freq": []}
         tracking_uri = (workspace / "mlruns").as_uri()
         client = MlflowClient(tracking_uri=tracking_uri)
         experiment_id = client.create_experiment(
@@ -454,16 +494,120 @@ def finite_signal_training(mock_env_constants, monkeypatch):
             "original_model_cfg": original_model_cfg, "params": params, "dates": dates,
             "raw_frame": frame, "workspace": workspace,
         }
+        if predict_only:
+            from quantpits.utils.model_artifacts import load_owned_model
+
+            source = MLflowRecorder(experiment_id, tracking_uri, mlflow_run=client.create_run(experiment_id))
+            source.set_tags(model="finite", mode="train")
+            source.save_objects(**{"model.pkl": model})
+            source_path = workspace / "output/finite_signal" / source.id / "artifacts/model.pkl"
+            case["source_bytes"] = source_path.read_bytes()
+            case["source_path"] = source_path
+            case["source"] = source
+            workflow.get_recorder.side_effect = lambda **kwargs: source if kwargs else recorder
+            def load(*args):
+                loaded = load_owned_model(*args)
+                case["model"] = loaded
+                return loaded
+            monkeypatch.setattr(train_utils, "load_owned_model", load)
+            if save_error is not None:
+                save = recorder.save_objects
+                def failing_save(*args, **kwargs):
+                    if "pred.pkl" in kwargs:
+                        raise save_error
+                    return save(*args, **kwargs)
+                monkeypatch.setattr(recorder, "save_objects", failing_save)
         try:
-            case["result"] = train_utils.train_single_model(
-                "finite", str(yaml_file), params, "finite_signal", cache_mgr=cache,
-                history_file=False, workspace_root=str(workspace),
-            )
+            if predict_only:
+                case["result"] = train_utils.predict_single_model(
+                    "finite", {"yaml_file": str(yaml_file)}, params, "finite_signal",
+                    {"experiment_name": "finite_signal", "models": {"finite@static": source.id}},
+                    cache_mgr=cache, history_file=False, workspace_root=str(workspace),
+                )
+            else:
+                case["result"] = train_utils.train_single_model(
+                    "finite", str(yaml_file), params, "finite_signal", cache_mgr=cache,
+                    history_file=False, workspace_root=str(workspace),
+                )
         finally:
             client.set_terminated(recorder.id)
         return case
 
     return run
+
+
+@pytest.mark.parametrize("dataset_class", ["DatasetH", "MTSDatasetH", "PurgedMTSDatasetH"])
+@pytest.mark.parametrize("use_cache", [False, True])
+@pytest.mark.parametrize("dataframe_prediction", [False, True])
+def test_predict_only_records_the_single_computed_result(finite_signal_training, dataset_class,
+                                                       use_cache, dataframe_prediction):
+    from qlib.contrib.eva.alpha import calc_ic
+
+    case = finite_signal_training(dataset_class, predict_only=True, use_cache=use_cache,
+                                  dataframe_prediction=dataframe_prediction,
+                                  record_classes=["SignalRecord", "SigAnaRecord"])
+    assert case["result"]["success"], case["result"]
+    model = case["model"]
+    assert len(model.predict_datasets) == 1
+    expected = model.returned_predictions[0]
+    if isinstance(expected, pd.Series):
+        expected = expected.to_frame("score")
+    pd.testing.assert_frame_equal(case["recorder"].load_object("pred.pkl"), expected)
+    labels = case["recorder"].load_object("label.pkl")
+    assert len(expected) == 21 and expected.index.get_level_values("datetime").max() == case["dates"][-1]
+    assert labels.index.get_level_values("datetime").max() == case["dates"][-1]
+    assert labels.loc[(slice(case["dates"][-6], None), slice(None))].isna().all().all()
+    ic, _ = calc_ic(expected.iloc[:, 0], labels.iloc[:, 0])
+    pd.testing.assert_series_equal(case["recorder"].load_object("sig_analysis/ic.pkl"), ic)
+    assert case["source_path"].read_bytes() == case["source_bytes"]
+    assert model.fit_dataset is None
+    assert case["result"]["history_entry"]["record_id"] == case["recorder"].id
+    assert case["result"]["record_entry"]["prediction_rows"] == len(expected)
+
+
+@pytest.mark.parametrize("records", [[], ["SigAnaRecord"], ["SignalRecord", "SignalRecord", "SigAnaRecord"]])
+def test_predict_only_saves_without_a_unique_standard_signal_record(finite_signal_training, records):
+    case = finite_signal_training("DatasetH", predict_only=True, record_classes=records)
+    assert case["result"]["success"], case["result"]
+    assert len(case["model"].predict_datasets) == 1
+    pd.testing.assert_frame_equal(case["recorder"].load_object("pred.pkl"),
+                                  case["model"].returned_predictions[0].to_frame("score"))
+    assert "label.pkl" in case["recorder"].list_artifacts()
+
+
+def test_predict_only_native_portfolio_record_consumes_computed_prediction(finite_signal_training, monkeypatch):
+    observed = []
+    def backtest(*, strategy, **kwargs):
+        observed.append(strategy["kwargs"]["signal"].copy())
+        return {"1day": (pd.DataFrame({"return": [0.1]}), {})}, {}
+    monkeypatch.setattr("qlib.workflow.record_temp.normal_backtest", backtest)
+    case = finite_signal_training("DatasetH", predict_only=True,
+                                  record_classes=["SignalRecord", "SigAnaRecord", "PortAnaRecord"])
+    assert case["result"]["success"], case["result"]
+    assert len(case["model"].predict_datasets) == len(observed) == 1
+    pd.testing.assert_frame_equal(observed[0], case["model"].returned_predictions[0].to_frame("score"))
+    assert case["recorder"].load_object("portfolio_analysis/report_normal_1day.pkl").iloc[0, 0] == 0.1
+
+
+@pytest.mark.parametrize("failure", ["save", "coverage", "format", "recorder_exit"])
+def test_predict_only_failed_result_is_not_publishable(finite_signal_training, failure):
+    kwargs = {
+        "save": {"save_error": OSError("cannot save")},
+        "coverage": {"truncate_prediction": True},
+        "format": {"invalid_prediction": True},
+        "recorder_exit": {"recorder_exit_error": RuntimeError("cannot finish recorder")},
+    }[failure]
+    case = finite_signal_training("DatasetH", predict_only=True, **kwargs)
+    assert not case["result"]["success"]
+    assert "record_entry" not in case["result"] and "history_entry" not in case["result"]
+    assert len(case["model"].predict_datasets) == 1
+    assert case["source_path"].read_bytes() == case["source_bytes"]
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_predict_only_save_interrupt_propagates(finite_signal_training, interrupt):
+    with pytest.raises(interrupt):
+        finite_signal_training("DatasetH", predict_only=True, save_error=interrupt("stop saving"))
 
 
 @pytest.mark.parametrize("dataset_class", ["MTSDatasetH", "PurgedMTSDatasetH"])
