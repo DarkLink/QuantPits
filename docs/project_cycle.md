@@ -123,3 +123,38 @@ paper 从已有估值前沿向 `value-through` 逐交易日推进，每个日期
 数值是示例。板块假设和个股例外由使用者填写，已给的个股 `reference_close` 不被覆盖。准备结果和观察 receipt 放在周期目录，不修改行情。未知或缺价沿原 paper 的局部处理；整个交易日数据不足保持等待。
 
 更详细差异可对同一组、同一估值日期另外调用 `compare_accounts --explain`；周期入口默认生成已有财务比较及账户建议。
+
+## 从已保存信号比较模型与组合
+
+对已有周期可单独重新评估，无需重跑预测、融合或交易步骤：
+
+```bash
+python -m quantpits.scripts.run_cycle evaluate --project /path/to/project.yaml --cycle week_one
+python -m quantpits.scripts.run_cycle evaluate --project /path/to/project.yaml --cycle week_one \
+  --start-date 2024-05-13 --end-date 2024-05-17 --account 100000
+```
+
+也可在原 `run`／`resume` 命令添加 `--evaluate`，核心周期 complete 后调用同一比较能力。
+此时 `--start-date`／`--end-date`／`--account` 仅控制诊断评估，不进入原交易请求身份；
+`--account` 默认100000，为各信号新建的空仓回测账户资金，不修改实盘或paper现金。
+未加 `--evaluate` 的旧命令与status行为保留。
+
+每个signal组读取本周期固定predictions／ensemble对应的原recorder完整pred.pkl，校验来源及字节；
+不读latest换源、不加载模型、不重新融合。anchor的signal.csv不能替代历史融合预测。
+同组成员及组合使用共同窗口、初始现金／空仓、策略、频率、基准、成交价与费用；
+默认窗口取各保存信号共同覆盖的起止日期。显式区间缺覆盖会列出缺失日期与原覆盖，不能悄悄裁短后报complete。
+股票覆盖保留各自信号，组间分别展示条件和窗口，不做跨组优劣排名。
+
+每次评估新建 `cycles/<cycle>/evaluations/evaluation-*/`，内含总结果JSON／Markdown及各组
+`result.json`、`comparison.md`、`summary.csv`、逐信号轨迹和worker日志。
+净值以诊断初始现金为1计，首期费用和从初始资金发生的回撤保留；Qlib仍使用原生信号滞后及回测频率，
+报告标明信号窗口、首末报告bar及样本数，首个bar可能尚未成交。
+这些是对保存信号的历史诊断回放，与连续实盘／paper净值分开。
+
+原YAML的SigAna／PortAna继续执行。新表不重算IC／RankIC或补历史标签，IC保持未评估，
+原recorder指标仍是原标签观察期的记录；未知尾部标签不填0。诊断不会覆盖源指标、原报告、融合权重或分数。
+首版重新做必要回测，不承诺已消除原records与新比较之间的回测重复。
+
+单独evaluate缺来源／评估失败时返回非零，组与成员失败仍完整保留；某组失败不吞掉其他组。
+`run/resume --evaluate`的普通评估失败放在独立evaluation结果中，核心complete及原退出语义保留；
+核心未完成则不启动附带评估。Ctrl+C等中断沿原CLI传播。评估不新增核心步骤、进度或恢复状态机。

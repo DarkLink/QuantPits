@@ -73,6 +73,11 @@ retention policy stay unchanged. Unknown forward labels remain missing without d
 prediction endpoint. Completed targets reuse existing evidence; retrying an uncommitted failed
 attempt may infer again. This does not introduce a cross-process computation cache.
 
+Training and prediction retain their configured accompanying signal/backtest analysis. For saved
+project model/ensemble signals, [run_cycle evaluate](project_cycle.md#compare-saved-model-and-ensemble-signals)
+provides common diagnostic cash, empty positions and windows. Changing diagnostic dates or cash
+later does not require fitting, predicting or fusing again, and does not alter source metrics or accounts.
+
 V2 uses strict version dispatch. Once `schema_version: 2` is declared, matching `models` and
 `model_records` mappings are mandatory; readers never fall back to top-level V1 fields. A `ready`
 entry must describe actual prediction start/end/rows, while predict-only entries also carry their

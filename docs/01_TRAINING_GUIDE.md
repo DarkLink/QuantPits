@@ -65,6 +65,10 @@ Qlib 原生标签。Series 按 SignalRecord 语义转为 `score` DataFrame，Dat
 未知前向标签仍为空，不裁掉末日预测。已完成目标沿现有证据复用；未提交结果的失败按原请求恢复，
 重试 attempt 可以重新推理，本行为不提供跨进程计算缓存。
 
+训练和仅预测原有YAML附带的信号／回测分析继续保留。对已经保存的项目单模型／融合信号，
+可另用 [run_cycle evaluate](project_cycle.md#从已保存信号比较模型与组合) 在统一资金、空仓及区间下比较；
+事后换诊断区间／资金不需要重新fit、predict或融合，也不影响原模型、指标和账户。
+
 V2 使用严格版本分派：一旦声明 `schema_version: 2`，一致的 `models` 与 `model_records`
 映射就是必需项，不会退回顶层 V1 字段。`ready` 记录必须包含实际预测的 start/end/rows；
 predict-only 还必须记录直接 source recorder、experiment 与 operation。融合运行时会再次

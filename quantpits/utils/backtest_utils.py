@@ -23,7 +23,8 @@ def run_backtest_with_strategy(
     freq: str, 
     account_cash: float, 
     bt_start: str, 
-    bt_end: str
+    bt_end: str,
+    benchmark: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Any]:
     """
     使用共同的 trade_exchange，实例化一个安全的 SimulatorExecutor 并执行 backtest_loop。
@@ -39,7 +40,12 @@ def run_backtest_with_strategy(
     from qlib.backtest.utils import CommonInfrastructure
     from qlib.backtest.account import Account
 
-    trade_account = Account(init_cash=account_cash)
+    account_options = {"init_cash": account_cash}
+    if benchmark is not None:
+        account_options["benchmark_config"] = {
+            "benchmark": benchmark, "start_time": bt_start, "end_time": bt_end,
+        }
+    trade_account = Account(**account_options)
     
     common_infra = CommonInfrastructure(
         trade_account=trade_account,

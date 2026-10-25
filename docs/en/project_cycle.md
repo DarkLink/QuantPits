@@ -84,3 +84,45 @@ Set project `rules: dated_rules.json`, optional per-account `rules`, or `pending
 Alternatively, `prepare_rules: normal_session.json` uses PaperMarket anchor cash closes and records observation receipts. Members must share a provider. The template must declare `reference_assumption: anchor_close_for_normal_session`, a source description, board assumptions and instrument exceptions. Existing instrument reference closes take precedence. This is an explicit normal-session assumption; missing prices retain native local handling, and whole-session data gaps wait. It does not modify market data.
 
 For detailed differences, separately run `compare_accounts --explain` with the same group and valuation dates. The cycle produces existing financial comparison reports and native account suggestions by default.
+
+## Compare saved model and ensemble signals
+
+Evaluate an existing cycle without repeating prediction, fusion or trading steps:
+
+```bash
+python -m quantpits.scripts.run_cycle evaluate --project /path/to/project.yaml --cycle week_one
+python -m quantpits.scripts.run_cycle evaluate --project /path/to/project.yaml --cycle week_one \
+  --start-date 2024-05-13 --end-date 2024-05-17 --account 100000
+```
+
+Add `--evaluate` to an ordinary `run` or `resume` command to invoke the same capability after core
+completion. Diagnostic dates and `--account` do not enter the core request identity. The default
+100000 initial cash belongs to a fresh empty backtest account per signal; actual/paper cash is unchanged.
+Old commands without the flag and status retain their behavior.
+
+Each signal group reads the complete original recorder predictions selected by that cycle's fixed
+predictions/ensemble snapshots and checks source identities and bytes. It neither resolves latest,
+loads models nor recomputes fusion. The anchor-only signal.csv is not historical ensemble prediction.
+Members and ensemble share a date window, initial cash/empty positions, strategy, frequency,
+benchmark, execution price and costs. Defaults use their common saved coverage. Explicit coverage
+gaps retain missing dates and original ranges instead of silently shortening a completed request.
+Each signal retains its own instrument coverage. Groups display separate conditions/windows;
+there is no cross-group ranking.
+
+Every call creates a unique `cycles/<cycle>/evaluations/evaluation-*/` with top-level JSON/Markdown
+and per-group result.json, comparison.md, summary.csv, signal trajectories and worker logs.
+NAV starts from diagnostic cash, retaining first-period fees and drawdown from initial capital.
+Qlib's native signal lag and report frequency remain in effect; saved signal bounds, first/last
+report bars and sample counts are disclosed. The first bar may have no trade. These are historical
+diagnostic replays, separate from continuous actual/paper NAV.
+
+Existing YAML SigAna/PortAna still runs. This comparison does not recompute IC/RankIC or historical
+labels; IC remains unevaluated and source metrics remain observations made with the original labels.
+Unknown tail labels are not filled with zero. Source metrics, reports, weights and fused scores are
+unchanged. This first version performs additional diagnostic backtests rather than claiming to
+deduplicate all analysis.
+
+Standalone evaluation failure returns nonzero and preserves requested groups/members. One group's
+ordinary failure does not suppress others. Attached evaluation failures are nested in `evaluation`
+without changing core completion or its exit semantics. Incomplete core cycles do not start attached
+evaluation. Interrupts propagate. Evaluation adds no core step, progress field or recovery state machine.

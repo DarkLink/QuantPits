@@ -8,6 +8,14 @@
 
 **Workflow Pipeline Placement**: Training → Ensemble Search → Combo Selection → **Fusion Backtesting (This Step)** → Order Generation / Signal Ranking
 
+Fusion computes ensemble scores from saved member predictions; it does not call member models again.
+Existing accompanying research analysis remains available. The standalone fusion leaderboard crops
+historical PortAna reports and is a historical reference: it does not establish common initial cash,
+positions or costs. For a project's models versus its actual saved ensemble, use
+[`run_cycle evaluate`](project_cycle.md#compare-saved-model-and-ensemble-signals), which creates fresh
+accounts under common group conditions and reads the original full-history ensemble output.
+It does not re-fuse scores or modify original ICIR weighting dependencies. Old reports remain intact.
+
 ## Quick Start
 
 ```bash
