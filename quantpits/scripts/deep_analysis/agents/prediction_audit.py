@@ -40,7 +40,10 @@ class PredictionAuditAgent(BaseAgent):
         buy_hits = self._analyze_suggestion_hits(ctx, direction='buy')
         raw_metrics['buy_hit_rate'] = buy_hits
 
-        if buy_hits:
+        if buy_hits and buy_hits.get('error'):
+            findings.append(self._make_finding(
+                'warning', 'Buy suggestion analysis unresolved', buy_hits['error']))
+        elif buy_hits:
             overall = buy_hits.get('overall', {})
             hit_rate = overall.get('hit_rate', 0)
             n_suggestions = overall.get('n_suggestions', 0)
@@ -81,7 +84,10 @@ class PredictionAuditAgent(BaseAgent):
         sell_hits = self._analyze_suggestion_hits(ctx, direction='sell')
         raw_metrics['sell_hit_rate'] = sell_hits
 
-        if sell_hits:
+        if sell_hits and sell_hits.get('error'):
+            findings.append(self._make_finding(
+                'warning', 'Sell suggestion analysis unresolved', sell_hits['error']))
+        elif sell_hits:
             overall = sell_hits.get('overall', {})
             hit_rate = overall.get('hit_rate', 0)
             n_suggestions = overall.get('n_suggestions', 0)
@@ -178,18 +184,16 @@ class PredictionAuditAgent(BaseAgent):
         all_returns = []
         per_date = []
 
-        for path in files:
-            date_str = self._extract_date(path)
-            if not date_str:
-                continue
+        from quantpits.order.suggestions import parse_suggestion_name, load_suggestion, SuggestionSourceError
+        sources = tuple(s for s in (parse_suggestion_name(p) for p in files) if s is not None)
+        resolved = []
+        try:
+            for date_str in sorted({s.date for s in sources if s.direction == direction}):
+                resolved.append((date_str, load_suggestion(sources, direction, date_str)))
+        except SuggestionSourceError as exc:
+            return {'error': str(exc)}
 
-            try:
-                df = pd.read_csv(path)
-                if 'instrument' not in df.columns:
-                    continue
-            except Exception:
-                continue
-
+        for date_str, df in resolved:
             instruments = df['instrument'].tolist()
             if not instruments:
                 continue

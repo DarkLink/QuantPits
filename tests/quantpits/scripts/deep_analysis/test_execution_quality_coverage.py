@@ -152,7 +152,7 @@ def test_substitution_bias_below_threshold(exec_ctx):
 
 
 def test_substitution_bias_no_order_history_dir(exec_ctx):
-    """Lines 162: order_history dirs don't exist → substitution bias skipped."""
+    """Missing history still invokes account-wide suggestion discovery."""
     # Remove the order_history dir
     import shutil
     oh_dir = os.path.join(exec_ctx.workspace_root, "data", "order_history")
@@ -164,11 +164,13 @@ def test_substitution_bias_no_order_history_dir(exec_ctx):
         ea_inst = MagicMock()
         ea_inst.calculate_slippage_and_delay.return_value = pd.DataFrame()
         ea_inst.analyze_explicit_costs.return_value = {}
+        ea_inst.analyze_order_discrepancies.return_value = {}
         mock_ea.return_value = ea_inst
 
         with patch("quantpits.scripts.analysis.utils.init_qlib"):
             findings = agent.analyze(exec_ctx)
 
+    ea_inst.analyze_order_discrepancies.assert_called_once_with(workspace_root=exec_ctx.workspace_root)
     assert "substitution_bias" not in findings.raw_metrics
 
 

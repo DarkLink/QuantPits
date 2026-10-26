@@ -11,12 +11,15 @@ Trade Classifier Engine — 实盘交易信号归因
 """
 
 import os
-import glob
+from pathlib import Path
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
 from quantpits.scripts.analysis.utils import ROOT_DIR
+from quantpits.order.suggestions import (
+    discover_suggestions, scan_suggestion_directory, load_suggestion, validate_selection,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -35,32 +38,18 @@ SELL_TYPES = ["上海A股普通股票竞价卖出", "深圳A股普通股票竞�
 # Suggestion File Loader
 # ---------------------------------------------------------------------------
 
-def _scan_suggestion_dates(prefix="buy_suggestion"):
-    """Scan order_history/ and output/ to discover all available suggestion file dates."""
-    dates = []
-    
-    # 1. Check order_history
-    pattern1 = os.path.join(ORDER_DIR, f"{prefix}_*.csv")
-    for f in sorted(glob.glob(pattern1)):
-        base = os.path.basename(f)
-        date_str = base.replace(f"{prefix}_", "").replace(".csv", "")
-        try:
-            dates.append(pd.Timestamp(date_str))
-        except Exception:
-            pass
-            
-    # 2. Check output directory
-    pattern2 = os.path.join(OUTPUT_DIR, f"{prefix}_*.csv")
-    for f in sorted(glob.glob(pattern2)):
-        base = os.path.basename(f)
-        # e.g., buy_suggestion_ensemble_2026-02-24.csv
-        date_part = base.replace(".csv", "")[-10:]
-        try:
-            dates.append(pd.Timestamp(date_part))
-        except Exception:
-            pass
-            
-    return sorted(list(set(dates)))
+def _legacy_suggestion_sources():
+    # Retain the old explicit-directory helpers for callers overriding constants.
+    directories = [Path(ORDER_DIR), Path(OUTPUT_DIR)]
+    directories.extend(sorted(Path(OUTPUT_DIR).glob("cycles/*/*/orders")))
+    return tuple(source for directory in directories
+                 for source in scan_suggestion_directory(directory))
+
+
+def _scan_suggestion_dates(prefix="buy_suggestion", sources=None):
+    sources = _legacy_suggestion_sources() if sources is None else sources
+    direction = prefix.split("_", 1)[0]
+    return sorted({pd.Timestamp(s.date) for s in sources if s.direction == direction})
 
 
 def _find_suggestion_date(trade_date, available_dates, strict_after="2026-02-13"):
@@ -90,30 +79,11 @@ def _find_suggestion_date(trade_date, available_dates, strict_after="2026-02-13"
     return None
 
 
-def _load_suggestion(prefix, date):
-    """Load a buy/sell suggestion CSV for a given date. Returns a DataFrame."""
-    date_str = pd.Timestamp(date).strftime("%Y-%m-%d")
-    
-    # Priority 1: Check output directory (latest generated ones)
-    out_pattern1 = os.path.join(OUTPUT_DIR, f"{prefix}_*_{date_str}.csv")
-    out_files = sorted(glob.glob(out_pattern1))
-    if not out_files:
-        out_pattern2 = os.path.join(OUTPUT_DIR, f"{prefix}_{date_str}.csv")
-        out_files = sorted(glob.glob(out_pattern2))
-        
-    if out_files:
-        path = out_files[-1]
-    else:
-        # Priority 2: Check order_history directory
-        path = os.path.join(ORDER_DIR, f"{prefix}_{date_str}.csv")
-
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    df = pd.read_csv(path)
-    # Ensure instrument column exists
-    if "instrument" not in df.columns:
-        return pd.DataFrame()
-    return df
+def _load_suggestion(prefix, date, sources=None, selected_files=()):
+    sources = _legacy_suggestion_sources() if sources is None else sources
+    return load_suggestion(sources, prefix.split("_", 1)[0],
+                           pd.Timestamp(date).strftime("%Y-%m-%d"),
+                           selected_files=selected_files)
 
 
 def _add_prefix(code):
@@ -132,21 +102,25 @@ def _add_prefix(code):
 # Core Classification
 # ---------------------------------------------------------------------------
 
-def classify_trades(verbose=False, trade_dates=None):
+def classify_trades(verbose=False, trade_dates=None, *, workspace_root=None, suggestion_files=()):
     """
     Classify all buy/sell trades in trade_log_full.csv.
 
     If trade_dates is strictly defined, only filters and classifies trades from those days.
+    workspace_root binds reads explicitly; suggestion_files selects discovered
+    absolute paths when suggestions conflict. Unresolved sources raise before save.
 
     Returns a DataFrame with columns:
         trade_date, instrument, trade_type, trade_class,
         suggestion_date, suggestion_rank
     """
+    root = Path(workspace_root) if workspace_root is not None else Path(ROOT_DIR)
+    trade_log_file = root / "data/trade_log_full.csv" if workspace_root is not None else TRADE_LOG_FILE
     # 1. Load trade log
-    if not os.path.exists(TRADE_LOG_FILE):
-        raise FileNotFoundError(f"Trade log not found: {TRADE_LOG_FILE}")
+    if not os.path.exists(trade_log_file):
+        raise FileNotFoundError(f"Trade log not found: {trade_log_file}")
 
-    trade_df = pd.read_csv(TRADE_LOG_FILE)
+    trade_df = pd.read_csv(trade_log_file)
 
     # Normalize date column
     if "成交日期" in trade_df.columns:
@@ -175,11 +149,13 @@ def classify_trades(verbose=False, trade_dates=None):
         raise ValueError("Column '证券代码' not found in trade log")
 
     # 2. Scan available suggestion dates
-    buy_dates_set = set(_scan_suggestion_dates("buy_suggestion"))
-    sell_dates_set = set(_scan_suggestion_dates("sell_suggestion"))
+    sources = discover_suggestions(root)
+    validate_selection(sources, suggestion_files)
+    buy_dates_set = set(_scan_suggestion_dates("buy_suggestion", sources))
+    sell_dates_set = set(_scan_suggestion_dates("sell_suggestion", sources))
 
     # Load config to get buy_suggestion_factor
-    config_file = os.path.join(ROOT_DIR, "config", "prod_config.json")
+    config_file = os.path.join(root, "config", "prod_config.json")
     factor = 3
     if os.path.exists(config_file):
         try:
@@ -212,8 +188,8 @@ def classify_trades(verbose=False, trade_dates=None):
         sell_sugg_date = _find_suggestion_date(trade_date, sell_dates_set)
 
         # Load suggestion data
-        buy_sugg = _load_suggestion("buy_suggestion", buy_sugg_date) if buy_sugg_date else pd.DataFrame()
-        sell_sugg = _load_suggestion("sell_suggestion", sell_sugg_date) if sell_sugg_date else pd.DataFrame()
+        buy_sugg = _load_suggestion("buy_suggestion", buy_sugg_date, sources, suggestion_files) if buy_sugg_date and n_buy else pd.DataFrame()
+        sell_sugg = _load_suggestion("sell_suggestion", sell_sugg_date, sources, suggestion_files) if sell_sugg_date and n_sell else pd.DataFrame()
 
         # Calculate algorithmic signal counts (intended DropN bounds)
         alg_n_buy = math.ceil(len(buy_sugg) / factor) if not buy_sugg.empty else 0
@@ -244,6 +220,8 @@ def classify_trades(verbose=False, trade_dates=None):
                 "suggestion_date": buy_sugg_date.strftime("%Y-%m-%d") if buy_sugg_date else "",
                 "suggestion_rank": rank if rank is not None else "",
                 "signal_count": alg_n_buy,
+                "suggestion_paths": " | ".join(buy_sugg.attrs.get("suggestion_source", {}).get("paths", [])),
+                "suggestion_sha256": buy_sugg.attrs.get("suggestion_source", {}).get("sha256", ""),
             })
 
         # Classify each sell
@@ -262,6 +240,8 @@ def classify_trades(verbose=False, trade_dates=None):
                 "suggestion_date": sell_sugg_date.strftime("%Y-%m-%d") if sell_sugg_date else "",
                 "suggestion_rank": rank if rank is not None else "",
                 "signal_count": alg_n_sell,
+                "suggestion_paths": " | ".join(sell_sugg.attrs.get("suggestion_source", {}).get("paths", [])),
+                "suggestion_sha256": sell_sugg.attrs.get("suggestion_source", {}).get("sha256", ""),
             })
 
     result_df = pd.DataFrame(results)

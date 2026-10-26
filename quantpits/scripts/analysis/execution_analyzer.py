@@ -225,28 +225,43 @@ class ExecutionAnalyzer:
             'total_dividend': total_dividend
         }
 
-    def analyze_order_discrepancies(self, order_dir, market=None, buy_suggestion_factor=None):
+    def analyze_order_discrepancies(self, order_dir=None, market=None, buy_suggestion_factor=None,
+                                    *, workspace_root=None, suggestion_files=()):
         """
         Analyze substitution bias (missed buys vs actual buys).
-        order_dir: Path to {workspace}/data/order_suggestions or similar.
+        order_dir: legacy explicit directory, scanned at its top level.
+        workspace_root: account root; discovers history, output and native cycles.
+        suggestion_files: explicitly selected discovered files for conflicting days.
+        Unresolved sources raise SuggestionSourceError; they are not zero bias.
         Returns a dict of metrics.
         market 默认从 model_config.json 读取。
         """
         if market is None:
             market, _ = load_market_config()
         import os
-        import glob
         import math
         import json as _json
         from .utils import get_forward_returns, ROOT_DIR
         
-        if self.trade_log.empty or not os.path.exists(order_dir):
+        from quantpits.order.suggestions import (
+            discover_suggestions, scan_suggestion_directory, load_suggestion, validate_selection,
+        )
+        if order_dir is not None and workspace_root is not None:
+            raise ValueError("Choose either order_dir or workspace_root")
+        if order_dir is None and workspace_root is None:
+            raise ValueError("order_dir or workspace_root is required")
+        if self.trade_log.empty:
             return {}
+        if order_dir is not None and not os.path.exists(order_dir):
+            return {}
+        sources = (discover_suggestions(workspace_root) if workspace_root is not None
+                   else scan_suggestion_directory(order_dir))
+        validate_selection(sources, suggestion_files)
         
         # Load buy_suggestion_factor from config if not provided
         # (same logic as trade_classifier for consistency)
         if buy_suggestion_factor is None:
-            config_file = os.path.join(ROOT_DIR, "config", "prod_config.json")
+            config_file = os.path.join(workspace_root if workspace_root is not None else ROOT_DIR, "config", "prod_config.json")
             buy_suggestion_factor = 3  # default
             if os.path.exists(config_file):
                 try:
@@ -256,7 +271,6 @@ class ExecutionAnalyzer:
                 except Exception:
                     pass
             
-        buy_files = sorted(glob.glob(os.path.join(order_dir, "buy_suggestion_*.csv")))
         
         df_trade = self.trade_log.copy()
         df_trade['date_str'] = df_trade['成交日期'].dt.strftime('%Y-%m-%d')
@@ -267,6 +281,13 @@ class ExecutionAnalyzer:
         if pd.isna(min_date):
              return {}
              
+        # Resolve relevant sources before market I/O; conflicts are never zero loss.
+        buy_dates = set(df_trade_buy['date_str'])
+        suggestions = []
+        for date_str in sorted({s.date for s in sources if s.direction == "buy"} & buy_dates):
+            frame = load_suggestion(sources, "buy", date_str, selected_files=suggestion_files)
+            suggestions.append((date_str, frame))
+
         # Use 1-day or 5-day proxy for missed opportunities. Using 5-day for structural impact checking
         fwd_ret_5d = get_forward_returns(min_date, max_date, market=market, n_days=5)
         
@@ -284,23 +305,9 @@ class ExecutionAnalyzer:
         total_substitute_count = 0
         total_days_with_misses = 0
         
-        for f in buy_files:
-            date_str = os.path.basename(f).replace("buy_suggestion_", "").replace(".csv", "")
-            if len(date_str) == 8 and "-" not in date_str:
-                date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-                
+        for date_str, sugg_df in suggestions:
             day_log = df_trade_buy[df_trade_buy['date_str'] == date_str]
-            if day_log.empty:
-                continue
-                
             actual_instruments = set(day_log['证券代码'].unique())
-            if not actual_instruments:
-                continue
-                
-            try:
-                sugg_df = pd.read_csv(f)
-            except pd.errors.EmptyDataError:
-                continue
             if sugg_df.empty:
                 continue
             
@@ -391,5 +398,6 @@ class ExecutionAnalyzer:
             'avg_missed_buys_return': avg_missed_return,
             'total_missed_count': total_missed_count,
             'total_substitute_count': total_substitute_count,
-            'total_days_with_misses': total_days_with_misses
+            'total_days_with_misses': total_days_with_misses,
+            'suggestion_sources': [frame.attrs['suggestion_source'] for _, frame in suggestions],
         }

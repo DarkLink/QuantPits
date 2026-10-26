@@ -181,15 +181,21 @@ def render_micro_execution(exec_a):
         st.plotly_chart(fig3, use_container_width=True)
 
     # 3. Substitution Bias Tracking
-    order_dir = os.path.join(env.ROOT_DIR, "data", "order_history")
-    if os.path.exists(order_dir):
-        discrepancy = exec_a.analyze_order_discrepancies(order_dir)
-        if discrepancy and discrepancy.get('total_missed_count', 0) > 0:
+    from quantpits.order.suggestions import SuggestionSourceError
+    try:
+        discrepancy = exec_a.analyze_order_discrepancies(workspace_root=env.ROOT_DIR)
+    except SuggestionSourceError as exc:
+        st.warning("Order suggestion analysis unresolved: %s" % exc)
+        discrepancy = {}
+    if discrepancy:
+        with st.expander("Order suggestion sources"):
+            st.json(discrepancy.get('suggestion_sources', []))
+        if discrepancy.get('total_missed_count', 0) > 0:
             st.write(f"**Total Missed Top Buys**: {discrepancy.get('total_missed_count')}")
             
             bar_data = pd.DataFrame({
                 'Category': ['Missed Top Buys Expected Return', 'Actual Substitute Buys Return'],
-                'Return': [discrepancy.get('avg_missed_buys_return', 0), discrepancy.get('avg_substitute_buys_return', 0)]
+                'Return': [discrepancy.get('avg_missed_buys_return', 0), discrepancy.get('realized_avg_substitute_return', 0)]
             })
             
             fig4 = px.bar(bar_data, x='Category', y='Return', color='Category', title="Substitution Bias Tracking (Avg 5-Day Forward Return)")

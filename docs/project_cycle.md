@@ -4,6 +4,10 @@
 
 ## 配置
 
+实际账户的周期订单原位保存在 `output/cycles/<project>/<cycle>/orders/`；直接运行旧 order_gen 的默认位置仍为 `output/`。分类、替代买入分析、dashboard 和 deep_analysis 会共同发现该账户的周期目录、`output/` 顶层及 `data/order_history/`，按文件执行日匹配，不从周期 anchor 推断日期。原文件受 manifest／progress 引用，不应为分析移动、覆盖或自动归档它们。
+
+同日同方向的相同字节副本只计一次；不同建议列明冲突。报告可通过重复 `--suggestion-file <工作区相对路径或绝对路径>` 选择实际文件，API 使用 `suggestion_files=[绝对路径, ...]`，详见[分析指南](08_ANALYSIS_GUIDE.md)。未解析来源使订单分析不完整；post_trade 已提交账务保留，派生分类记录失败／警告。本次兼容不会自动重分类旧历史，也不改变 paper／交易准入或周期恢复身份。
+
 项目文件及其 `cycles/` 目录放在账户、行情目录之外。下面是合成示例；先为三个成员分别建立已有的实际/paper 工作区，再填写组文件。paper 必须已通过原 `paper_trade bootstrap` 初始化。
 
 ```yaml

@@ -2,7 +2,13 @@
 
 `python -m quantpits.scripts.run_cycle` coordinates one weekly cycle across existing actual/paper workspaces. It reuses the [account comparison](account_comparison.md) group file and native domain commands. Static producers use predict-only with explicit models and fixed fit records; this entry never starts a fit.
 
-Keep the private project and its `cycles/` directory outside all account/provider trees. Initialize paper accounts with their existing bootstrap command first. A synthetic project:
+Keep the private project and its `cycles/` directory outside all account/provider trees. Initialize paper accounts with their existing bootstrap command first.
+
+Actual-account cycle orders stay in `output/cycles/<project>/<cycle>/orders/`; direct legacy order_gen still defaults to `output/`. Classification, substitution analysis, the dashboard and deep_analysis discover the account's cycle orders, output top level and `data/order_history/` together. Matching uses the filename's execution date, not the cycle anchor. Preserve originals referenced by manifests/progress; analysis requires no moves, overwrites or automatic archival.
+
+Identical byte copies count once per date/direction. Different suggestions produce a conflict. Reports accept repeatable `--suggestion-file <workspace-relative-or-absolute-path>`; APIs accept `suggestion_files=[absolute_path, ...]`. See the [analysis guide](08_ANALYSIS_GUIDE.md). Unresolved sources make order analysis incomplete. post_trade retains committed account state and records a derived classification failure/warning. Existing historical classifications are not automatically repaired. Paper/trading admission and cycle recovery identities are unchanged.
+
+A synthetic project:
 
 ```yaml
 version: 1

@@ -153,43 +153,37 @@ class ExecutionQualityAgent(BaseAgent):
 
         # --- 3. Substitution Bias ---
         try:
-            # analyze_order_discrepancies needs the order_history directory
-            order_dirs = [
-                os.path.join(ctx.workspace_root, 'data', 'order_history'),
-                os.path.join(ctx.workspace_root, 'output'),
-            ]
-            for order_dir in order_dirs:
-                if os.path.isdir(order_dir):
-                    sub_result = ea.analyze_order_discrepancies(order_dir)
-                    if sub_result:
-                        raw_metrics['substitution_bias'] = sub_result
-                        theo_bias = sub_result.get('theoretical_substitute_bias_impact', 0)
-                        real_bias = sub_result.get('realized_substitute_bias_impact', 0)
-                        n_missed = sub_result.get('total_missed_count', 0)
-                        n_sub = sub_result.get('total_substitute_count', 0)
+            sub_result = ea.analyze_order_discrepancies(workspace_root=ctx.workspace_root)
+            if sub_result:
+                raw_metrics['substitution_bias'] = sub_result
+                theo_bias = sub_result.get('theoretical_substitute_bias_impact', 0)
+                real_bias = sub_result.get('realized_substitute_bias_impact', 0)
+                n_missed = sub_result.get('total_missed_count', 0)
+                n_sub = sub_result.get('total_substitute_count', 0)
 
-                        findings.append(self._make_finding(
-                            'info', 'Substitution bias',
-                            f'Theoretical impact: {theo_bias*100:.2f}%. '
-                            f'Realized impact: {real_bias*100:.2f}%. '
-                            f'Missed buys: {n_missed}. Substitutes: {n_sub}.',
-                            sub_result
-                        ))
+                findings.append(self._make_finding(
+                    'info', 'Substitution bias',
+                    f'Theoretical impact: {theo_bias*100:.2f}%. '
+                    f'Realized impact: {real_bias*100:.2f}%. '
+                    f'Missed buys: {n_missed}. Substitutes: {n_sub}.',
+                    sub_result
+                ))
 
-                        if abs(real_bias) > 0.02:
-                            findings.append(self._make_finding(
-                                'warning', 'Significant substitution bias',
-                                f'Realized substitution bias impact: {real_bias*100:.2f}%. '
-                                f'Missed {n_missed} top buys.',
-                                sub_result
-                            ))
-                            recommendations.append(
-                                "Substitution bias is significant. Consider pre-market "
-                                "limit orders for top-ranked buy suggestions."
-                            )
-                        break  # Use first directory that returns results
+                if abs(real_bias) > 0.02:
+                    findings.append(self._make_finding(
+                        'warning', 'Significant substitution bias',
+                        f'Realized substitution bias impact: {real_bias*100:.2f}%. '
+                        f'Missed {n_missed} top buys.',
+                        sub_result
+                    ))
+                    recommendations.append(
+                        "Substitution bias is significant. Consider pre-market "
+                        "limit orders for top-ranked buy suggestions."
+                    )
         except Exception as e:
             raw_metrics['substitution_bias_error'] = str(e)
+            findings.append(self._make_finding(
+                'warning', 'Substitution bias unresolved', str(e)))
 
         # --- 4. Execution Timing ---
         try:

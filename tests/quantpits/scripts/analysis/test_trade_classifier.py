@@ -316,15 +316,16 @@ def test_scan_suggestion_dates_output_dir_malformed(tmp_path):
 
 
 def test_load_suggestion_no_instrument_column(tmp_path):
-    """Line 115: CSV without 'instrument' column returns empty DataFrame."""
+    """An existing malformed source must not silently become manual trades."""
     order_dir = tmp_path / "orders"
     order_dir.mkdir()
     (order_dir / "buy_suggestion_2026-01-01.csv").write_text("col1,col2\n1,2\n")
 
     with patch('quantpits.scripts.analysis.trade_classifier.ORDER_DIR', str(order_dir)):
         with patch('quantpits.scripts.analysis.trade_classifier.OUTPUT_DIR', str(tmp_path)):
-            df = tc._load_suggestion("buy_suggestion", "2026-01-01")
-            assert df.empty
+            from quantpits.order.suggestions import SuggestionSourceError
+            with pytest.raises(SuggestionSourceError, match="requires instrument"):
+                tc._load_suggestion("buy_suggestion", "2026-01-01")
 
 
 def test_add_prefix_nan():

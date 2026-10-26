@@ -33,6 +33,8 @@ def main():
                         choices=['static', 'rolling'],
                         help='训练模式过滤 (默认 None=自动解析)')
     parser.add_argument('--shareable', action='store_true', help="Redact monetary amounts and individual stock details for sharing")
+    parser.add_argument('--suggestion-file', action='append', default=[],
+                        help='Select an actual suggestion file for a conflicting day (repeatable; workspace relative or absolute)')
     args = parser.parse_args()
 
     print("Initializing Qlib...")
@@ -181,8 +183,16 @@ def main():
     slip_df = exec_a.calculate_slippage_and_delay()
     path_df = exec_a.calculate_path_dependency()
     explicit_costs = exec_a.analyze_explicit_costs()
-    order_dir = os.path.join(ROOT_DIR, "data", "order_history")
-    discrepancy = exec_a.analyze_order_discrepancies(order_dir, market="all")
+    from quantpits.order.suggestions import SuggestionSourceError
+    selected = [p if os.path.isabs(p) else os.path.join(ROOT_DIR, p) for p in args.suggestion_file]
+    discrepancy_error = None
+    try:
+        discrepancy = exec_a.analyze_order_discrepancies(
+            workspace_root=ROOT_DIR, market="all", suggestion_files=selected)
+    except SuggestionSourceError as exc:
+        discrepancy = {}
+        discrepancy_error = str(exc)
+        print("WARNING: Order suggestion analysis unresolved: %s" % exc)
     
     report.append("\n## 3. Execution Friction & Path Dependency (Quantitative Only)")
     quant_slip_df = pd.DataFrame() # Initialize to avoid UnboundLocalError
@@ -278,6 +288,15 @@ def main():
         else:
             report.append(f"- **Total Dividend Accumulation (net)**: {div_val:.2f}")
         
+    if discrepancy_error:
+        report.append("\n### Order Suggestion Analysis Unresolved")
+        detail = ("Source resolution failed; inspect an ordinary report for candidate paths."
+                  if args.shareable else discrepancy_error)
+        report.append("- Substitution counts and impact unavailable: %s" % detail)
+    if discrepancy and not args.shareable:
+        for source in discrepancy.get('suggestion_sources', []):
+            report.append("- Suggestion source (%s %s): %s [sha256 %s]" % (
+                source['date'], source['direction'], "; ".join(source['paths']), source['sha256']))
     if discrepancy:
         report.append("\n### Order Suggestion vs Actual Discrepancy (Buys)")
         if discrepancy.get('total_missed_count', 0) > 0:
@@ -630,8 +649,10 @@ def main():
     with open(out_path, "w") as f:
         f.write(report_text)
         
-    print(f"\nAnalysis completed successfully. Report written to {out_path}")
+    status = "incomplete (order suggestions unresolved)" if discrepancy_error else "completed successfully"
+    print(f"\nAnalysis {status}. Report written to {out_path}")
+    return 1 if discrepancy_error else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -170,7 +170,11 @@ python quantpits/scripts/run_analysis.py --models gru_Alpha158 --shareable --out
 
 - **运行与归档逻辑 (Execution & Archiving)**：
   - 分类引擎现在支持**增量执行 (Incremental Classification)**。在日常执行 `prod_post_trade.py` 时，分类引擎将只对当日新产生的交易进行溯源匹配，并安全地合并结果，**绝对不会覆盖或篡改任何你曾经进行过的历史人工校验或修正数据**。
-  - 信号读取支持双源目录，默认能够识别当前尚未归档存放于 `output/` 目录下带有 `ensemble_` 融合前缀的动态生成推荐文件，以及归档在 `data/order_history/` 目录下的常规格式。
+  - 分类、替代买入分析及深度分析共同发现当前账户的 `data/order_history/`、`output/` 顶层和 `output/cycles/*/*/orders/`。历史目录不存在也可读取周期订单；不递归扫描融合／实验目录或其他账户。按建议文件名尾部的**执行日**匹配，支持纯日期、模型／ensemble 前缀及 `YYYYMMDD`，保留买卖方向和推荐行序。
+  - 同日同方向、字节完全相同的副本只计一次；内容不同会列明候选文件，不能取并集或按修改时间选最新。分类结果保留 `suggestion_paths`／`suggestion_sha256`；摩擦结果保留 `suggestion_sources`，普通报告与面板可查看实际来源。
+  - 报告遇到冲突或损坏建议时会标记订单分析未解析，不展示成零损失；CLI 保存其他分析后返回非零。核对实际采用文件后，可重复传入 `python -m quantpits.scripts.run_analysis --suggestion-file output/cycles/<project>/<cycle>/orders/buy_suggestion_ensemble_<execution-date>.csv`，每个冲突的日期／方向选择一个文件。此参数支持工作区相对路径或绝对路径，只能选已发现的建议。
+  - 程序调用保留 `ExecutionAnalyzer.analyze_order_discrepancies(order_dir, ...)` 的单目录能力；正式账户分析使用 `workspace_root=...`，可用 `suggestion_files=[绝对路径, ...]` 明确选择。`classify_trades(workspace_root=..., suggestion_files=[...])` 使用同一合同。唯一来源不需额外参数。
+  - post_trade 分类是账务提交后的派生步骤，来源冲突记录为分类失败／警告，不回滚账务。修复读取不会自动重算旧分类；历史修复须另行限定日期并保护人工修改，不能依赖旧事务 resume 自动重分类。周期原件及其 manifest／progress 引用保持原位，无需复制到历史目录。
   
 - **量化净表现 (Quantitative-Only Performance)**：
   - 剔除了手动交易干扰后的、纯机器算法贡献的年化收益率。这一指标能最直观地解答：“如果我不进行那些手动干预操作，系统本身到底能赚多少？”

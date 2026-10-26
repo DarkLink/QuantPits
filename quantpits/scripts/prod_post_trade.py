@@ -612,7 +612,7 @@ def _run_classification(ctx, manager, journal):
         dates = list(journal.processed_dates)
         print("\n%s" % ("=" * 50))
         print("Running Trade Classification Engine for %d dates..." % len(dates))
-        frame = classify_trades(verbose=False, trade_dates=dates)
+        frame = classify_trades(verbose=False, trade_dates=dates, workspace_root=ctx.root)
         outputs = ()
         if not frame.empty:
             path = ctx.data_path("trade_classification.csv")

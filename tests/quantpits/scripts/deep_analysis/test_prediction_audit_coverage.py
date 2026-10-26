@@ -139,7 +139,7 @@ def test_analyze_suggestion_hits_edge_cases(agent, mock_analysis_context, tmp_pa
         
         ctx.buy_suggestion_files = [str(bad_csv_named), str(empty_csv_named)]
         res = agent._analyze_suggestion_hits(ctx)
-        assert res == {}
+        assert "requires instrument" in res["error"]
 
 def test_analyze_consensus_more_edge_cases(agent, tmp_path):
     """Test more edge cases in _analyze_consensus to cover lines 274-275, 294."""
@@ -173,11 +173,13 @@ def test_analyze_suggestion_hits_read_csv_exception(agent, tmp_path):
          patch('qlib.data.D'):
         
         ctx = MagicMock(spec=AnalysisContext)
-        ctx.buy_suggestion_files = ['buy_suggestion_2026-03-20.csv']
+        source = tmp_path / 'buy_suggestion_2026-03-20.csv'
+        source.write_text('instrument\nA\n')
+        ctx.buy_suggestion_files = [str(source)]
         
-        with patch('quantpits.scripts.deep_analysis.agents.prediction_audit.pd.read_csv', side_effect=Exception("Read error")):
+        with patch('quantpits.scripts.deep_analysis.agents.prediction_audit.pd.read_csv', side_effect=ValueError("Read error")):
              res = agent._analyze_suggestion_hits(ctx)
-             assert res == {}
+             assert "Read error" in res["error"]
 
 def test_analyze_positive_consensus(agent, mock_analysis_context):
     """Test positive consensus finding (line 98)."""

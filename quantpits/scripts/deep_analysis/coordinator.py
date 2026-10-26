@@ -182,6 +182,8 @@ class Coordinator:
             os.path.join(self.archive_dir, 'output'),
         ]
 
+        from quantpits.order.suggestions import discover_suggestions
+        suggestions = discover_suggestions(self.workspace_root)
         self._discovered_files = {
             'model_performance': _scan_dated_files(
                 archive_output_dirs, 'model_performance', '.json'),
@@ -191,10 +193,8 @@ class Coordinator:
                 ensemble_dirs, 'correlation_matrix', '.csv'),
             'model_opinions': _scan_dated_files(
                 suggestion_dirs, 'model_opinions', '.json'),
-            'buy_suggestion': _scan_dated_files(
-                suggestion_dirs, 'buy_suggestion', '.csv'),
-            'sell_suggestion': _scan_dated_files(
-                suggestion_dirs, 'sell_suggestion', '.csv'),
+            'buy_suggestion': sorted((s.date, str(s.path)) for s in suggestions if s.direction == 'buy'),
+            'sell_suggestion': sorted((s.date, str(s.path)) for s in suggestions if s.direction == 'sell'),
             'model_contribution': _scan_dated_files(
                 ensemble_dirs, 'model_contribution', '.json'),
         }
