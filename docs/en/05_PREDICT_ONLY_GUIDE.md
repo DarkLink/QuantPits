@@ -41,12 +41,17 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
 3. For each active bound mapping:
    a. Hook natively onto the MLflow Recorder object loading its `.pkl` algorithm structure.
    b. Interface with `model_config.json` defining valid updated target chronological windows.
-   c. Compile target Datasets + execute `.predict()` outputs.
-    d. Instantiate novel Recorder mappings mapped inside the `Prod_Predict_{Freq}` branch identifier.
-    e. Commit `pred.pkl` artifact persistence + Execute standard `SignalRecord` structures extracting IC/ICIR parameters.
+   c. Construct the prediction dataset.
+   d. Create a Recorder in `Prod_Predict_{FREQ}` and compute the final prediction once.
+   e. Save that result as `pred.pkl` with native `label.pkl`; configured SigAna/PortAna consume these artifacts.
 4. Validate each recorder's model, operation, anchor, experiment, and persisted prediction evidence.
 5. Persist publication intent, recoverably commit record/performance, and write a verified receipt while retaining failed targets' current pointers.
 ```
+
+Static full training after fit and static predict-only both explicitly save one final prediction.
+Missing or repeated standard SignalRecord entries do not add inference calls, and configured
+signal/backtest analysis continues. Validation and selection inside fit are outside this count;
+see the [training guide](01_TRAINING_GUIDE.md).
 
 > [!IMPORTANT]
 > Post-execution, the corresponding entries targeting active models within `latest_train_records.json` overwrite their respective `experiment_name` and `record_id` parameters mapped out to this explicit new execution trace. Downstream nodes parsing this dictionary seamlessly consume the updated hashes.

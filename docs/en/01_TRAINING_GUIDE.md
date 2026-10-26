@@ -64,7 +64,8 @@ and inference processors and model parameters retain their configured values. Un
 missing. Regular `DatasetH` and `TSDatasetH` reuse their original dataset, and coverage checks still
 inspect the persisted `pred.pkl`.
 
-Static `--predict-only` calls the model once per actually executed target attempt, then saves that
+Static full training computes its final test/forward prediction once after fitting. Static
+`--predict-only` also calls the model once per actually executed target attempt, then saves that
 result and Qlib's native labels. Series results become a `score` DataFrame as in SignalRecord;
 DataFrames retain their format. Missing or repeated standard `SignalRecord` configurations neither
 discard the result nor add inference calls. Configured `SigAnaRecord` and `PortAnaRecord` continue
@@ -72,6 +73,15 @@ to consume the saved prediction; YAML analysis/backtests, prediction dates and t
 retention policy stay unchanged. Unknown forward labels remain missing without dropping the
 prediction endpoint. Completed targets reuse existing evidence; retrying an uncommitted failed
 attempt may infer again. This does not introduce a cross-process computation cache.
+
+This count excludes validation, early stopping, mini-backtests and batched forwards inside fit.
+Training parameters, checkpoint selection and topk/n_drop used for training selection remain intact.
+Stochastic or stateful models now save the first final prediction, which can differ from the old
+second result. The engine neither infers again nor resets RNG state to reproduce that old sequence.
+A training success history event is created only after persisted coverage validation and recorder
+completion; save, record-construction or close failures produce no success event. Direct helper
+history-write failures remain warnings; native runners still delegate history to the service.
+Existing performance fields, including without-cost metrics, retain their definitions.
 
 Training and prediction retain their configured accompanying signal/backtest analysis. For saved
 project model/ensemble signals, [run_cycle evaluate](project_cycle.md#compare-saved-model-and-ensemble-signals)

@@ -295,6 +295,9 @@ class _FiniteSignalModel:
         self.dataframe_prediction = False
         self.returned_predictions = []
         self.invalid_prediction = False
+        self.fit_validation_steps = 0
+        self.fit_calls = 0
+        self.predict_segments = []
 
     @staticmethod
     def _segment_rows(dataset, segment):
@@ -312,20 +315,26 @@ class _FiniteSignalModel:
         return index, values[["feature"]].values, values[["label"]].values
 
     def fit(self, dataset, evals_result=None):
+        self.fit_calls += 1
         self.fit_dataset = dataset
         self.fit_labels = self._segment_rows(dataset, "train")[2]
+        for _ in range(self.fit_validation_steps):
+            self.predict(dataset, segment="valid")
+        if self.fit_validation_steps:
+            evals_result.update(train=[.3, .2], valid=[.4, .1])
 
-    def predict(self, dataset):
+    def predict(self, dataset, segment="test"):
         self.predict_datasets.append(dataset)
+        self.predict_segments.append(segment)
         if self.invalid_prediction:
             return np.array([1.0])
         if hasattr(dataset, "_batch_slices"):
-            index, values, _ = self._segment_rows(dataset, "test")
+            index, values, _ = self._segment_rows(dataset, segment)
             prediction = pd.Series(values[:, 0], index=index)
         else:
             from qlib.data.dataset.handler import DataHandlerLP
 
-            features = dataset.prepare("test", col_set="feature", data_key=DataHandlerLP.DK_I)
+            features = dataset.prepare(segment, col_set="feature", data_key=DataHandlerLP.DK_I)
             prediction = pd.Series(features.iloc[:, 0], index=features.index)
         if self.truncate_prediction_tail:
             dates = prediction.index.get_level_values("datetime")
@@ -337,6 +346,13 @@ class _FiniteSignalModel:
             prediction = prediction.to_frame("score")
         self.returned_predictions.append(prediction.copy())
         return prediction
+
+
+class _SavedSignalConsumer(SignalRecord):
+    """A custom subclass must retain its own analysis behavior."""
+
+    def generate(self):
+        self.save(**{"custom_analysis.pkl": self.load("pred.pkl")})
 
 
 @pytest.fixture
@@ -373,7 +389,8 @@ def finite_signal_training(mock_env_constants, monkeypatch):
     def run(dataset_class="MTSDatasetH", use_cache=False, dropna_label=True,
             rebuild_error=None, truncate_prediction=False, recorder_exit_error=None,
             predict_only=False, dataframe_prediction=False, record_classes=None,
-            save_error=None, invalid_prediction=False):
+            save_error=None, invalid_prediction=False, changing_predictions=False,
+            history_file=False, mode="static", record_error=None, fit_validation_steps=0):
         if dataset_class != "DatasetH":
             # Qlib's real MTS datasets import torch; lightweight [test] CI
             # deliberately omits it. Keep DatasetH coverage active there.
@@ -424,7 +441,7 @@ def finite_signal_training(mock_env_constants, monkeypatch):
             dataset_cfg["kwargs"].update(horizon=6, seq_len=3, batch_size=3, shuffle=False)
         task_config = {
             "task": {
-                "model": {"class": "FiniteSignalModel", "kwargs": {"seed": 7, "n_epochs": 1}},
+                "model": {"class": "FiniteSignalModel", "kwargs": {"seed": 7, "n_epochs": 3 if fit_validation_steps else 1}},
                 "dataset": dataset_cfg,
                 "record": [{
                     "class": "SignalRecord",
@@ -437,12 +454,13 @@ def finite_signal_training(mock_env_constants, monkeypatch):
         original_model_cfg = copy.deepcopy(task_config["task"]["model"])
         model = _FiniteSignalModel()
         model.truncate_prediction_tail = truncate_prediction
-        model.changing_predictions = predict_only
+        model.changing_predictions = predict_only or changing_predictions
         model.dataframe_prediction = dataframe_prediction
         model.invalid_prediction = invalid_prediction
+        model.fit_validation_steps = fit_validation_steps
         if record_classes is not None:
             task_config["task"]["record"] = [
-                {"class": name, "module_path": "qlib.workflow.record_temp", "kwargs": (
+                {"class": name, "module_path": (__name__ if name == "_SavedSignalConsumer" else "qlib.workflow.record_temp"), "kwargs": (
                     {"model": "<MODEL>", "dataset": "<DATASET>"} if name == "SignalRecord" else {}
                 )} for name in record_classes
             ]
@@ -463,6 +481,8 @@ def finite_signal_training(mock_env_constants, monkeypatch):
         constructed = []
 
         def init(config, *args, **kwargs):
+            if isinstance(config, dict) and config.get("class") == "SignalRecord" and record_error is not None:
+                raise record_error
             if isinstance(config, dict) and config.get("class") == "FiniteSignalModel":
                 return model
             if isinstance(config, dict) and config.get("class") == dataset_class:
@@ -479,8 +499,13 @@ def finite_signal_training(mock_env_constants, monkeypatch):
         workflow.get_recorder.return_value = recorder
         workflow.set_tags.side_effect = recorder.set_tags
         workflow.log_params.side_effect = recorder.log_params
-        if recorder_exit_error is not None:
-            workflow.start.return_value.__exit__.side_effect = recorder_exit_error
+        completion = {"closed": False}
+        def close(exc_type, exc, traceback):
+            if recorder_exit_error is not None:
+                raise recorder_exit_error
+            completion["closed"] = True
+            client.set_terminated(recorder.id, status="FAILED" if exc_type is not None else "FINISHED")
+        workflow.start.return_value.__exit__.side_effect = close
         monkeypatch.setattr("qlib.workflow.R", workflow)
         cache = HandlerCacheManager(max_size_mb=16) if use_cache else None
         params = {
@@ -493,6 +518,7 @@ def finite_signal_training(mock_env_constants, monkeypatch):
             "cache": cache, "task_config": task_config, "original_dataset_cfg": original_dataset_cfg,
             "original_model_cfg": original_model_cfg, "params": params, "dates": dates,
             "raw_frame": frame, "workspace": workspace,
+            "completion": completion,
         }
         if predict_only:
             from quantpits.utils.model_artifacts import load_owned_model
@@ -510,30 +536,173 @@ def finite_signal_training(mock_env_constants, monkeypatch):
                 case["model"] = loaded
                 return loaded
             monkeypatch.setattr(train_utils, "load_owned_model", load)
-            if save_error is not None:
-                save = recorder.save_objects
-                def failing_save(*args, **kwargs):
-                    if "pred.pkl" in kwargs:
-                        raise save_error
-                    return save(*args, **kwargs)
-                monkeypatch.setattr(recorder, "save_objects", failing_save)
+        if save_error is not None:
+            save = recorder.save_objects
+            def failing_save(*args, **kwargs):
+                if "pred.pkl" in kwargs:
+                    raise save_error
+                return save(*args, **kwargs)
+            monkeypatch.setattr(recorder, "save_objects", failing_save)
         try:
             if predict_only:
                 case["result"] = train_utils.predict_single_model(
                     "finite", {"yaml_file": str(yaml_file)}, params, "finite_signal",
                     {"experiment_name": "finite_signal", "models": {"finite@static": source.id}},
-                    cache_mgr=cache, history_file=False, workspace_root=str(workspace),
+                    cache_mgr=cache, history_file=history_file, workspace_root=str(workspace),
                 )
             else:
                 case["result"] = train_utils.train_single_model(
                     "finite", str(yaml_file), params, "finite_signal", cache_mgr=cache,
-                    history_file=False, workspace_root=str(workspace),
+                    history_file=history_file, workspace_root=str(workspace), mode=mode,
                 )
         finally:
-            client.set_terminated(recorder.id)
+            client.set_terminated(recorder.id, status="FINISHED" if case.get("result", {}).get("success") else "FAILED")
         return case
 
     return run
+
+
+@pytest.mark.parametrize("dataset_class", ["DatasetH", "MTSDatasetH", "PurgedMTSDatasetH"])
+@pytest.mark.parametrize("use_cache", [False, True])
+@pytest.mark.parametrize("dataframe_prediction", [False, True])
+def test_train_records_the_single_computed_result(finite_signal_training, dataset_class,
+                                                use_cache, dataframe_prediction):
+    from qlib.contrib.eva.alpha import calc_ic
+
+    case = finite_signal_training(dataset_class, use_cache=use_cache,
+                                  dataframe_prediction=dataframe_prediction, changing_predictions=True,
+                                  record_classes=["SignalRecord", "SigAnaRecord"])
+    assert case["result"]["success"], case["result"]
+    model = case["model"]
+    assert len(model.predict_datasets) == 1
+    expected = model.returned_predictions[0]
+    if isinstance(expected, pd.Series):
+        expected = expected.to_frame("score")
+    pd.testing.assert_frame_equal(case["recorder"].load_object("pred.pkl"), expected)
+    labels = case["recorder"].load_object("label.pkl")
+    assert len(expected) == 21 and expected.index.get_level_values("datetime").max() == case["dates"][-1]
+    assert labels.loc[(slice(case["dates"][-6], None), slice(None))].isna().all().all()
+    ic, _ = calc_ic(expected.iloc[:, 0], labels.iloc[:, 0])
+    pd.testing.assert_series_equal(case["recorder"].load_object("sig_analysis/ic.pkl"), ic)
+    assert np.isfinite(model.fit_labels).all()
+    assert case["result"]["record_entry"]["prediction_rows"] == len(expected)
+    assert case["result"]["history_entry"]["record_id"] == case["recorder"].id
+
+
+@pytest.mark.parametrize("records", [[], ["SigAnaRecord"], ["SignalRecord", "SignalRecord", "SigAnaRecord"]])
+def test_train_saves_without_a_unique_standard_signal_record(finite_signal_training, records):
+    case = finite_signal_training("DatasetH", changing_predictions=True, record_classes=records)
+    assert case["result"]["success"], case["result"]
+    assert len(case["model"].predict_datasets) == 1
+    pd.testing.assert_frame_equal(case["recorder"].load_object("pred.pkl"),
+                                  case["model"].returned_predictions[0].to_frame("score"))
+    assert "label.pkl" in case["recorder"].list_artifacts()
+
+
+@pytest.mark.parametrize("predict_only", [False, True])
+def test_custom_signal_subclass_still_consumes_saved_result(finite_signal_training, predict_only):
+    case = finite_signal_training("DatasetH", predict_only=predict_only, changing_predictions=True,
+                                  record_classes=["SignalRecord", "_SavedSignalConsumer"])
+    assert case["result"]["success"], case["result"]
+    assert len(case["model"].predict_datasets) == 1
+    pd.testing.assert_frame_equal(case["recorder"].load_object("custom_analysis.pkl"),
+                                  case["recorder"].load_object("pred.pkl"))
+
+
+def test_fit_internal_validation_remains_separate_from_final_prediction(finite_signal_training):
+    case = finite_signal_training("DatasetH", changing_predictions=True, fit_validation_steps=2)
+    assert case["result"]["success"], case["result"]
+    model = case["model"]
+    assert model.fit_calls == 1 and model.predict_segments == ["valid", "valid", "test"]
+    assert model.seed == 7 and model.topk == 22 and model.n_drop == 3
+    pd.testing.assert_frame_equal(case["recorder"].load_object("pred.pkl"),
+                                  model.returned_predictions[-1].to_frame("score"))
+    convergence = case["result"]["performance"]["convergence"]
+    assert (convergence["configured_epochs"], convergence["actual_epochs"], convergence["best_epoch"]) == (3, 2, 1)
+    assert convergence["best_score"] == .1 and convergence["early_stopped"]
+    assert case["task_config"]["task"]["model"] == case["original_model_cfg"]
+
+
+@pytest.mark.parametrize("failure", ["save", "coverage", "format", "record", "entry", "recorder_exit"])
+def test_train_failure_has_no_publishable_entry_or_success_history(finite_signal_training, tmp_path, monkeypatch, failure):
+    history = tmp_path / "direct_training_history.jsonl"
+    kwargs = {
+        "save": {"save_error": OSError("cannot save")},
+        "coverage": {"truncate_prediction": True},
+        "format": {"invalid_prediction": True},
+        "record": {"record_error": ValueError("cannot construct record")},
+        "entry": {},
+        "recorder_exit": {"recorder_exit_error": RuntimeError("cannot finish recorder")},
+    }[failure]
+    if failure == "entry":
+        def fail(**kwargs):
+            raise ValueError("cannot build output entry")
+        monkeypatch.setattr("quantpits.training.records.build_model_record_entry", fail)
+    case = finite_signal_training("DatasetH", history_file=str(history), **kwargs)
+    assert not case["result"]["success"]
+    assert "record_entry" not in case["result"] and "history_entry" not in case["result"]
+    assert not history.exists()
+    assert len(case["model"].predict_datasets) == 1
+    assert case["recorder"].client.get_run(case["recorder"].id).info.status == "FAILED"
+    from types import SimpleNamespace
+    from quantpits.training.runners import TrainingTargetRequest, _adapt_result
+    adapted = _adapt_result(TrainingTargetRequest(None, SimpleNamespace(key="finite@static", operation="train")),
+                            case["result"])
+    assert adapted.outcome == "failed" and adapted.entry is None and adapted.history_event is None
+
+
+@pytest.mark.parametrize("artifact", ["model.pkl", "label.pkl"])
+def test_train_other_artifact_save_failure_has_no_success_history(finite_signal_training, tmp_path, monkeypatch, artifact):
+    from qlib.workflow.recorder import MLflowRecorder
+    save = MLflowRecorder.save_objects
+    def fail(self, *args, **kwargs):
+        if artifact in kwargs:
+            raise OSError("cannot save " + artifact)
+        return save(self, *args, **kwargs)
+    monkeypatch.setattr(MLflowRecorder, "save_objects", fail)
+    history = tmp_path / "history.jsonl"
+    case = finite_signal_training("DatasetH", history_file=str(history))
+    assert not case["result"]["success"] and not history.exists()
+    assert "history_entry" not in case["result"] and "record_entry" not in case["result"]
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("phase", ["save", "record", "recorder_exit"])
+def test_train_interrupt_never_writes_success_history(finite_signal_training, tmp_path, interrupt, phase):
+    history = tmp_path / "history.jsonl"
+    key = {"save": "save_error", "record": "record_error", "recorder_exit": "recorder_exit_error"}[phase]
+    with pytest.raises(interrupt):
+        finite_signal_training("DatasetH", history_file=str(history), **{key: interrupt("stop")})
+    assert not history.exists()
+
+
+def test_direct_training_history_follows_recorder_completion(finite_signal_training, mock_env_constants, tmp_path, monkeypatch):
+    import json
+    train_utils, _ = mock_env_constants
+    append = train_utils.append_jsonl
+    observed = []
+    def inspect_append(path, event):
+        from qlib.workflow import R
+        recorder = R.get_recorder()
+        assert recorder.client.get_run(recorder.id).info.status == "FINISHED"
+        assert len(recorder.load_object("pred.pkl")) == 21
+        observed.append(event.copy())
+        return append(path, event)
+    monkeypatch.setattr(train_utils, "append_jsonl", inspect_append)
+    history = tmp_path / "history.jsonl"
+    case = finite_signal_training("DatasetH", mode="rolling", history_file=str(history))
+    assert case["result"]["success"] and case["completion"]["closed"]
+    event = case["result"]["history_entry"]
+    assert event["mode"] == "rolling" and event["event_id"]
+    assert observed == [event] == [json.loads(line) for line in history.read_text().splitlines()]
+
+
+def test_direct_training_history_write_failure_remains_a_warning(finite_signal_training, tmp_path, capsys):
+    blocker = tmp_path / "file_not_directory"
+    blocker.write_text("block history parent")
+    case = finite_signal_training("DatasetH", history_file=str(blocker / "history.jsonl"))
+    assert case["result"]["success"] and case["result"]["history_entry"]
+    assert "Warning: Could not write to training_history.jsonl" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("dataset_class", ["DatasetH", "MTSDatasetH", "PurgedMTSDatasetH"])
@@ -575,13 +744,14 @@ def test_predict_only_saves_without_a_unique_standard_signal_record(finite_signa
     assert "label.pkl" in case["recorder"].list_artifacts()
 
 
-def test_predict_only_native_portfolio_record_consumes_computed_prediction(finite_signal_training, monkeypatch):
+@pytest.mark.parametrize("predict_only", [False, True])
+def test_native_portfolio_record_consumes_computed_prediction(finite_signal_training, monkeypatch, predict_only):
     observed = []
     def backtest(*, strategy, **kwargs):
         observed.append(strategy["kwargs"]["signal"].copy())
         return {"1day": (pd.DataFrame({"return": [0.1]}), {})}, {}
     monkeypatch.setattr("qlib.workflow.record_temp.normal_backtest", backtest)
-    case = finite_signal_training("DatasetH", predict_only=True,
+    case = finite_signal_training("DatasetH", predict_only=predict_only, changing_predictions=True,
                                   record_classes=["SignalRecord", "SigAnaRecord", "PortAnaRecord"])
     assert case["result"]["success"], case["result"]
     assert len(case["model"].predict_datasets) == len(observed) == 1
@@ -621,6 +791,7 @@ def test_train_mts_preserves_unlabeled_anchor_after_fit(finite_signal_training, 
     assert prediction.index.get_level_values("datetime").max() == dates[-1]
     assert len(prediction) == 21
     assert np.isfinite(prediction["score"]).all()
+    pd.testing.assert_frame_equal(prediction, model.returned_predictions[0].to_frame("score"))
     assert case["result"]["success"], case["result"]
     entry = case["result"]["record_entry"]
     assert entry["operation"] == "train"
@@ -631,7 +802,7 @@ def test_train_mts_preserves_unlabeled_anchor_after_fit(finite_signal_training, 
     assert len(case["constructed"]) == 2
     train_dataset, prediction_dataset = case["constructed"]
     assert model.fit_dataset is train_dataset
-    assert model.predict_datasets == [prediction_dataset, prediction_dataset]
+    assert model.predict_datasets == [prediction_dataset]
     assert model.seed == 7 and model.topk == 22 and model.n_drop == 3
     assert case["task_config"]["task"]["model"] == case["original_model_cfg"]
     assert case["task_config"]["task"]["dataset"] == case["original_dataset_cfg"]
@@ -659,7 +830,9 @@ def test_train_reuses_dataset_when_prediction_config_unchanged(finite_signal_tra
     assert case["result"]["success"], case["result"]
     assert len(case["constructed"]) == 1
     model = case["model"]
-    assert model.predict_datasets == [model.fit_dataset, model.fit_dataset]
+    assert model.predict_datasets == [model.fit_dataset]
+    pd.testing.assert_frame_equal(case["recorder"].load_object("pred.pkl"),
+                                  model.returned_predictions[0].to_frame("score"))
     assert case["result"]["record_entry"]["prediction_end"] == "2026-10-09"
     if use_cache:
         assert case["cache"].stats["misses"] == 1

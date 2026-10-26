@@ -1,10 +1,19 @@
 import os
 import json
+import pandas as pd
 import pytest
 from unittest.mock import MagicMock, patch, mock_open
 from datetime import datetime
 
 # We will import train_single_model inside the test functions or use a fixture
+
+def _telemetry_prediction():
+    index = pd.MultiIndex.from_tuples(
+        [(pd.Timestamp("2026-01-01"), "S1")], names=["datetime", "instrument"]
+    )
+    return pd.DataFrame({"score": [.5]}, index=index)
+
+
 
 @pytest.fixture
 def mock_training_output_entry(monkeypatch):
@@ -70,6 +79,7 @@ def test_convergence_log_nn_early_stop(mock_env_constants, mock_qlib, mock_param
     
     # Mock Model with NN attributes
     mock_model = MagicMock()
+    mock_model.predict.return_value = _telemetry_prediction()
     # Explicitly delete attributes that might be detected as Tree models
     if hasattr(mock_model, 'fitted_model_'):
         del mock_model.fitted_model_
@@ -115,6 +125,7 @@ def test_convergence_log_nn_full(mock_env_constants, mock_qlib, mock_params, tmp
     
     # Mock Model with NN attributes
     mock_model = MagicMock()
+    mock_model.predict.return_value = _telemetry_prediction()
     if hasattr(mock_model, 'fitted_model_'):
         del mock_model.fitted_model_
     
@@ -155,6 +166,7 @@ def test_convergence_log_tree_model(mock_env_constants, mock_qlib, mock_params, 
     
     # Mock Model with Tree attributes
     mock_model = MagicMock()
+    mock_model.predict.return_value = _telemetry_prediction()
     del mock_model.model # No .model attribute like NN
     mock_model.fitted_model_.best_iteration = 150
     mock_init.side_effect = [mock_model, MagicMock()]
@@ -193,6 +205,7 @@ def test_convergence_log_appended_to_jsonl(mock_env_constants, mock_qlib, mock_p
     mock_init, mock_r, mock_recorder = mock_qlib
     
     mock_model = MagicMock()
+    mock_model.predict.return_value = _telemetry_prediction()
     if hasattr(mock_model, 'fitted_model_'):
         del mock_model.fitted_model_
     if hasattr(mock_model, 'model'):
@@ -233,6 +246,7 @@ def test_convergence_log_failure_does_not_affect_training(mock_env_constants, mo
     mock_init, mock_r, mock_recorder = mock_qlib
     
     mock_model = MagicMock()
+    mock_model.predict.return_value = _telemetry_prediction()
     if hasattr(mock_model, 'fitted_model_'):
         del mock_model.fitted_model_
     if hasattr(mock_model, 'model'):
@@ -284,7 +298,7 @@ def test_convergence_log_log_capture(mock_env_constants, mock_qlib, mock_params,
             logger = logging.getLogger("qlib.ADD")
             logger.info("bootstrap_fit best score: 0.063768 @ 7")
         def predict(self, **kwargs):
-            return MagicMock()
+            return _telemetry_prediction()
             
     mock_model = LoggingModel()
     mock_init.side_effect = [mock_model, MagicMock()] # model, dataset
@@ -342,7 +356,7 @@ def test_convergence_log_add_model_capture(mock_env_constants, mock_qlib, mock_p
             logger.info("bootstrap_fit best score: 0.063768 @ 7")
 
         def predict(self, **kwargs):
-            return MagicMock()
+            return _telemetry_prediction()
 
     mock_model = ADDModel()
     mock_init.side_effect = [mock_model, MagicMock()]

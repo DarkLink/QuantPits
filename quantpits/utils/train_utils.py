@@ -1414,12 +1414,12 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             print(f"[{model_name}] Saving model to recorder...")
             recorder = R.get_recorder()
             recorder.save_objects(**{"model.pkl": model})
-            
 
-            
-            # 生成 Signal Record
+            # 保存唯一末段预测；标准 SignalRecord 只需这些既有制品。
+            from quantpits.training.prediction_result import save_prediction_result
+            from qlib.workflow.record_temp import SignalRecord
             record_cfgs = task_config['task'].get('record', [])
-            recorder = R.get_recorder()
+            save_prediction_result(pred, prediction_dataset, recorder)
             
             for r_cfg in record_cfgs:
                 if r_cfg['kwargs'].get('model') == '<MODEL>':
@@ -1428,7 +1428,8 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
                     r_cfg['kwargs']['dataset'] = prediction_dataset
                 
                 r_obj = init_instance_by_config(r_cfg, recorder=recorder)
-                r_obj.generate()
+                if type(r_obj) is not SignalRecord:
+                    r_obj.generate()
             
             # 获取模型成绩（IC等及回测指标）
             performance = {}
@@ -1477,20 +1478,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             
             performance["convergence"] = convergence_log
 
-            # 追加到 training_history.jsonl
-            history_entry = {"model_name": model_name, "mode": mode}
-            history_entry.update(convergence_log)
-            history_entry["event_id"] = fingerprint_value({
-                "operation": "train", "model_name": model_name, "mode": mode,
-                "record_id": convergence_log.get("record_id"),
-            })
-            result["history_entry"] = history_entry
-            if history_file is not False and not append_jsonl(history_file or TRAINING_HISTORY_FILE, history_entry):
-                print(f"[{model_name}] Warning: Could not write to training_history.jsonl")
-            
             rid = recorder.info['id']
-            print(f"[{model_name}] Finished! Recorder ID: {rid}")
-            
             result['record_id'] = rid
             result['performance'] = performance
             from quantpits.training.records import build_model_record_entry
@@ -1505,12 +1493,23 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             ).to_dict()
 
         # Both persisted prediction validation and recorder context completion
-        # must succeed before this model can be reported as successful.
+        # precede the success event, including for direct helper callers.
+        print(f"[{model_name}] Finished! Recorder ID: {rid}")
+        history_entry = {"model_name": model_name, "mode": mode}
+        history_entry.update(convergence_log)
+        history_entry["event_id"] = fingerprint_value({
+            "operation": "train", "model_name": model_name, "mode": mode,
+            "record_id": convergence_log.get("record_id"),
+        })
+        result["history_entry"] = history_entry
+        if history_file is not False and not append_jsonl(history_file or TRAINING_HISTORY_FILE, history_entry):
+            print(f"[{model_name}] Warning: Could not write to training_history.jsonl")
         result['success'] = True
     
     except Exception as e:
         result['success'] = False
         result.pop('record_entry', None)
+        result.pop('history_entry', None)
         result['error'] = str(e)
         print(f"!!! Error running {model_name}: {e}")
         import traceback

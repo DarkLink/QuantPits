@@ -58,12 +58,19 @@ workspace 时会保留已选的 `MLFLOW_TRACKING_URI`；切换到另一 workspac
 也能产生信号；其余学习／推理处理器及模型参数保持配置值。未知标签保留为空，不填零。
 普通 `DatasetH`／`TSDatasetH` 继续使用原数据集，预测覆盖校验仍依据实际保存的 `pred.pkl`。
 
-静态 `--predict-only` 每次实际执行一个目标的 attempt 只调用一次模型推理，随后保存这份结果和
+静态完整训练在fit完成后只生成一次用于最终制品的test／前向预测；`--predict-only` 每次实际执行
+一个目标的 attempt 也只调用一次模型推理，随后保存这份结果和
 Qlib 原生标签。Series 按 SignalRecord 语义转为 `score` DataFrame，DataFrame 保留原格式；
 缺少或重复配置标准 `SignalRecord` 都不会丢弃结果或增加推理。YAML 中的 `SigAnaRecord`、
 `PortAnaRecord` 继续消费保存的预测，原有分析／回测、预测日期范围和 `model.pkl` 保存政策不变。
 未知前向标签仍为空，不裁掉末日预测。已完成目标沿现有证据复用；未提交结果的失败按原请求恢复，
 重试 attempt 可以重新推理，本行为不提供跨进程计算缓存。
+
+这里的“一次”不限制fit内部的验证、early stopping、mini-backtest或分批forward；训练参数、
+checkpoint选择及参与训练择优的topk／n_drop保持。随机或有状态模型现在保存首次末段预测，
+可能与旧实现丢弃首次后保存第二次的值不同，不额外推理或重置RNG模拟旧顺序。
+训练成功history在持久化覆盖校验和recorder完成后才形成；保存、record构建或关闭失败不产生成功事件。
+直接helper的history写失败仍仅警告，原生runner仍交由service收尾；既有performance的without_cost等口径不变。
 
 训练和仅预测原有YAML附带的信号／回测分析继续保留。对已经保存的项目单模型／融合信号，
 可另用 [run_cycle evaluate](project_cycle.md#从已保存信号比较模型与组合) 在统一资金、空仓及区间下比较；

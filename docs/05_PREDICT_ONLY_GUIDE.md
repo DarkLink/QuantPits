@@ -41,12 +41,15 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
 3. 对每个模型:
    a. 从源 Recorder 加载 model.pkl
    b. 用 model_config.json 计算新的日期窗口
-   c. 构建新 dataset、执行 model.predict()
-    d. 在 Prod_Predict_{FREQ} 实验下创建新 Recorder
-    e. 保存 pred.pkl + 运行 SignalRecord（生成 IC/ICIR 指标）
+   c. 构建新 dataset
+   d. 在 Prod_Predict_{FREQ} 实验下创建新 Recorder，执行一次最终 model.predict()
+   e. 保存该结果为 pred.pkl 和原生 label.pkl；配置中的 SigAna/PortAna 读取这些制品
 4. 校验每个 recorder 的模型、operation、anchor、experiment 与持久化预测证据
 5. 持久化 publication intent，以可恢复 transaction 更新 record/performance，再写 verified receipt；失败 target 保留旧 current pointer
 ```
+
+静态完整训练的fit后末段预测与仅预测均显式保存唯一结果；缺少或重复标准SignalRecord不会增加推理，
+原有信号／回测分析继续执行。fit内部验证与择优不受此计数限制，详见[训练指南](01_TRAINING_GUIDE.md)。
 
 > [!IMPORTANT]
 > 预测结束后，`latest_train_records.json` 中相关模型的 `experiment_name` 和 `record_id` 会更新为新值。下游的穷举/融合脚本直接读取此文件即可，无需任何修改。

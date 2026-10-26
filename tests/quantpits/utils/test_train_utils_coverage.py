@@ -33,6 +33,14 @@ import pytest
 from unittest.mock import MagicMock, patch, mock_open, PropertyMock
 
 
+def _telemetry_prediction():
+    index = pd.MultiIndex.from_tuples(
+        [(pd.Timestamp("2026-01-01"), "S1")], names=["datetime", "instrument"]
+    )
+    return pd.DataFrame({"score": [.5]}, index=index)
+
+
+
 @pytest.fixture
 def mock_training_output_entry(monkeypatch):
     """Isolate convergence/metrics units from persisted-output validation.
@@ -249,6 +257,7 @@ def test_train_single_model_fit_typeerror_fallback(mock_env_constants, tmp_path,
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     model.fit.side_effect = [TypeError("unexpected kwarg"), None]
     # After the TypeError, the except TypeError catches it and calls fit() without evals_result
     dataset = MagicMock()
@@ -297,6 +306,7 @@ def test_train_evals_result_gbdt_structure(mock_env_constants, tmp_path, mock_tr
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     # Remove attributes that would trigger NN paths
     del model.model  # no .model attribute
 
@@ -359,6 +369,7 @@ def test_train_evals_result_nn_list_structure_minimizing(mock_env_constants, tmp
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     # Remove tree attributes
     if hasattr(model, "fitted_model_"):
         del model.fitted_model_
@@ -417,6 +428,7 @@ def test_train_evals_result_nn_list_maximizing(mock_env_constants, tmp_path, moc
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     if hasattr(model, "fitted_model_"):
         del model.fitted_model_
     # Maximizing model (name contains 'return')
@@ -481,7 +493,7 @@ def test_train_lightgbm_fallback(mock_env_constants, tmp_path, mock_training_out
     class _LGBModel:
         model = _LGBInner()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _LGBModel()
     dataset = MagicMock()
@@ -536,7 +548,7 @@ def test_train_lightgbm_best_score_valid_key(mock_env_constants, tmp_path, mock_
     class _LGBModel2:
         model = _LGBInner2()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _LGBModel2()
     dataset = MagicMock()
@@ -588,7 +600,7 @@ def test_train_catboost_fallback(mock_env_constants, tmp_path, mock_training_out
     class _CatModel:
         model = _CatInner()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _CatModel()
     dataset = MagicMock()
@@ -641,7 +653,7 @@ def test_train_gbdt_fitted_model_fallback(mock_env_constants, tmp_path, mock_tra
     class _GBDTModel:
         fitted_model_ = _GBDTInner()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _GBDTModel()
     dataset = MagicMock()
@@ -689,7 +701,7 @@ def test_train_linear_model_branch(mock_env_constants, tmp_path, mock_training_o
     # Simple class without model/fitted_model_ attributes
     class _LinearModel:
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _LinearModel()
     dataset = MagicMock()
@@ -745,7 +757,7 @@ def test_train_convergence_extraction_exception(mock_env_constants, tmp_path, mo
     class _BadModel:
         fitted_model_ = _BadFittedModel()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _BadModel()
     dataset = MagicMock()
@@ -797,6 +809,7 @@ def test_train_portfolio_analysis_single_index(mock_env_constants, tmp_path, moc
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     del model.model
     model.fit.return_value = None
 
@@ -855,6 +868,7 @@ def test_train_portfolio_analysis_multiindex(mock_env_constants, tmp_path, mock_
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     del model.model
     model.fit.return_value = None
 
@@ -914,6 +928,7 @@ def test_train_portfolio_analysis_exception(mock_env_constants, tmp_path, mock_t
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     del model.model
     model.fit.return_value = None
 
@@ -964,6 +979,7 @@ def test_train_single_model_top_level_exception(mock_env_constants, tmp_path):
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     dataset = MagicMock()
 
     with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
@@ -1473,6 +1489,7 @@ def test_train_evals_result_stop_iteration(mock_env_constants, tmp_path, mock_tr
         yaml.dump(yaml_content, f)
 
     model = MagicMock()
+    model.predict.return_value = _telemetry_prediction()
     del model.model
     model.fit.return_value = None
     dataset = MagicMock()
@@ -1525,7 +1542,7 @@ def test_train_catboost_best_score_exception(mock_env_constants, tmp_path, mock_
     class _CatModelBad:
         model = _CatInnerBad()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _CatModelBad()
     dataset = MagicMock()
@@ -1581,7 +1598,7 @@ def test_train_lgb_num_trees_fallback(mock_env_constants, tmp_path, mock_trainin
     class _LGBModelNumTrees:
         model = _LGBInnerNumTrees()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _LGBModelNumTrees()
     dataset = MagicMock()
@@ -1635,7 +1652,7 @@ def test_train_lgb_num_trees_exception(mock_env_constants, tmp_path, mock_traini
     class _LGBModelBadTrees:
         model = _LGBInnerBadTrees()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _LGBModelBadTrees()
     dataset = MagicMock()
@@ -1691,7 +1708,7 @@ def test_train_lgb_best_score_exception(mock_env_constants, tmp_path, mock_train
     class _LGBModelBadScore:
         model = _LGBInnerBadScore()
         fit = MagicMock(return_value=None)
-        predict = MagicMock()
+        predict = MagicMock(return_value=_telemetry_prediction())
 
     model = _LGBModelBadScore()
     dataset = MagicMock()
