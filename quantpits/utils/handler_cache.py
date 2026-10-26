@@ -439,13 +439,12 @@ def enumerate_tasks_static(
     Returns:
         List of (model_name, handler_cfg, dataset_cfg) tuples.
     """
-    from quantpits.utils.train_utils import inject_config
+    from quantpits.training.static_config import load_model_task
 
     tasks = []
     for model_name in selected_models:
         yaml_path = yaml_paths[model_name]
-        task_config = inject_config(
-            yaml_path, params, model_name=model_name)
+        task_config = load_model_task(yaml_path, params)
         handler_cfg = task_config['task']['dataset']['kwargs']['handler']
         dataset_cfg = task_config['task']['dataset']
         tasks.append((model_name, handler_cfg, dataset_cfg))

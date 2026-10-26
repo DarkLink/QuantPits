@@ -27,8 +27,19 @@ def test_reviewed_prediction_outputs_and_failure_boundary(mock_env_constants, tm
         functions.append((scope[name], scope))
     config_file = tmp_path / 'model.yaml'
     config_file.write_text('fixture')
-    cfg = {'task': {'dataset': {'class': 'DatasetH', 'kwargs': {}}, 'record': []}}
-    params = {'anchor_date': '2026-09-11', 'cpcv_folds': [{}]}
+    cfg = {'data_handler_config': {},
+           'task': {'dataset': {'class': 'DatasetH', 'kwargs': {'segments': {}}}, 'record': []}}
+    params = {'anchor_date': '2026-09-11', 'cpcv_folds': [{}], 'market': 'synthetic',
+              'benchmark': 'SH000300', 'start_time': '2026-08-03', 'end_time': '2026-09-11',
+              'fit_start_time': '2026-08-03', 'fit_end_time': '2026-08-21',
+              'valid_start_time': '2026-08-24', 'valid_end_time': '2026-08-28',
+              'test_start_time': '2026-08-31', 'test_end_time': '2026-09-11'}
+    template_calls = []
+    def static_template(path):
+        template_calls.append(path)
+        return copy.deepcopy(cfg)
+    # Both controlled origin variants retain the real static builders.
+    monkeypatch.setattr(train, '_read_static_template', static_template)
     outputs = []
     # Record writer is outside the changed functions; compare its complete
     # invocation and preserve the selected model/dataset/prediction operations.
@@ -68,7 +79,6 @@ def test_reviewed_prediction_outputs_and_failure_boundary(mock_env_constants, tm
         monkeypatch.setattr(qlib.workflow, 'R', runtime)
         initialize = MagicMock(return_value=dataset)
         monkeypatch.setattr(qlib.utils, 'init_instance_by_config', initialize)
-        scope['inject_config'] = lambda *a, **kw: copy.deepcopy(cfg)
         scope['inject_config_for_fold'] = lambda *a, **kw: copy.deepcopy(cfg)
         scope['datetime'] = FixedDate
         scope['_flatten_rnn_params'] = lambda model: None
@@ -111,3 +121,4 @@ def test_reviewed_prediction_outputs_and_failure_boundary(mock_env_constants, tm
                         initialize.call_args.args[0], record_args))
     if ancestry != 'interrupt':
         assert outputs[0] == outputs[1]
+    assert template_calls == ([str(config_file)] * 2 if kind == 'static' else [])

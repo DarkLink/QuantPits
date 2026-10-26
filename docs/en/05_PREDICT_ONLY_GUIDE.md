@@ -53,6 +53,12 @@ Missing or repeated standard SignalRecord entries do not add inference calls, an
 signal/backtest analysis continues. Validation and selection inside fit are outside this count;
 see the [training guide](01_TRAINING_GUIDE.md).
 
+Static prediction constructs model/dataset and requested records separately; handler cache
+preparation builds no analysis configuration. Default SigAna/PortAna remains enabled. Existing
+YAML, inject_config and flat params stay compatible; the full CLI retains legacy merged reads,
+account sourcing and run/resume fingerprint definitions. See the training guide for the independent
+builders and pretrained-path adapter boundary.
+
 > [!IMPORTANT]
 > Post-execution, the corresponding entries targeting active models within `latest_train_records.json` overwrite their respective `experiment_name` and `record_id` parameters mapped out to this explicit new execution trace. Downstream nodes parsing this dictionary seamlessly consume the updated hashes.
 

@@ -84,8 +84,12 @@ def reload_case(mock_env_constants, monkeypatch):
     monkeypatch.setattr("qlib.workflow.R", runtime)
     yaml_file = workspace / "config/model.yaml"
     yaml_file.write_text("fixture", encoding="utf-8")
-    params = {"anchor_date": "2026-10-09", "test_start_time": "2026-10-05",
-              "test_end_time": "2026-10-09", "freq": "week", "cpcv_folds": [{}, {}]}
+    params = {"anchor_date": "2026-10-09", "market": "synthetic", "benchmark": "SH000300",
+              "start_time": "2026-09-25", "end_time": "2026-10-09",
+              "fit_start_time": "2026-09-25", "fit_end_time": "2026-09-28",
+              "valid_start_time": "2026-09-28", "valid_end_time": "2026-09-28",
+              "test_start_time": "2026-10-05", "test_end_time": "2026-10-09",
+              "freq": "week", "cpcv_folds": [{}, {}]}
 
     def config(_yaml, current_params, *args, **kwargs):
         cfg = copy.deepcopy(dataset_cfg)
@@ -96,6 +100,13 @@ def reload_case(mock_env_constants, monkeypatch):
         }]}}
     monkeypatch.setattr(train, "inject_config", config)
     monkeypatch.setattr(train, "inject_config_for_fold", config)
+    template_calls = []
+    def static_template(path):
+        template_calls.append(path)
+        # Mock only template I/O: static reload must use the real separate
+        # model/record builders. StaticDataLoader owns its supplied raw data.
+        return {"data_handler_config": {}, **config(path, params)}
+    monkeypatch.setattr(train, "_read_static_template", static_template)
     info = {"yaml_file": str(yaml_file), "record_id": source.id}
 
     def predict(kind):
@@ -109,6 +120,7 @@ def reload_case(mock_env_constants, monkeypatch):
     return {"source": source, "output": output, "recorder": recorder, "selected": selected,
             "calls": calls, "runtime": runtime, "params": params, "info": info, "dates": dates,
             "expected": expected, "predict": predict, "workspace": workspace,
+            "template_calls": template_calls,
             "model_kwargs": {"trusted": True} if supports_trusted else {}}
 
 
@@ -136,6 +148,9 @@ def test_actual_predict_only_reloads_models_and_preserves_requested_coverage(rel
     prediction = case["output"].load_object("pred.pkl")
     scores = prediction["score"] if isinstance(prediction, pd.DataFrame) else prediction
     pd.testing.assert_series_equal(scores, case["expected"], check_names=False)
+    if kind == "static":
+        assert case["template_calls"] == [case["info"]["yaml_file"]]
+        assert case["output"].load_object("label.pkl").index.equals(case["expected"].index)
     assert all(Path(source.download_artifact(name)).read_bytes() == before[name] for name in model_paths)
     if missing_child:
         assert case["calls"][child.id] == []

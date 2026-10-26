@@ -1,0 +1,1962 @@
+{
+  "base_commit": "51d714eb19155062dcc1bbc6962c21888b349c21",
+  "old_inject_source_sha256": "e554775b6fda564749632809dd08451ff1fd2cc8cc12e6dea2bbbeb05ce9c82d",
+  "cases": {
+    "week_alias": {
+      "config": {
+        "benchmark": "SH000300",
+        "custom_root": {
+          "keep": [
+            1,
+            2
+          ]
+        },
+        "data_handler_config": {
+          "end_time": "2024-05-17",
+          "feature_extension": {
+            "fields": [
+              "$close",
+              "Ref($close, 1)"
+            ],
+            "names": [
+              "CLOSE",
+              "LAG"
+            ]
+          },
+          "fit_end_time": "2024-03-29",
+          "fit_start_time": "2024-01-02",
+          "infer_processors": [
+            {
+              "class": "RobustZScoreNorm",
+              "kwargs": {
+                "fields_group": "feature"
+              }
+            }
+          ],
+          "instruments": "selected",
+          "label": [
+            "Ref($close, -6) / Ref($close, -1) - 1"
+          ],
+          "learn_processors": [
+            {
+              "class": "DropnaLabel"
+            },
+            {
+              "class": "CSRankNorm",
+              "kwargs": {
+                "fields_group": "label"
+              }
+            }
+          ],
+          "start_time": "2024-01-02"
+        },
+        "market": "selected",
+        "port_analysis_config": {
+          "strategy": {
+            "class": "TopkDropoutStrategy",
+            "kwargs": {
+              "signal": "<PRED>",
+              "topk": 22,
+              "n_drop": 3
+            }
+          },
+          "executor": {
+            "class": "SimulatorExecutor",
+            "kwargs": {
+              "time_per_step": "week"
+            }
+          },
+          "backtest": {
+            "account": 123456,
+            "exchange_kwargs": {
+              "deal_price": "close",
+              "open_cost": 0.0005,
+              "close_cost": 0.0015,
+              "min_cost": 5
+            },
+            "start_time": "2024-04-15",
+            "end_time": "2024-05-17",
+            "benchmark": "SH000300"
+          }
+        },
+        "strategy": {
+          "params": {
+            "buy_suggestion_factor": 5,
+            "custom_strategy": true,
+            "n_drop": 4,
+            "topk": 33
+          }
+        },
+        "task": {
+          "custom_task": {
+            "keep": true
+          },
+          "dataset": {
+            "class": "DatasetH",
+            "kwargs": {
+              "handler": {
+                "class": "Alpha158",
+                "kwargs": {
+                  "end_time": "2024-05-17",
+                  "feature_extension": {
+                    "fields": [
+                      "$close",
+                      "Ref($close, 1)"
+                    ],
+                    "names": [
+                      "CLOSE",
+                      "LAG"
+                    ]
+                  },
+                  "fit_end_time": "2024-03-29",
+                  "fit_start_time": "2024-01-02",
+                  "infer_processors": [
+                    {
+                      "class": "RobustZScoreNorm",
+                      "kwargs": {
+                        "fields_group": "feature"
+                      }
+                    }
+                  ],
+                  "instruments": "selected",
+                  "label": [
+                    "Ref($close, -6) / Ref($close, -1) - 1"
+                  ],
+                  "learn_processors": [
+                    {
+                      "class": "DropnaLabel"
+                    },
+                    {
+                      "class": "CSRankNorm",
+                      "kwargs": {
+                        "fields_group": "label"
+                      }
+                    }
+                  ],
+                  "start_time": "2024-01-02"
+                },
+                "module_path": "qlib.contrib.data.handler"
+              },
+              "segments": {
+                "pretrain": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "pretrain_validation": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ],
+                "test": [
+                  "2024-04-15",
+                  "2024-05-17"
+                ],
+                "train": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "valid": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ]
+              },
+              "unknown_dataset_option": [
+                "preserved"
+              ]
+            },
+            "module_path": "qlib.data.dataset"
+          },
+          "model": {
+            "class": "SyntheticModel",
+            "kwargs": {
+              "early_stop": 5,
+              "metric": "ir",
+              "n_drop": 2,
+              "n_epochs": 20,
+              "seed": 17,
+              "topk": 7,
+              "unknown_model_option": {
+                "nested": [
+                  "unchanged"
+                ]
+              }
+            },
+            "module_path": "synthetic.models"
+          },
+          "record": [
+            {
+              "class": "SignalRecord",
+              "kwargs": {
+                "dataset": "<DATASET>",
+                "model": "<MODEL>"
+              }
+            },
+            {
+              "class": "SigAnaRecord",
+              "kwargs": {
+                "ann_scaler": 52
+              }
+            },
+            {
+              "class": "PortAnaRecord",
+              "kwargs": {
+                "config": {
+                  "strategy": {
+                    "class": "TopkDropoutStrategy",
+                    "kwargs": {
+                      "signal": "<PRED>",
+                      "topk": 22,
+                      "n_drop": 3
+                    }
+                  },
+                  "executor": {
+                    "class": "SimulatorExecutor",
+                    "kwargs": {
+                      "time_per_step": "week"
+                    }
+                  },
+                  "backtest": {
+                    "account": 123456,
+                    "exchange_kwargs": {
+                      "deal_price": "close",
+                      "open_cost": 0.0005,
+                      "close_cost": 0.0015,
+                      "min_cost": 5
+                    },
+                    "start_time": "2024-04-15",
+                    "end_time": "2024-05-17",
+                    "benchmark": "SH000300"
+                  }
+                }
+              }
+            },
+            {
+              "class": "CustomRecord",
+              "kwargs": {
+                "extension": [
+                  1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "handler_key": "7197e7c1c7b5a562",
+      "handler_alias": true,
+      "portfolio_alias": true
+    },
+    "day_override": {
+      "config": {
+        "benchmark": "SH000300",
+        "custom_root": {
+          "keep": [
+            1,
+            2
+          ]
+        },
+        "data_handler_config": {
+          "end_time": "2024-05-17",
+          "feature_extension": {
+            "fields": [
+              "$close",
+              "Ref($close, 1)"
+            ],
+            "names": [
+              "CLOSE",
+              "LAG"
+            ]
+          },
+          "fit_end_time": "2024-03-29",
+          "fit_start_time": "2024-01-02",
+          "infer_processors": [
+            {
+              "class": "RobustZScoreNorm",
+              "kwargs": {
+                "fields_group": "feature"
+              }
+            }
+          ],
+          "instruments": "selected",
+          "label": [
+            "custom-label"
+          ],
+          "learn_processors": [
+            {
+              "class": "DropnaLabel"
+            },
+            {
+              "class": "CSRankNorm",
+              "kwargs": {
+                "fields_group": "label"
+              }
+            }
+          ],
+          "start_time": "2024-01-02"
+        },
+        "market": "selected",
+        "port_analysis_config": {
+          "strategy": {
+            "class": "TopkDropoutStrategy",
+            "kwargs": {
+              "signal": "<PRED>",
+              "topk": 22,
+              "n_drop": 3
+            }
+          },
+          "executor": {
+            "class": "SimulatorExecutor",
+            "kwargs": {
+              "time_per_step": "day"
+            }
+          },
+          "backtest": {
+            "account": 700000,
+            "exchange_kwargs": {
+              "deal_price": "close",
+              "open_cost": 0.0005,
+              "close_cost": 0.0015,
+              "min_cost": 5
+            },
+            "start_time": "2024-04-15",
+            "end_time": "2024-05-17",
+            "benchmark": "SH000300"
+          }
+        },
+        "strategy": {
+          "params": {
+            "buy_suggestion_factor": 5,
+            "custom_strategy": true,
+            "n_drop": 4,
+            "topk": 33
+          }
+        },
+        "task": {
+          "custom_task": {
+            "keep": true
+          },
+          "dataset": {
+            "class": "DatasetH",
+            "kwargs": {
+              "handler": {
+                "class": "Alpha158",
+                "kwargs": {
+                  "end_time": "2024-05-17",
+                  "feature_extension": {
+                    "fields": [
+                      "$close",
+                      "Ref($close, 1)"
+                    ],
+                    "names": [
+                      "CLOSE",
+                      "LAG"
+                    ]
+                  },
+                  "fit_end_time": "2024-03-29",
+                  "fit_start_time": "2024-01-02",
+                  "infer_processors": [
+                    {
+                      "class": "RobustZScoreNorm",
+                      "kwargs": {
+                        "fields_group": "feature"
+                      }
+                    }
+                  ],
+                  "instruments": "selected",
+                  "label": [
+                    "custom-label"
+                  ],
+                  "learn_processors": [
+                    {
+                      "class": "DropnaLabel"
+                    },
+                    {
+                      "class": "CSRankNorm",
+                      "kwargs": {
+                        "fields_group": "label"
+                      }
+                    }
+                  ],
+                  "start_time": "2024-01-02"
+                },
+                "module_path": "qlib.contrib.data.handler"
+              },
+              "segments": {
+                "pretrain": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "pretrain_validation": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ],
+                "test": [
+                  "2024-04-15",
+                  "2024-05-17"
+                ],
+                "train": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "valid": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ]
+              },
+              "unknown_dataset_option": [
+                "preserved"
+              ]
+            },
+            "module_path": "qlib.data.dataset"
+          },
+          "model": {
+            "class": "SyntheticModel",
+            "kwargs": {
+              "early_stop": 5,
+              "metric": "ir",
+              "n_drop": 2,
+              "n_epochs": 20,
+              "seed": 17,
+              "topk": 7,
+              "unknown_model_option": {
+                "nested": [
+                  "unchanged"
+                ]
+              }
+            },
+            "module_path": "synthetic.models"
+          },
+          "record": [
+            {
+              "class": "SignalRecord",
+              "kwargs": {
+                "dataset": "<DATASET>",
+                "model": "<MODEL>"
+              }
+            },
+            {
+              "class": "SigAnaRecord",
+              "kwargs": {
+                "ann_scaler": 252
+              }
+            },
+            {
+              "class": "PortAnaRecord",
+              "kwargs": {
+                "config": {
+                  "strategy": {
+                    "class": "TopkDropoutStrategy",
+                    "kwargs": {
+                      "signal": "<PRED>",
+                      "topk": 22,
+                      "n_drop": 3
+                    }
+                  },
+                  "executor": {
+                    "class": "SimulatorExecutor",
+                    "kwargs": {
+                      "time_per_step": "day"
+                    }
+                  },
+                  "backtest": {
+                    "account": 700000,
+                    "exchange_kwargs": {
+                      "deal_price": "close",
+                      "open_cost": 0.0005,
+                      "close_cost": 0.0015,
+                      "min_cost": 5
+                    },
+                    "start_time": "2024-04-15",
+                    "end_time": "2024-05-17",
+                    "benchmark": "SH000300"
+                  }
+                }
+              }
+            },
+            {
+              "class": "CustomRecord",
+              "kwargs": {
+                "extension": [
+                  1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "handler_key": "47e98a9090d844f7",
+      "handler_alias": true,
+      "portfolio_alias": true
+    },
+    "multi_label": {
+      "config": {
+        "benchmark": "SH000300",
+        "custom_root": {
+          "keep": [
+            1,
+            2
+          ]
+        },
+        "data_handler_config": {
+          "end_time": "2024-05-17",
+          "feature_extension": {
+            "fields": [
+              "$close",
+              "Ref($close, 1)"
+            ],
+            "names": [
+              "CLOSE",
+              "LAG"
+            ]
+          },
+          "fit_end_time": "2024-03-29",
+          "fit_start_time": "2024-01-02",
+          "infer_processors": [
+            {
+              "class": "RobustZScoreNorm",
+              "kwargs": {
+                "fields_group": "feature"
+              }
+            }
+          ],
+          "instruments": "selected",
+          "label": [
+            "label-one",
+            "label-two"
+          ],
+          "learn_processors": [
+            {
+              "class": "DropnaLabel"
+            },
+            {
+              "class": "CSRankNorm",
+              "kwargs": {
+                "fields_group": "label"
+              }
+            }
+          ],
+          "start_time": "2024-01-02"
+        },
+        "market": "selected",
+        "port_analysis_config": {
+          "strategy": {
+            "class": "TopkDropoutStrategy",
+            "kwargs": {
+              "signal": "<PRED>",
+              "topk": 22,
+              "n_drop": 3
+            }
+          },
+          "executor": {
+            "class": "SimulatorExecutor",
+            "kwargs": {
+              "time_per_step": "week"
+            }
+          },
+          "backtest": {
+            "account": 123456,
+            "exchange_kwargs": {
+              "deal_price": "close",
+              "open_cost": 0.0005,
+              "close_cost": 0.0015,
+              "min_cost": 5
+            },
+            "start_time": "2024-04-15",
+            "end_time": "2024-05-17",
+            "benchmark": "SH000300"
+          }
+        },
+        "strategy": {
+          "params": {
+            "buy_suggestion_factor": 5,
+            "custom_strategy": true,
+            "n_drop": 4,
+            "topk": 33
+          }
+        },
+        "task": {
+          "custom_task": {
+            "keep": true
+          },
+          "dataset": {
+            "class": "DatasetH",
+            "kwargs": {
+              "handler": {
+                "class": "Alpha158",
+                "kwargs": {
+                  "end_time": "2024-05-17",
+                  "feature_extension": {
+                    "fields": [
+                      "$close",
+                      "Ref($close, 1)"
+                    ],
+                    "names": [
+                      "CLOSE",
+                      "LAG"
+                    ]
+                  },
+                  "fit_end_time": "2024-03-29",
+                  "fit_start_time": "2024-01-02",
+                  "infer_processors": [
+                    {
+                      "class": "RobustZScoreNorm",
+                      "kwargs": {
+                        "fields_group": "feature"
+                      }
+                    }
+                  ],
+                  "instruments": "selected",
+                  "label": [
+                    "label-one",
+                    "label-two"
+                  ],
+                  "learn_processors": [
+                    {
+                      "class": "DropnaLabel"
+                    },
+                    {
+                      "class": "CSRankNorm",
+                      "kwargs": {
+                        "fields_group": "label"
+                      }
+                    }
+                  ],
+                  "start_time": "2024-01-02"
+                },
+                "module_path": "qlib.contrib.data.handler"
+              },
+              "segments": {
+                "pretrain": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "pretrain_validation": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ],
+                "test": [
+                  "2024-04-15",
+                  "2024-05-17"
+                ],
+                "train": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "valid": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ]
+              },
+              "unknown_dataset_option": [
+                "preserved"
+              ]
+            },
+            "module_path": "qlib.data.dataset"
+          },
+          "model": {
+            "class": "SyntheticModel",
+            "kwargs": {
+              "early_stop": 5,
+              "metric": "ir",
+              "n_drop": 2,
+              "n_epochs": 20,
+              "seed": 17,
+              "topk": 7,
+              "unknown_model_option": {
+                "nested": [
+                  "unchanged"
+                ]
+              }
+            },
+            "module_path": "synthetic.models"
+          },
+          "record": [
+            {
+              "class": "SignalRecord",
+              "kwargs": {
+                "dataset": "<DATASET>",
+                "model": "<MODEL>"
+              }
+            },
+            {
+              "class": "SigAnaRecord",
+              "kwargs": {
+                "ann_scaler": 52
+              }
+            },
+            {
+              "class": "PortAnaRecord",
+              "kwargs": {
+                "config": {
+                  "strategy": {
+                    "class": "TopkDropoutStrategy",
+                    "kwargs": {
+                      "signal": "<PRED>",
+                      "topk": 22,
+                      "n_drop": 3
+                    }
+                  },
+                  "executor": {
+                    "class": "SimulatorExecutor",
+                    "kwargs": {
+                      "time_per_step": "week"
+                    }
+                  },
+                  "backtest": {
+                    "account": 123456,
+                    "exchange_kwargs": {
+                      "deal_price": "close",
+                      "open_cost": 0.0005,
+                      "close_cost": 0.0015,
+                      "min_cost": 5
+                    },
+                    "start_time": "2024-04-15",
+                    "end_time": "2024-05-17",
+                    "benchmark": "SH000300"
+                  }
+                }
+              }
+            },
+            {
+              "class": "CustomRecord",
+              "kwargs": {
+                "extension": [
+                  1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "handler_key": "c4e79b47e2ba0e94",
+      "handler_alias": true,
+      "portfolio_alias": true
+    },
+    "non_alias": {
+      "config": {
+        "benchmark": "SH000300",
+        "custom_root": {
+          "keep": [
+            1,
+            2
+          ]
+        },
+        "data_handler_config": {
+          "end_time": "2024-05-17",
+          "feature_extension": {
+            "fields": [
+              "$close",
+              "Ref($close, 1)"
+            ],
+            "names": [
+              "CLOSE",
+              "LAG"
+            ]
+          },
+          "fit_end_time": "2024-03-29",
+          "fit_start_time": "2024-01-02",
+          "infer_processors": [
+            {
+              "class": "RobustZScoreNorm",
+              "kwargs": {
+                "fields_group": "feature"
+              }
+            }
+          ],
+          "instruments": "selected",
+          "label": [
+            "Ref($close, -6) / Ref($close, -1) - 1"
+          ],
+          "learn_processors": [
+            {
+              "class": "DropnaLabel"
+            },
+            {
+              "class": "CSRankNorm",
+              "kwargs": {
+                "fields_group": "label"
+              }
+            }
+          ],
+          "start_time": "2024-01-02"
+        },
+        "market": "selected",
+        "port_analysis_config": {
+          "strategy": {
+            "class": "TopkDropoutStrategy",
+            "kwargs": {
+              "signal": "<PRED>",
+              "topk": 22,
+              "n_drop": 3
+            }
+          },
+          "executor": {
+            "class": "SimulatorExecutor",
+            "kwargs": {
+              "time_per_step": "week"
+            }
+          },
+          "backtest": {
+            "account": 123456,
+            "exchange_kwargs": {
+              "deal_price": "close",
+              "open_cost": 0.0005,
+              "close_cost": 0.0015,
+              "min_cost": 5
+            },
+            "start_time": "2024-04-15",
+            "end_time": "2024-05-17",
+            "benchmark": "SH000300"
+          }
+        },
+        "strategy": {
+          "params": {
+            "buy_suggestion_factor": 5,
+            "custom_strategy": true,
+            "n_drop": 4,
+            "topk": 33
+          }
+        },
+        "task": {
+          "custom_task": {
+            "keep": true
+          },
+          "dataset": {
+            "class": "DatasetH",
+            "kwargs": {
+              "handler": {
+                "class": "Alpha158",
+                "kwargs": {
+                  "end_time": "2015-12-31",
+                  "feature_extension": {
+                    "fields": [
+                      "$close",
+                      "Ref($close, 1)"
+                    ],
+                    "names": [
+                      "CLOSE",
+                      "LAG"
+                    ]
+                  },
+                  "fit_end_time": "2013-12-31",
+                  "fit_start_time": "2010-01-01",
+                  "infer_processors": [
+                    {
+                      "class": "RobustZScoreNorm",
+                      "kwargs": {
+                        "fields_group": "feature"
+                      }
+                    }
+                  ],
+                  "instruments": "original",
+                  "label": [
+                    "original-label"
+                  ],
+                  "learn_processors": [
+                    {
+                      "class": "DropnaLabel"
+                    },
+                    {
+                      "class": "CSRankNorm",
+                      "kwargs": {
+                        "fields_group": "label"
+                      }
+                    }
+                  ],
+                  "start_time": "2010-01-01"
+                },
+                "module_path": "qlib.contrib.data.handler"
+              },
+              "segments": {
+                "pretrain": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "pretrain_validation": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ],
+                "test": [
+                  "2024-04-15",
+                  "2024-05-17"
+                ],
+                "train": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "valid": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ]
+              },
+              "unknown_dataset_option": [
+                "preserved"
+              ]
+            },
+            "module_path": "qlib.data.dataset"
+          },
+          "model": {
+            "class": "SyntheticModel",
+            "kwargs": {
+              "early_stop": 5,
+              "metric": "ir",
+              "n_drop": 2,
+              "n_epochs": 20,
+              "seed": 17,
+              "topk": 7,
+              "unknown_model_option": {
+                "nested": [
+                  "unchanged"
+                ]
+              }
+            },
+            "module_path": "synthetic.models"
+          },
+          "record": [
+            {
+              "class": "SignalRecord",
+              "kwargs": {
+                "dataset": "<DATASET>",
+                "model": "<MODEL>"
+              }
+            },
+            {
+              "class": "SigAnaRecord",
+              "kwargs": {
+                "ann_scaler": 52
+              }
+            },
+            {
+              "class": "PortAnaRecord",
+              "kwargs": {
+                "config": {
+                  "strategy": {
+                    "class": "TopkDropoutStrategy",
+                    "kwargs": {
+                      "signal": "<PRED>",
+                      "topk": 22,
+                      "n_drop": 3
+                    }
+                  },
+                  "executor": {
+                    "class": "SimulatorExecutor",
+                    "kwargs": {
+                      "time_per_step": "week"
+                    }
+                  },
+                  "backtest": {
+                    "account": 123456,
+                    "exchange_kwargs": {
+                      "deal_price": "close",
+                      "open_cost": 0.0005,
+                      "close_cost": 0.0015,
+                      "min_cost": 5
+                    },
+                    "start_time": "2024-04-15",
+                    "end_time": "2024-05-17",
+                    "benchmark": "SH000300"
+                  }
+                }
+              }
+            },
+            {
+              "class": "CustomRecord",
+              "kwargs": {
+                "extension": [
+                  1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "handler_key": "6082a90c6abbf1cd",
+      "handler_alias": false,
+      "portfolio_alias": true
+    },
+    "pretrain_found": {
+      "config": {
+        "benchmark": "SH000300",
+        "custom_root": {
+          "keep": [
+            1,
+            2
+          ]
+        },
+        "data_handler_config": {
+          "end_time": "2024-05-17",
+          "feature_extension": {
+            "fields": [
+              "$close",
+              "Ref($close, 1)"
+            ],
+            "names": [
+              "CLOSE",
+              "LAG"
+            ]
+          },
+          "fit_end_time": "2024-03-29",
+          "fit_start_time": "2024-01-02",
+          "infer_processors": [
+            {
+              "class": "RobustZScoreNorm",
+              "kwargs": {
+                "fields_group": "feature"
+              }
+            }
+          ],
+          "instruments": "selected",
+          "label": [
+            "Ref($close, -6) / Ref($close, -1) - 1"
+          ],
+          "learn_processors": [
+            {
+              "class": "DropnaLabel"
+            },
+            {
+              "class": "CSRankNorm",
+              "kwargs": {
+                "fields_group": "label"
+              }
+            }
+          ],
+          "start_time": "2024-01-02"
+        },
+        "market": "selected",
+        "port_analysis_config": {
+          "strategy": {
+            "class": "TopkDropoutStrategy",
+            "kwargs": {
+              "signal": "<PRED>",
+              "topk": 22,
+              "n_drop": 3
+            }
+          },
+          "executor": {
+            "class": "SimulatorExecutor",
+            "kwargs": {
+              "time_per_step": "week"
+            }
+          },
+          "backtest": {
+            "account": 123456,
+            "exchange_kwargs": {
+              "deal_price": "close",
+              "open_cost": 0.0005,
+              "close_cost": 0.0015,
+              "min_cost": 5
+            },
+            "start_time": "2024-04-15",
+            "end_time": "2024-05-17",
+            "benchmark": "SH000300"
+          }
+        },
+        "strategy": {
+          "params": {
+            "buy_suggestion_factor": 5,
+            "custom_strategy": true,
+            "n_drop": 4,
+            "topk": 33
+          }
+        },
+        "task": {
+          "custom_task": {
+            "keep": true
+          },
+          "dataset": {
+            "class": "DatasetH",
+            "kwargs": {
+              "handler": {
+                "class": "Alpha158",
+                "kwargs": {
+                  "end_time": "2024-05-17",
+                  "feature_extension": {
+                    "fields": [
+                      "$close",
+                      "Ref($close, 1)"
+                    ],
+                    "names": [
+                      "CLOSE",
+                      "LAG"
+                    ]
+                  },
+                  "fit_end_time": "2024-03-29",
+                  "fit_start_time": "2024-01-02",
+                  "infer_processors": [
+                    {
+                      "class": "RobustZScoreNorm",
+                      "kwargs": {
+                        "fields_group": "feature"
+                      }
+                    }
+                  ],
+                  "instruments": "selected",
+                  "label": [
+                    "Ref($close, -6) / Ref($close, -1) - 1"
+                  ],
+                  "learn_processors": [
+                    {
+                      "class": "DropnaLabel"
+                    },
+                    {
+                      "class": "CSRankNorm",
+                      "kwargs": {
+                        "fields_group": "label"
+                      }
+                    }
+                  ],
+                  "start_time": "2024-01-02"
+                },
+                "module_path": "qlib.contrib.data.handler"
+              },
+              "segments": {
+                "pretrain": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "pretrain_validation": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ],
+                "test": [
+                  "2024-04-15",
+                  "2024-05-17"
+                ],
+                "train": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "valid": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ]
+              },
+              "unknown_dataset_option": [
+                "preserved"
+              ]
+            },
+            "module_path": "qlib.data.dataset"
+          },
+          "model": {
+            "class": "SyntheticModel",
+            "kwargs": {
+              "base_model": "base",
+              "d_feat": 20,
+              "early_stop": 5,
+              "metric": "ir",
+              "model_path": "/synthetic/pretrain/base_latest.pkl",
+              "n_drop": 2,
+              "n_epochs": 20,
+              "seed": 17,
+              "topk": 7,
+              "unknown_model_option": {
+                "nested": [
+                  "unchanged"
+                ]
+              }
+            },
+            "module_path": "synthetic.models"
+          },
+          "record": [
+            {
+              "class": "SignalRecord",
+              "kwargs": {
+                "dataset": "<DATASET>",
+                "model": "<MODEL>"
+              }
+            },
+            {
+              "class": "SigAnaRecord",
+              "kwargs": {
+                "ann_scaler": 52
+              }
+            },
+            {
+              "class": "PortAnaRecord",
+              "kwargs": {
+                "config": {
+                  "strategy": {
+                    "class": "TopkDropoutStrategy",
+                    "kwargs": {
+                      "signal": "<PRED>",
+                      "topk": 22,
+                      "n_drop": 3
+                    }
+                  },
+                  "executor": {
+                    "class": "SimulatorExecutor",
+                    "kwargs": {
+                      "time_per_step": "week"
+                    }
+                  },
+                  "backtest": {
+                    "account": 123456,
+                    "exchange_kwargs": {
+                      "deal_price": "close",
+                      "open_cost": 0.0005,
+                      "close_cost": 0.0015,
+                      "min_cost": 5
+                    },
+                    "start_time": "2024-04-15",
+                    "end_time": "2024-05-17",
+                    "benchmark": "SH000300"
+                  }
+                }
+              }
+            },
+            {
+              "class": "CustomRecord",
+              "kwargs": {
+                "extension": [
+                  1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "handler_key": "7197e7c1c7b5a562",
+      "handler_alias": true,
+      "portfolio_alias": true
+    },
+    "pretrain_missing": {
+      "config": {
+        "benchmark": "SH000300",
+        "custom_root": {
+          "keep": [
+            1,
+            2
+          ]
+        },
+        "data_handler_config": {
+          "end_time": "2024-05-17",
+          "feature_extension": {
+            "fields": [
+              "$close",
+              "Ref($close, 1)"
+            ],
+            "names": [
+              "CLOSE",
+              "LAG"
+            ]
+          },
+          "fit_end_time": "2024-03-29",
+          "fit_start_time": "2024-01-02",
+          "infer_processors": [
+            {
+              "class": "RobustZScoreNorm",
+              "kwargs": {
+                "fields_group": "feature"
+              }
+            }
+          ],
+          "instruments": "selected",
+          "label": [
+            "Ref($close, -6) / Ref($close, -1) - 1"
+          ],
+          "learn_processors": [
+            {
+              "class": "DropnaLabel"
+            },
+            {
+              "class": "CSRankNorm",
+              "kwargs": {
+                "fields_group": "label"
+              }
+            }
+          ],
+          "start_time": "2024-01-02"
+        },
+        "market": "selected",
+        "port_analysis_config": {
+          "strategy": {
+            "class": "TopkDropoutStrategy",
+            "kwargs": {
+              "signal": "<PRED>",
+              "topk": 22,
+              "n_drop": 3
+            }
+          },
+          "executor": {
+            "class": "SimulatorExecutor",
+            "kwargs": {
+              "time_per_step": "week"
+            }
+          },
+          "backtest": {
+            "account": 123456,
+            "exchange_kwargs": {
+              "deal_price": "close",
+              "open_cost": 0.0005,
+              "close_cost": 0.0015,
+              "min_cost": 5
+            },
+            "start_time": "2024-04-15",
+            "end_time": "2024-05-17",
+            "benchmark": "SH000300"
+          }
+        },
+        "strategy": {
+          "params": {
+            "buy_suggestion_factor": 5,
+            "custom_strategy": true,
+            "n_drop": 4,
+            "topk": 33
+          }
+        },
+        "task": {
+          "custom_task": {
+            "keep": true
+          },
+          "dataset": {
+            "class": "DatasetH",
+            "kwargs": {
+              "handler": {
+                "class": "Alpha158",
+                "kwargs": {
+                  "end_time": "2024-05-17",
+                  "feature_extension": {
+                    "fields": [
+                      "$close",
+                      "Ref($close, 1)"
+                    ],
+                    "names": [
+                      "CLOSE",
+                      "LAG"
+                    ]
+                  },
+                  "fit_end_time": "2024-03-29",
+                  "fit_start_time": "2024-01-02",
+                  "infer_processors": [
+                    {
+                      "class": "RobustZScoreNorm",
+                      "kwargs": {
+                        "fields_group": "feature"
+                      }
+                    }
+                  ],
+                  "instruments": "selected",
+                  "label": [
+                    "Ref($close, -6) / Ref($close, -1) - 1"
+                  ],
+                  "learn_processors": [
+                    {
+                      "class": "DropnaLabel"
+                    },
+                    {
+                      "class": "CSRankNorm",
+                      "kwargs": {
+                        "fields_group": "label"
+                      }
+                    }
+                  ],
+                  "start_time": "2024-01-02"
+                },
+                "module_path": "qlib.contrib.data.handler"
+              },
+              "segments": {
+                "pretrain": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "pretrain_validation": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ],
+                "test": [
+                  "2024-04-15",
+                  "2024-05-17"
+                ],
+                "train": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "valid": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ]
+              },
+              "unknown_dataset_option": [
+                "preserved"
+              ]
+            },
+            "module_path": "qlib.data.dataset"
+          },
+          "model": {
+            "class": "SyntheticModel",
+            "kwargs": {
+              "base_model": "base",
+              "d_feat": 20,
+              "early_stop": 5,
+              "metric": "ir",
+              "n_drop": 2,
+              "n_epochs": 20,
+              "seed": 17,
+              "topk": 7,
+              "unknown_model_option": {
+                "nested": [
+                  "unchanged"
+                ]
+              }
+            },
+            "module_path": "synthetic.models"
+          },
+          "record": [
+            {
+              "class": "SignalRecord",
+              "kwargs": {
+                "dataset": "<DATASET>",
+                "model": "<MODEL>"
+              }
+            },
+            {
+              "class": "SigAnaRecord",
+              "kwargs": {
+                "ann_scaler": 52
+              }
+            },
+            {
+              "class": "PortAnaRecord",
+              "kwargs": {
+                "config": {
+                  "strategy": {
+                    "class": "TopkDropoutStrategy",
+                    "kwargs": {
+                      "signal": "<PRED>",
+                      "topk": 22,
+                      "n_drop": 3
+                    }
+                  },
+                  "executor": {
+                    "class": "SimulatorExecutor",
+                    "kwargs": {
+                      "time_per_step": "week"
+                    }
+                  },
+                  "backtest": {
+                    "account": 123456,
+                    "exchange_kwargs": {
+                      "deal_price": "close",
+                      "open_cost": 0.0005,
+                      "close_cost": 0.0015,
+                      "min_cost": 5
+                    },
+                    "start_time": "2024-04-15",
+                    "end_time": "2024-05-17",
+                    "benchmark": "SH000300"
+                  }
+                }
+              }
+            },
+            {
+              "class": "CustomRecord",
+              "kwargs": {
+                "extension": [
+                  1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "handler_key": "7197e7c1c7b5a562",
+      "handler_alias": true,
+      "portfolio_alias": true
+    },
+    "no_pretrain": {
+      "config": {
+        "benchmark": "SH000300",
+        "custom_root": {
+          "keep": [
+            1,
+            2
+          ]
+        },
+        "data_handler_config": {
+          "end_time": "2024-05-17",
+          "feature_extension": {
+            "fields": [
+              "$close",
+              "Ref($close, 1)"
+            ],
+            "names": [
+              "CLOSE",
+              "LAG"
+            ]
+          },
+          "fit_end_time": "2024-03-29",
+          "fit_start_time": "2024-01-02",
+          "infer_processors": [
+            {
+              "class": "RobustZScoreNorm",
+              "kwargs": {
+                "fields_group": "feature"
+              }
+            }
+          ],
+          "instruments": "selected",
+          "label": [
+            "Ref($close, -6) / Ref($close, -1) - 1"
+          ],
+          "learn_processors": [
+            {
+              "class": "DropnaLabel"
+            },
+            {
+              "class": "CSRankNorm",
+              "kwargs": {
+                "fields_group": "label"
+              }
+            }
+          ],
+          "start_time": "2024-01-02"
+        },
+        "market": "selected",
+        "port_analysis_config": {
+          "strategy": {
+            "class": "TopkDropoutStrategy",
+            "kwargs": {
+              "signal": "<PRED>",
+              "topk": 22,
+              "n_drop": 3
+            }
+          },
+          "executor": {
+            "class": "SimulatorExecutor",
+            "kwargs": {
+              "time_per_step": "week"
+            }
+          },
+          "backtest": {
+            "account": 123456,
+            "exchange_kwargs": {
+              "deal_price": "close",
+              "open_cost": 0.0005,
+              "close_cost": 0.0015,
+              "min_cost": 5
+            },
+            "start_time": "2024-04-15",
+            "end_time": "2024-05-17",
+            "benchmark": "SH000300"
+          }
+        },
+        "strategy": {
+          "params": {
+            "buy_suggestion_factor": 5,
+            "custom_strategy": true,
+            "n_drop": 4,
+            "topk": 33
+          }
+        },
+        "task": {
+          "custom_task": {
+            "keep": true
+          },
+          "dataset": {
+            "class": "DatasetH",
+            "kwargs": {
+              "handler": {
+                "class": "Alpha158",
+                "kwargs": {
+                  "end_time": "2024-05-17",
+                  "feature_extension": {
+                    "fields": [
+                      "$close",
+                      "Ref($close, 1)"
+                    ],
+                    "names": [
+                      "CLOSE",
+                      "LAG"
+                    ]
+                  },
+                  "fit_end_time": "2024-03-29",
+                  "fit_start_time": "2024-01-02",
+                  "infer_processors": [
+                    {
+                      "class": "RobustZScoreNorm",
+                      "kwargs": {
+                        "fields_group": "feature"
+                      }
+                    }
+                  ],
+                  "instruments": "selected",
+                  "label": [
+                    "Ref($close, -6) / Ref($close, -1) - 1"
+                  ],
+                  "learn_processors": [
+                    {
+                      "class": "DropnaLabel"
+                    },
+                    {
+                      "class": "CSRankNorm",
+                      "kwargs": {
+                        "fields_group": "label"
+                      }
+                    }
+                  ],
+                  "start_time": "2024-01-02"
+                },
+                "module_path": "qlib.contrib.data.handler"
+              },
+              "segments": {
+                "pretrain": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "pretrain_validation": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ],
+                "test": [
+                  "2024-04-15",
+                  "2024-05-17"
+                ],
+                "train": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "valid": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ]
+              },
+              "unknown_dataset_option": [
+                "preserved"
+              ]
+            },
+            "module_path": "qlib.data.dataset"
+          },
+          "model": {
+            "class": "SyntheticModel",
+            "kwargs": {
+              "base_model": "base",
+              "d_feat": 20,
+              "early_stop": 5,
+              "metric": "ir",
+              "n_drop": 2,
+              "n_epochs": 20,
+              "seed": 17,
+              "topk": 7,
+              "unknown_model_option": {
+                "nested": [
+                  "unchanged"
+                ]
+              }
+            },
+            "module_path": "synthetic.models"
+          },
+          "record": [
+            {
+              "class": "SignalRecord",
+              "kwargs": {
+                "dataset": "<DATASET>",
+                "model": "<MODEL>"
+              }
+            },
+            {
+              "class": "SigAnaRecord",
+              "kwargs": {
+                "ann_scaler": 52
+              }
+            },
+            {
+              "class": "PortAnaRecord",
+              "kwargs": {
+                "config": {
+                  "strategy": {
+                    "class": "TopkDropoutStrategy",
+                    "kwargs": {
+                      "signal": "<PRED>",
+                      "topk": 22,
+                      "n_drop": 3
+                    }
+                  },
+                  "executor": {
+                    "class": "SimulatorExecutor",
+                    "kwargs": {
+                      "time_per_step": "week"
+                    }
+                  },
+                  "backtest": {
+                    "account": 123456,
+                    "exchange_kwargs": {
+                      "deal_price": "close",
+                      "open_cost": 0.0005,
+                      "close_cost": 0.0015,
+                      "min_cost": 5
+                    },
+                    "start_time": "2024-04-15",
+                    "end_time": "2024-05-17",
+                    "benchmark": "SH000300"
+                  }
+                }
+              }
+            },
+            {
+              "class": "CustomRecord",
+              "kwargs": {
+                "extension": [
+                  1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "handler_key": "7197e7c1c7b5a562",
+      "handler_alias": true,
+      "portfolio_alias": true
+    },
+    "configured_path": {
+      "config": {
+        "benchmark": "SH000300",
+        "custom_root": {
+          "keep": [
+            1,
+            2
+          ]
+        },
+        "data_handler_config": {
+          "end_time": "2024-05-17",
+          "feature_extension": {
+            "fields": [
+              "$close",
+              "Ref($close, 1)"
+            ],
+            "names": [
+              "CLOSE",
+              "LAG"
+            ]
+          },
+          "fit_end_time": "2024-03-29",
+          "fit_start_time": "2024-01-02",
+          "infer_processors": [
+            {
+              "class": "RobustZScoreNorm",
+              "kwargs": {
+                "fields_group": "feature"
+              }
+            }
+          ],
+          "instruments": "selected",
+          "label": [
+            "Ref($close, -6) / Ref($close, -1) - 1"
+          ],
+          "learn_processors": [
+            {
+              "class": "DropnaLabel"
+            },
+            {
+              "class": "CSRankNorm",
+              "kwargs": {
+                "fields_group": "label"
+              }
+            }
+          ],
+          "start_time": "2024-01-02"
+        },
+        "market": "selected",
+        "port_analysis_config": {
+          "strategy": {
+            "class": "TopkDropoutStrategy",
+            "kwargs": {
+              "signal": "<PRED>",
+              "topk": 22,
+              "n_drop": 3
+            }
+          },
+          "executor": {
+            "class": "SimulatorExecutor",
+            "kwargs": {
+              "time_per_step": "week"
+            }
+          },
+          "backtest": {
+            "account": 123456,
+            "exchange_kwargs": {
+              "deal_price": "close",
+              "open_cost": 0.0005,
+              "close_cost": 0.0015,
+              "min_cost": 5
+            },
+            "start_time": "2024-04-15",
+            "end_time": "2024-05-17",
+            "benchmark": "SH000300"
+          }
+        },
+        "strategy": {
+          "params": {
+            "buy_suggestion_factor": 5,
+            "custom_strategy": true,
+            "n_drop": 4,
+            "topk": 33
+          }
+        },
+        "task": {
+          "custom_task": {
+            "keep": true
+          },
+          "dataset": {
+            "class": "DatasetH",
+            "kwargs": {
+              "handler": {
+                "class": "Alpha158",
+                "kwargs": {
+                  "end_time": "2024-05-17",
+                  "feature_extension": {
+                    "fields": [
+                      "$close",
+                      "Ref($close, 1)"
+                    ],
+                    "names": [
+                      "CLOSE",
+                      "LAG"
+                    ]
+                  },
+                  "fit_end_time": "2024-03-29",
+                  "fit_start_time": "2024-01-02",
+                  "infer_processors": [
+                    {
+                      "class": "RobustZScoreNorm",
+                      "kwargs": {
+                        "fields_group": "feature"
+                      }
+                    }
+                  ],
+                  "instruments": "selected",
+                  "label": [
+                    "Ref($close, -6) / Ref($close, -1) - 1"
+                  ],
+                  "learn_processors": [
+                    {
+                      "class": "DropnaLabel"
+                    },
+                    {
+                      "class": "CSRankNorm",
+                      "kwargs": {
+                        "fields_group": "label"
+                      }
+                    }
+                  ],
+                  "start_time": "2024-01-02"
+                },
+                "module_path": "qlib.contrib.data.handler"
+              },
+              "segments": {
+                "pretrain": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "pretrain_validation": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ],
+                "test": [
+                  "2024-04-15",
+                  "2024-05-17"
+                ],
+                "train": [
+                  "2024-01-02",
+                  "2024-03-29"
+                ],
+                "valid": [
+                  "2024-04-01",
+                  "2024-04-12"
+                ]
+              },
+              "unknown_dataset_option": [
+                "preserved"
+              ]
+            },
+            "module_path": "qlib.data.dataset"
+          },
+          "model": {
+            "class": "SyntheticModel",
+            "kwargs": {
+              "base_model": "base",
+              "d_feat": 20,
+              "early_stop": 5,
+              "metric": "ir",
+              "model_path": "configured.pkl",
+              "n_drop": 2,
+              "n_epochs": 20,
+              "seed": 17,
+              "topk": 7,
+              "unknown_model_option": {
+                "nested": [
+                  "unchanged"
+                ]
+              }
+            },
+            "module_path": "synthetic.models"
+          },
+          "record": [
+            {
+              "class": "SignalRecord",
+              "kwargs": {
+                "dataset": "<DATASET>",
+                "model": "<MODEL>"
+              }
+            },
+            {
+              "class": "SigAnaRecord",
+              "kwargs": {
+                "ann_scaler": 52
+              }
+            },
+            {
+              "class": "PortAnaRecord",
+              "kwargs": {
+                "config": {
+                  "strategy": {
+                    "class": "TopkDropoutStrategy",
+                    "kwargs": {
+                      "signal": "<PRED>",
+                      "topk": 22,
+                      "n_drop": 3
+                    }
+                  },
+                  "executor": {
+                    "class": "SimulatorExecutor",
+                    "kwargs": {
+                      "time_per_step": "week"
+                    }
+                  },
+                  "backtest": {
+                    "account": 123456,
+                    "exchange_kwargs": {
+                      "deal_price": "close",
+                      "open_cost": 0.0005,
+                      "close_cost": 0.0015,
+                      "min_cost": 5
+                    },
+                    "start_time": "2024-04-15",
+                    "end_time": "2024-05-17",
+                    "benchmark": "SH000300"
+                  }
+                }
+              }
+            },
+            {
+              "class": "CustomRecord",
+              "kwargs": {
+                "extension": [
+                  1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "handler_key": "7197e7c1c7b5a562",
+      "handler_alias": true,
+      "portfolio_alias": true
+    }
+  }
+}

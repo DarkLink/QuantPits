@@ -262,7 +262,7 @@ def test_train_single_model_fit_typeerror_fallback(mock_env_constants, tmp_path,
     # After the TypeError, the except TypeError catches it and calls fit() without evals_result
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -326,7 +326,7 @@ def test_train_evals_result_gbdt_structure(mock_env_constants, tmp_path, mock_tr
     model.fit.side_effect = fit_side_effect
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -385,7 +385,7 @@ def test_train_evals_result_nn_list_structure_minimizing(mock_env_constants, tmp
     model.fit.side_effect = fit_side_effect
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -443,7 +443,7 @@ def test_train_evals_result_nn_list_maximizing(mock_env_constants, tmp_path, moc
     model.fit.side_effect = fit_side_effect
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -498,7 +498,7 @@ def test_train_lightgbm_fallback(mock_env_constants, tmp_path, mock_training_out
     model = _LGBModel()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -553,7 +553,7 @@ def test_train_lightgbm_best_score_valid_key(mock_env_constants, tmp_path, mock_
     model = _LGBModel2()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -605,7 +605,7 @@ def test_train_catboost_fallback(mock_env_constants, tmp_path, mock_training_out
     model = _CatModel()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -658,7 +658,7 @@ def test_train_gbdt_fitted_model_fallback(mock_env_constants, tmp_path, mock_tra
     model = _GBDTModel()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -706,7 +706,7 @@ def test_train_linear_model_branch(mock_env_constants, tmp_path, mock_training_o
     model = _LinearModel()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -762,7 +762,7 @@ def test_train_convergence_extraction_exception(mock_env_constants, tmp_path, mo
     model = _BadModel()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -821,7 +821,7 @@ def test_train_portfolio_analysis_single_index(mock_env_constants, tmp_path, moc
 
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -882,7 +882,7 @@ def test_train_portfolio_analysis_multiindex(mock_env_constants, tmp_path, mock_
 
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -934,7 +934,7 @@ def test_train_portfolio_analysis_exception(mock_env_constants, tmp_path, mock_t
 
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -982,7 +982,7 @@ def test_train_single_model_top_level_exception(mock_env_constants, tmp_path):
     model.predict.return_value = _telemetry_prediction()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 # Make R.start() raise an exception, which is caught by the try/except
@@ -1159,7 +1159,7 @@ def test_predict_single_model_fallback_chain(mock_env_constants, tmp_path):
             mock_R.get_recorder.side_effect = get_recorder
             mock_R.start.return_value.__enter__.return_value = mock_R
 
-            with patch("quantpits.utils.train_utils.inject_config", return_value=task_config):
+            with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(task_config, task_config)):
                 with patch("os.path.exists", return_value=True):
                     result = train_utils.predict_single_model(
                         "M1", {"yaml_file": str(yaml_file)}, params, "E", source
@@ -1200,7 +1200,7 @@ def test_predict_single_model_max_depth_exceeded(mock_env_constants, tmp_path):
             mock_R.get_recorder.return_value = recorder
             mock_R.start.return_value.__enter__.return_value = mock_R
 
-            with patch("quantpits.utils.train_utils.inject_config", return_value=task_config):
+            with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(task_config, task_config)):
                 with patch("os.path.exists", return_value=True):
                     result = train_utils.predict_single_model(
                         "M1", {"yaml_file": str(yaml_file)}, params, "E", source
@@ -1246,7 +1246,7 @@ def test_predict_single_model_ic_error(mock_env_constants, tmp_path):
             mock_R.get_recorder.side_effect = lambda **kwargs: source_recorder if kwargs else recorder
             mock_R.start.return_value.__enter__.return_value = mock_R
 
-            with patch("quantpits.utils.train_utils.inject_config", return_value=task_config):
+            with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(task_config, task_config)):
                 with patch("os.path.exists", return_value=True):
                     result = train_utils.predict_single_model(
                         "M1", {"yaml_file": str(yaml_file)}, params, "E", source
@@ -1276,7 +1276,7 @@ def test_predict_single_model_top_level_exception(mock_env_constants, tmp_path):
                 mock_R.get_recorder.side_effect = RuntimeError("boom predict")
                 mock_R.start.return_value.__enter__.return_value = mock_R
 
-                with patch("quantpits.utils.train_utils.inject_config", return_value={"task": {"dataset": {}, "record": []}}):
+                with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=({"task": {"dataset": {}, "record": []}}, {"task": {"dataset": {}, "record": []}})):
                     result = train_utils.predict_single_model(
                         "M1", {"yaml_file": str(yaml_file)}, params, "E", source
                     )
@@ -1494,7 +1494,7 @@ def test_train_evals_result_stop_iteration(mock_env_constants, tmp_path, mock_tr
     model.fit.return_value = None
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -1547,7 +1547,7 @@ def test_train_catboost_best_score_exception(mock_env_constants, tmp_path, mock_
     model = _CatModelBad()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -1603,7 +1603,7 @@ def test_train_lgb_num_trees_fallback(mock_env_constants, tmp_path, mock_trainin
     model = _LGBModelNumTrees()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -1657,7 +1657,7 @@ def test_train_lgb_num_trees_exception(mock_env_constants, tmp_path, mock_traini
     model = _LGBModelBadTrees()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -1713,7 +1713,7 @@ def test_train_lgb_best_score_exception(mock_env_constants, tmp_path, mock_train
     model = _LGBModelBadScore()
     dataset = MagicMock()
 
-    with patch("quantpits.utils.train_utils.inject_config", return_value=yaml_content):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(yaml_content, yaml_content)):
         with patch("qlib.utils.init_instance_by_config", side_effect=[model, dataset]):
             with patch("qlib.workflow.R") as mock_R:
                 mock_recorder = MagicMock()
@@ -1771,7 +1771,7 @@ def test_predict_single_model_no_parent_tags(mock_env_constants, tmp_path):
             mock_R.get_recorder.return_value = recorder
             mock_R.start.return_value.__enter__.return_value = mock_R
 
-            with patch("quantpits.utils.train_utils.inject_config", return_value=task_config):
+            with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(task_config, task_config)):
                 with patch("os.path.exists", return_value=True):
                     result = train_utils.predict_single_model(
                         "M1", {"yaml_file": str(yaml_file)}, params, "E", source

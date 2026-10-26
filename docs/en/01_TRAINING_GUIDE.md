@@ -88,6 +88,38 @@ project model/ensemble signals, [run_cycle evaluate](project_cycle.md#compare-sa
 provides common diagnostic cash, empty positions and windows. Changing diagnostic dates or cash
 later does not require fitting, predicting or fusing again, and does not alter source metrics or accounts.
 
+Static model/data tasks and record/backtest settings now have separate construction APIs in
+`quantpits.training.static_config`, usable without workspace environment variables:
+
+```python
+from quantpits.training.static_config import build_model_task, build_record_config
+
+model_task = build_model_task(template, compute_params)
+records = build_record_config(
+    template, research_params, port_analysis_config=explicit_portfolio_config,
+)
+```
+
+Both copy their inputs. Model construction neither builds analysis settings, reads accounts nor
+initializes Qlib/MLflow; record construction does not alter model/data inputs. The portfolio context
+is an explicit Qlib strategy/backtest configuration, required when the template requests a root
+PortAna configuration. Pretrained paths can be supplied explicitly; workspace path resolution,
+no_pretrain and d_feat checks remain in the existing runtime adapter. Unknown model kwargs,
+processor settings and topk/n_drop used for fit selection remain intact.
+
+Static train/predict use the separate results and retain configured SigAna/PortAna. Static handler
+cache enumeration reads only model/data tasks, without building records or backtest settings.
+The legacy `inject_config` facade still composes the full view for rolling/pretrain callers.
+YAML layout, aliases and default analysis remain compatible. Old templates whose root
+data_handler_config is not aliased to the actual handler retain their previous behavior; inspect
+task.dataset.handler rather than only the root field.
+
+This does not move workspace configuration files or remove legacy merged reads from the full CLI.
+calculate_dates/load_training_config retain flat params, account retains its current_full_cash
+source, and full-run/resume and record configuration fingerprint definitions remain unchanged.
+Research cash/cost/report changes leave the same model/dataset inputs and handler key intact;
+new complete runs still follow the original request-identity rules.
+
 V2 uses strict version dispatch. Once `schema_version: 2` is declared, matching `models` and
 `model_records` mappings are mandatory; readers never fall back to top-level V1 fields. A `ready`
 entry must describe actual prediction start/end/rows, while predict-only entries also carry their

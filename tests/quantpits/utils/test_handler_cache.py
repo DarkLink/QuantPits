@@ -234,7 +234,7 @@ class TestHandlerCacheManager:
 
 
 class TestEnumerateTasksStatic:
-    """Test enumerate_tasks_static with mocked inject_config."""
+    """Test enumerate_tasks_static with a mocked explicit model-task loader."""
 
     def test_enumerates_all_models(self, monkeypatch):
         from quantpits.utils.handler_cache import enumerate_tasks_static
@@ -258,7 +258,7 @@ class TestEnumerateTasksStatic:
             }
 
         monkeypatch.setattr(
-            'quantpits.utils.train_utils.inject_config', mock_inject)
+            'quantpits.training.static_config.load_model_task', mock_inject)
 
         tasks = enumerate_tasks_static(
             ['model_a', 'model_b'],
@@ -282,7 +282,7 @@ class TestEnumerateTasksStatic:
 
         def mock_inject(yaml_path, params, model_name=None):
             call_count[0] += 1
-            cls = 'Alpha158' if 'a' in (model_name or '') else 'Alpha360'
+            cls = 'Alpha158' if yaml_path == 'a.yaml' else 'Alpha360'
             return {
                 'task': {
                     'dataset': {
@@ -301,7 +301,7 @@ class TestEnumerateTasksStatic:
             }
 
         monkeypatch.setattr(
-            'quantpits.utils.train_utils.inject_config', mock_inject)
+            'quantpits.training.static_config.load_model_task', mock_inject)
 
         tasks = enumerate_tasks_static(
             ['model_a', 'model_z'],

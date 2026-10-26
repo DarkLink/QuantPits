@@ -51,6 +51,10 @@ python -m quantpits.scripts.static_train --predict-only --all-enabled --json-pla
 静态完整训练的fit后末段预测与仅预测均显式保存唯一结果；缺少或重复标准SignalRecord不会增加推理，
 原有信号／回测分析继续执行。fit内部验证与择优不受此计数限制，详见[训练指南](01_TRAINING_GUIDE.md)。
 
+静态预测分别构建模型／dataset与所请求的records，handler缓存准备不生成分析配置；默认SigAna／PortAna仍运行。
+旧YAML／inject_config及扁平params兼容，完整CLI仍保留旧合并读取和account来源，运行／恢复指纹未换定义。
+独立构建API与预训练适配边界见[训练指南](01_TRAINING_GUIDE.md)。
+
 > [!IMPORTANT]
 > 预测结束后，`latest_train_records.json` 中相关模型的 `experiment_name` 和 `record_id` 会更新为新值。下游的穷举/融合脚本直接读取此文件即可，无需任何修改。
 

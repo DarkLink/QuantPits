@@ -159,7 +159,7 @@ def test_train_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
             return pd.Series([0.1, 0.2])
         raise FileNotFoundError(name)
     
-    with patch('quantpits.utils.train_utils.inject_config', return_value=task_config):
+    with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(task_config, task_config)):
         with patch('qlib.utils.init_instance_by_config', side_effect=[mock_model, mock_dataset, MagicMock(), mock_model, mock_dataset, MagicMock()]):
             with patch('qlib.workflow.R') as mock_R:
                 mock_R.get_recorder.return_value = mock_recorder
@@ -217,7 +217,7 @@ def test_predict_single_model(mock_env_constants, mock_qlib_objects, tmp_path):
                 "sig_analysis/ic.pkl": pd.Series([0.5]),
                 "pred.pkl": mock_model.predict.return_value,
             }[name]
-            with patch('quantpits.utils.train_utils.inject_config', return_value=task_config):
+            with patch('quantpits.utils.train_utils.prepare_static_tasks', return_value=(task_config, task_config)):
                 with patch('os.path.exists', return_value=True):
                     res = train_utils.predict_single_model("M1", {"yaml_file": str(yaml_file)}, params, "E", source)
                     assert res['success']
@@ -440,6 +440,9 @@ def finite_signal_training(mock_env_constants, monkeypatch):
         if dataset_class != "DatasetH":
             dataset_cfg["kwargs"].update(horizon=6, seq_len=3, batch_size=3, shuffle=False)
         task_config = {
+            # StaticDataLoader fixture has explicit processor/dataset dates;
+            # keep its deliberately non-aliased legacy root template separate.
+            "data_handler_config": {},
             "task": {
                 "model": {"class": "FiniteSignalModel", "kwargs": {"seed": 7, "n_epochs": 3 if fit_validation_steps else 1}},
                 "dataset": dataset_cfg,
@@ -494,7 +497,8 @@ def finite_signal_training(mock_env_constants, monkeypatch):
             return real_init(config, *args, **kwargs)
 
         monkeypatch.setattr("qlib.utils.init_instance_by_config", init)
-        monkeypatch.setattr(train_utils, "inject_config", lambda *args, **kwargs: task_config)
+        # Mock template I/O only: the real separate builders must run here.
+        monkeypatch.setattr(train_utils, "_read_static_template", lambda *args, **kwargs: task_config)
         workflow = MagicMock()
         workflow.get_recorder.return_value = recorder
         workflow.set_tags.side_effect = recorder.set_tags
@@ -509,9 +513,11 @@ def finite_signal_training(mock_env_constants, monkeypatch):
         monkeypatch.setattr("qlib.workflow.R", workflow)
         cache = HandlerCacheManager(max_size_mb=16) if use_cache else None
         params = {
-            "freq": "week", "market": "finite", "anchor_date": str(dates[-1].date()),
+            "freq": "week", "market": "finite", "benchmark": "SH000300", "anchor_date": str(dates[-1].date()),
+            "start_time": str(dates[0].date()), "end_time": str(dates[-1].date()),
             "fit_start_time": str(dates[0].date()), "fit_end_time": str(dates[7].date()),
-            "test_end_time": str(dates[-1].date()), "topk": 22, "n_drop": 3,
+            "valid_start_time": str(dates[8].date()), "valid_end_time": str(dates[10].date()),
+            "test_start_time": str(dates[11].date()), "test_end_time": str(dates[-1].date()), "topk": 22, "n_drop": 3,
         }
         case = {
             "model": model, "recorder": recorder, "constructed": constructed,

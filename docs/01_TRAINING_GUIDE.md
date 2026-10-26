@@ -76,6 +76,32 @@ checkpoint选择及参与训练择优的topk／n_drop保持。随机或有状态
 可另用 [run_cycle evaluate](project_cycle.md#从已保存信号比较模型与组合) 在统一资金、空仓及区间下比较；
 事后换诊断区间／资金不需要重新fit、predict或融合，也不影响原模型、指标和账户。
 
+静态配置现在分别构建模型／数据任务和records／回测任务，独立入口位于
+`quantpits.training.static_config`，可在没有工作区环境变量时使用：
+
+```python
+from quantpits.training.static_config import build_model_task, build_record_config
+
+model_task = build_model_task(template, compute_params)
+records = build_record_config(
+    template, research_params, port_analysis_config=explicit_portfolio_config,
+)
+```
+
+两个入口复制输入，模型构建不生成分析配置、不读取账户或初始化Qlib／MLflow；记录构建不改模型／数据。
+`explicit_portfolio_config`是调用者明确提供的Qlib策略／回测配置；模板请求根PortAna配置时必须提供。
+预训练路径可显式传给模型构建器，工作区路径解析、no_pretrain和d_feat校验仍由原运行适配边界处理。
+未知model kwargs、processor配置及参与fit择优的topk／n_drop保持，不按字段名称过滤。
+
+静态train／predict使用分开的构建结果，仍执行原配置的SigAna／PortAna；静态handler缓存枚举只读取
+模型／数据任务，不构建records或回测配置。旧`inject_config`继续组合完整配置供rolling／pretrain等使用，
+YAML布局、别名和默认分析保持。根data_handler_config未与实际handler关联的旧非别名模板沿原行为，
+应核对实际task.dataset.handler，不能只看根字段。
+
+本次没有迁移工作区配置文件，也没有删除完整CLI的旧合并读取：calculate_dates／load_training_config
+仍返回原扁平params，account仍沿原current_full_cash来源，完整运行及resume指纹和record配置指纹定义不变。
+修改研究资金／费用／报告不会改变相同计算输入的model／dataset或handler key，但新完整运行仍按原请求身份处理。
+
 V2 使用严格版本分派：一旦声明 `schema_version: 2`，一致的 `models` 与 `model_records`
 映射就是必需项，不会退回顶层 V1 字段。`ready` 记录必须包含实际预测的 start/end/rows；
 predict-only 还必须记录直接 source recorder、experiment 与 operation。融合运行时会再次

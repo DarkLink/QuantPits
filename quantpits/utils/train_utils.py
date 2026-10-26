@@ -731,110 +731,49 @@ def validate_pretrain_compatibility(model_name, pretrain_path, upper_d_feat):
 
 
 # ================= YAML 注入 =================
-def inject_config(yaml_path, params, model_name=None, no_pretrain=False):
-    """将参数注入 YAML 配置 (包含频次感知注入 + 预训练 model_path 注入)
-    
-    Args:
-        yaml_path: YAML 配置文件路径
-        params: 日期参数 (来自 calculate_dates)
-        model_name: 模型名 (用于查找 pretrain_source), None 则跳过预训练注入
-        no_pretrain: 强制不加载预训练模型 (使用随机权重)
-    """
-    with open(yaml_path, 'r') as f:
-        config = yaml.safe_load(f)
+def _read_static_template(yaml_path):
+    with open(yaml_path, 'r') as stream:
+        return yaml.safe_load(stream)
 
-    freq = params.get('freq', 'week').lower()
 
-    config['market'] = params['market']
-    config['benchmark'] = params['benchmark']
-
-    # 注入策略参数
-    if 'strategy' in config and 'params' in config['strategy']:
-        config['strategy']['params']['topk'] = params.get('topk', 20)
-        config['strategy']['params']['n_drop'] = params.get('n_drop', 3)
-        config['strategy']['params']['buy_suggestion_factor'] = params.get('buy_suggestion_factor', 2)
-
-    dh = config['data_handler_config']
-    dh['start_time'] = params['start_time']
-    dh['end_time'] = params['end_time']
-    dh['fit_start_time'] = params['fit_start_time']
-    dh['fit_end_time'] = params['fit_end_time']
-    dh['instruments'] = params['market']
-
-    # 1. 注入 Label (根据频次)
-    # 多标签 YAML（如 TCTS）保留原值，单标签按频次注入
-    if 'label_formula' in params:
-        dh['label'] = [params['label_formula']]
-    elif isinstance(dh.get('label'), list) and len(dh['label']) > 1:
-        pass  # 保留多标签配置（如 TCTS 多步预测）
-    elif freq == 'week':
-        dh['label'] = ["Ref($close, -6) / Ref($close, -1) - 1"]
-    else:
-        dh['label'] = ["Ref($close, -2) / Ref($close, -1) - 1"]
-
-    if 'task' in config and 'dataset' in config['task']:
-        segs = config['task']['dataset']['kwargs']['segments']
-        segs['train'] = [params['fit_start_time'], params['fit_end_time']]
-        segs['valid'] = [params['valid_start_time'], params['valid_end_time']]
-        segs['test'] = [params['test_start_time'], params['test_end_time']]
-        # TabNet 等模型需要 pretrain / pretrain_validation 段
-        # 它们通常与 train / valid 相同，必须随滑动窗口一起更新
-        if 'pretrain' in segs:
-            segs['pretrain'] = [params['fit_start_time'], params['fit_end_time']]
-        if 'pretrain_validation' in segs:
-            segs['pretrain_validation'] = [params['valid_start_time'], params['valid_end_time']]
-
-    if 'port_analysis_config' in config:
+def _static_build_options(template, params, model_name, no_pretrain):
+    """Resolve legacy workspace-dependent inputs outside the pure builders."""
+    options = {"no_pretrain": no_pretrain}
+    if 'port_analysis_config' in template:
         from quantpits.utils import strategy
-        pa = strategy.generate_port_analysis_config(freq=freq)
-        pa['backtest']['start_time'] = params['test_start_time']
-        pa['backtest']['end_time'] = params['test_end_time']
-        pa['backtest']['account'] = params.get('account', pa['backtest']['account'])
-        pa['backtest']['benchmark'] = params['benchmark']
-        config['port_analysis_config'] = pa
+        options['port_analysis_config'] = strategy.generate_port_analysis_config(
+            freq=params.get('freq', 'week').lower())
+    model_kwargs = template.get('task', {}).get('model', {}).get('kwargs', {})
+    if 'base_model' in model_kwargs:
+        if no_pretrain:
+            print("  ⏭️  --no-pretrain: 将使用随机权重初始化 basemodel")
+        elif model_name:
+            path = resolve_pretrained_path(model_name)
+            options['pretrain_path'] = path
+            if path:
+                if model_kwargs.get('d_feat') is not None:
+                    validate_pretrain_compatibility(model_name, path, model_kwargs['d_feat'])
+                print(f"  🧠 注入预训练模型: {path}")
+    return options
 
-        # YAML anchors (*port_analysis_config) are resolved at parse time,
-        # so PortAnaRecord's config kwarg still points to the original empty {}.
-        # Patch it directly to use the generated config.
-        if 'task' in config and 'record' in config['task']:
-            for r_cfg in config['task']['record']:
-                if r_cfg.get('class') == 'PortAnaRecord':
-                    if 'kwargs' in r_cfg and 'config' in r_cfg['kwargs']:
-                        r_cfg['kwargs']['config'] = pa
 
-    # 3. 注入 SigAnaRecord ann_scaler
-    if 'task' in config and 'record' in config['task']:
-        for r_cfg in config['task']['record']:
-            if r_cfg.get('class') == 'SigAnaRecord':
-                if 'kwargs' not in r_cfg: r_cfg['kwargs'] = {}
-                r_cfg['kwargs']['ann_scaler'] = TRADING_WEEKS_PER_YEAR if freq == 'week' else TRADING_DAYS_PER_YEAR
+def prepare_static_tasks(yaml_path, params, model_name=None, no_pretrain=False):
+    """Build model/data and requested records separately before static work."""
+    from quantpits.training.static_config import build_model_task, build_record_config
+    template = _read_static_template(yaml_path)
+    options = _static_build_options(template, params, model_name, no_pretrain)
+    portfolio = options.pop('port_analysis_config', None)
+    model_task = build_model_task(template, params, **options)
+    records = build_record_config(template, params, port_analysis_config=portfolio)
+    return model_task, records
 
-    # 4. 注入预训练 model_path
-    if 'task' in config and 'model' in config['task']:
-        model_kwargs = config['task']['model'].get('kwargs', {})
-        if 'base_model' in model_kwargs:
-            if no_pretrain:
-                # --no-pretrain: 强制删除 model_path, 使用随机权重
-                if 'model_path' in model_kwargs:
-                    del model_kwargs['model_path']
-                print(f"  ⏭️  --no-pretrain: 将使用随机权重初始化 basemodel")
-            elif model_name:
-                pretrain_path = resolve_pretrained_path(model_name)
-                if pretrain_path:
-                    # 校验 d_feat 兼容性
-                    upper_d_feat = model_kwargs.get('d_feat')
-                    if upper_d_feat is not None:
-                        validate_pretrain_compatibility(
-                            model_name, pretrain_path, upper_d_feat
-                        )
-                    model_kwargs['model_path'] = pretrain_path
-                    print(f"  🧠 注入预训练模型: {pretrain_path}")
-                else:
-                    # 预训练文件不存在, 删除 YAML 中可能存在的 model_path
-                    if 'model_path' in model_kwargs:
-                        del model_kwargs['model_path']
 
-    return config
+def inject_config(yaml_path, params, model_name=None, no_pretrain=False):
+    """Compatibility full configuration view over the static builders."""
+    from quantpits.training.static_config import compose_static_config
+    template = _read_static_template(yaml_path)
+    options = _static_build_options(template, params, model_name, no_pretrain)
+    return compose_static_config(template, params, **options)
 
 
 def inject_config_for_fold(yaml_path, params, fold, model_name=None,
@@ -1184,7 +1123,8 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
 
     print(f"\n>>> Processing Model: {model_name} from {yaml_file} ...")
     
-    task_config = inject_config(yaml_file, params, model_name=model_name, no_pretrain=no_pretrain)
+    task_config, record_config = prepare_static_tasks(
+        yaml_file, params, model_name=model_name, no_pretrain=no_pretrain)
     
     try:
         with R.start(experiment_name=experiment_name):
@@ -1418,7 +1358,7 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
             # 保存唯一末段预测；标准 SignalRecord 只需这些既有制品。
             from quantpits.training.prediction_result import save_prediction_result
             from qlib.workflow.record_temp import SignalRecord
-            record_cfgs = task_config['task'].get('record', [])
+            record_cfgs = record_config.get('task', {}).get('record', [])
             save_prediction_result(pred, prediction_dataset, recorder)
             
             for r_cfg in record_cfgs:
@@ -2774,7 +2714,7 @@ def predict_single_model(model_name, model_info, params, experiment_name,
     流程：
     1. 从 source_records 获取原始 recorder_id
     2. 从原 recorder 加载 model.pkl
-    3. 用 inject_config() 构建新的 dataset（新的日期范围）
+    3. 分别构建模型／数据任务和所请求的记录配置，取得新日期范围的 dataset
     4. model.predict(dataset)
     5. 保存该次预测及原生标签，供配置中的记录／分析消费
     6. 计算 IC 等指标
@@ -2868,7 +2808,7 @@ def predict_single_model(model_name, model_info, params, experiment_name,
         print(f"[{model_name}] Model loaded successfully")
 
         # 2. 构建新的 dataset（使用新日期范围）
-        task_config = inject_config(yaml_file, params, model_name=model_name,
+        task_config, record_config = prepare_static_tasks(yaml_file, params, model_name=model_name,
                                     no_pretrain=no_pretrain)
 
         dataset_cfg = _prepare_predict_only_dataset_config(
@@ -2905,7 +2845,7 @@ def predict_single_model(model_name, model_info, params, experiment_name,
             # 计算与保存显式交接；标准 SignalRecord 不再调用真实模型。
             from quantpits.training.prediction_result import save_prediction_result
             from qlib.workflow.record_temp import SignalRecord
-            record_cfgs = task_config['task'].get('record', [])
+            record_cfgs = record_config.get('task', {}).get('record', [])
             recorder = R.get_recorder()
             save_prediction_result(pred, dataset, recorder)
 
