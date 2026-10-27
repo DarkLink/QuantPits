@@ -72,6 +72,24 @@ checkpoint选择及参与训练择优的topk／n_drop保持。随机或有状态
 训练成功history在持久化覆盖校验和recorder完成后才形成；保存、record构建或关闭失败不产生成功事件。
 直接helper的history写失败仍仅警告，原生runner仍交由service收尾；既有performance的without_cost等口径不变。
 
+静态train／predict-only在原recorder context内完成计算、制品和请求的分析，退出context并由Qlib原end_run等待异步写入后，才通过已捕获recorder读取完成元数据／持久化预测并形成成功entry／history。关闭、真实元数据／预测校验失败或中断不产生成功证据；recorder已FINISHED也可能随后因证据检查失败而使命令失败，不能据此发布。无需重训旧模型，也不会自动修复历史FAILED run。
+
+静态CLI的full／incremental／predict-only可用 `--research-config` 显式选择研究策略及回测条件：
+
+```bash
+python -m quantpits.scripts.static_train --workspace /path/to/research_workspace \
+  --predict-only --models small --source-records data/training_sources/selected.json \
+  --research-config config/strategy_config.yaml --anchor 2024-05-17
+```
+
+所选YAML沿用 `strategy: {name, params}`、`backtest: {account, exchange_kwargs}` 结构，可以是默认策略文件或同结构的另一文件。
+`backtest.account` 必须是有限正数现金，不能是布尔、字符串或初始持仓结构；策略及费用沿用现有工厂字段。
+相对路径以workspace为根，绝对路径及符号链接解析后也须在该workspace内。显式模式不读取 `prod_config.json` 或另行合并默认策略；文件缺失／无效会失败，不回退到账户资金。
+market／benchmark／freq／日期切分仍归 `model_config.json` 与原日历，研究YAML只接收上述策略及回测结构；`--anchor`照常有效。
+原IC及请求的PortAna分析保留。纯研究现金／费用变化不改变模型任务或要求旧模型重训；topk／n_drop若参与workflow alias或fit择优，仍属于实际训练输入。
+计划与manifest记录规范路径、内容指纹及实际条件；准备后修改文件或用不同内容接续同一次run会按输入冲突失败，可另开新run研究新条件。
+未传选项时继续原合并配置及 `current_full_cash`／既有fallback，旧请求和恢复身份保持。新选项只用于静态入口；自定义旧式无参日期hook无法表达研究条件，会在执行副作用前明确拒绝，使用默认日期解析即可。
+
 训练和仅预测原有YAML附带的信号／回测分析继续保留。对已经保存的项目单模型／融合信号，
 可另用 [run_cycle evaluate](project_cycle.md#从已保存信号比较模型与组合) 在统一资金、空仓及区间下比较；
 事后换诊断区间／资金不需要重新fit、predict或融合，也不影响原模型、指标和账户。

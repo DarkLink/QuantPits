@@ -390,7 +390,8 @@ def finite_signal_training(mock_env_constants, monkeypatch):
             rebuild_error=None, truncate_prediction=False, recorder_exit_error=None,
             predict_only=False, dataframe_prediction=False, record_classes=None,
             save_error=None, invalid_prediction=False, changing_predictions=False,
-            history_file=False, mode="static", record_error=None, fit_validation_steps=0):
+            history_file=False, mode="static", record_error=None, fit_validation_steps=0,
+            recorder_lifecycle=None, tracking_backend="file", execute=None):
         if dataset_class != "DatasetH":
             # Qlib's real MTS datasets import torch; lightweight [test] CI
             # deliberately omits it. Keep DatasetH coverage active there.
@@ -474,7 +475,8 @@ def finite_signal_training(mock_env_constants, monkeypatch):
                                      "kwargs": {"signal": "<PRED>", "topk": 2, "n_drop": 1}},
                         "backtest": {"start_time": str(dates[11].date()), "end_time": str(dates[-2].date())},
                     }, "risk_analysis_freq": [], "indicator_analysis_freq": []}
-        tracking_uri = (workspace / "mlruns").as_uri()
+        tracking_uri = ("sqlite:///" + str(workspace / "completion.db") if tracking_backend == "sqlite"
+                        else (workspace / "mlruns").as_uri())
         client = MlflowClient(tracking_uri=tracking_uri)
         experiment_id = client.create_experiment(
             "finite_signal", artifact_location=(workspace / "output/finite_signal").as_uri()
@@ -549,8 +551,11 @@ def finite_signal_training(mock_env_constants, monkeypatch):
                     raise save_error
                 return save(*args, **kwargs)
             monkeypatch.setattr(recorder, "save_objects", failing_save)
+        cleanup = recorder_lifecycle(case, workflow, client) if recorder_lifecycle is not None else None
         try:
-            if predict_only:
+            if execute is not None:
+                case["result"] = execute(case)
+            elif predict_only:
                 case["result"] = train_utils.predict_single_model(
                     "finite", {"yaml_file": str(yaml_file)}, params, "finite_signal",
                     {"experiment_name": "finite_signal", "models": {"finite@static": source.id}},
@@ -562,7 +567,10 @@ def finite_signal_training(mock_env_constants, monkeypatch):
                     history_file=history_file, workspace_root=str(workspace), mode=mode,
                 )
         finally:
-            client.set_terminated(recorder.id, status="FINISHED" if case.get("result", {}).get("success") else "FAILED")
+            if recorder_lifecycle is None and not completion["closed"]:
+                client.set_terminated(recorder.id, status="FAILED")
+            elif cleanup is not None:
+                cleanup()
         return case
 
     return run
@@ -649,7 +657,9 @@ def test_train_failure_has_no_publishable_entry_or_success_history(finite_signal
     assert "record_entry" not in case["result"] and "history_entry" not in case["result"]
     assert not history.exists()
     assert len(case["model"].predict_datasets) == 1
-    assert case["recorder"].client.get_run(case["recorder"].id).info.status == "FAILED"
+    # Post-close evidence failure does not retroactively change recorder status.
+    expected_status = "FINISHED" if failure in ("coverage", "entry") else "FAILED"
+    assert case["recorder"].client.get_run(case["recorder"].id).info.status == expected_status
     from types import SimpleNamespace
     from quantpits.training.runners import TrainingTargetRequest, _adapt_result
     adapted = _adapt_result(TrainingTargetRequest(None, SimpleNamespace(key="finite@static", operation="train")),

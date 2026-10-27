@@ -736,13 +736,15 @@ def _read_static_template(yaml_path):
         return yaml.safe_load(stream)
 
 
-def _static_build_options(template, params, model_name, no_pretrain):
+def _static_build_options(template, params, model_name, no_pretrain, research_config=None):
     """Resolve legacy workspace-dependent inputs outside the pure builders."""
     options = {"no_pretrain": no_pretrain}
-    if 'port_analysis_config' in template:
+    if ('port_analysis_config' in template or (research_config is not None and any(
+            record.get('class') == 'PortAnaRecord' for record in template.get('task', {}).get('record', [])))):
         from quantpits.utils import strategy
+        explicit = {'config_dict': research_config} if research_config is not None else {}
         options['port_analysis_config'] = strategy.generate_port_analysis_config(
-            freq=params.get('freq', 'week').lower())
+            freq=params.get('freq', 'week').lower(), **explicit)
     model_kwargs = template.get('task', {}).get('model', {}).get('kwargs', {})
     if 'base_model' in model_kwargs:
         if no_pretrain:
@@ -757,12 +759,23 @@ def _static_build_options(template, params, model_name, no_pretrain):
     return options
 
 
-def prepare_static_tasks(yaml_path, params, model_name=None, no_pretrain=False):
+def prepare_static_tasks(yaml_path, params, model_name=None, no_pretrain=False, research_config=None):
     """Build model/data and requested records separately before static work."""
     from quantpits.training.static_config import build_model_task, build_record_config
     template = _read_static_template(yaml_path)
-    options = _static_build_options(template, params, model_name, no_pretrain)
+    if research_config is not None:
+        from quantpits.training.research import research_params
+        params = research_params(params, research_config)
+    options = _static_build_options(template, params, model_name, no_pretrain, research_config)
     portfolio = options.pop('port_analysis_config', None)
+    if research_config is not None and portfolio is not None:
+        # Workflows can embed a PortAna config without a root YAML alias.
+        # Give both forms the same explicit settings, preserving other records.
+        template = copy.deepcopy(template)
+        template['port_analysis_config'] = portfolio
+        for record in template.get('task', {}).get('record', []):
+            if record.get('class') == 'PortAnaRecord':
+                record.setdefault('kwargs', {})['config'] = portfolio
     model_task = build_model_task(template, params, **options)
     records = build_record_config(template, params, port_analysis_config=portfolio)
     return model_task, records
@@ -1083,7 +1096,7 @@ class BestScoreCaptureHandler(logging.Handler):
 # ================= 单模型训练 =================
 def train_single_model(model_name, yaml_file, params, experiment_name,
                        no_pretrain=False, cache_mgr=None, mode="static",
-                       history_file=None, workspace_root=None):
+                       history_file=None, workspace_root=None, research_config=None):
     """
     训练单个模型的完整流程：训练 → 预测 → Signal Record → IC 计算
 
@@ -1118,13 +1131,20 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
         print(f"!!! Warning: {yaml_file} not found, skipping...")
         return result
     
+    if research_config is not None:
+        if mode != "static":
+            raise ValueError("research_config is supported only for static training")
+        from quantpits.training.research import research_params
+        params = research_params(params, research_config)
+
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
 
     print(f"\n>>> Processing Model: {model_name} from {yaml_file} ...")
     
     task_config, record_config = prepare_static_tasks(
-        yaml_file, params, model_name=model_name, no_pretrain=no_pretrain)
+        yaml_file, params, model_name=model_name, no_pretrain=no_pretrain,
+        **({'research_config': research_config} if research_config is not None else {}))
     
     try:
         with R.start(experiment_name=experiment_name):
@@ -1370,67 +1390,70 @@ def train_single_model(model_name, yaml_file, params, experiment_name,
                 r_obj = init_instance_by_config(r_cfg, recorder=recorder)
                 if type(r_obj) is not SignalRecord:
                     r_obj.generate()
-            
-            # 获取模型成绩（IC等及回测指标）
-            performance = {}
+            # Retain the local run ID for diagnostics if context closure fails.
+            result['record_id'] = recorder.info['id']
+
+        # The original context closes and drains recorder writes before reads.
+        # 获取模型成绩（IC等及回测指标）
+        performance = {}
+        try:
+            # 1. IC 指标
+            ic_series = recorder.load_object("sig_analysis/ic.pkl")
+            ic_mean = ic_series.mean()
+            ic_std = ic_series.std()
+            ic_ir = ic_mean / ic_std if ic_std != 0 else None
+            performance = {
+                "IC_Mean": float(ic_mean) if pd.notna(ic_mean) else None,
+                "ICIR": float(ic_ir) if pd.notna(ic_ir) else None,
+                "record_id": recorder.info['id']
+            }
+
+            # 2. 回测指标 (Ann_Excess, Max_DD)
             try:
-                # 1. IC 指标
-                ic_series = recorder.load_object("sig_analysis/ic.pkl")
-                ic_mean = ic_series.mean()
-                ic_std = ic_series.std()
-                ic_ir = ic_mean / ic_std if ic_std != 0 else None
-                performance = {
-                    "IC_Mean": float(ic_mean) if pd.notna(ic_mean) else None,
-                    "ICIR": float(ic_ir) if pd.notna(ic_ir) else None,
-                    "record_id": recorder.info['id']
-                }
+                port_analysis = recorder.load_object("portfolio_analysis/port_analysis_1week.pkl")
+                if isinstance(port_analysis, pd.DataFrame):
+                    # 查找 excess_return_without_cost 组
+                    # 支持 MultiIndex 或单层 Index
+                    if "excess_return_without_cost" in port_analysis.index:
+                        metrics = port_analysis.loc["excess_return_without_cost"]
+                        if isinstance(metrics, pd.DataFrame):
+                            # 如果是多行，取 risk 列
+                            val_col = "risk" if "risk" in metrics.columns else metrics.columns[0]
+                            performance["Ann_Excess"] = float(metrics.loc["annualized_return", val_col])
+                            performance["Max_DD"] = float(metrics.loc["max_drawdown", val_col])
+                            performance["Information_Ratio"] = float(metrics.loc["information_ratio", val_col])
+                        else:
+                            # 只有一行
+                            performance["Ann_Excess"] = float(metrics.get("annualized_return"))
+                            performance["Max_DD"] = float(metrics.get("max_drawdown"))
+                            performance["Information_Ratio"] = float(metrics.get("information_ratio"))
+            except Exception as pa_e:
+                print(f"[{model_name}] Note: Could not load portfolio analysis (backtest may have been skipped): {pa_e}")
 
-                # 2. 回测指标 (Ann_Excess, Max_DD)
-                try:
-                    port_analysis = recorder.load_object("portfolio_analysis/port_analysis_1week.pkl")
-                    if isinstance(port_analysis, pd.DataFrame):
-                        # 查找 excess_return_without_cost 组
-                        # 支持 MultiIndex 或单层 Index
-                        if "excess_return_without_cost" in port_analysis.index:
-                            metrics = port_analysis.loc["excess_return_without_cost"]
-                            if isinstance(metrics, pd.DataFrame):
-                                # 如果是多行，取 risk 列
-                                val_col = "risk" if "risk" in metrics.columns else metrics.columns[0]
-                                performance["Ann_Excess"] = float(metrics.loc["annualized_return", val_col])
-                                performance["Max_DD"] = float(metrics.loc["max_drawdown", val_col])
-                                performance["Information_Ratio"] = float(metrics.loc["information_ratio", val_col])
-                            else:
-                                # 只有一行
-                                performance["Ann_Excess"] = float(metrics.get("annualized_return"))
-                                performance["Max_DD"] = float(metrics.get("max_drawdown"))
-                                performance["Information_Ratio"] = float(metrics.get("information_ratio"))
-                except Exception as pa_e:
-                    print(f"[{model_name}] Note: Could not load portfolio analysis (backtest may have been skipped): {pa_e}")
+        except Exception as e:
+            print(f"[{model_name}] Could not get IC metrics: {e}")
+            performance = {"record_id": recorder.info['id']}
 
-            except Exception as e:
-                print(f"[{model_name}] Could not get IC metrics: {e}")
-                performance = {"record_id": recorder.info['id']}
-            
-            # 注入所有指标到 convergence_log (用于 training_history.jsonl)
-            for k, v in performance.items():
-                if k != "convergence":
-                    convergence_log[k] = v
-            
-            performance["convergence"] = convergence_log
+        # 注入所有指标到 convergence_log (用于 training_history.jsonl)
+        for k, v in performance.items():
+            if k != "convergence":
+                convergence_log[k] = v
 
-            rid = recorder.info['id']
-            result['record_id'] = rid
-            result['performance'] = performance
-            from quantpits.training.records import build_model_record_entry
-            result['record_entry'] = build_model_record_entry(
-                key=make_model_key(model_name, mode), operation="train",
-                experiment_name=experiment_name, recorder=recorder,
-                requested_anchor=params['anchor_date'],
-                dataset_test_end=params.get('test_end_time'),
-                fit_start=params.get('fit_start_time'), fit_end=params.get('fit_end_time'),
-                workspace_root=workspace_root or env.ROOT_DIR,
-                config_fingerprint=fingerprint_value(params),
-            ).to_dict()
+        performance["convergence"] = convergence_log
+
+        rid = recorder.info['id']
+        result['record_id'] = rid
+        result['performance'] = performance
+        from quantpits.training.records import build_model_record_entry
+        result['record_entry'] = build_model_record_entry(
+            key=make_model_key(model_name, mode), operation="train",
+            experiment_name=experiment_name, recorder=recorder,
+            requested_anchor=params['anchor_date'],
+            dataset_test_end=params.get('test_end_time'),
+            fit_start=params.get('fit_start_time'), fit_end=params.get('fit_end_time'),
+            workspace_root=workspace_root or env.ROOT_DIR,
+            config_fingerprint=fingerprint_value(params),
+        ).to_dict()
 
         # Both persisted prediction validation and recorder context completion
         # precede the success event, including for direct helper callers.
@@ -2707,7 +2730,7 @@ def _prepare_predict_only_dataset_config(dataset_cfg):
 
 def predict_single_model(model_name, model_info, params, experiment_name,
                          source_records, no_pretrain=False, cache_mgr=None,
-                         history_file=None, workspace_root=None):
+                         history_file=None, workspace_root=None, research_config=None):
     """
     使用已有模型对新数据进行预测（不训练）— 共享逻辑
 
@@ -2754,6 +2777,11 @@ def predict_single_model(model_name, model_info, params, experiment_name,
         return result
 
     source_record_id = source_models[resolved_key]
+    if research_config is not None:
+        if parse_model_key(resolved_key)[1] != "static":
+            raise ValueError("research_config is supported only for static prediction")
+        from quantpits.training.research import research_params
+        params = research_params(params, research_config)
     source_experiment = (
         get_experiment_name_for_model(source_records, resolved_key)
         or 'Weekly_Production_Train'
@@ -2809,7 +2837,8 @@ def predict_single_model(model_name, model_info, params, experiment_name,
 
         # 2. 构建新的 dataset（使用新日期范围）
         task_config, record_config = prepare_static_tasks(yaml_file, params, model_name=model_name,
-                                    no_pretrain=no_pretrain)
+                                    no_pretrain=no_pretrain,
+                                    **({'research_config': research_config} if research_config is not None else {}))
 
         dataset_cfg = _prepare_predict_only_dataset_config(
             task_config['task']['dataset']
@@ -2862,62 +2891,65 @@ def predict_single_model(model_name, model_info, params, experiment_name,
             # 重点修复：必须把模型也存入新的 recorder 里面，
             # 否则下一个周期如果继续做仅预测，会因为上个仅预测的记录中没有 model.pkl 而失败
             recorder.save_objects(**{"model.pkl": model})
+            # Local identity remains diagnostic even if closing fails.
+            result['record_id'] = recorder.info['id']
 
-            # 获取 IC 指标
-            performance = {}
-            try:
-                ic_series = recorder.load_object("sig_analysis/ic.pkl")
-                ic_mean = ic_series.mean()
-                ic_std = ic_series.std()
-                ic_ir = ic_mean / ic_std if ic_std != 0 else None
-                performance = {
-                    "IC_Mean": float(ic_mean) if pd.notna(ic_mean) else None,
-                    "ICIR": float(ic_ir) if pd.notna(ic_ir) else None,
-                    "record_id": recorder.info['id'],
-                }
-            except Exception as e:
-                print(f"[{model_name}] Could not get IC metrics: {e}")
-                performance = {"record_id": recorder.info['id']}
-
-            rid = recorder.info['id']
-            print(f"[{model_name}] Finished! New Recorder ID: {rid}")
-
-            result['record_id'] = rid
-            result['performance'] = performance
-            # Determine source mode from the resolved key (e.g. lstm@static → static)
-            _, source_mode = parse_model_key(resolved_key)
-            from quantpits.training.records import build_model_record_entry
-            result['record_entry'] = build_model_record_entry(
-                key=make_model_key(model_name, source_mode), operation="predict_only",
-                experiment_name=experiment_name, recorder=recorder,
-                requested_anchor=params['anchor_date'],
-                dataset_test_end=params.get('test_end_time'),
-                source_recorder_id=source_record_id,
-                source_experiment_name=source_experiment,
-                source_operation=source_operation,
-                workspace_root=workspace_root or env.ROOT_DIR,
-                config_fingerprint=fingerprint_value(params),
-            ).to_dict()
-
-            # Track predict-only event in prediction_history.jsonl
-            pred_entry = {
-                "model_name": model_name,
-                "mode": source_mode,
-                "anchor_date": params['anchor_date'],
-                "predicted_at": datetime.now().isoformat(),
-                "experiment_name": experiment_name,
-                "record_id": rid,
-                "source_record_id": source_record_id,
-                "IC_Mean": performance.get('IC_Mean'),
-                "ICIR": performance.get('ICIR'),
+        # Use this captured recorder after its original context has completed.
+        # 获取 IC 指标
+        performance = {}
+        try:
+            ic_series = recorder.load_object("sig_analysis/ic.pkl")
+            ic_mean = ic_series.mean()
+            ic_std = ic_series.std()
+            ic_ir = ic_mean / ic_std if ic_std != 0 else None
+            performance = {
+                "IC_Mean": float(ic_mean) if pd.notna(ic_mean) else None,
+                "ICIR": float(ic_ir) if pd.notna(ic_ir) else None,
+                "record_id": recorder.info['id'],
             }
-            pred_entry["event_id"] = fingerprint_value({
-                "operation": "predict_only", "model_name": model_name,
-                "mode": source_mode, "record_id": rid,
-            })
-            result["history_entry"] = pred_entry
+        except Exception as e:
+            print(f"[{model_name}] Could not get IC metrics: {e}")
+            performance = {"record_id": recorder.info['id']}
+
+        rid = recorder.info['id']
+
+        result['record_id'] = rid
+        result['performance'] = performance
+        # Determine source mode from the resolved key (e.g. lstm@static → static)
+        _, source_mode = parse_model_key(resolved_key)
+        from quantpits.training.records import build_model_record_entry
+        result['record_entry'] = build_model_record_entry(
+            key=make_model_key(model_name, source_mode), operation="predict_only",
+            experiment_name=experiment_name, recorder=recorder,
+            requested_anchor=params['anchor_date'],
+            dataset_test_end=params.get('test_end_time'),
+            source_recorder_id=source_record_id,
+            source_experiment_name=source_experiment,
+            source_operation=source_operation,
+            workspace_root=workspace_root or env.ROOT_DIR,
+            config_fingerprint=fingerprint_value(params),
+        ).to_dict()
+
+        # Track predict-only event in prediction_history.jsonl
+        pred_entry = {
+            "model_name": model_name,
+            "mode": source_mode,
+            "anchor_date": params['anchor_date'],
+            "predicted_at": datetime.now().isoformat(),
+            "experiment_name": experiment_name,
+            "record_id": rid,
+            "source_record_id": source_record_id,
+            "IC_Mean": performance.get('IC_Mean'),
+            "ICIR": performance.get('ICIR'),
+        }
+        pred_entry["event_id"] = fingerprint_value({
+            "operation": "predict_only", "model_name": model_name,
+            "mode": source_mode, "record_id": rid,
+        })
+        result["history_entry"] = pred_entry
 
         # Persisted coverage validation and recorder completion precede success.
+        print(f"[{model_name}] Finished! New Recorder ID: {rid}")
         if history_file is not False and not append_jsonl(history_file or PREDICTION_HISTORY_FILE, pred_entry):
             print(f"[{model_name}] Warning: Could not write to prediction_history.jsonl")
         result['success'] = True

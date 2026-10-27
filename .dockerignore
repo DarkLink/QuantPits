@@ -43,5 +43,5 @@ helper_debug.log
 helper_error.log
 test_error.log
 quantpits.egg-info/
-ui/
+# UI source is required by dashboard integration tests.
 landing/

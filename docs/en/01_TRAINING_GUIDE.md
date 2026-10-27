@@ -81,7 +81,25 @@ second result. The engine neither infers again nor resets RNG state to reproduce
 A training success history event is created only after persisted coverage validation and recorder
 completion; save, record-construction or close failures produce no success event. Direct helper
 history-write failures remain warnings; native runners still delegate history to the service.
+
+Static train/predict-only compute, save artifacts and run requested analysis inside the original recorder context. Context exit uses Qlib's existing end_run to wait for asynchronous writes; completion metadata and persisted predictions are then checked through the captured recorder before producing a success entry/history. Close errors, invalid metadata/predictions and interrupts produce no success evidence. A recorder can be FINISHED while a later evidence check fails the command; FINISHED alone cannot authorize publication. Existing models need no retraining, and historical FAILED runs are not automatically repaired.
 Existing performance fields, including without-cost metrics, retain their definitions.
+
+Static full/incremental/predict-only commands can explicitly select research strategy and backtest settings:
+
+```bash
+python -m quantpits.scripts.static_train --workspace /path/to/research_workspace \
+  --predict-only --models small --source-records data/training_sources/selected.json \
+  --research-config config/strategy_config.yaml --anchor 2024-05-17
+```
+
+The YAML uses the existing `strategy: {name, params}` and `backtest: {account, exchange_kwargs}` structure; select the default strategy file or another file with that structure.
+`backtest.account` must be finite positive numeric cash, excluding booleans, strings and initial holdings. Strategy and exchange fields retain their existing factory meanings.
+Relative paths start at the workspace; absolute paths and resolved symlinks must also stay inside it. Explicit mode reads neither `prod_config.json` nor a separately merged default strategy. Missing or invalid research inputs fail without an account fallback.
+Market, benchmark, frequency and date splits still come from `model_config.json` and the existing calendar; the research YAML accepts only the strategy/backtest structure above. `--anchor` remains available.
+IC and requested PortAna analysis remain enabled. Changing only research cash/fees leaves model tasks unchanged and does not require retraining a saved model. Topk/n_drop remain training inputs when workflow aliases or fit selection consume them.
+Plans and manifests record the canonical relative path, content fingerprint and actual conditions. Editing the file after preparation or changing conditions when resuming the same run causes an input conflict; use a new run for different conditions.
+Without the option, merged configuration, `current_full_cash`/existing fallback and legacy request/resume identities are unchanged. This option is static-only. Legacy custom date hooks that accept no research conditions are rejected before execution side effects; use the default date resolver.
 
 Training and prediction retain their configured accompanying signal/backtest analysis. For saved
 project model/ensemble signals, [run_cycle evaluate](project_cycle.md#compare-saved-model-and-ensemble-signals)

@@ -28,6 +28,7 @@ from quantpits.training.errors import (
 )
 from quantpits.training.record_repository import TrainingRecordBaseline, TrainingRecordRepository
 from quantpits.training.records import TrainingRecordSnapshot, snapshot_from_dict
+from quantpits.training.research import PreparedResearchConfig, prepare_research_config
 from quantpits.training.state import TrainingStateRepository
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_file
 
@@ -56,12 +57,15 @@ class TrainingRunOptions:
     no_manifest: bool = False
     run_id: Optional[str] = None
     anchor: Optional[str] = None
+    research_config: Optional[str] = None
 
     def __post_init__(self):
         if self.family not in FAMILIES:
             raise TrainingPlanError("unsupported training family")
         if self.action not in ACTIONS:
             raise TrainingPlanError("unsupported training action")
+        if self.research_config is not None and self.family != "static":
+            raise TrainingPlanError("--research-config is supported only for static training")
         if self.cache_size_mb is not None and self.cache_size_mb < 0:
             raise TrainingPlanError("cache size must be non-negative")
         if self.resume and self.action not in ("incremental", "predict_only"):
@@ -119,6 +123,7 @@ class PreparedTrainingRun:
     current_record_baseline: TrainingRecordBaseline
     date_policy: RequestedDatePolicy
     resume_state: Optional[PreparedResumeState] = None
+    research_config: Optional[PreparedResearchConfig] = None
 
     @property
     def anchor_resolution(self) -> str:
@@ -257,6 +262,14 @@ def prepare_training_run(
         InputRef("config/model_registry.yaml", kind="config", fingerprint=fingerprints["config/model_registry.yaml"]),
         InputRef("config/model_config.json", kind="config", fingerprint=fingerprints["config/model_config.json"]),
     ]
+    research_config = None
+    if options.research_config is not None:
+        research_config = prepare_research_config(ctx, _contained(ctx, options.research_config))
+        fingerprints[research_config.path] = research_config.fingerprint
+        input_refs.append(InputRef(
+            research_config.path, kind="config", fingerprint=research_config.fingerprint,
+            description="explicit research strategy/backtest; cash from backtest.account",
+        ))
     for name, info, reasons in selected:
         workflow = _workflow_path(ctx, str(info.get("yaml_file", "")))
         relative = workflow.relative_to(ctx.root).as_posix()
@@ -414,6 +427,7 @@ def prepare_training_run(
             "publication_journal": "data/training_transactions/<run_id>/",
             "source_record_keys": [item.key for item in source_snapshot.entries] if source_snapshot else [],
             "source_identities": source_identities,
+            **({"research_config": research_config.description()} if research_config is not None else {}),
         },
     )
     plan_fingerprint = fingerprint_command_plan(plan)
@@ -423,6 +437,7 @@ def prepare_training_run(
         source_snapshot=source_snapshot, current_snapshot=current_snapshot,
         current_record_baseline=current_baseline, date_policy=date_policy,
         resume_state=resume_state,
+        research_config=research_config,
     )
 
 
@@ -431,7 +446,11 @@ def prepared_plan_json(prepared: PreparedTrainingRun) -> dict:
 
 
 def render_prepared_plan(prepared: PreparedTrainingRun) -> str:
-    return "%s\n\nPlan fingerprint: %s" % (render_command_plan(prepared.plan), prepared.plan_fingerprint)
+    rendered = "%s\n\nPlan fingerprint: %s" % (render_command_plan(prepared.plan), prepared.plan_fingerprint)
+    if prepared.research_config is not None:
+        rendered += "\nResearch config: %s\nResearch conditions: %s" % (
+            prepared.research_config.path, prepared.research_config.content_json)
+    return rendered
 
 
 def options_from_namespace(args: argparse.Namespace, family: str) -> TrainingRunOptions:
@@ -456,4 +475,5 @@ def options_from_namespace(args: argparse.Namespace, family: str) -> TrainingRun
         json_plan=bool(getattr(args, "json_plan", False)),
         no_manifest=bool(getattr(args, "no_manifest", False)), run_id=getattr(args, "run_id", None),
         anchor=getattr(args, "anchor", None),
+        research_config=getattr(args, "research_config", None),
     )

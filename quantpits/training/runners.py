@@ -79,11 +79,14 @@ def run_static_target(request: TrainingTargetRequest) -> TrainingTargetResult:
     workflow = str(run.prepared.ctx.path(target.target.workflow_path))
     history_file = False
     workspace_root = str(run.prepared.ctx.root)
+    research_options = ({"research_config": run.prepared.research_config.to_dict()}
+                        if run.prepared.research_config is not None else {})
     if target.operation == "train":
         raw = train_utils.train_single_model(
             target.target.model_name, workflow, dict(run.params), run.output_experiment_name,
             no_pretrain=run.prepared.options.no_pretrain, cache_mgr=request.cache, mode="static",
             history_file=history_file, workspace_root=workspace_root,
+            **research_options,
         )
     else:
         source = target.source_entry
@@ -94,6 +97,7 @@ def run_static_target(request: TrainingTargetRequest) -> TrainingTargetResult:
             dict(run.params), run.output_experiment_name, source_records,
             no_pretrain=run.prepared.options.no_pretrain, cache_mgr=request.cache,
             history_file=history_file, workspace_root=workspace_root,
+            **research_options,
         )
     return _adapt_result(request, raw)
 

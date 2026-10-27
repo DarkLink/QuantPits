@@ -1,0 +1,402 @@
+{
+  "account": {
+    "execution_fingerprint": "7758ea8d56818265d4fef5f0cba917f1d5b22819679170ce50d05e41d8e0d871",
+    "params": {
+      "account": 777000,
+      "anchor_date": "2024-05-17",
+      "benchmark": "SH000300",
+      "buy_suggestion_factor": 2,
+      "end_time": "2024-05-17",
+      "fit_end_time": "2024-03-29",
+      "fit_start_time": "2024-01-02",
+      "freq": "week",
+      "market": "finite",
+      "n_drop": 3,
+      "start_time": "2024-01-02",
+      "test_end_time": "2024-05-17",
+      "test_start_time": "2024-04-15",
+      "topk": 20,
+      "valid_end_time": "2024-04-12",
+      "valid_start_time": "2024-04-01"
+    },
+    "plan": {
+      "plan": {
+        "args": [],
+        "command": "static_train",
+        "config_fingerprints": {
+          "config/finite.yaml": "67edb37c140aee9c465a56f0d713e22018f46b3877395d853c4cf4bd95d2731e",
+          "config/model_config.json": "33fc9d38df68a0ce6dfcc1a28fb647583cc24ead0ba76a2cb9370de272785e89",
+          "config/model_registry.yaml": "9eece6748693911b537c661347855d1b5d5db407b0001111c22298b08b8ce784",
+          "latest_train_records.json": "504b8365a187ca113d645d32befd3aa0a0a3e77af352b03c98391394e99bf659"
+        },
+        "inputs": [
+          {
+            "fingerprint": "9eece6748693911b537c661347855d1b5d5db407b0001111c22298b08b8ce784",
+            "kind": "config",
+            "path": "config/model_registry.yaml",
+            "required": true
+          },
+          {
+            "fingerprint": "33fc9d38df68a0ce6dfcc1a28fb647583cc24ead0ba76a2cb9370de272785e89",
+            "kind": "config",
+            "path": "config/model_config.json",
+            "required": true
+          },
+          {
+            "fingerprint": "67edb37c140aee9c465a56f0d713e22018f46b3877395d853c4cf4bd95d2731e",
+            "kind": "config",
+            "path": "config/finite.yaml",
+            "required": true
+          },
+          {
+            "description": "current publication baseline and predict-only source records",
+            "fingerprint": "504b8365a187ca113d645d32befd3aa0a0a3e77af352b03c98391394e99bf659",
+            "kind": "record",
+            "path": "latest_train_records.json",
+            "required": true
+          }
+        ],
+        "metadata": {
+          "action": "predict_only",
+          "anchor_resolution": "configured",
+          "cache_size_mb": 0,
+          "configured_anchor": "2024-05-17",
+          "current_record_fingerprint": "504b8365a187ca113d645d32befd3aa0a0a3e77af352b03c98391394e99bf659",
+          "execution_lease": "data/locks/training_execution.lock",
+          "family": "static",
+          "no_pretrain": false,
+          "output_experiment_name": null,
+          "performance_path_pattern": "output/model_performance[_cpcv]_<anchor>.json",
+          "publication_journal": "data/training_transactions/<run_id>/",
+          "publication_policy": "merge_successes",
+          "resume": false,
+          "resume_identity_source": null,
+          "source_identities": [
+            {
+              "experiment_name": "source-experiment",
+              "operation": "legacy_import",
+              "recorder_id": "source-finite",
+              "status": "legacy_unverified",
+              "target_key": "finite@static"
+            }
+          ],
+          "source_record_keys": [
+            "finite@static"
+          ],
+          "target_count": 1,
+          "target_keys": [
+            "finite@static"
+          ]
+        },
+        "mode": "static:predict_only",
+        "outputs": [
+          {
+            "description": "verified current recorder registry",
+            "kind": "record",
+            "overwrite": true,
+            "path": "latest_train_records.json"
+          },
+          {
+            "kind": "manifest",
+            "overwrite": true,
+            "path": "output/manifests/static_train/research-baseline.json"
+          }
+        ],
+        "run_id": "research-baseline",
+        "states": [
+          {
+            "action": "read_write",
+            "description": "locked V3 resume and publication state",
+            "path": "data/run_state.json"
+          },
+          {
+            "action": "read_write",
+            "description": "workspace execution lease",
+            "path": "data/locks/training_execution.lock"
+          },
+          {
+            "action": "read_write",
+            "description": "publication intent and receipt",
+            "path": "data/training_transactions/<run_id>/"
+          },
+          {
+            "action": "read_write",
+            "description": "exact-byte audit of proven resolution failures",
+            "path": "data/training_attempts/<run_id>/"
+          }
+        ],
+        "steps": [
+          {
+            "can_skip": false,
+            "description": "resolve exact train/test windows after Qlib initialization",
+            "expensive": true,
+            "name": "resolve-calendar-and-dates"
+          },
+          {
+            "can_skip": false,
+            "description": "verify or create the workspace-contained writer experiment before model work",
+            "expensive": false,
+            "name": "prepare-output-experiment"
+          },
+          {
+            "can_skip": true,
+            "description": "prepare reusable handler cache",
+            "expensive": false,
+            "name": "initialize-handler-cache",
+            "skip_reason": "disabled"
+          },
+          {
+            "can_skip": false,
+            "description": "verify per-model source recorder identity",
+            "expensive": false,
+            "name": "resolve-source-recorders"
+          },
+          {
+            "can_skip": false,
+            "description": "execute 1 deterministic target(s)",
+            "expensive": true,
+            "name": "train-or-predict-targets"
+          },
+          {
+            "can_skip": false,
+            "description": "verify persisted prediction coverage and workspace lineage",
+            "expensive": false,
+            "name": "verify-output-recorders"
+          },
+          {
+            "can_skip": false,
+            "description": "stage record and performance postimages with durable intent",
+            "expensive": false,
+            "name": "prepare-publication"
+          },
+          {
+            "can_skip": false,
+            "description": "commit and verify the recoverable current-output bundle",
+            "expensive": false,
+            "name": "commit-publication"
+          },
+          {
+            "can_skip": false,
+            "description": "write truthful run manifest",
+            "expensive": false,
+            "name": "write-manifest"
+          },
+          {
+            "can_skip": false,
+            "description": "link operator log to plan and manifest",
+            "expensive": false,
+            "name": "write-operator-log"
+          }
+        ],
+        "warnings": [
+          "source training record uses legacy V1 identity"
+        ],
+        "workspace": "Demo_Workspace"
+      },
+      "plan_fingerprint": "0d9171d8edfd",
+      "schema_version": 1
+    },
+    "resolved_params_fingerprint": "5c69fff94a53328ceecec6d965bb82e7d25ed4e5d76df76b24dffad478f9c0c8",
+    "resume_fingerprint": "89bddc9756c5972c529e5ebe3e42cc9f6a0669cd9f2a33ff63b8ac16ceb90adb"
+  },
+  "fallback": {
+    "execution_fingerprint": "f8c5addebdb15922b9f5d5f0704da86ed2e928273cdc688b66f0579b63318dc7",
+    "params": {
+      "account": 100000.0,
+      "anchor_date": "2024-05-17",
+      "benchmark": "SH000300",
+      "buy_suggestion_factor": 2,
+      "end_time": "2024-05-17",
+      "fit_end_time": "2024-03-29",
+      "fit_start_time": "2024-01-02",
+      "freq": "week",
+      "market": "finite",
+      "n_drop": 3,
+      "start_time": "2024-01-02",
+      "test_end_time": "2024-05-17",
+      "test_start_time": "2024-04-15",
+      "topk": 20,
+      "valid_end_time": "2024-04-12",
+      "valid_start_time": "2024-04-01"
+    },
+    "plan": {
+      "plan": {
+        "args": [],
+        "command": "static_train",
+        "config_fingerprints": {
+          "config/finite.yaml": "67edb37c140aee9c465a56f0d713e22018f46b3877395d853c4cf4bd95d2731e",
+          "config/model_config.json": "33fc9d38df68a0ce6dfcc1a28fb647583cc24ead0ba76a2cb9370de272785e89",
+          "config/model_registry.yaml": "9eece6748693911b537c661347855d1b5d5db407b0001111c22298b08b8ce784",
+          "latest_train_records.json": "504b8365a187ca113d645d32befd3aa0a0a3e77af352b03c98391394e99bf659"
+        },
+        "inputs": [
+          {
+            "fingerprint": "9eece6748693911b537c661347855d1b5d5db407b0001111c22298b08b8ce784",
+            "kind": "config",
+            "path": "config/model_registry.yaml",
+            "required": true
+          },
+          {
+            "fingerprint": "33fc9d38df68a0ce6dfcc1a28fb647583cc24ead0ba76a2cb9370de272785e89",
+            "kind": "config",
+            "path": "config/model_config.json",
+            "required": true
+          },
+          {
+            "fingerprint": "67edb37c140aee9c465a56f0d713e22018f46b3877395d853c4cf4bd95d2731e",
+            "kind": "config",
+            "path": "config/finite.yaml",
+            "required": true
+          },
+          {
+            "description": "current publication baseline and predict-only source records",
+            "fingerprint": "504b8365a187ca113d645d32befd3aa0a0a3e77af352b03c98391394e99bf659",
+            "kind": "record",
+            "path": "latest_train_records.json",
+            "required": true
+          }
+        ],
+        "metadata": {
+          "action": "predict_only",
+          "anchor_resolution": "configured",
+          "cache_size_mb": 0,
+          "configured_anchor": "2024-05-17",
+          "current_record_fingerprint": "504b8365a187ca113d645d32befd3aa0a0a3e77af352b03c98391394e99bf659",
+          "execution_lease": "data/locks/training_execution.lock",
+          "family": "static",
+          "no_pretrain": false,
+          "output_experiment_name": null,
+          "performance_path_pattern": "output/model_performance[_cpcv]_<anchor>.json",
+          "publication_journal": "data/training_transactions/<run_id>/",
+          "publication_policy": "merge_successes",
+          "resume": false,
+          "resume_identity_source": null,
+          "source_identities": [
+            {
+              "experiment_name": "source-experiment",
+              "operation": "legacy_import",
+              "recorder_id": "source-finite",
+              "status": "legacy_unverified",
+              "target_key": "finite@static"
+            }
+          ],
+          "source_record_keys": [
+            "finite@static"
+          ],
+          "target_count": 1,
+          "target_keys": [
+            "finite@static"
+          ]
+        },
+        "mode": "static:predict_only",
+        "outputs": [
+          {
+            "description": "verified current recorder registry",
+            "kind": "record",
+            "overwrite": true,
+            "path": "latest_train_records.json"
+          },
+          {
+            "kind": "manifest",
+            "overwrite": true,
+            "path": "output/manifests/static_train/research-baseline.json"
+          }
+        ],
+        "run_id": "research-baseline",
+        "states": [
+          {
+            "action": "read_write",
+            "description": "locked V3 resume and publication state",
+            "path": "data/run_state.json"
+          },
+          {
+            "action": "read_write",
+            "description": "workspace execution lease",
+            "path": "data/locks/training_execution.lock"
+          },
+          {
+            "action": "read_write",
+            "description": "publication intent and receipt",
+            "path": "data/training_transactions/<run_id>/"
+          },
+          {
+            "action": "read_write",
+            "description": "exact-byte audit of proven resolution failures",
+            "path": "data/training_attempts/<run_id>/"
+          }
+        ],
+        "steps": [
+          {
+            "can_skip": false,
+            "description": "resolve exact train/test windows after Qlib initialization",
+            "expensive": true,
+            "name": "resolve-calendar-and-dates"
+          },
+          {
+            "can_skip": false,
+            "description": "verify or create the workspace-contained writer experiment before model work",
+            "expensive": false,
+            "name": "prepare-output-experiment"
+          },
+          {
+            "can_skip": true,
+            "description": "prepare reusable handler cache",
+            "expensive": false,
+            "name": "initialize-handler-cache",
+            "skip_reason": "disabled"
+          },
+          {
+            "can_skip": false,
+            "description": "verify per-model source recorder identity",
+            "expensive": false,
+            "name": "resolve-source-recorders"
+          },
+          {
+            "can_skip": false,
+            "description": "execute 1 deterministic target(s)",
+            "expensive": true,
+            "name": "train-or-predict-targets"
+          },
+          {
+            "can_skip": false,
+            "description": "verify persisted prediction coverage and workspace lineage",
+            "expensive": false,
+            "name": "verify-output-recorders"
+          },
+          {
+            "can_skip": false,
+            "description": "stage record and performance postimages with durable intent",
+            "expensive": false,
+            "name": "prepare-publication"
+          },
+          {
+            "can_skip": false,
+            "description": "commit and verify the recoverable current-output bundle",
+            "expensive": false,
+            "name": "commit-publication"
+          },
+          {
+            "can_skip": false,
+            "description": "write truthful run manifest",
+            "expensive": false,
+            "name": "write-manifest"
+          },
+          {
+            "can_skip": false,
+            "description": "link operator log to plan and manifest",
+            "expensive": false,
+            "name": "write-operator-log"
+          }
+        ],
+        "warnings": [
+          "source training record uses legacy V1 identity"
+        ],
+        "workspace": "Demo_Workspace"
+      },
+      "plan_fingerprint": "0d9171d8edfd",
+      "schema_version": 1
+    },
+    "resolved_params_fingerprint": "278cac01866687609ba2b9f53dcbd62afa3922bf4561842acf400eddc10f9de5",
+    "resume_fingerprint": "a0b3b15c37ab1414368aab4dd21bddc9c09fc00f130d45c777bc3b5b5d611a8b"
+  }
+}

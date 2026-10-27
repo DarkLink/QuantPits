@@ -170,8 +170,11 @@ def prepare_default_cache(run: ResolvedTrainingRun):
     return manager
 
 
-def _lazy_calculate_dates(ctx, anchor=None):
+def _lazy_calculate_dates(ctx, anchor=None, research_config=None):
     from quantpits.utils.train_utils import calculate_dates
+    if research_config is not None:
+        model = json.loads(ctx.config_path("model_config.json").read_text(encoding="utf-8"))
+        return calculate_dates(ctx=ctx, anchor=anchor, config=research_config.training_config(model))
     return calculate_dates(ctx=ctx, anchor=anchor)
 
 
@@ -264,7 +267,8 @@ class TrainingExecutionService:
         self.hooks.activate_workspace(str(prepared.ctx.root))
         self.hooks.init_qlib()
         params = (self.hooks.calculate_dates() if self.hooks.calculate_dates is not None
-                  else _lazy_calculate_dates(prepared.ctx, prepared.options.anchor))
+                  else _lazy_calculate_dates(prepared.ctx, prepared.options.anchor,
+                                             prepared.research_config))
         run = resolve_training_run(prepared, params)
         self._verify_input_baselines(prepared)
         return run
@@ -275,6 +279,11 @@ class TrainingExecutionService:
             if relative == "data/run_state.json":
                 continue
             path = prepared.ctx.path(relative)
+            if prepared.research_config is not None and relative == prepared.research_config.path:
+                try:
+                    path.resolve().relative_to(prepared.ctx.root)
+                except ValueError as exc:
+                    raise TrainingStateConflictError("research input path left the prepared workspace") from exc
             if expected is None:
                 if path.exists():
                     raise TrainingStateConflictError("a prepared input appeared before execution")
@@ -918,6 +927,10 @@ class TrainingExecutionService:
         )
 
     def execute(self, prepared: PreparedTrainingRun) -> TrainingRunSummary:
+        if prepared.research_config is not None and self.hooks.calculate_dates is not None:
+            raise TrainingExecutionError(
+                "--research-config does not support legacy calculate_dates hooks; use the default date resolver"
+            )
         attempt_started = self.hooks.clock().replace(microsecond=0).isoformat()
         logical_started = attempt_started
         logical_finished = None
@@ -1509,6 +1522,8 @@ class TrainingExecutionService:
             "resume_fingerprint": run.resume_fingerprint,
             "anchor_date": run.anchor_date,
             "output_experiment_name": run.output_experiment_name,
+            **({"research_config": run.prepared.research_config.description()}
+               if run.prepared.research_config is not None else {}),
             "outcomes": list(outcomes),
             "publication": {
                 "policy": run.prepared.plan.metadata.get("publication_policy"),

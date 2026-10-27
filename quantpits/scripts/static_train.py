@@ -108,6 +108,8 @@ def build_parser():
     ctrl.add_argument('--json-plan', action='store_true', help='以单一 JSON 文档输出轻量执行计划')
     ctrl.add_argument('--run-id', default=None, help='显式运行 ID，用于 plan/manifest 对齐')
     ctrl.add_argument('--anchor', default=None, help='本次数据锚点 YYYY-MM-DD；不修改模型或账户配置')
+    ctrl.add_argument('--research-config', default=None, metavar='YAML',
+                      help='workspace 内的显式研究策略／回测配置；资金取 backtest.account，不读取账户状态')
     ctrl.add_argument('--no-manifest', action='store_true', help='真实执行时不写 RunManifest')
 
     info = parser.add_argument_group('信息查看')
