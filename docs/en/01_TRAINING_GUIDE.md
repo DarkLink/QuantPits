@@ -127,6 +127,28 @@ immediate source recorder, experiment, and operation. Ensemble execution recheck
 experiment/artifact identity and persisted `pred.pkl` coverage. The registry is evidence, not a
 substitute for runtime verification.
 
+### Preview and export an explicit model source
+
+After a native static training run, export references for explicitly selected models. Omitting `--output` previews only, without opening a backend or loading a model:
+
+```bash
+python -m quantpits.scripts.model_source --workspace /path/to/producer \
+  --run-id selected_static_run --models model_a,model_b \
+  --output data/training_sources/chosen_models.json
+
+python -m quantpits.scripts.static_train --workspace /path/to/producer \
+  --predict-only --models model_a,model_b \
+  --source-records data/training_sources/chosen_models.json
+```
+
+Use `--record-file data/training_sources/existing.json` instead of `--run-id` to select an explicit V1/V2 document, including latest when deliberately named. Run selection reads the original manifest, publication receipt and retained record postimage; later latest changes do not affect it. Only native static runs are reconstructed. Existing rolling/CPCV source files remain usable. File selection preserves operation and direct ancestry without guessing a prediction copy's fit root.
+
+The preview retains request order and shows key, recorder, experiment, operation, declared status, direct source and existing date ranges. Overall run status is reported separately. Missing, failed, duplicate or ambiguous members are reported individually, return nonzero, and prevent writing a reduced success set. An unselected failed member does not block an available explicit subset. Use `model@mode` for an ambiguous bare name.
+
+The output uses the existing training-record JSON contract and feeds `--source-records` directly. V1 retains legacy keys and metadata; V2 uses the existing serializer and preserves member entries. The tool never upgrades `legacy_unverified` to `ready`. It checks reference evidence, while existing consumers still verify recorder contents, model loading and prediction coverage. Export is not a new training or model certification result.
+
+Input/output paths must remain inside the explicit workspace and cannot refer to the same file. Existing equivalent JSON is reported as `reused` without rewriting its bytes; different content requires a new path. Control interrupts propagate. An interrupt after atomic creation can leave a complete file, which a retry reports as reused. Only the requested source file is written: no model.pkl copy, training, prediction, latest/project changes, publication or paper account updates. Actual switching and new-cycle selection remain separate explicit requests.
+
 ### Lightweight plans and run audit
 
 `static_train.py` and `cv_train.py` share a plan-first command boundary:

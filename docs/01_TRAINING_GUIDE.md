@@ -107,6 +107,28 @@ V2 使用严格版本分派：一旦声明 `schema_version: 2`，一致的 `mode
 predict-only 还必须记录直接 source recorder、experiment 与 operation。融合运行时会再次
 核对 recorder 的 experiment/artifact 以及 `pred.pkl` 的覆盖范围，registry 是证据而不是替代验证。
 
+### 明确预览与导出模型来源
+
+训练完成后，可从原生静态 run 导出指定模型引用；省略 `--output` 时只预览，不创建后端或加载模型：
+
+```bash
+python -m quantpits.scripts.model_source --workspace /path/to/producer \
+  --run-id selected_static_run --models model_a,model_b \
+  --output data/training_sources/chosen_models.json
+
+python -m quantpits.scripts.static_train --workspace /path/to/producer \
+  --predict-only --models model_a,model_b \
+  --source-records data/training_sources/chosen_models.json
+```
+
+也可用 `--record-file data/training_sources/existing.json` 代替 `--run-id`，只读明确指定的V1／V2文件（包括用户明确指定的 latest 文件）。run入口从原manifest、发布receipt及保留postimage取源，后来latest变化不影响它；只支持原生静态run，不重建rolling／CPCV run。文件入口保留已有模式和直接来源，不自动追溯预测副本的fit根。
+
+预览按请求顺序显示模型key、recorder、experiment、operation、原状态、直接source及已有区间。原run整体状态独立显示；请求成员缺失、失败、重复或歧义时逐项报告并返回非零，不写缩减后的成功集合。某个未选成员失败，不阻断明确可用的子集。裸名有多模式时需写 `model@mode`。
+
+输出仍是原训练记录JSON，可直接由 `--source-records` 消费：V1保留旧key与合法元数据，V2沿原序列化合同保留成员entry，预览不把 `legacy_unverified` 升级为 `ready`。本工具只校验所选引用的记录证据；recorder内容、模型可加载性及预测覆盖仍由原消费者检查。它不表示本工具已执行训练或模型认证。
+
+源文件与输出均限制在明确workspace内，源目标不能是同一个文件。输出默认不覆盖：相同JSON内容报告 `reused` 并保留原字节，内容不同须选新路径；创建中断沿进程控制异常传播，原子创建之后中断可留下完整文件，重试时照实报告复用。只写请求的来源文件，不复制model.pkl、不训练／预测、不改latest、project绑定、发布状态或paper账户。后续模型切换及新周期选择仍由独立请求明确指定。
+
 ### 轻量执行计划与运行审计
 
 `static_train.py` 与 `cv_train.py` 共用 plan-first command boundary：
