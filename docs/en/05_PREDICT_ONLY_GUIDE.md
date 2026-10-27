@@ -8,6 +8,8 @@
 
 **Pipeline Placement**: ~~Training Array~~ → **Prediction Output (This Step)** → Ensemble Search → Ensemble Fusion → Order Gen
 
+To fix an explicit source, export existing references with `python -m quantpits.scripts.model_source --workspace /path/to/producer --run-id selected_static_run --models model_a --output data/training_sources/chosen.json`, then use the existing `--source-records` argument. A new project cycle can select a signal's source through `"fit_records": {"candidate": "data/training_sources/chosen.json"}` in `--inputs`. This preserves project defaults and old-cycle sources; omitting overrides preserves ordinary behavior. See [source export](01_TRAINING_GUIDE.md#preview-and-export-an-explicit-model-source) and [cycle inputs](project_cycle.md#dates-and-execution).
+
 ---
 
 ## Quick Start

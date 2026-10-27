@@ -128,15 +128,38 @@ def load_project(path):
     return Project(path, group, signals, accounts, value.get("rules"), value.get("prepare_rules"), fingerprint_value(normalized))
 
 
-def cycle_request(project, *, cycle, anchor, value_through, trade_date, since, inputs=None):
+def selected_fit_records(project, request, signal):
+    """Resolve this request's explicit source, otherwise the project default."""
+    spec = project.signals[signal]
+    value = request["inputs"].get("fit_records", {}).get(signal, spec["fit_records"])
+    return contained(project.members[spec["producer"]].ctx.root, value)
+
+
+def cycle_request(project, *, cycle, anchor, value_through, trade_date, since, inputs=None,
+                  _frozen_sources=False):
     identifier(cycle)
     for selected in (anchor, value_through, trade_date, since):
         date(selected)
     if not since < value_through <= anchor < trade_date:
         raise CycleError("dates require since < value-through <= anchor < trade-date")
     inputs = dict(inputs or {})
-    if set(inputs) - {"actual", "paper_cycles", "hold", "skip"}:
+    if set(inputs) - {"actual", "paper_cycles", "hold", "skip", "fit_records"}:
         raise CycleError("unknown cycle input fields")
+    if "fit_records" in inputs:
+        overrides = inputs["fit_records"]
+        if not isinstance(overrides, dict):
+            raise CycleError("fit_records must map signal IDs to source paths")
+        for key, value in overrides.items():
+            if key not in project.signals:
+                raise CycleError("unknown fit_records signal: %s" % key)
+            if not isinstance(value, str) or not value.strip() or "\x00" in value:
+                raise CycleError("fit_records source must be a nonempty valid path")
+            if _frozen_sources:
+                ctx = project.members[project.signals[key]["producer"]].ctx
+                frozen = contained(ctx.root, project.signal_dir(cycle, key) / "fit_records.json")
+                if frozen.is_file():
+                    continue  # saved requests use the fixed copy, not a mutable external path
+            selected_fit_records(project, {"inputs": inputs}, key)
     hold = inputs.get("hold", [])
     if not isinstance(hold, list) or any(not isinstance(key, str) for key in hold) or len(set(hold)) != len(hold):
         raise CycleError("hold must be a distinct list of member IDs")

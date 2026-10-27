@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from quantpits.operations.config import CycleError, contained, path_at, read_json
+from quantpits.operations.config import CycleError, contained, path_at, read_json, selected_fit_records
 from quantpits.research.paper_market import PaperMarket, load_signal
 from quantpits.research.paper_workflow import PaperWorkflow
 from quantpits.training.persistence import atomic_write_bytes, sha256_bytes
@@ -237,7 +237,11 @@ class NativeSteps:
         snapshot = snapshot_from_dict(json.loads(raw.decode("utf-8")))
         entries = []
         observed = []
-        fit = snapshot_from_dict(read_json(directory / "fit_records.json"))
+        fit_path = contained(ctx.root, directory / "fit_records.json")
+        raw_fit = fit_path.read_bytes()
+        if sha256_bytes(raw_fit) != step["fit_sha256"]:
+            raise CycleError("fixed fit source differs from the captured content")
+        fit = snapshot_from_dict(json.loads(raw_fit))
         for key in keys:
             entry = snapshot.entry_map[key]
             outcome = next(o for o in outcomes if o["key"] == key)
@@ -331,13 +335,15 @@ class NativeSteps:
             directory = self.signal_dir(step)
             directory.mkdir(parents=True, exist_ok=True)
             spec = self.project.signals[step["signal"]]
-            source = contained(ctx.root, spec["fit_records"])
-            frozen = directory / "fit_records.json"
+            frozen = contained(ctx.root, directory / "fit_records.json")
             if not frozen.exists():
+                source = selected_fit_records(self.project, request, step["signal"])
                 raw = source.read_bytes()
                 if sha256_bytes(raw) != step["fit_sha256"]:
                     raise CycleError("selected fit source changed since request capture")
                 fixed_bytes(frozen, raw)
+            if sha256_bytes(frozen.read_bytes()) != step["fit_sha256"]:
+                raise CycleError("fixed fit source differs from the captured content")
             state = ctx.data_path("run_state.json")
             resume = state.exists()
             if resume and read_json(state).get("run_id") != step["run_id"]:

@@ -149,6 +149,8 @@ The output uses the existing training-record JSON contract and feeds `--source-r
 
 Input/output paths must remain inside the explicit workspace and cannot refer to the same file. Existing equivalent JSON is reported as `reused` without rewriting its bytes; different content requires a new path. Control interrupts propagate. An interrupt after atomic creation can leave a complete file, which a retry reports as reused. Only the requested source file is written: no model.pkl copy, training, prediction, latest/project changes, publication or paper account updates. Actual switching and new-cycle selection remain separate explicit requests.
 
+To use an export for a new project cycle, put `"fit_records": {"candidate": "data/training_sources/chosen_models.json"}` in that cycle's `--inputs` JSON. Replace candidate with an existing signal ID; paths resolve inside its producer workspace. Project defaults remain unchanged and old cycles retain their own frozen sources. See [project cycles](project_cycle.md#dates-and-execution). A cycle cannot be reselected; ordinary requests need no new argument.
+
 ### Lightweight plans and run audit
 
 `static_train.py` and `cv_train.py` share a plan-first command boundary:

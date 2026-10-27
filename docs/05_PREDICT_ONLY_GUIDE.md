@@ -8,6 +8,8 @@
 
 **工作流位置**：~~训练~~ → **仅预测（本步）** → 组合搜索 → 融合回测 → 订单生成
 
+需要明确固定来源时，先用 `python -m quantpits.scripts.model_source --workspace /path/to/producer --run-id selected_static_run --models model_a --output data/training_sources/chosen.json` 导出既有引用，再交给原 `--source-records`。新项目周期可通过 `--inputs` 中的 `"fit_records": {"candidate": "data/training_sources/chosen.json"}` 选择当期signal来源；不改project默认，也不重选旧cycle。省略覆盖时行为保持，参见[来源导出](01_TRAINING_GUIDE.md#明确预览与导出模型来源)及[周期输入](project_cycle.md#周期输入与命令)。
+
 ---
 
 ## 快速开始

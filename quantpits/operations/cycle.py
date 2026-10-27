@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from quantpits.operations.config import CycleError, contained, cycle_request, path_at, read_json
+from quantpits.operations.config import CycleError, contained, cycle_request, path_at, read_json, selected_fit_records
 from quantpits.operations.native import NativeSteps, next_day, ref, save_json, validate_write_context, valuation_processed, verify_refs
 from quantpits.operations.process import ProcessRunner
 from quantpits.research.paper_market import PaperMarket
@@ -151,9 +151,11 @@ def build_steps(project, request):
             old_dependencies[member.id] = [post]
     for key, spec in project.signals.items():
         ctx = project.members[spec["producer"]].ctx
-        fit = contained(ctx.root, spec["fit_records"])
+        fit = selected_fit_records(project, request, key)
         predict = add(key + "-predict", "predict", signal=key, member=spec["producer"],
                       fit_sha256=fingerprint_file(fit) if fit.is_file() else None)
+        if key in request["inputs"].get("fit_records", {}):
+            steps[-1]["fit_records"] = request["inputs"]["fit_records"][key]
         add(key + "-fuse", "fuse", [predict], signal=key, member=spec["producer"])
     if project.prepare_rules is not None:
         producer = next(iter(project.signals.values()))["producer"]
@@ -193,10 +195,12 @@ def _preflight(project, request, step):
         return "dated rules file is missing: " + step["rules_source"]
     member = project.members[step["member"]]
     if kind == "predict":
-        frozen = project.signal_dir(request["cycle"], step["signal"]) / "fit_records.json"
-        fit = frozen if frozen.is_file() else contained(member.ctx.root, project.signals[step["signal"]]["fit_records"])
+        frozen = contained(member.ctx.root, project.signal_dir(request["cycle"], step["signal"]) / "fit_records.json")
+        fit = frozen if frozen.is_file() else selected_fit_records(project, request, step["signal"])
         if not fit.is_file():
             return "fixed fit source is missing: %s" % fit
+        if step["fit_sha256"] is not None and fingerprint_file(fit) != step["fit_sha256"]:
+            raise CycleError("selected fit source changed since request capture")
         from quantpits.training.command import TrainingRunOptions, prepare_training_run
         spec = project.signals[step["signal"]]
         prepare_training_run(ctx=member.ctx, options=TrainingRunOptions(family="static", action="predict_only",
@@ -244,8 +248,11 @@ def preview(project, request):
         status = "held" if step["kind"] == "hold" else ("skipped" if step["skip"] else ("waiting" if reason else ("dependency" if step["dependencies"] else "ready")))
         rows.append(dict(step, status=status, reason=reason,
                          source="pending_generation" if step["kind"] in ("predict", "fuse") else None))
+    signals = {key: dict(spec, fit_records=request["inputs"]["fit_records"][key])
+               if key in request["inputs"].get("fit_records", {}) else spec
+               for key, spec in project.signals.items()}
     return {"schema_version": 1, "mode": "plan", "project": str(project.path), "request": request,
-            "signals": project.signals, "accounts": project.accounts, "contexts": {m.id: {
+            "signals": signals, "accounts": project.accounts, "contexts": {m.id: {
                 "workspace": str(m.ctx.root), "mlflow_uri": m.ctx.mlflow_uri,
                 "provider": str(m.ctx.qlib_data_dir), "region": m.ctx.qlib_region,
             } for m in project.group.members}, "steps": rows}
@@ -258,7 +265,8 @@ def load_state(project, cycle):
         raise CycleError("cycle project/group configuration changed; select a new cycle or restore original config")
     request = value["request"]
     normalized = cycle_request(project, cycle=cycle, anchor=request["anchor"], value_through=request["value_through"],
-                               trade_date=request["trade_date"], since=request["since"], inputs=request["inputs"])
+                               trade_date=request["trade_date"], since=request["since"], inputs=request["inputs"],
+                               _frozen_sources=True)
     if request != normalized or value.get("request_identity") != fingerprint_value(request):
         raise CycleError("saved cycle request identity mismatch")
     ids = [s["id"] for s in value["steps"]]
@@ -269,6 +277,11 @@ def load_state(project, cycle):
     for step in value["steps"]:
         if step["skip"] != (step["id"] in request["inputs"].get("skip", [])) or set(step["dependencies"]) - set(ids):
             raise CycleError("saved step scope/dependencies differ from the cycle request")
+        if step["kind"] == "predict":
+            overrides = request["inputs"].get("fit_records", {})
+            if ((step["signal"] in overrides and step.get("fit_records") != overrides[step["signal"]])
+                    or (step["signal"] not in overrides and "fit_records" in step)):
+                raise CycleError("saved source binding differs from the cycle request")
         if value["results"][step["id"]].get("status") not in ("pending", "running", "done", "failed", "waiting", "interrupted", "held", "skipped"):
             raise CycleError("invalid saved step status")
     return value
@@ -376,7 +389,7 @@ def execute(project, *, request=None, cycle=None, runner=None, fault=None):
                 if evidence is None:
                     # Capture the first available fixed fit before native execution.
                     if step["kind"] == "predict" and step["fit_sha256"] is None:
-                        source = contained(native.ctx(step).root, project.signals[step["signal"]]["fit_records"])
+                        source = selected_fit_records(project, request, step["signal"])
                         if source.is_file():
                             step["fit_sha256"] = fingerprint_file(source)
                             state["steps_identity"] = fingerprint_value(state["steps"])

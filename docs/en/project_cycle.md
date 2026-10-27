@@ -41,6 +41,7 @@ Optional cycle inputs:
 
 ```json
 {
+  "fit_records": {"candidate": "data/training_sources/explicit_candidate.json"},
   "actual": {"live": {
     "settlement_bundle": "data/2024-05-13-2024-05-17-table.xlsx",
     "allow_missing_settlement": false
@@ -52,6 +53,12 @@ Optional cycle inputs:
 ```
 
 Settlement bundles use native filenames and paths relative to the actual workspace. Omit the bundle to discover native daily files. Missing evidence waits unless the user explicitly selects the existing empty-settlement assumption. `paper_cycles` maps new plan IDs; old pending plans always settle under their original journal IDs. HOLD advances old accounts and valuations while omitting new orders/plans. Skip accepts explicit step IDs from plan; dependent steps remain waiting.
+
+Optional `fit_records` overrides only the named signals for this new cycle; other signals retain project defaults. Ordinary requests need no new field. Paths resolve inside the signal's **producer workspace**, including contained absolute paths, rather than beside the project or in a paper consumer. Use [model_source exports](01_TRAINING_GUIDE.md#preview-and-export-an-explicit-model-source) or existing legal V1/V2 files. Existing model membership, operation and direct-source checks remain; prediction copies are not newly prohibited. Plan signals and overridden prediction steps show the selection; status retains the saved request source.
+
+Unknown signals, invalid types, empty paths and cross-workspace symlinks fail explicitly. A missing file waits only its dependent branch, without falling back to defaults or latest. The saved request binds the path, and the existing `fit_sha256` captures the first available content. Changes before freezing are rejected. Once saved as the cycle signal's `fit_records.json`, the fixed copy remains authoritative even if the original is deleted or changed. Resume/status never reselect from external inputs; independent evaluation uses that cycle's saved predictions.
+
+Changing an override requires a new cycle ID. Keep the shared project unchanged to choose a new cycle's model source: project/group identity checks still reject configuration changes, including producers, accounts, model sets and combos. Old inputs receive no empty default field; explicit `"fit_records": {}` is part of its own new request. Before rolling code back, finish or explicitly handle cycles that have started with overrides while preserving their supporting code and frozen files. Never remove the field or change a digest to disguise an old request. Selection does not automatically switch production, settle pending plans or train models.
 
 ```bash
 python -m quantpits.scripts.run_cycle plan --project /path/to/project.yaml --cycle week_one \

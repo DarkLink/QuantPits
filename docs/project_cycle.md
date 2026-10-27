@@ -64,6 +64,7 @@ accounts:
 
 ```json
 {
+  "fit_records": {"candidate": "data/training_sources/explicit_candidate.json"},
   "actual": {
     "live": {
       "settlement_bundle": "data/2024-05-13-2024-05-17-table.xlsx",
@@ -77,6 +78,12 @@ accounts:
 ```
 
 `settlement_bundle` 必须相对该实盘 workspace，格式沿原 post_trade；也可省略，使用原逐日文件发现。资料缺失时等待，只有明确 `allow_missing_settlement: true` 才沿原命令的空日假设处理。`paper_cycles` 是本期新计划的 ID 映射；到期 pending 自动按账本里的原 ID 结算。`hold` 仍推进旧账和估值，但不生成该成员的新订单/计划。`skip` 接受 plan 中的明确步骤 ID；依赖被跳过步骤的后续步骤继续等待。
+
+可选 `fit_records` 只为本次新cycle覆盖指定signal的来源，其他signal沿project默认；普通无覆盖操作无需添加字段。路径相对该signal的 **producer workspace**，也可用其中的绝对路径，不相对project目录或paper消费者。来源可以由 [model_source 导出](01_TRAINING_GUIDE.md#明确预览与导出模型来源)，也可直接使用已有合法V1／V2文件；原模型成员、operation和直接source检查保持，不新增“只能选择train”的限制。plan的signals及覆盖预测步骤会显示当期选择，status保留保存请求中的来源。
+
+未知signal、错误类型、空路径或跨workspace符号链接明确报错；文件暂缺只等待其依赖分支，不能回退project默认或latest。请求保存路径，首次可用内容由原 `fit_sha256` 绑定；冻结前内容变更会拒绝，冻结为周期signal目录的 `fit_records.json` 后以该副本为准，原文件删改不使已冻结周期失效。resume／status／独立evaluate不重新读取外部inputs选源，evaluate继续使用该周期保存的预测证据。
+
+同cycle不能更换覆盖，需使用新cycle ID。不要为换下一期模型修改共享project：原project/group identity校验仍生效，改变producer、账户、模型集合或combo后不保证旧cycle恢复。旧inputs不补空映射，旧JSON／身份保持；显式 `"fit_records": {}` 属于本次新请求。回退代码前，已开始使用此字段的周期须保留相应代码和冻结资料至完成或明确处置，不能删字段或改摘要伪装成旧请求。此功能不会自动切换生产绑定、结算pending或执行训练。
 
 ```bash
 python -m quantpits.scripts.run_cycle plan --project /path/to/project.yaml --cycle week_one \

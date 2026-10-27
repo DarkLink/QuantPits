@@ -129,6 +129,8 @@ python -m quantpits.scripts.static_train --workspace /path/to/producer \
 
 源文件与输出均限制在明确workspace内，源目标不能是同一个文件。输出默认不覆盖：相同JSON内容报告 `reused` 并保留原字节，内容不同须选新路径；创建中断沿进程控制异常传播，原子创建之后中断可留下完整文件，重试时照实报告复用。只写请求的来源文件，不复制model.pkl、不训练／预测、不改latest、project绑定、发布状态或paper账户。后续模型切换及新周期选择仍由独立请求明确指定。
 
+将导出结果用于某个新项目周期时，可在该期 `--inputs` JSON 中写 `"fit_records": {"candidate": "data/training_sources/chosen_models.json"}`，candidate换成project已有signal ID，路径相对其producer。这样无需修改共享project默认，旧周期仍沿各自冻结来源恢复；详见[项目周期](project_cycle.md#周期输入与命令)。同cycle不得重新选源，普通未覆盖请求不增加参数。
+
 ### 轻量执行计划与运行审计
 
 `static_train.py` 与 `cv_train.py` 共用 plan-first command boundary：
