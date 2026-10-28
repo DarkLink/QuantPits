@@ -79,6 +79,62 @@ python quantpits/scripts/order_gen.py --dry-run --verbose
 
 ---
 
+## 保存完整候选并按当前现金／开盘观察准备数量
+
+订单生成可显式加 `--candidate-output output/candidates/week.json`，保存数量过滤前的完整有序主备、
+原持仓及卖出意图、信号来源／摘要、日期、策略和anchor价格。旧估算不足一手的候选仍保留，估量记为0。
+原建议CSV及分析发现路径保持；省略此选项时，旧计划、输出与周期身份不变，旧周期无需补候选文件。
+
+```bash
+# 在已激活的工作区生成原建议和可复用候选；dry-run仍零写入
+python -m quantpits.scripts.order_gen --candidate-output output/candidates/week.json
+
+# 无需激活环境或初始化Qlib；显式指定研究／账户工作区
+python -m quantpits.scripts.prepare_orders --workspace /path/to/workspace \
+  --candidates output/candidates/week.json --observation data/open_observation.json --preview
+
+python -m quantpits.scripts.prepare_orders --workspace /path/to/workspace \
+  --candidates output/candidates/week.json --observation data/open_observation.json \
+  --output-dir output/prepared/week-open
+```
+
+观察JSON示例（全部是合成假设，费用须自行明确提供，复用paper execution字段）：
+
+```json
+{
+  "schema_version": 1,
+  "kind": "cash_open_observation",
+  "trade_date": "2026-10-27",
+  "price_basis": "CASH_OPEN",
+  "cash": "1050.00",
+  "holdings": [{"instrument": "SH600099", "quantity": 100}],
+  "quotes": {
+    "SH600001": {"open": "9.60", "previous_close": "10.00", "factor": "1", "previous_factor": "1"}
+  },
+  "market_rules": {
+    "date": "2026-10-27", "source": "synthetic dated rules",
+    "boards": {"SH_MAIN": {"normal_limit": true, "limit_rate": "0.10"}}, "instruments": {}
+  },
+  "execution": {
+    "base_fee": "5", "base_rate": "0", "sell_tax_rate": "0.0005",
+    "transfer_rates": {"SH": "0.00001", "SZ": "0"}, "lot_size": 100, "cash_reserve": "0"
+  }
+}
+```
+
+执行日须与候选、规则及报价观察一致；价格明确为现金开盘价，H/L不用于猜成交。本工具可事后预演，没有08:45门槛。
+现金及持仓均为**当前实际观察**：尚未卖出的持仓仍占名额，不加入原估算卖出款；已更新快照若含净卖出回收，
+不会再次加回或扣已发生的卖出费用。现金可如实为负，不足预算时只给出零准备量，不补资金或写回账户。
+
+可买名额受topk、当前持仓数和原target约束，固定每名额预算并留存reserve，复用paper含费精度和100股整手规则。
+无开盘价、停牌、触限、规则不明、已持有或买不起一手会逐项记录原因，继续原序递补；全部候选均有结果。
+例如旧anchor估量为0的候选，在1050现金、9.60开盘及上述合成费用下可准备100股，占用965.01。
+结果仅标记PREPARED／SKIPPED和预计费用，不执行交易或生成账户postimage；实际成交仍通过券商交割及post_trade记录。
+
+输入须在显式workspace内；候选及 `order_preparation.json` 输出在该workspace的output内，符号链接也须满足范围。
+不同内容不覆盖，换结果目录即可；相同内容可明确复用。预览不写文件，不重新预测、融合、选择latest或读取账户配置。
+本选项尚未自动接入run_cycle，旧paper计划／账本与分析消费者沿原合同工作。
+
 ## 配置要求
 
 脚本运行会通过 `config_loader` 统一合并工作区配置（包含 `prod_config.json`, `model_config.json`, `strategy_config.yaml`）。以下是影响脚本的核心逻辑字段：

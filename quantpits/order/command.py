@@ -47,6 +47,7 @@ class OrderRunOptions:
     anchor: str | None = None
     trade_date: str | None = None
     ensemble_record_file: str | None = None
+    candidate_output: str | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,7 @@ def build_order_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--anchor", help="本期信号锚点 YYYY-MM-DD")
     parser.add_argument("--trade-date", help="明确选择的下一执行日 YYYY-MM-DD")
     parser.add_argument("--ensemble-record-file", help="固定融合映射/快照；指定组合缺失时失败")
+    parser.add_argument("--candidate-output", help="保存完整有序候选到 workspace/output 内的 JSON（含零估量候选）")
     parser.add_argument("--explain-plan", action="store_true", help="仅打印执行计划，不初始化 Qlib，不写文件")
     parser.add_argument("--json-plan", action="store_true", help="以 JSON 输出执行计划；隐含 explain-plan")
     parser.add_argument("--run-id", type=str, default=None, help="显式指定运行 ID，用于计划身份")
@@ -345,12 +347,13 @@ def _file_ref(ctx: WorkspaceContext, path: Path, *, kind: str, description: str,
 def _preview_outputs(options: OrderRunOptions) -> tuple[str, ...]:
     base = options.output_dir.rstrip("/") or "."
     source = options.model or "ensemble"
-    return (
+    paths = (
         f"{base}/model_opinions_<next_trade_date>.csv",
         f"{base}/model_opinions_<next_trade_date>.json",
         f"{base}/sell_suggestion_{source}_<next_trade_date>.csv",
         f"{base}/buy_suggestion_{source}_<next_trade_date>.csv",
     )
+    return paths + ((options.candidate_output,) if options.candidate_output is not None else ())
 
 
 def _steps(dry_run: bool, no_manifest: bool) -> tuple[CommandStep, ...]:
@@ -454,6 +457,13 @@ def build_order_command_plan(
         "pending_cashflow_date_count": len(cashflows) if isinstance(cashflows, dict) else 0,
         "preview_output_paths": list(preview),
     }
+    if options.candidate_output is not None:
+        from quantpits.order.candidates import output_path as derived_output_path
+        candidate = derived_output_path(ctx, options.candidate_output).relative_to(ctx.root).as_posix()
+        metadata["candidate_output"] = candidate
+        outputs = tuple(ref for ref in outputs if ref.path != options.candidate_output)
+        if not options.dry_run:
+            outputs += (OutputRef(candidate, kind="report", description="complete ordered candidates", overwrite=False),)
     return CommandPlan(
         command="order_gen",
         workspace=ctx.root.as_posix(),
@@ -499,10 +509,18 @@ def prepare_order_run(
     source = resolve_order_source(options, run_config)
     output_path = _workspace_path(ctx, options.output_dir, "output")
     record_path = _workspace_path(ctx, options.record_file, "latest_train_records.json") if options.record_file else None
+    candidate_path = None
+    if options.candidate_output is not None:
+        from quantpits.order.candidates import output_path as derived_output_path
+        try:
+            candidate_path = derived_output_path(ctx, options.candidate_output)
+        except ValueError as exc:
+            raise OrderPlanError(str(exc)) from exc
     execution_options = replace(
         options,
         output_dir=output_path.as_posix(),
         record_file=record_path.as_posix() if record_path else None,
+        candidate_output=candidate_path.as_posix() if candidate_path is not None else None,
     )
     plan = build_order_command_plan(
         ctx=ctx,

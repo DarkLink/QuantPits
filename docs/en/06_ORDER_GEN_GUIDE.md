@@ -80,6 +80,55 @@ instead of reopening mappings to select a source again, and model opinions reuse
 
 ---
 
+## Save complete candidates and prepare quantities from current cash and cash-open observations
+
+Add `--candidate-output output/candidates/week.json` to order generation to retain the complete ordered primary/backup list before quantity filtering, original holdings and sell intentions, signal identity/digest, dates, strategy and anchor prices. Estimates below one lot remain present with quantity zero. Existing suggestion CSVs and analysis discovery are unchanged. Without the option, legacy plans, outputs and cycle identities remain unchanged; old cycles need no candidate file.
+
+```bash
+# Generate the original suggestions and reusable candidates in an activated workspace.
+python -m quantpits.scripts.order_gen --candidate-output output/candidates/week.json
+
+# This entry needs no environment activation, Qlib or MLflow initialization.
+python -m quantpits.scripts.prepare_orders --workspace /path/to/workspace \
+  --candidates output/candidates/week.json --observation data/open_observation.json --preview
+
+python -m quantpits.scripts.prepare_orders --workspace /path/to/workspace \
+  --candidates output/candidates/week.json --observation data/open_observation.json \
+  --output-dir output/prepared/week-open
+```
+
+Example observation (synthetic assumptions; supply your own explicit fees using the existing paper execution fields):
+
+```json
+{
+  "schema_version": 1,
+  "kind": "cash_open_observation",
+  "trade_date": "2026-10-27",
+  "price_basis": "CASH_OPEN",
+  "cash": "1050.00",
+  "holdings": [{"instrument": "SH600099", "quantity": 100}],
+  "quotes": {
+    "SH600001": {"open": "9.60", "previous_close": "10.00", "factor": "1", "previous_factor": "1"}
+  },
+  "market_rules": {
+    "date": "2026-10-27", "source": "synthetic dated rules",
+    "boards": {"SH_MAIN": {"normal_limit": true, "limit_rate": "0.10"}}, "instruments": {}
+  },
+  "execution": {
+    "base_fee": "5", "base_rate": "0", "sell_tax_rate": "0.0005",
+    "transfer_rates": {"SH": "0.00001", "SZ": "0"}, "lot_size": 100, "cash_reserve": "0"
+  }
+}
+```
+
+Candidate, rule and quote dates must match execution. Prices explicitly mean cash opening observations; H/L never imply execution. Retrospective preparation is allowed without an 08:45 gate.
+Cash and holdings are current observations. Uncompleted sells release no cash or slots. If an updated snapshot already includes actual net sell proceeds, the tool neither adds them again nor charges historical sell fees again. Negative cash remains truthful and produces zero affordable quantities without funding or account writes.
+
+Slots are bounded by topk, current holding count and the original target. Fixed per-slot budgets, reserve cash, Decimal fee rounding and ordinary 100-share lots follow paper semantics. Missing open, suspension, price limits, unknown rules, already-held securities and insufficient budgets receive individual reasons while later original candidates remain eligible. Every candidate gets a result. A zero-estimate candidate can prepare 100 shares at 9.60 from 1050 cash under the example fees, consuming 965.01.
+Results use PREPARED/SKIPPED and estimated fees. They execute no trades and create no account postimage; broker evidence and post_trade still record actual trading.
+
+Inputs must stay inside the explicit workspace; candidate and `order_preparation.json` outputs must resolve inside its output directory, including through symlinks. Different content is never overwritten; choose a new result directory. Identical content can be explicitly reused. Preview writes nothing and never reruns prediction/fusion, selects latest or reads account configuration. This option is not automatically wired into run_cycle; existing paper plans/journals and analysis consumers retain their contracts.
+
 ## Configuration Requirements
 
 The script loads unified workspace parameters implicitly leveraging `config_loader` (which aggregates `prod_config.json`, `model_config.json`, and `strategy_config.yaml`). Below are the vital operative boundaries steering execution logic:

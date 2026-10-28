@@ -29,6 +29,7 @@ class OrderArtifactLedger:
     sell_csv: str | None = None
     buy_csv: str | None = None
     outputs: tuple[OutputRef, ...] = ()
+    candidate_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,8 @@ class OrderPersistenceRequest:
     sell_orders: tuple[dict, ...]
     buy_orders: tuple[dict, ...]
     opinions: ModelOpinionsResult | None
+    candidate_output: Path | None = None
+    candidate_payload: dict | None = None
 
 
 class OrderPersistenceError(RuntimeError):
@@ -65,7 +68,9 @@ def display_path(ctx: WorkspaceContext, path: Path) -> str:
         return path.resolve().as_posix()
 
 
-def _atomic_write(path: Path, writer) -> None:
+def _atomic_write(path: Path, writer, *, exclusive=False, validate_path=None) -> None:
+    if validate_path is not None:
+        validate_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     os.close(fd)
@@ -74,7 +79,12 @@ def _atomic_write(path: Path, writer) -> None:
         writer(temp)
         with temp.open("rb") as handle:
             os.fsync(handle.fileno())
-        os.replace(temp, path)
+        if validate_path is not None:
+            validate_path()
+        if exclusive:
+            os.link(temp, path)
+        else:
+            os.replace(temp, path)
     finally:
         if temp.exists():
             temp.unlink()
@@ -84,15 +94,47 @@ def atomic_write_csv(dataframe: Any, path: Path, *, index: bool) -> None:
     _atomic_write(path, lambda temp: dataframe.to_csv(temp, index=index))
 
 
-def atomic_write_json(payload: dict, path: Path) -> None:
+def atomic_write_json(payload: dict, path: Path, *, exclusive=False, validate_path=None) -> None:
     def writer(temp: Path) -> None:
         with temp.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=4, ensure_ascii=False)
+            json.dump(payload, handle, indent=4, ensure_ascii=False, allow_nan=not exclusive)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
 
-    _atomic_write(path, writer)
+    _atomic_write(path, writer, exclusive=exclusive, validate_path=validate_path)
+
+
+def write_derived_json(ctx, value, payload):
+    """Create once, or reuse identical content, and verify the canonical result."""
+    from quantpits.order.candidates import output_path
+    from quantpits.utils.workspace import fingerprint_value
+    path = output_path(ctx, value)
+    def check_path():
+        if output_path(ctx, path) != path:
+            raise ValueError("derived output path changed")
+    def matches():
+        check_path()
+        if not path.is_file():
+            return False
+        try:
+            observed = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            return False
+        return fingerprint_value(observed) == fingerprint_value(payload)
+    if path.exists():
+        if matches():
+            return "reused"
+        raise FileExistsError("different derived content already exists: %s" % path)
+    try:
+        atomic_write_json(payload, path, exclusive=True, validate_path=check_path)
+    except FileExistsError:
+        if matches():
+            return "reused"
+        raise
+    if not matches():
+        raise OSError("derived output canonical postcondition failed: %s" % path)
+    return "created"
 
 
 def persist_order_artifacts(request: OrderPersistenceRequest) -> OrderArtifactLedger:
@@ -119,6 +161,13 @@ def persist_order_artifacts(request: OrderPersistenceRequest) -> OrderArtifactLe
         if request.buy_orders:
             atomic_write_csv(pd.DataFrame(request.buy_orders), paths.buy_csv, index=False)
             commit("buy_csv", paths.buy_csv)
+        if request.candidate_output is not None:
+            if request.candidate_payload is None:
+                raise ValueError("complete candidate payload is missing")
+            status = write_derived_json(request.ctx, request.candidate_output, request.candidate_payload)
+            values["candidate_json"] = display_path(request.ctx, request.candidate_output)
+            committed.append(OutputRef(values["candidate_json"], kind="report",
+                                       description="complete ordered candidates (%s)" % status, overwrite=False))
     except Exception as exc:
         raise OrderPersistenceError(str(exc), committed_outputs=tuple(committed)) from exc
     return OrderArtifactLedger(outputs=tuple(committed), **values)

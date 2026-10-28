@@ -96,6 +96,9 @@ def _records(prepared: PreparedOrderRun, calculation: OrderCalculationResult, le
         "fingerprint_algorithm": calculation.universe.fingerprint_algorithm,
         "fingerprint": calculation.universe.fingerprint,
     }
+    if calculation.candidate_payload is not None:
+        records["candidates"] = dict(path=ledger.candidate_json,
+            digest=calculation.candidate_payload["digest"], count=len(calculation.candidate_payload["buys"]))
     return records
 
 
@@ -252,6 +255,16 @@ class OrderGenerationService:
         sell_tuple = tuple(dict(item) for item in sell_orders)
         buy_tuple = tuple(dict(item) for item in buy_orders)
         buy_min, buy_max = _estimated_buy_range(buy_tuple, target_buy_count)
+        candidate_payload = None
+        if options.candidate_output is not None:
+            import hashlib
+            from quantpits.order.candidates import build_candidates
+            candidate_payload = build_candidates(
+                ctx=prepared.ctx, loaded=loaded, anchor=anchor_date, trade_date=trade_date,
+                strategy=prepared.config.strategy_config["strategy"], analysis=analysis,
+                current_holding=current_holding, buy_orders=buy_tuple, sell_orders=sell_tuple,
+                sell_decisions=sell_decisions,
+                signal_digest=hashlib.sha256(predictions.to_csv().encode("utf-8")).hexdigest())
 
         if options.verbose and opinions is not None and not opinions.dataframe.empty:
             print(opinions.dataframe.to_string())
@@ -291,6 +304,7 @@ class OrderGenerationService:
             remaining_after_sell=analysis.remaining_after_sell,
             planned_final_holding_count=analysis.planned_final_holding_count,
             sell_decisions=sell_decisions,
+            candidate_payload=candidate_payload,
         )
 
     @staticmethod
@@ -309,6 +323,9 @@ class OrderGenerationService:
                 sell_orders=calculation.sell_orders,
                 buy_orders=calculation.buy_orders,
                 opinions=calculation.opinions,
+                candidate_output=(Path(prepared.execution_options.candidate_output)
+                                  if prepared.execution_options.candidate_output is not None else None),
+                candidate_payload=calculation.candidate_payload,
             )
         )
 

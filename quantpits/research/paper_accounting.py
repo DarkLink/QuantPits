@@ -272,6 +272,21 @@ def validate_event(event):
 
 
 @cash_context
+def affordable_buy_quantity(cap, price, instrument, config):
+    """Ordinary lots affordable after the existing per-order fee rounding."""
+    if cap <= ZERO:
+        return 0
+    lot = config["lot_size"]
+    quantity = int(cap / (price * lot)) * lot
+    while quantity > 0:
+        gross = money(price * quantity)
+        if gross + decimal(fees(gross, "BUY", instrument, config)["total"]) <= cap:
+            break
+        quantity -= lot
+    return quantity
+
+
+@cash_context
 def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
     """Replayable settlement with fixed per-slot budgets and ordered replacement."""
     config = execution_config(plan["execution"])
@@ -347,7 +362,6 @@ def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
         raise PaperError("cash reserve exceeds clean cash")
     budget = ((cash - reserve) / slots).quantize(CENT, rounding=ROUND_DOWN) if slots else ZERO
     filled_buys = 0
-    lot = config["lot_size"]
     for row in plan["buys"]:
         instrument = row["instrument"]
         if filled_buys == slots:
@@ -362,12 +376,7 @@ def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
             decision(row, "BUY", reason, price, limits, budget=amount(budget))
             continue
         cap = min(budget, cash - reserve)
-        quantity = int(cap / (price * lot)) * lot
-        while quantity > 0:
-            gross = money(price * quantity)
-            if gross + decimal(fees(gross, "BUY", instrument, config)["total"]) <= cap:
-                break
-            quantity -= lot
+        quantity = affordable_buy_quantity(cap, price, instrument, config)
         if quantity == 0:
             decision(row, "BUY", "INSUFFICIENT_SLOT_BUDGET", price, limits, budget=amount(budget))
             continue

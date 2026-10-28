@@ -1,0 +1,519 @@
+{
+  "1050": {
+    "plan": {
+      "command": "order_gen",
+      "workspace": "<workspace>",
+      "run_id": "order36-baseline",
+      "mode": "ensemble-default",
+      "args": [],
+      "inputs": [
+        {
+          "path": "config/model_config.json",
+          "kind": "config",
+          "required": false,
+          "description": "model_config"
+        },
+        {
+          "path": "config/strategy_config.yaml",
+          "kind": "config",
+          "required": false,
+          "description": "strategy_config"
+        },
+        {
+          "path": "config/prod_config.json",
+          "kind": "config",
+          "required": false,
+          "description": "prod_config"
+        },
+        {
+          "path": "config/ensemble_config.json",
+          "kind": "config",
+          "required": false,
+          "description": "ensemble_config"
+        },
+        {
+          "path": "config/model_registry.yaml",
+          "kind": "config",
+          "required": false,
+          "description": "model_registry"
+        },
+        {
+          "path": "config/ensemble_records.json",
+          "kind": "config",
+          "required": false,
+          "description": "ensemble_records"
+        },
+        {
+          "path": "config/rolling_config.yaml",
+          "kind": "config",
+          "required": false,
+          "description": "rolling_config"
+        },
+        {
+          "path": "latest_train_records.json",
+          "kind": "config",
+          "required": false,
+          "description": "latest_train_records"
+        },
+        {
+          "path": "config/cashflow.json",
+          "kind": "config",
+          "required": false,
+          "description": "cashflow"
+        },
+        {
+          "path": "config/saved.json",
+          "kind": "record",
+          "required": false,
+          "description": "ensemble recorder mapping"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "output/original/model_opinions_<next_trade_date>.csv",
+          "kind": "report",
+          "overwrite": true
+        },
+        {
+          "path": "output/original/model_opinions_<next_trade_date>.json",
+          "kind": "report",
+          "overwrite": true
+        },
+        {
+          "path": "output/original/sell_suggestion_ensemble_<next_trade_date>.csv",
+          "kind": "report",
+          "overwrite": true
+        },
+        {
+          "path": "output/original/buy_suggestion_ensemble_<next_trade_date>.csv",
+          "kind": "report",
+          "overwrite": true
+        },
+        {
+          "path": "output/manifests/order_gen/order36-baseline.json",
+          "kind": "manifest",
+          "overwrite": true,
+          "description": "run manifest"
+        }
+      ],
+      "states": [
+        {
+          "path": "mlflow",
+          "action": "read",
+          "description": "selected prediction recorder"
+        },
+        {
+          "path": "qlib-calendar",
+          "action": "read",
+          "description": "trading calendar"
+        },
+        {
+          "path": "qlib-market-data",
+          "action": "read",
+          "description": "price and price-limit data"
+        },
+        {
+          "path": "qlib-universe",
+          "action": "read",
+          "description": "exact anchor-date market membership"
+        },
+        {
+          "path": "data/operator_log.jsonl",
+          "action": "write",
+          "description": "operator execution log"
+        }
+      ],
+      "steps": [
+        {
+          "name": "validate-configs",
+          "description": "validate workspace configuration contracts",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "resolve-prediction-source",
+          "description": "resolve the model or ensemble recorder",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "init-qlib",
+          "description": "initialize Qlib for the active workspace",
+          "expensive": true,
+          "can_skip": false
+        },
+        {
+          "name": "resolve-trade-dates",
+          "description": "resolve anchor and next trade dates",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "load-predictions",
+          "description": "load selected predictions from a Qlib recorder",
+          "expensive": true,
+          "can_skip": false
+        },
+        {
+          "name": "load-price-data",
+          "description": "load prices and price-limit estimates",
+          "expensive": true,
+          "can_skip": false
+        },
+        {
+          "name": "analyze-positions",
+          "description": "rank predictions against current holdings",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "build-model-opinions",
+          "description": "compare available prediction sources",
+          "expensive": true,
+          "can_skip": false
+        },
+        {
+          "name": "generate-sell-orders",
+          "description": "generate sell suggestions",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "generate-buy-orders",
+          "description": "generate buy suggestions",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "write-model-opinions",
+          "description": "write model opinion reports",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "write-order-files",
+          "description": "write buy and sell suggestion files",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "write-run-manifest",
+          "description": "write the actual run artifact manifest",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "append-operator-log",
+          "description": "append the real execution result to OperatorLog",
+          "expensive": false,
+          "can_skip": false
+        }
+      ],
+      "config_fingerprints": {},
+      "warnings": [
+        "error: config/model_config.json: Config file not found: config/model_config.json",
+        "error: config/strategy_config.yaml: Config file not found: config/strategy_config.yaml",
+        "error: config/prod_config.json: Config file not found: config/prod_config.json",
+        "error: config/ensemble_config.json: Config file not found: config/ensemble_config.json",
+        "error: config/model_registry.yaml: Config file not found: config/model_registry.yaml",
+        "warning: config/ensemble_records.json: Config file not found: config/ensemble_records.json",
+        "warning: config/rolling_config.yaml: Config file not found: config/rolling_config.yaml",
+        "warning: latest_train_records.json: Config file not found: latest_train_records.json",
+        "warning: config/cashflow.json: Config file not found: config/cashflow.json"
+      ],
+      "metadata": {
+        "source_mode": "ensemble",
+        "requested_model": null,
+        "requested_combo": null,
+        "anchor": "2026-10-23",
+        "trade_date": "2026-10-27",
+        "ensemble_record_file": "config/saved.json",
+        "resolved_source_name": "saved",
+        "source_record_available": true,
+        "record_file": "latest_train_records.json",
+        "output_dir": "output/original",
+        "dry_run": false,
+        "verbose": false,
+        "no_manifest": false,
+        "market": "synthetic",
+        "strategy_name": "topk_dropout",
+        "topk": 2,
+        "n_drop": 1,
+        "buy_suggestion_factor": 2,
+        "sell_out_of_universe": true,
+        "current_state_date": null,
+        "holding_count": 1,
+        "pending_cashflow_date_count": 0,
+        "preview_output_paths": [
+          "output/original/model_opinions_<next_trade_date>.csv",
+          "output/original/model_opinions_<next_trade_date>.json",
+          "output/original/sell_suggestion_ensemble_<next_trade_date>.csv",
+          "output/original/buy_suggestion_ensemble_<next_trade_date>.csv"
+        ]
+      }
+    },
+    "csv": {
+      "sell_suggestion_ensemble_2026-10-27.csv": "instrument,datetime,value,estimated_amount,score,current_close\nSH600099,2026-10-27,100,900.0,1.0,10.0\n"
+    },
+    "normalized_plan_fingerprint": "990812d8c1cd"
+  },
+  "10000": {
+    "plan": {
+      "command": "order_gen",
+      "workspace": "<workspace>",
+      "run_id": "order36-baseline",
+      "mode": "ensemble-default",
+      "args": [],
+      "inputs": [
+        {
+          "path": "config/model_config.json",
+          "kind": "config",
+          "required": false,
+          "description": "model_config"
+        },
+        {
+          "path": "config/strategy_config.yaml",
+          "kind": "config",
+          "required": false,
+          "description": "strategy_config"
+        },
+        {
+          "path": "config/prod_config.json",
+          "kind": "config",
+          "required": false,
+          "description": "prod_config"
+        },
+        {
+          "path": "config/ensemble_config.json",
+          "kind": "config",
+          "required": false,
+          "description": "ensemble_config"
+        },
+        {
+          "path": "config/model_registry.yaml",
+          "kind": "config",
+          "required": false,
+          "description": "model_registry"
+        },
+        {
+          "path": "config/ensemble_records.json",
+          "kind": "config",
+          "required": false,
+          "description": "ensemble_records"
+        },
+        {
+          "path": "config/rolling_config.yaml",
+          "kind": "config",
+          "required": false,
+          "description": "rolling_config"
+        },
+        {
+          "path": "latest_train_records.json",
+          "kind": "config",
+          "required": false,
+          "description": "latest_train_records"
+        },
+        {
+          "path": "config/cashflow.json",
+          "kind": "config",
+          "required": false,
+          "description": "cashflow"
+        },
+        {
+          "path": "config/saved.json",
+          "kind": "record",
+          "required": false,
+          "description": "ensemble recorder mapping"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "output/original/model_opinions_<next_trade_date>.csv",
+          "kind": "report",
+          "overwrite": true
+        },
+        {
+          "path": "output/original/model_opinions_<next_trade_date>.json",
+          "kind": "report",
+          "overwrite": true
+        },
+        {
+          "path": "output/original/sell_suggestion_ensemble_<next_trade_date>.csv",
+          "kind": "report",
+          "overwrite": true
+        },
+        {
+          "path": "output/original/buy_suggestion_ensemble_<next_trade_date>.csv",
+          "kind": "report",
+          "overwrite": true
+        },
+        {
+          "path": "output/manifests/order_gen/order36-baseline.json",
+          "kind": "manifest",
+          "overwrite": true,
+          "description": "run manifest"
+        }
+      ],
+      "states": [
+        {
+          "path": "mlflow",
+          "action": "read",
+          "description": "selected prediction recorder"
+        },
+        {
+          "path": "qlib-calendar",
+          "action": "read",
+          "description": "trading calendar"
+        },
+        {
+          "path": "qlib-market-data",
+          "action": "read",
+          "description": "price and price-limit data"
+        },
+        {
+          "path": "qlib-universe",
+          "action": "read",
+          "description": "exact anchor-date market membership"
+        },
+        {
+          "path": "data/operator_log.jsonl",
+          "action": "write",
+          "description": "operator execution log"
+        }
+      ],
+      "steps": [
+        {
+          "name": "validate-configs",
+          "description": "validate workspace configuration contracts",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "resolve-prediction-source",
+          "description": "resolve the model or ensemble recorder",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "init-qlib",
+          "description": "initialize Qlib for the active workspace",
+          "expensive": true,
+          "can_skip": false
+        },
+        {
+          "name": "resolve-trade-dates",
+          "description": "resolve anchor and next trade dates",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "load-predictions",
+          "description": "load selected predictions from a Qlib recorder",
+          "expensive": true,
+          "can_skip": false
+        },
+        {
+          "name": "load-price-data",
+          "description": "load prices and price-limit estimates",
+          "expensive": true,
+          "can_skip": false
+        },
+        {
+          "name": "analyze-positions",
+          "description": "rank predictions against current holdings",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "build-model-opinions",
+          "description": "compare available prediction sources",
+          "expensive": true,
+          "can_skip": false
+        },
+        {
+          "name": "generate-sell-orders",
+          "description": "generate sell suggestions",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "generate-buy-orders",
+          "description": "generate buy suggestions",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "write-model-opinions",
+          "description": "write model opinion reports",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "write-order-files",
+          "description": "write buy and sell suggestion files",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "write-run-manifest",
+          "description": "write the actual run artifact manifest",
+          "expensive": false,
+          "can_skip": false
+        },
+        {
+          "name": "append-operator-log",
+          "description": "append the real execution result to OperatorLog",
+          "expensive": false,
+          "can_skip": false
+        }
+      ],
+      "config_fingerprints": {},
+      "warnings": [
+        "error: config/model_config.json: Config file not found: config/model_config.json",
+        "error: config/strategy_config.yaml: Config file not found: config/strategy_config.yaml",
+        "error: config/prod_config.json: Config file not found: config/prod_config.json",
+        "error: config/ensemble_config.json: Config file not found: config/ensemble_config.json",
+        "error: config/model_registry.yaml: Config file not found: config/model_registry.yaml",
+        "warning: config/ensemble_records.json: Config file not found: config/ensemble_records.json",
+        "warning: config/rolling_config.yaml: Config file not found: config/rolling_config.yaml",
+        "warning: latest_train_records.json: Config file not found: latest_train_records.json",
+        "warning: config/cashflow.json: Config file not found: config/cashflow.json"
+      ],
+      "metadata": {
+        "source_mode": "ensemble",
+        "requested_model": null,
+        "requested_combo": null,
+        "anchor": "2026-10-23",
+        "trade_date": "2026-10-27",
+        "ensemble_record_file": "config/saved.json",
+        "resolved_source_name": "saved",
+        "source_record_available": true,
+        "record_file": "latest_train_records.json",
+        "output_dir": "output/original",
+        "dry_run": false,
+        "verbose": false,
+        "no_manifest": false,
+        "market": "synthetic",
+        "strategy_name": "topk_dropout",
+        "topk": 2,
+        "n_drop": 1,
+        "buy_suggestion_factor": 2,
+        "sell_out_of_universe": true,
+        "current_state_date": null,
+        "holding_count": 1,
+        "pending_cashflow_date_count": 0,
+        "preview_output_paths": [
+          "output/original/model_opinions_<next_trade_date>.csv",
+          "output/original/model_opinions_<next_trade_date>.json",
+          "output/original/sell_suggestion_ensemble_<next_trade_date>.csv",
+          "output/original/buy_suggestion_ensemble_<next_trade_date>.csv"
+        ]
+      }
+    },
+    "csv": {
+      "sell_suggestion_ensemble_2026-10-27.csv": "instrument,datetime,value,estimated_amount,score,current_close\nSH600099,2026-10-27,100,900.0,1.0,10.0\n",
+      "buy_suggestion_ensemble_2026-10-27.csv": "instrument,datetime,value,estimated_amount,score,current_close\nSH600001,2026-10-27,400,4400.0,5.0,10.0\nSH600002,2026-10-27,400,4400.0,4.0,10.0\nSH600003,2026-10-27,400,4400.0,3.0,10.0\nSH600004,2026-10-27,400,4400.0,2.0,10.0\n"
+    },
+    "normalized_plan_fingerprint": "990812d8c1cd"
+  }
+}

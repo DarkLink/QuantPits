@@ -206,6 +206,7 @@ class OrderCalculationResult:
     remaining_after_sell: int
     planned_final_holding_count: int
     sell_decisions: tuple[dict, ...]
+    candidate_payload: dict | None = None
 
 
 def source_description(source: ResolvedOrderSource) -> str:
