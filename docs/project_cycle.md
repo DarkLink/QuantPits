@@ -100,6 +100,28 @@ python -m quantpits.scripts.run_cycle resume --project /path/to/project.yaml --c
 
 plan/status 不初始化后端、不创建账户锁或项目进度。plan 对未生成的预测与融合标记 `pending_generation`，不预填 recorder。run/resume 保存 `cycles/<id>/progress.json`、各步骤日志和既有比较报告。退出码：完整/只读 plan 为 0，失败或等待为 2，配置错误为 1，中断为 130。
 
+## 新周期可选导出完整订单候选
+
+在原inputs中加入明确选择（可与其他字段组合）：
+
+```json
+{"order_candidates": ["live"]}
+```
+
+列表须为本group中不重复的actual成员ID，不能选择paper或未知成员。所选成员不能同时HOLD或skip其 `<member>-new` order步骤；移除导出选择或取消该HOLD／skip即可。省略字段不增加默认值，显式空列表是一个明确的新请求。共享project、账户配置及paper冻结计划不需要修改。
+
+被选成员的**原order调用一次**生成原CSV和 `output/cycles/<project-stem>/<cycle>/orders/order_candidates.json`，文件位于该成员workspace。plan显示 `candidate_output`，status的原step证据提供候选路径／digest／count及files摘要。采用前核对原native manifest、候选格式、执行日期和本期固定信号来源；原生完成后中断时resume沿同一个manifest／候选采用，不再计算order。实际没有目标时允许完整空候选。
+
+本功能不增加步骤、不读取未来开盘观察，也不自动运行prepare_orders。日后自行提供当前现金／持仓和现金开盘观察即可预演：
+
+```bash
+python -m quantpits.scripts.prepare_orders --workspace /path/to/actual_workspace \
+  --candidates output/cycles/project/new_cycle/orders/order_candidates.json \
+  --observation data/current_open_observation.json --preview
+```
+
+观察字段、预计费用与未完成卖出的处理见[订单指南](06_ORDER_GEN_GUIDE.md#保存完整候选并按当前现金开盘观察准备数量)。预览不执行交易、不写账户、不重新预测／融合。原request保存导出选择，resume不重新读取外部inputs；已完成候选损坏会被status发现。旧cycle继续沿原请求恢复，无候选仍有效，不能通过改外部inputs或共享project给旧请求补导出；需要时选择新cycle。
+
 ## 固定来源与恢复
 
 单命令也支持 `static_train --anchor YYYY-MM-DD`，以及 `order_gen --anchor YYYY-MM-DD --trade-date YYYY-MM-DD --ensemble-record-file <fixed.json>`。显式融合文件保留原 `combos/default_combo` 格式，可附带 `predictions.<combo>.path/sha256` 供跨 workspace 只读消费；请求组合缺失直接报错。未指定新参数时沿用旧日期与来源默认行为，`--record-file` 继续负责单模型记录。

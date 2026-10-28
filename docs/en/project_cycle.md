@@ -74,6 +74,28 @@ python -m quantpits.scripts.run_cycle resume --project /path/to/project.yaml --c
 
 Plan/status create no backend, account locks or project progress. Predictions/fusion awaiting generation have no invented recorder identity. Run/resume save progress, step logs and existing comparison reports under `cycles/<id>/`. Exit codes: 0 complete/plan, 2 waiting or failed steps, 1 configuration error, 130 interruption.
 
+## Optional complete order candidates for a new cycle
+
+Add an explicit selection to the same inputs JSON (alongside other fields if needed):
+
+```json
+{"order_candidates": ["live"]}
+```
+
+The list must name distinct actual members of this project group. Unknown members, paper members, duplicates and wrong types fail. A selected member cannot also HOLD or skip its `<member>-new` order step; remove the selection or enable that order step. Omitting the field inserts no default. An explicit empty list is a distinct new request. Shared project settings, account configuration and paper frozen plans need no changes.
+
+The selected member's original order invocation writes the original CSVs and `output/cycles/<project-stem>/<cycle>/orders/order_candidates.json` in its own workspace. No extra order invocation is made. Plan shows `candidate_output`; the existing step proof exposes path/digest/count and file checksums. Adoption checks the native manifest, candidate format, dates and this cycle's fixed signal identity. Resume after native completion adopts the same manifest/candidate without recomputing orders. A complete empty candidate file is valid when there is no buy target.
+
+This adds no step or dependency on future opening observations and never runs prepare_orders automatically. Later, provide explicit current cash/holdings and cash-open observations:
+
+```bash
+python -m quantpits.scripts.prepare_orders --workspace /path/to/actual_workspace \
+  --candidates output/cycles/project/new_cycle/orders/order_candidates.json \
+  --observation data/current_open_observation.json --preview
+```
+
+See the [order guide](06_ORDER_GEN_GUIDE.md#save-complete-candidates-and-prepare-quantities-from-current-cash-and-cash-open-observations) for observation fields, assumed fees and uncompleted sells. Preview executes no trades, changes no account and reruns no prediction/fusion. Resume uses the selection in the saved request, not a changed external inputs file. Status detects damaged completed candidates. Old cycles remain valid without candidate files and cannot acquire this feature through edited external inputs or shared project settings; use a new cycle request.
+
 ## Sources and recovery
 
 Standalone commands also support `static_train --anchor YYYY-MM-DD` and `order_gen --anchor YYYY-MM-DD --trade-date YYYY-MM-DD --ensemble-record-file <fixed.json>`. The explicit ensemble file retains `combos/default_combo` and may provide `predictions.<combo>.path/sha256` for cross-workspace reads. A missing selected combo fails explicitly. Omitting the new options preserves legacy defaults; `--record-file` continues to select model records.

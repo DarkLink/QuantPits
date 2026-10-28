@@ -1,0 +1,173 @@
+{
+  "request": {
+    "cycle": "new_week",
+    "anchor": "2024-05-17",
+    "value_through": "2024-05-17",
+    "trade_date": "2024-05-21",
+    "since": "2024-05-10",
+    "inputs": {}
+  },
+  "steps": [
+    {
+      "id": "live-post",
+      "kind": "post_trade",
+      "dependencies": [],
+      "member": "live",
+      "start": "2024-05-11",
+      "through": "2024-05-17",
+      "scope": "all",
+      "already_current": false,
+      "run_id": "<run-prefix>-live-post",
+      "skip": false
+    },
+    {
+      "id": "paper_a-settle-0",
+      "kind": "settle",
+      "member": "paper_a",
+      "dependencies": [],
+      "run_id": "<run-prefix>-paper_a-settle-0",
+      "native_cycle": "old_native_id",
+      "skip": false
+    },
+    {
+      "id": "paper_a-value-2024-05-13",
+      "kind": "value",
+      "member": "paper_a",
+      "dependencies": [
+        "paper_a-settle-0"
+      ],
+      "run_id": "<run-prefix>-paper_a-value-2024-05-13",
+      "date": "2024-05-13",
+      "skip": false
+    },
+    {
+      "id": "paper_a-value",
+      "kind": "value",
+      "member": "paper_a",
+      "dependencies": [
+        "paper_a-value-2024-05-13"
+      ],
+      "run_id": "<run-prefix>-paper_a-value",
+      "date": "2024-05-17",
+      "skip": false
+    },
+    {
+      "id": "paper_b-settle-0",
+      "kind": "settle",
+      "member": "paper_b",
+      "dependencies": [],
+      "run_id": "<run-prefix>-paper_b-settle-0",
+      "native_cycle": "old_native_id",
+      "skip": false
+    },
+    {
+      "id": "paper_b-value-2024-05-13",
+      "kind": "value",
+      "member": "paper_b",
+      "dependencies": [
+        "paper_b-settle-0"
+      ],
+      "run_id": "<run-prefix>-paper_b-value-2024-05-13",
+      "date": "2024-05-13",
+      "skip": false
+    },
+    {
+      "id": "paper_b-value",
+      "kind": "value",
+      "member": "paper_b",
+      "dependencies": [
+        "paper_b-value-2024-05-13"
+      ],
+      "run_id": "<run-prefix>-paper_b-value",
+      "date": "2024-05-17",
+      "skip": false
+    },
+    {
+      "id": "candidate-predict",
+      "kind": "predict",
+      "dependencies": [],
+      "signal": "candidate",
+      "member": "paper_b",
+      "fit_sha256": "0ace86c390c71aa4248713ede7af5c82d7beea27e52874607a19176ae0f9487b",
+      "run_id": "<run-prefix>-candidate-predict",
+      "skip": false
+    },
+    {
+      "id": "candidate-fuse",
+      "kind": "fuse",
+      "dependencies": [
+        "candidate-predict"
+      ],
+      "signal": "candidate",
+      "member": "paper_b",
+      "run_id": "<run-prefix>-candidate-fuse",
+      "skip": false
+    },
+    {
+      "id": "shared-predict",
+      "kind": "predict",
+      "dependencies": [],
+      "signal": "shared",
+      "member": "live",
+      "fit_sha256": "0ace86c390c71aa4248713ede7af5c82d7beea27e52874607a19176ae0f9487b",
+      "run_id": "<run-prefix>-shared-predict",
+      "skip": false
+    },
+    {
+      "id": "shared-fuse",
+      "kind": "fuse",
+      "dependencies": [
+        "shared-predict"
+      ],
+      "signal": "shared",
+      "member": "live",
+      "run_id": "<run-prefix>-shared-fuse",
+      "skip": false
+    },
+    {
+      "id": "live-new",
+      "kind": "order",
+      "dependencies": [
+        "live-post",
+        "shared-fuse"
+      ],
+      "member": "live",
+      "signal": "shared",
+      "run_id": "<run-prefix>-live-new",
+      "skip": false
+    },
+    {
+      "id": "paper_a-new",
+      "kind": "paper_plan",
+      "dependencies": [
+        "paper_a-value",
+        "shared-fuse"
+      ],
+      "member": "paper_a",
+      "signal": "shared",
+      "native_cycle": "new_week",
+      "run_id": "<run-prefix>-paper_a-new",
+      "skip": false
+    },
+    {
+      "id": "paper_b-new",
+      "kind": "paper_plan",
+      "dependencies": [
+        "paper_b-value",
+        "candidate-fuse"
+      ],
+      "member": "paper_b",
+      "signal": "candidate",
+      "native_cycle": "new_week",
+      "run_id": "<run-prefix>-paper_b-new",
+      "skip": false
+    },
+    {
+      "id": "report",
+      "kind": "report",
+      "dependencies": [],
+      "run_id": "<run-prefix>-report",
+      "skip": false
+    }
+  ]
+}

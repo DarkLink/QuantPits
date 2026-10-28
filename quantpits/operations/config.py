@@ -135,6 +135,10 @@ def selected_fit_records(project, request, signal):
     return contained(project.members[spec["producer"]].ctx.root, value)
 
 
+def order_candidate_path(project, cycle):
+    return "output/cycles/%s/%s/orders/order_candidates.json" % (project.path.stem, identifier(cycle))
+
+
 def cycle_request(project, *, cycle, anchor, value_through, trade_date, since, inputs=None,
                   _frozen_sources=False):
     identifier(cycle)
@@ -143,8 +147,19 @@ def cycle_request(project, *, cycle, anchor, value_through, trade_date, since, i
     if not since < value_through <= anchor < trade_date:
         raise CycleError("dates require since < value-through <= anchor < trade-date")
     inputs = dict(inputs or {})
-    if set(inputs) - {"actual", "paper_cycles", "hold", "skip", "fit_records"}:
+    if set(inputs) - {"actual", "paper_cycles", "hold", "skip", "fit_records", "order_candidates"}:
         raise CycleError("unknown cycle input fields")
+    if "order_candidates" in inputs:
+        selected = inputs["order_candidates"]
+        if (not isinstance(selected, list) or any(not isinstance(key, str) for key in selected)
+                or len(set(selected)) != len(selected)):
+            raise CycleError("order_candidates must be a distinct list of actual member IDs")
+        for key in selected:
+            if key not in project.members or project.members[key].kind != "actual":
+                raise CycleError("order_candidates must name actual project members: %s" % key)
+        skipped = inputs.get("skip", [])
+        if not isinstance(skipped, list) or any(not isinstance(key, str) for key in skipped):
+            raise CycleError("skip must list step IDs")
     if "fit_records" in inputs:
         overrides = inputs["fit_records"]
         if not isinstance(overrides, dict):
@@ -166,6 +181,9 @@ def cycle_request(project, *, cycle, anchor, value_through, trade_date, since, i
     for key in hold:
         if key not in project.members:
             raise CycleError("unknown HOLD member")
+    if "order_candidates" in inputs and any(
+            key in hold or key + "-new" in skipped for key in inputs["order_candidates"]):
+        raise CycleError("order_candidates conflicts with HOLD/skip; remove the selection or enable its order step")
     for key, native_cycle in inputs.get("paper_cycles", {}).items():
         if key not in project.members or project.members[key].kind != "paper":
             raise CycleError("paper cycle mapping must name a paper member")

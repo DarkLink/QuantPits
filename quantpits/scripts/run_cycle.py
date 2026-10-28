@@ -28,7 +28,7 @@ def parser():
             command.add_argument("--value-through", required=True)
             command.add_argument("--trade-date", required=True)
             command.add_argument("--since", required=True)
-            command.add_argument("--inputs", help="cycle JSON: fit_records per-signal source overrides, actual evidence/empty-day assumption, paper_cycles, hold, skip")
+            command.add_argument("--inputs", help="cycle JSON: fit_records, actual evidence, paper_cycles, hold, skip, order_candidates actual-member selection")
     return result
 
 

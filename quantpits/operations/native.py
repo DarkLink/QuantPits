@@ -177,7 +177,10 @@ class NativeSteps:
             outputs = [contained(ctx.root, item["path"]) for item in manifest[1]["outputs"]]
             if not outputs or any(not p.is_file() for p in outputs):
                 raise CycleError("order manifest output is missing")
-            return {"run_id": step["run_id"], "manifest": str(manifest[0]), "files": [ref(p) for p in outputs]}
+            proof = {"run_id": step["run_id"], "manifest": str(manifest[0]), "files": [ref(p) for p in outputs]}
+            if "candidate_output" in step:
+                proof["candidates"] = self._order_candidates(step, manifest[1], snapshot)
+            return proof
         if kind == "rules":
             path = contained(self.directory, "rules.json")
             observation = contained(self.directory, "rules_observation.json")
@@ -326,6 +329,43 @@ class NativeSteps:
     def _signal_snapshot(self, step):
         return read_json(self.signal_dir(step) / "ensemble.json")
 
+    def _order_candidates(self, step, manifest, snapshot):
+        from quantpits.order.candidates import output_path, validate_candidates
+        ctx = self.ctx(step)
+        relative = step["candidate_output"]
+        path = output_path(ctx, relative)
+        if path != ctx.root / relative:
+            raise CycleError("order candidate path differs from its fixed location")
+        records = manifest["records"]
+        declaration = records.get("candidates")
+        if (sum(item["path"] == relative for item in manifest["outputs"]) != 1
+                or not isinstance(declaration, dict) or declaration.get("path") != relative):
+            raise CycleError("order candidates are missing from the native manifest ledger")
+        candidates = read_json(path)
+        validate_candidates(candidates)
+        if (type(declaration.get("count")) is not int or declaration["count"] != len(candidates["buys"])
+                or declaration.get("digest") != candidates["digest"]
+                or type(records.get("target_buy_count")) is not int
+                or records["target_buy_count"] != candidates["target_buy_count"]):
+            raise CycleError("order candidate count/target/digest differs from native records")
+        if (candidates["workspace"], candidates["anchor"], candidates["trade_date"]) != (
+                str(ctx.root), self.request["anchor"], self.request["trade_date"]):
+            raise CycleError("order candidate workspace/dates differ from the cycle request")
+        combo = snapshot["default_combo"]
+        source = candidates["source"]
+        expected = ("ensemble", combo, snapshot["combos"][combo], "Ensemble_Fusion")
+        if tuple(source.get(key) for key in ("mode", "resolved_name", "record_id", "experiment_name")) != expected:
+            raise CycleError("order candidate source differs from the fixed cycle signal")
+        if tuple(records.get("source", {}).get(key) for key in ("mode", "resolved_name", "record_id", "experiment_name")) != expected:
+            raise CycleError("order manifest source differs from the fixed cycle signal")
+        prediction = snapshot["predictions"][combo]
+        producer = self.project.members[self.project.signals[step["signal"]]["producer"]].ctx
+        signal_path = contained(producer.root, prediction["path"])
+        if (source["signal_digest"] != prediction["sha256"]
+                or fingerprint_file(signal_path) != prediction["sha256"]):
+            raise CycleError("order candidate signal digest differs from the fixed signal")
+        return {"path": str(path), "digest": candidates["digest"], "count": len(candidates["buys"])}
+
     def execute(self, step):
         kind, request, ctx = step["kind"], self.request, self.ctx(step)
         if kind == "blocked":
@@ -397,10 +437,13 @@ class NativeSteps:
             return self.invoke(step, "prod_post_trade", arguments)
         if kind == "order":
             spec = self.project.signals[step["signal"]]
-            return self.invoke(step, "order_gen", ["--anchor", request["anchor"], "--trade-date", request["trade_date"],
+            arguments = ["--anchor", request["anchor"], "--trade-date", request["trade_date"],
                 "--combo", spec["combo"], "--ensemble-record-file", str(self.signal_dir(step) / "ensemble.json"),
                 "--record-file", str(self.signal_dir(step) / "predictions.json"),
-                "--output-dir", "output/cycles/%s/%s/orders" % (self.project.path.stem, request["cycle"]), "--run-id", step["run_id"]])
+                "--output-dir", "output/cycles/%s/%s/orders" % (self.project.path.stem, request["cycle"]), "--run-id", step["run_id"]]
+            if "candidate_output" in step:
+                arguments += ["--candidate-output", step["candidate_output"]]
+            return self.invoke(step, "order_gen", arguments)
         if kind == "report":
             return self.invoke(step, "compare_accounts", ["--group", str(self.project.group.path), "--since", request["since"],
                 "--date", request["value_through"], "--output", str(self.directory / "reports")])

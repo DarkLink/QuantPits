@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from quantpits.operations.config import CycleError, contained, cycle_request, path_at, read_json, selected_fit_records
+from quantpits.operations.config import CycleError, contained, cycle_request, order_candidate_path, path_at, read_json, selected_fit_records
 from quantpits.operations.native import NativeSteps, next_day, ref, save_json, validate_write_context, valuation_processed, verify_refs
 from quantpits.operations.process import ProcessRunner
 from quantpits.research.paper_market import PaperMarket
@@ -171,6 +171,8 @@ def build_steps(project, request):
         fields = dict(member=member.id, signal=binding["signal"])
         if member.kind == "paper":
             fields["native_cycle"] = request["inputs"].get("paper_cycles", {}).get(member.id, request["cycle"])
+        elif member.id in request["inputs"].get("order_candidates", []):
+            fields["candidate_output"] = order_candidate_path(project, request["cycle"])
         add(member.id + "-new", "paper_plan" if member.kind == "paper" else "order", deps, **fields)
     add("report", "report")  # reports can describe partial members while another branch waits
     skip = request["inputs"].get("skip", [])
@@ -274,7 +276,18 @@ def load_state(project, cycle):
         raise CycleError("cycle progress does not preserve its requested steps")
     if value.get("steps_identity") != fingerprint_value(value["steps"]):
         raise CycleError("saved step requests changed")
+    selected_candidates = set(request["inputs"].get("order_candidates", []))
+    bound_candidates = []
     for step in value["steps"]:
+        selected = step["kind"] == "order" and step.get("member") in selected_candidates
+        if selected:
+            if (step["id"] != step["member"] + "-new"
+                    or step.get("signal") != project.accounts[step["member"]]["signal"]
+                    or step.get("candidate_output") != order_candidate_path(project, cycle)):
+                raise CycleError("saved order candidate binding differs from the cycle request")
+            bound_candidates.append(step["member"])
+        elif "candidate_output" in step:
+            raise CycleError("unselected step has an order candidate output")
         if step["skip"] != (step["id"] in request["inputs"].get("skip", [])) or set(step["dependencies"]) - set(ids):
             raise CycleError("saved step scope/dependencies differ from the cycle request")
         if step["kind"] == "predict":
@@ -284,6 +297,8 @@ def load_state(project, cycle):
                 raise CycleError("saved source binding differs from the cycle request")
         if value["results"][step["id"]].get("status") not in ("pending", "running", "done", "failed", "waiting", "interrupted", "held", "skipped"):
             raise CycleError("invalid saved step status")
+    if sorted(bound_candidates) != sorted(selected_candidates):
+        raise CycleError("saved steps do not preserve the requested order candidate members")
     return value
 
 

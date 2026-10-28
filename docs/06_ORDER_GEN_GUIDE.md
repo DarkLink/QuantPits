@@ -133,7 +133,7 @@ python -m quantpits.scripts.prepare_orders --workspace /path/to/workspace \
 
 输入须在显式workspace内；候选及 `order_preparation.json` 输出在该workspace的output内，符号链接也须满足范围。
 不同内容不覆盖，换结果目录即可；相同内容可明确复用。预览不写文件，不重新预测、融合、选择latest或读取账户配置。
-本选项尚未自动接入run_cycle，旧paper计划／账本与分析消费者沿原合同工作。
+项目的新周期可在当期inputs显式设置 `"order_candidates": ["实盘成员ID"]`，由原order步骤一次交出上述候选；见[项目指南](project_cycle.md#新周期可选导出完整订单候选)。未选择时保持旧行为，周期不自动运行数量准备，也不等待开盘价。旧paper计划／账本与分析消费者沿原合同工作。
 
 ## 配置要求
 

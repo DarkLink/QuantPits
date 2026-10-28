@@ -166,6 +166,16 @@ if __name__ == "__main__":
         from quantpits.scripts.run_cycle import main
         def fault(point, step):
             marker = Path(arguments[arguments.index("--project") + 1]).parent / "interrupt-after"
+            damage = marker.parent / "damage-order-candidates"
+            if damage.exists() and step["kind"] == "order" and "candidate_output" in step:
+                # Corrupt a real service output after native success, before
+                # project adoption. Never synthesize a replacement candidate.
+                from quantpits.operations.config import load_project
+                selected = load_project(Path(arguments[arguments.index("--project") + 1]))
+                path = selected.members[step["member"]].ctx.root / step["candidate_output"]
+                payload = json.loads(path.read_text())
+                payload["digest"] = "damaged after native completion"
+                path.write_text(json.dumps(payload))
             if marker.exists() and marker.read_text() == step["id"]:
                 marker.unlink()
                 raise KeyboardInterrupt("injected native commit/project progress gap")
