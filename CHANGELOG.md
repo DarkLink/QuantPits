@@ -7,9 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [0.4.9-alpha] - 2026-10-29
 
-- Order generation now observes exact anchor-date universe membership, prioritizes forced exits within the DropN policy, retains unscored holdings in account arithmetic, and records classification/count evidence in run manifests.
+This is a **checkpoint release** for the post-0.4.8 work. The main new capability is a weekly **project cycle**: one command runs the live account and the paper accounts together, from model prediction through settlement to new order suggestions. The release also covers static training cleanup, explicit model sources, and order candidates. It is also the last release that includes the experimental forward shadow (C3/C4/D) chain and the unwired rolling domain protocol. Both are scheduled for removal in the next release; use this tag if you need to read their historical records.
+
+144 commits, 388 files changed, ~105,000 lines added since v0.4.8-alpha.
+
+### Added
+
+#### Weekly Operations
+- **Multi-account project cycle** (`operations/`, `scripts/run_cycle.py`): `plan / run / status / resume` for one project that links the live account and paper accounts. Each step resumes from its native manifest or ledger. Missing broker files only block steps that depend on that live account. `run_cycle evaluate` compares saved cycle signals under common conditions.
+- **Independent weekly paper accounts** (`research/paper_*`, `scripts/paper_trade.py`): paper accounts carry their own cash and holdings across cycles. They use frozen plans, lot-size and fee-aware fills, explicit HOLD/skip, daily valuation and validated stale-price handling.
+- **Account group comparison and explanations** (`research/account_comparison*.py`, `research/account_differences.py`, `scripts/compare_accounts.py`): read-only reports across accounts that break down asset and execution differences.
+
+#### Training, Signals and Orders
+- **Explicit model sources** (`training/model_source.py`): preview and export the members of a chosen static run. A cycle request can then select its own model source, while the project default and old cycle identities stay unchanged.
+- **Static model vs. record configuration** (`training/static_config.py`, `training/research.py`): model and dataset configuration is built separately from records and backtest settings. The new `--research-config` option lets static train and predict-only runs skip account JSON reads.
+- **Single prediction per run**: static predict-only runs and the end of training now compute the final prediction once and pass it to all records, instead of recomputing it in SignalRecord.
+- **Order candidates** (`order/candidates.py`, `order/preparation.py`): primary and backup candidates are kept even when the estimated quantity is zero. Cash and open-price based quantity preparation is available as a separate tool. A project cycle can opt in to exporting the complete candidate list (`order_candidates`).
+- Order generation observes exact universe membership on the anchor date, gives forced exits priority within the DropN policy, and keeps unscored holdings in account arithmetic.
+
+#### Infrastructure
+- **Production cycle evidence** (`evidence/`): seals private production cycle evidence (Phase 37A).
+- **Model capability matrix** (`model_capabilities/`): verified capability observation for model wrappers.
+- **Semantic test lane** (`make test-semantic`): isolated cross-command contract tests.
+- Random monkey statistical benchmark; QuantPits Arena links on the landing page.
+
+#### Experimental (removal planned)
+- Forward shadow research chain: definition store, publication, evidence, bootstrap, signal and model capsules, decision surface, and intent preparation, publication, settlement, continuation and window reports. It was never enabled for operations and has been replaced by the weekly paper accounts.
+- Rolling domain protocol (`rolling/` execution, aggregate, recovery and repository backends, and `tools/verify_rolling_aggregate_candidate.py`): it was never wired into `rolling_train.py`, which still runs through the legacy adapter.
+
+### Fixed
+- post-trade: validate bundle coverage against trading dates and Qlib quotes at cent precision; preserve broker cash adjustments; recognize GTJA execution mode labels.
+- training: preserve the TRA prediction tail on resume and after fit; isolate dates, artifact roots and early-failure retries; read recorder completion only after writes finish.
+- qlib: reload owned model artifacts through the trusted API.
+- workspace: preserve an explicit MLflow backend when a workspace is reactivated.
+- operations: isolate the cycle environment; value paper accounts daily; advance paper cycles after validated stale valuations.
+- analysis: trade classification and friction analysis read native cycle order suggestions.
+- test: Docker compatibility with pandas 3; optional torch handling in CI.
+
+### Known Gaps
+- `pyproject.toml` had stayed at `0.4.3-alpha` through 0.4.4–0.4.8; this release realigns it. Some module paths cited in the 0.4.7/0.4.8 notes (`runtime/context.py`, `config/validators.py`, `training/identity.py`) correspond to `utils/workspace.py`, `config_contracts/` and `training/` services in the current tree.
+
+---
 
 ## [0.4.8-alpha] - 2026-07-14
 
