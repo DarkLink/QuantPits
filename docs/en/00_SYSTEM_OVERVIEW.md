@@ -20,15 +20,37 @@ The system strictly separates **Engine (Code)** from **Workspace (Data & Config)
 4. (Optional) Custom data source: Uncomment `QLIB_DATA_DIR` / `QLIB_REGION` in `run_env.sh` to point the workspace at a different Qlib data directory (defaults to `~/.qlib/qlib_data/cn_data` and `cn`).
 5. Execute scripts: Scripts will automatically route all file I/O into the currently activated workspace, and `env.init_qlib()` will initialize Qlib with the configured data path.
    > [!IMPORTANT]
-   > **Initialization order**: Core scripts should import `env` before resolving workspace-scoped paths. This ensures `ROOT_DIR` is recognized, `MLFLOW_TRACKING_URI` points to the active workspace's MLflow backend (SQLite `mlflow.db` by default; legacy `mlruns/` file stores are auto-detected), and `env.init_qlib()` binds both the Qlib data provider and experiment manager to that workspace. To customize the backend, set `MLFLOW_TRACKING_URI` in `run_env.sh`.
-   >
-   > **Runtime context**: New code should prefer `env.get_workspace_context()` to obtain an explicit `WorkspaceContext` instead of copying `env.ROOT_DIR`, deriving import-time path constants, or changing the process `cwd` with `os.chdir()`. Legacy APIs remain compatible and production scripts will migrate gradually; `ensemble_fusion.py` has already removed its import-time cwd side effect.
+   > **Runtime context**: Commands supporting `--workspace` and project/group contexts use explicit
+   > `WorkspaceContext` objects. Pass that context into new code; avoid deriving paths at import time
+   > or changing process cwd. Legacy `env` entries resolve the activated workspace and honor an explicit
+   > `MLFLOW_TRACKING_URI`; otherwise they select an existing `mlruns/` store or default to SQLite
+   > `mlflow.db`. Explicit contexts should bind the intended backend and provider themselves.
 
 ---
 
 For a read-only overview across actual/paper accounts, use `python -m quantpits.scripts.compare_accounts`.
 It needs no workspace activation or `env` import and initializes neither Qlib nor MLflow. See the
 [account comparison guide](account_comparison.md) for configuration, accounting rules, and exit codes.
+
+## Project Cycles and Paper Accounts
+
+Use [project cycle execution](project_cycle.md) for routine operations across an existing actual
+account and multiple paper accounts. The project binds accounts, model sources, and signals; each
+cycle's inputs select broker evidence, new paper-plan IDs, and HOLD/skip choices. Inspect dates and
+dependencies with `run_cycle plan`, execute with `run`, and continue the same request through
+`status` and `resume` after interruption or partial failure.
+
+Each signal group performs predict-only and fusion once per cycle, and its accounts share the
+fixed cycle signal. The cycle coordinates actual post-trade processing, settlement of due paper
+plans, valuation on each trading day, and new actual orders and paper plans. Missing broker data
+blocks only the dependent actual-account steps; independent accounts can continue. Completed steps
+are adopted from their verified native manifests, transactions, or journals.
+
+Bootstrap a new paper account once using the [weekly paper guide](research_paper_weekly.md), then
+carry its settled cash and holdings into later periods. Saved plans keep their original signal,
+fees, and execution rules. Use [compare_accounts](account_comparison.md) for account reports and
+project-cycle `evaluate` for saved-signal evaluation. Initial training and retraining remain
+separate, on-demand operations. The single-account commands below are the direct domain entries.
 
 ## Core Design Philosophy
 

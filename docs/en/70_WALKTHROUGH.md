@@ -12,6 +12,8 @@ For shared signals, actual/paper account advancement and recovery across workspa
 
 ## Table of Contents
 
+- [Routine project/paper workflow](#routine-workflow-project-cycles-and-paper-accounts)
+
 1. [Install Qlib & Dependencies](#1-install-qlib--dependencies)
 2. [Prepare Market Data](#2-prepare-market-data)
 3. [Initialize a Workspace](#3-initialize-a-workspace)
@@ -23,6 +25,37 @@ For shared signals, actual/paper account advancement and recovery across workspa
 9. [Process Live-Trade Data (Post-Trade)](#9-process-live-trade-data-post-trade)
 10. [Generate Trade Orders (Order Gen)](#10-generate-trade-orders-order-gen)
 11. [Live-Trading Analysis](#11-live-trading-analysis)
+
+---
+
+## Routine Workflow: Project Cycles and Paper Accounts
+
+After preparing the environment, data, and models below, use one [project cycle](project_cycle.md)
+to advance an actual account and multiple paper accounts. Bootstrap each new paper account once
+using the [paper guide](research_paper_weekly.md); continue existing accounts from their journals.
+The group file specifies each workspace, MLflow backend, and provider. The project binds models
+and signals, while the cycle inputs supply broker data and new paper-plan IDs.
+
+Replace these example dates and paths with the intended period and inspect the read-only plan:
+
+```bash
+python -m quantpits.scripts.run_cycle plan --project /path/to/project.yaml --cycle week_one \
+  --anchor 2024-05-17 --value-through 2024-05-17 --trade-date 2024-05-21 \
+  --since 2024-05-10 --inputs /path/to/inputs.json
+
+# Execute the same request in the authorized workspaces
+python -m quantpits.scripts.run_cycle run --project /path/to/project.yaml --cycle week_one \
+  --anchor 2024-05-17 --value-through 2024-05-17 --trade-date 2024-05-21 \
+  --since 2024-05-10 --inputs /path/to/inputs.json
+python -m quantpits.scripts.run_cycle status --project /path/to/project.yaml --cycle week_one
+python -m quantpits.scripts.run_cycle resume --project /path/to/project.yaml --cycle week_one
+```
+
+The cycle coordinates shared predict-only/fusion signals, actual post-trade processing, daily paper
+valuation, settlement of due plans, and new orders/plans. `status` exposes completion, failures, and
+waiting steps; `resume` continues from the original evidence. Paper settlement waits for actual
+opening data instead of assuming fills. Train models and search combinations separately as needed;
+the remaining sections describe the direct domain commands.
 
 ---
 

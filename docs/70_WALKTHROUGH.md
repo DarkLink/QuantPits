@@ -12,6 +12,8 @@
 
 ## 目录
 
+- [例行 project/paper 主流程](#例行主流程project-cycle-与-paper)
+
 1. [安装 Qlib 及依赖](#1-安装-qlib-及依赖)
 2. [准备行情数据](#2-准备行情数据)
 3. [初始化工作区](#3-初始化工作区)
@@ -23,6 +25,34 @@
 9. [处理实盘数据（Post-Trade）](#9-处理实盘数据post-trade)
 10. [生成交易订单（Order Gen）](#10-生成交易订单order-gen)
 11. [实盘分析](#11-实盘分析)
+
+---
+
+## 例行主流程：project cycle 与 paper
+
+完成下文的环境、行情和模型准备后，实盘与多个 paper 的日常推进使用同一
+[项目周期配置](project_cycle.md)。为新 paper 按 [paper 指南](research_paper_weekly.md) 初始化一次；
+已有账户直接续期。组文件明确各工作区、MLflow 后端和 provider，项目文件绑定模型与信号，
+本期 inputs 提供券商资料和新的 paper 计划 ID。
+
+以下日期及路径为示例；按实际周期填写，先查看只读计划：
+
+```bash
+python -m quantpits.scripts.run_cycle plan --project /path/to/project.yaml --cycle week_one \
+  --anchor 2024-05-17 --value-through 2024-05-17 --trade-date 2024-05-21 \
+  --since 2024-05-10 --inputs /path/to/inputs.json
+
+# 在已授权的工作区执行同一请求
+python -m quantpits.scripts.run_cycle run --project /path/to/project.yaml --cycle week_one \
+  --anchor 2024-05-17 --value-through 2024-05-17 --trade-date 2024-05-21 \
+  --since 2024-05-10 --inputs /path/to/inputs.json
+python -m quantpits.scripts.run_cycle status --project /path/to/project.yaml --cycle week_one
+python -m quantpits.scripts.run_cycle resume --project /path/to/project.yaml --cycle week_one
+```
+
+周期负责共享 predict-only／融合信号、推进旧账和 paper 每日估值、结算到期计划并生成新订单／计划。
+`status` 展示已完成、失败和等待；`resume` 沿原证据接续。paper 的实际开盘行情未到齐时保留待结算，
+不会自动假设成交。重训及组合搜索按需单独开展；下文保留各领域命令的具体用法。
 
 ---
 

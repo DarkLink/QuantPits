@@ -20,14 +20,30 @@
 4. (可选) 自定义数据源：在 `run_env.sh` 中取消注释 `QLIB_DATA_DIR` / `QLIB_REGION`，即可为该工作区指向不同的 Qlib 数据目录（默认 `~/.qlib/qlib_data/cn_data`、`cn`）。
 5. 执行脚本：脚本会自动将所有的文件读写路由到当前激活的工作区内部。
    > [!IMPORTANT]
-   > **初始化顺序**：所有核心脚本必须在开头首先执行 `import env`。这会确保 `ROOT_DIR` 被正确识别，`MLFLOW_TRACKING_URI` 指向工作区内部的 MLflow 数据库（新工作区默认 `mlflow.db` / SQLite；含历史 `mlruns/` 数据的旧工作区自动回退到 `file://` 并设置 `MLFLOW_ALLOW_FILE_STORE=true`），并通过 `env.init_qlib()` 统一初始化 Qlib 数据路径及绑定同一工作区的 experiment manager。如需使用自定义后端，在 `run_env.sh` 中设置 `MLFLOW_TRACKING_URI` 即可，`env.py` 会优先使用该值。
-   >
-   > **运行时上下文**：新增代码优先通过 `env.get_workspace_context()` 获取显式的 `WorkspaceContext`，而不是直接复制 `env.ROOT_DIR`、在 import 时派生路径常量，或通过 `os.chdir()` 隐式改变进程 cwd。旧接口仍保持兼容，现有生产脚本会逐步迁移；`ensemble_fusion.py` 已完成 import-time cwd 副作用清理。
+   > **运行时上下文**：支持 `--workspace` 的入口和 project/group 上下文使用显式 `WorkspaceContext`。
+   > 新代码传递该上下文，避免在 import 时派生路径或切换进程 cwd。旧 `env` 入口解析已激活工作区，
+   > 优先采用明确的 `MLFLOW_TRACKING_URI`；未指定时使用已有 `mlruns/`，其余默认 SQLite `mlflow.db`。
+   > 显式构造上下文时应同时绑定预期 backend 和 provider。
 
 ---
 
 多个实盘／paper 账户的只读总览使用 `python -m quantpits.scripts.compare_accounts`，不要求激活
 workspace 或导入 `env`，也不初始化 Qlib／MLflow；组配置、财务口径和退出码见[账户对比指南](account_comparison.md)。
+
+## 项目周期与 paper 主流程
+
+已有实盘与多个 paper 账户的例行操作使用 [项目周期运行](project_cycle.md)：项目配置明确账户、
+模型来源与信号绑定，本期 inputs 明确交割资料、paper 新计划 ID 和 HOLD/skip 选择。先用
+`run_cycle plan` 核对日期与依赖，再执行 `run`；中断或部分失败后通过原项目的 `status`、`resume` 接续。
+
+每个信号组每周期只做一次 predict-only 和融合，账户共享本期固定信号。周期同时协调实盘旧账、
+paper 到期计划结算、逐交易日估值，以及新的实盘订单和 paper 计划。缺少券商资料只阻断依赖该实盘账户的
+步骤，其它独立账户继续推进。已完成步骤沿原生 manifest、事务或 journal 核验采用。
+
+新 paper 账户按 [独立 paper 周期](research_paper_weekly.md) 仅 bootstrap 一次；以后使用自身结算后的
+现金和持仓续期，原计划的信号、费用及执行规则保持冻结。账户比较使用
+[compare_accounts](account_comparison.md)，保存信号评估见项目周期的 `evaluate`。首训或重训按需在
+训练入口独立执行；下面的单账户命令仍是各业务步骤的直接入口。
 
 ## 核心设计理念
 

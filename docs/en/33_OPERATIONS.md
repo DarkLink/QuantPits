@@ -89,74 +89,18 @@ workspace identities, absolute paths, or runtime data.
 
 Fully independent. `--cold-start` clears only the current method's state.
 
-Only valid legacy state can currently enter legacy execution. The reader validates a
-`schema_version=2` identity envelope. A standalone `RollingStateRepository` now provides the
-canonical sibling lock, exact-baseline CAS, atomic replace/delete, and truthful receipts, but it is
-not connected to the CLI. Public mutation, clear, or resume therefore still rejects V2 before
-safeguard, lease, and backend activation. The version must be the JSON
-integer `2`; floats `2.0`/`2e0` are unsupported. Zero-byte files, `{}`, duplicate JSON keys,
-non-canonical window/run identities, family/workspace/config identity mismatches, and external
-symlinks fail closed. A legacy config is reported as `checked` only when present in state and its
-fingerprint was actually compared; mismatch inspections expose no raw legacy payload. Completion or
-recorder claims without evidence reinspection are not recovery reuse authority. Plain repository
-`commit()` permits only pre-evidence transitions. The Phase 34 evidence-authorized entry rebuilds
-the exact `RollingEvidenceSetInspection`, validates the complete original source selector, permits
-only `executing → units_complete`, and continues
-to reject `completed`. Legacy migration produces only a deterministic, zero-write,
-proposal-only postimage audit with no CLI or `apply()` capability. Immutable evidence now has a
-standalone read-only domain API consumed by the exact-unit kernel, but not by the legacy CLI.
-Repository data/state/lock mappings cannot be redirected through a context or
-public field, create rejects a foreign workspace identity before temp/replace, and
-compare-and-delete accepts only an exact `failed` V2.
+Only valid legacy state can enter legacy execution. The read-only classifier recognizes a
+`schema_version=2` identity envelope, but CLI mutation, clear, and resume reject V2 before safeguard,
+lease acquisition, or backend initialization. The version must be the JSON integer `2`;
+`2.0`/`2e0` are unsupported. Zero-byte files, `{}`, duplicate JSON keys, non-canonical window/run
+identities, family/workspace/config mismatches, and external symlinks fail closed. A legacy config
+is reported as `checked` only when present in state and actually compared by fingerprint; mismatch
+inspections do not expose a raw legacy payload. A completion flag or recorder ID alone does not
+establish verified recovery evidence.
 
-### Immutable evidence and recovery proposals
-
-`inspect_rolling_evidence(context, requests, backend)` accepts only an explicit
-`WorkspaceContext` and original-run-bound source manifests. It does not infer a source from
-`latest_train_records.json`, the registry, a State receipt, or console output. Every requested
-target×window retains one terminal result; available recorders and orphans cannot shrink or expand
-the requested set.
-
-A unit is `valid` only after one unique identity-bound candidate, physically contained regular
-artifacts opened component by component from a workspace-root directory fd with no-follow semantics,
-exact byte digests, and complete prediction session/index/
-finite-score predicates have all been observed and compared. Other terminal classifications are
-`missing`, `duplicate`, `foreign`, `identity_mismatch`, `partial`, `corrupt`, `coverage_short`,
-`not_comparable`, `legacy_unverified`, or `drifted`; orphans remain in a separate audit list. A
-metadata inventory change blocks the complete recovery observation, while drift of one artifact's
-public path blocks only that unit.
-Prediction pickles are decoded by a restricted unpickler. A payload that references globals beyond
-the required pandas/numpy object graph, or an arbitrary reducer, becomes `corrupt /
-prediction_decode_failed`; the reducer is not executed.
-`checked` lists only predicates actually executed with comparable inputs. `n_candidates` comes
-directly from authoritative inventory cardinality; each member is assigned at most once, and
-`n_unassigned_candidates` exposes members that cannot form a valid target/window identity.
-Leaf/orphan cardinality requires inspector provenance and cannot be forged through public
-constructors, and recovery accepts only an aggregate retaining that provenance. A `valid` leaf has the same provenance protection, so public construction or field
-replay cannot grant reuse. Malformed backend metadata and other non-interrupt operational exceptions
-are redacted into the corresponding requested unit's terminal result; they cannot abort later
-members or expose a local-path-shaped identifier. A target/window family mismatch cannot be accepted
-as an orphan by evidence and then rejected by recovery.
-
-`classify_rolling_recovery(requests, evidence_set)` returns only an `all_reusable`, `incomplete`,
-`no_reusable_evidence`, or `blocked` proposal. It has no `apply()` method and does not train, fill a
-prediction gap, mutate State V2, publish a current record, or clean a recorder. The Phase 34 domain
-API uses `build_rolling_execution_scope(prepared, resolved, selected_window_keys, targets, windows)`
-to revalidate Prepared/Resolved authority and an ordered subset of resolved windows, while binding
-runtime parameters, observed sessions, Qlib provider/region, and the MLflow backend into the
-execution identity. It then exposes `preflight_rolling_execution()`,
-`execute_rolling_units()`, and `resume_rolling_units()` for the exact
-LinearModel/DatasetH/Slide unit. After the runner, the backend must prove the unique newly created
-recorder, experiment, and tags. Resume consumes the exact recovery proposal and reads only the
-original source frozen in State V2; its
-highest durable success phase is `units_complete`. Retry preserves prior attempt
-failure/interruption/source facts in append-only `prior_attempts`; final success retains that audit,
-and State CAS rejects deletion, mutation, reordering, or duplicate attempts. If a crash leaves an
-`executing` envelope with a durable `failed` claim, resume preserves that failure, converges the old
-envelope, and retries under a new attempt. Any valid recorder/evidence left by the old attempt is an
-orphan and cannot be promoted to success. These APIs write no current record, combined
-recorder, backtest, history, or promotion output; existing `rolling_train.py` commands remain on the
-legacy route.
+Legacy-to-V2 support is limited to deterministic, zero-write serialization and a migration proposal;
+it has no CLI or `apply()` operation. Continue existing accounts through the legacy CLI and their
+original state files.
 
 ### Cross-Mode Isolation
 
@@ -227,63 +171,6 @@ pos    0.0
 ```
 
 ## 6. Troubleshooting
-
-The Phase 35 aggregate candidate boundary is not wired to the production Rolling CLI. Do not treat
-`Rolling_Aggregate_Candidates` / `CPCV_Rolling_Aggregate_Candidates` as current or manually place
-them in `latest_train_records.json`. The reusable gate command is preflight-only by default; a real
-`--execute` adapter gate requires release-owner authorization in a disposable `Demo_Workspace`
-validation environment and performs no training.
-
-For incident review, a candidate is reusable only when its MLflow run is active and terminal
-`FINISHED` and its complete source-derived manifest contract still matches reobserved sources.
-Failed, killed, running, deleted, partial, duplicate, or provenance-mismatched runs are audit-only.
-All candidate staging and namespace writes must remain physically inside the selected disposable
-workspace. Repository, source scope, and candidate backend must bind the same canonical workspace,
-and the candidate experiment artifact location must be
-`data/rolling_aggregate_candidates_<family>/`. Terminal inventory must contain exactly one active,
-`FINISHED`, exact candidate per target, checked under the candidate lock. A duplicate or drifted
-candidate cannot receive `publication_input`. A different candidate key under the same scope or
-the same attempt/target is a requested collision, not an orphan; terminal
-raw/requested/orphan/unassigned counts remain visible. The terminal-reuse open itself never creates the
-lock. If the lock disappears after precheck or is not the canonical regular file, a known
-zero-write result is `blocked / did_write=false`; manually recreating the lock does not turn that
-invocation into success.
-Source prediction bytes must also match the exact size/SHA-256 frozen in the Phase 32 request.
-The candidate artifact root permits only the direct regular files `pred.pkl` and
-`aggregate_manifest.json`; any extra directory, symlink, or special node blocks reuse. Neither the
-root nor any ancestor in the MLflow public artifact URI may be a directory alias, including an
-alias to a contained target in the same workspace; the directory chain is rechecked through the
-original public URI after the reads. Before the first candidate artifact upload, the canonical
-experiment, recorder artifact root, and staging identities are frozen. Each direct artifact's
-device/inode is frozen immediately after its first write and rechecked after later uploads,
-terminal transition, inventory, create return, and final reinspection. The create/reuse namespace
-fingerprint also binds link count and stable size/mtime/ctime metadata; hardlinks and same-inode
-rewrites fail closed, and the fingerprint remains joined through the kernel terminal recheck.
-The candidate lock, staging files, SQLite tracking database, and any existing journal/WAL/SHM
-sidecars must be link-count-one regular nodes. Staging uses exclusive creation and rechecks the
-public/open identity before and after writing and upload. The Gate must repeat
-`--protected-workspace` for every production and experimental read-only root. Cleanup defaults to
-preserve and cannot remove a protected/repository ancestor or an aliased tree.
-Source root/direct-node identity
-likewise spans from before evidence inspection through returned prediction bytes and the terminal
-postcondition. A same-URI replacement of the SQLite file
-or file-store root is backend drift and cannot grant source, candidate, or publication authority;
-byte-identical directory or file inode replacement cannot grant authority either.
-Artifact-root creation and experiment metadata are separate before/after inventory facts. Even
-with a zero recorder delta, creation of either namespace preserves `did_write=true`.
-Gate execute uses a recursive lifecycle mutation observer and installs each new-directory watch synchronously
-before `mkdir` or directory rename returns, including no-wait write-then-delete. Its write
-allow-list is anchored back to the terminal experiment, recorder, and candidate identities, so a
-broad `mlruns/` or `qlib_data/` prefix grants no authority. Physical write bytes come from
-`/proc/self/io`. Each observer also freezes the device/inode of the disposable, every protected,
-and repository public root plus its complete ancestor chain through no-follow descriptors, records
-root/ancestor move/delete-self events without a child name, and rejoins every identity through the
-original public path at shutdown. Moving and restoring any observed directory or replacing it with
-a same-content directory is drift. Primary runs
-in a separate process with a hard 300-second timeout; reuse receives
-only the remainder of that same total budget.
-The Gate source fixture never invokes a model-capability probe or `LinearModel.fit`;
-`training_calls=0` must come from the profiler observer rather than a constant declaration.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|

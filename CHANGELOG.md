@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Retired the experimental forward research pipeline, its definition/decision-surface and
+  signal/model capsule APIs, the 16 associated CLIs, and their dedicated tests and guides.
+  Weekly paper accounts, account comparisons, historical replay/window tools, and production
+  cycle evidence remain available. The `v0.4.9-alpha` tag retains the retired source for reading
+  historical records; private workspaces and ignored runtime data are not stored in that tag.
+- Removed the unwired rolling State repository, evidence/recovery, exact-unit execution,
+  aggregate-candidate backends and validation tool, plus the model capability observation layer.
+  `rolling_train.py` continues through its legacy adapter with existing planning, identity and
+  read-only state inspection. Model wrappers, datasets, saved models and account data are unchanged.
+
 ## [0.4.9-alpha] - 2026-10-29
 
 This is a **checkpoint release** for the post-0.4.8 work. The main new capability is a weekly **project cycle**: one command runs the live account and the paper accounts together, from model prediction through settlement to new order suggestions. The release also covers static training cleanup, explicit model sources, and order candidates. It is also the last release that includes the experimental forward shadow (C3/C4/D) chain and the unwired rolling domain protocol. Both are scheduled for removal in the next release; use this tag if you need to read their historical records.
