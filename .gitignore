@@ -202,6 +202,9 @@ brain/
 # Local planning and design docs (not part of the shipped product)
 plan/
 
+# Private cross-workspace project configuration and cycle state
+/projects/
+
 # Research papers (maintained on a separate branch)
 papers/
 

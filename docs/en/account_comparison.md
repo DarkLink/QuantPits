@@ -6,8 +6,20 @@ or paper operations. It does not register, migrate, or merge accounts.
 
 ## Configuration and command
 
-The group is an index stored at any explicitly selected path. Keep private configurations and reports
-under ignored `brain/account_groups/` directories; do not commit private paths, identities, or balances.
+The group is an index stored at any explicitly selected path. Keep private project configurations,
+cycle state and reports under ignored `projects/<project>/` directories, with models and account data
+in their own workspaces. Do not commit private paths, identities, or balances. Existing
+`brain/account_groups/` paths remain supported: preserve the original configuration and directories
+for existing cycles, and use the new location for new cycles. Include ignored business files in local
+backups.
+
+When relocating project configuration, check relative group/rule paths and retain the original
+configuration and complete `cycles/` directory for existing periods. Use new project-cycle and paper-plan
+IDs at the new location; existing pending plans continue under their original IDs in the same workspace
+journals. The absolute project path changes signal namespaces and native run IDs, while order directories
+still depend on the project filename and cycle ID. Do not rerun an old cycle at the new location or copy
+its progress there to resume. See [project cycle execution](project_cycle.md) for the runtime boundaries.
+
 This example uses synthetic paths only:
 
 ```yaml

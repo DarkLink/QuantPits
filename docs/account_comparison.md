@@ -5,8 +5,17 @@ workspace，不初始化 Qlib／MLflow，不运行训练、交割或 paper 步�
 
 ## 组配置与命令
 
-组配置是一个操作索引，可以放在任意路径。真实配置及报告建议保存在忽略的 `brain/account_groups/`
-下，不把私人路径、账户 ID 或余额提交到 Git。公开示例仅使用合成路径：
+组配置是一个操作索引，可以放在任意显式路径。真实项目配置、周期进度和报告建议放在忽略的
+`projects/<project>/` 下，模型和账户数据仍留各自 workspace，不把私人路径、账户 ID 或余额提交到 Git。
+原有 `brain/account_groups/` 路径继续支持；已有周期保留原配置及目录，新位置用于新周期。
+这些忽略的业务资料应纳入本机备份。
+
+迁移项目配置时核对相对 group／规则路径，保留旧配置与完整 `cycles/` 供旧周期接续。
+新位置使用全新的 project cycle 和 paper 计划 ID；现有 pending 仍从原 workspace 账本按原 ID 处理。
+项目绝对路径会改变信号目录及原生 run ID，而订单目录仍按项目文件名和 cycle ID 定位，
+因此不要在新位置重跑旧 cycle 或复制旧 progress 接续。运行边界见[项目周期指南](project_cycle.md)。
+
+公开示例仅使用合成路径：
 
 ```yaml
 name: example_comparison
