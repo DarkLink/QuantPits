@@ -1,6 +1,6 @@
 # Rolling Training Guide (Overview)
 
-> Phase 28A/28B/28C establish an import-pure CLI, a filesystem-only authoritative Prepared Plan,
+> Rolling provides an import-pure CLI, a filesystem-only authoritative Prepared Plan,
 > and an in-lease Resolved Plan plus legacy execution adapter.
 > Importing the module and running `--help` require no prior `source run_env.sh` and do not change the
 > current directory. `--dry-run`, `--explain-plan`, and `--json-plan` render the same typed plan,
@@ -18,14 +18,11 @@
 > IDs, and attempt IDs do not alter execution identity. The adapter
 > consumes only Prepared targets and Resolved windows; it does not rescan the registry or generate a
 > second window set. Rolling still uses unversioned legacy state and legacy record
-> merge, without the newer evidence/publication closure parity.
+> merge; it does not establish per-window immutable evidence or publication receipts.
 
-> Phase 27 transition boundary: Rolling/CPCV-rolling still use their legacy window/state
-> orchestration and are not yet backed by the static/CPCV execution service. All real mutating
-> commands now share the workspace training execution lease with static/CPCV, preventing concurrent
-> current-record replacement. `--show-state` and `--dry-run` do not acquire that lease. Phase 34
-> adds a standalone exact-unit execution/evidence kernel without switching the existing CLI to it;
-> publication, current-record replacement, and closure remain later boundaries.
+> Rolling/CPCV-rolling use the legacy window/state orchestration. Real mutating commands share
+> the workspace training execution lease with static/CPCV to prevent concurrent current-record
+> replacement. `--show-state` and plan routes do not acquire that lease.
 
 Rolling model reload supports Qlib's artifact hardening: our own selected model artifacts use explicit
 `trusted=True`, older APIs retain their original call, and prediction/report data keep default loading.
@@ -41,11 +38,9 @@ end-of-fold marker and never causes prediction replacement using only a subset. 
 > files, duplicate JSON keys, unsupported schemas, cross-workspace symlinks, ambiguous indexes, and
 > identity mismatches never degrade to missing/empty. The reader recognizes the State V2 identity
 > envelope and accepts only the JSON integer `schema_version: 2` (rejecting `2.0`/`2e0`).
-> `quantpits.rolling.repository` now provides canonical paths, sibling locks, CAS, atomic
-> replace/delete, and actual-postimage receipts under an explicit `WorkspaceContext`. Public Rolling
-> runtime has not adopted it, so V2 still cannot enter the legacy writer, CLI mutation, or
-> recovery/reuse. Legacy-to-V2 support is a deterministic, zero-write proposal audit with no
-> `apply()` capability. A legacy `rolling_config` is reported as
+> State V2 remains available for read-only classification and serialization; it cannot enter
+> the legacy writer, CLI mutation, or recovery/reuse. Legacy-to-V2 support produces a
+> deterministic zero-write proposal with no `apply()` capability. A legacy `rolling_config` is reported as
 > `checked` only when it exists in state and its fingerprint was compared; mismatch inspections do
 > not expose a raw compatibility payload. `--clear-state` backs up/deletes
 > state, so it still passes safeguard and holds the shared execution lease.
@@ -101,19 +96,13 @@ rolling_train.py      ← CLI + orchestration + strategy dispatch
 ```
 quantpits/rolling/
 ├── command.py            # filesystem-only PreparedRollingRun
-├── identity.py           # pure canonical target/fold/window/run identities
-├── state.py              # strict V2 serializer + readonly classifier/migration proposal
-├── repository.py         # canonical lock + CAS + atomic State V2 persistence
-├── evidence.py           # immutable per-unit artifact/coverage inspection
-├── recovery.py           # proposal-only recovery classification
-├── windows.py            # runtime windows + exact business-session observation
-├── execution.py          # scope/preflight/result contracts + public domain API
-├── execution_backend.py  # exact-unit kernel / deterministic-resume truth owner
-├── unit_runner.py        # narrow LinearModel/DatasetH/Slide runner
-├── mlflow_execution_backend.py # local recorder manifest + evidence adapter
-└── legacy.py             # exact-scope legacy adapter + baseline recheck
+├── errors.py             # typed command failures
+├── identity.py           # canonical target/fold/window/run identities
+├── state.py              # read-only classification, V2 serialization and migration proposal
+├── windows.py            # runtime windows and business sessions
+└── legacy.py             # legacy execution adapter and baseline recheck
 
-rolling/
+quantpits/scripts/rolling/
 ├── state.py              # State management (separate file per method)
 ├── memory.py             # 3-tier memory cleanup
 ├── backtest.py           # Backtest
@@ -196,158 +185,6 @@ backend activation. `--show-state` reports `missing`, `valid_legacy`, `valid_ver
 stable reason code. A state `completed`/success flag or recorder ID is only a claim; it is not
 immutable unit evidence or a publication receipt.
 
-The State V2 repository is a standalone domain API for later execution/evidence consumers, not a
-new CLI. It requires an exact baseline token; `WorkspaceContext.data_dir` must equal `root/data`,
-and family-specific state/lock paths are read-only derived mappings. It rereads and classifies the
-same byte snapshot under the canonical sibling lock, validates workspace identity and the
-transition, writes a same-directory temporary file, then performs file fsync, a
-pre-replace CAS recheck, atomic replace, directory fsync, and an
-actual reread. Conflicts, invalid sources/transitions, write failures, and interruption are never
-reported as committed; uncertain directory durability or postimage reread produces only
-`durability_uncertain`. Compare-and-delete accepts only an exact `failed` V2 and has no public
-parameter that can relax this rule. Plain `commit()` still rejects success and `units_complete`.
-The separate evidence-authorized entry rebuilds an inspector-owned
-`RollingEvidenceSetInspection`, jointly checks every original attempt, experiment, recorder,
-source protocol/operation, source manifest, artifact expectation, and evidence identity, and can advance only as
-far as `units_complete`; `completed` still requires a later publication receipt. Existing legacy
-`rolling_train.py`, `--clear-state`, resume, and backup
-behavior is unchanged and no workspace is migrated automatically.
-
-Immutable Rolling evidence is also a standalone, read-only domain API rather than a CLI. A caller
-must provide an ordered, duplicate-free target×window request set under one `RollingRunIdentity`,
-plus source manifests frozen by the original logical run. `inspect_rolling_evidence(context,
-requests, backend)` snapshots metadata inventory before and after observation. Starting from a
-workspace-root directory fd, the inspector opens every ancestor and required artifact with
-component-by-component no-follow semantics, then checks the exact byte size and
-SHA-256, decodes the prediction bytes, and compares complete ordered sessions, a unique canonical
-index, and finite scores. Prediction pickles are limited to the pandas/numpy globals needed for the
-prediction object; arbitrary reducers are not executed. `checked` names only predicates actually
-executed with comparable inputs. The inspector computes `n_candidates` directly from authoritative
-inventory cardinality; each inventory member belongs to at most one requested unit or valid orphan,
-and `n_unassigned_candidates` exposes members that cannot form a valid identity. Leaf/orphan display
-cardinalities require inspector provenance, and recovery accepts only an aggregate retaining that
-provenance; neither can be forged through public constructors. Only
-inspector-created `valid` evidence carries recovery provenance; callers cannot assemble reusable
-facts through the public constructor. Recorder or state-completion existence alone, a legacy source, duplicate
-candidates, identity mismatch, missing/corrupt artifacts, short coverage, non-comparable facts,
-orphans, or drift cannot become `valid`. `classify_rolling_recovery(requests, evidence_set)` emits
-only a proposal that preserves requested identity, order, and cardinality; only `valid` units enter
-its reusable subset, and it has no execute, state-transition, publication, repair, or `apply()`
-capability.
-
-Model-capability probes monitor repository writes, excluding `.git`, `plan`, and `workspaces`.
-Errors list paths with changed metadata; write events still fail when final metadata matches.
-This observation does not identify the writer. Concurrent writes by another agent or verification
-process can also trigger it, so run these checks while the protected directories are stable.
-
-Phase 34's authoritative
-`build_rolling_execution_scope(prepared, resolved, selected_window_keys, targets, windows)` revalidates
-the Prepared target tuple, the matching Resolved Plan, and an explicit ordered subset of resolved
-windows; unknown, duplicate, and out-of-order selections are rejected. Internally,
-`bind_rolling_execution_run_identity(resolved, selected_window_keys, windows)` combines the original
-runtime parameters, observed business sessions, Qlib provider/region, and MLflow backend in the
-execution identity. `preflight_rolling_execution()`,
-`execute_rolling_units()`, and `resume_rolling_units()` consume the exact capability row and this
-evidence. Every requested target×window retains one ordered terminal result; runner success becomes
-`executed_success` only after the manifest, Phase 32 reinspection, and State CAS all pass. Manifest
-commit also proves the runner's unique newly created recorder, experiment, and provenance tags;
-State CAS jointly checks the attempt, experiment, source manifest/operation, and artifact expectations.
-Resume consumes the exact `classify_rolling_recovery()` proposal and
-uses only the original attempt/recorder/evidence frozen in State V2 and never a mutable current
-record or "latest recorder". Ordinary unit failure preserves later units and process-control
-interruptions propagate. On `failed → running`, the prior attempt's failure/interruption and any source selector
-are appended unchanged to canonical `prior_attempts`; deletion, mutation, reordering, and duplicate
-attempts fail closed, and final success retains both this audit and its exact evidence selector.
-If a crash leaves a durable `failed` claim inside an `executing` envelope, resume preserves that
-failure audit, converges the old envelope to `failed`, and only then starts a new attempt. Even valid
-recorder/evidence left by the old attempt is an orphan and is never reinterpreted as
-`reused_success`. The mapper retains a canonical target whose capability is blocked instead of shrinking the
-requested set to an available subset; one blocked decision blocks the complete batch before the
-runner while preserving identity, order, and cardinality. A real Linear unit rebinds the exact
-workspace, Qlib provider, and tracking backend inside a controlled child process; the parent accepts
-only a typed path-free recorder/failure envelope and propagates process-control. This domain API is not connected to `rolling_train.py` and writes no
-combined/current/backtest/history/promotion output; publication remains a later boundary.
-
-Phase 35 adds a non-current aggregate candidate boundary after exact `units_complete`:
-`build_rolling_aggregate_scope()`, `inspect_rolling_aggregate_sources()`, and
-`materialize_rolling_aggregate_candidates()`. It re-observes every original execution-bound source
-in target-major order and conserves the requested targets/windows, business sessions, canonical
-`(datetime, instrument)` rows, and finite float64 scores. The prediction index must have exactly two
-levels and instrument values must already be control-character-free strings; an extra partition
-level, implicit string coercion, NUL, newline, or another control character is rejected. The
-aggregate inspector independently compares backend-returned prediction bytes with the exact
-size/SHA-256 of the sole prediction artifact frozen in the Phase 32 request, so a backend cannot
-self-authorize substituted bytes. Overlapping windows, duplicate rows,
-foreign sources, missing or partial artifacts, non-finite values, and State/backend/root drift all
-fail closed; legacy `keep='last'` behavior is never used. A successful result creates only an
-append-only recorder in `Rolling_Aggregate_Candidates` or
-`CPCV_Rolling_Aggregate_Candidates` and grants a proposal-only `publication_input` capability. It
-does not change State, `latest_train_records.json`, current/default, history, backtests, promotion,
-or orders. Existing `rolling_train.py` commands remain on the legacy aggregation route, so a legacy
-combined recorder is not a Phase 35 verified candidate.
-The source-set observer preserves the complete requested-unit identity. Content or coverage defects
-return `incomplete`; incomparable observation or State joins return `observation_drifted`. Both are
-render-only and neither drops later units nor grants aggregate/publication capability. Each source
-unit also carries an inspector-owned namespace fingerprint. The same public root, no-follow
-directory chain, and direct-artifact device/inode identities must survive from before evidence
-inspection through both sides of the prediction-byte read and the kernel terminal postcondition.
-
-Candidate reuse is stricter than recorder or artifact existence. The MLflow run must still be
-active and terminal `FINISHED`, and reinspection must match the source-derived manifest contract:
-ordered unit keys, source request/evidence/recorder identities, per-unit sessions and row counts,
-source content fingerprints, and independently recomputed candidate index/value/content
-fingerprints. `FAILED`, `KILLED`, running, deleted, partial, duplicate, or provenance-mismatched
-runs remain audit records but grant no candidate or publication capability. Candidate staging,
-locks, experiment metadata, and artifacts must remain inside the same canonical workspace.
-Repository, execution/source scope, and candidate-backend workspace identities must join exactly.
-The candidate experiment artifact location must equal
-`data/rolling_aggregate_candidates_<family>/`; mere workspace containment is insufficient.
-The candidate artifact root is inventoried through no-follow direct children and may contain only
-the two regular files `pred.pkl` and `aggregate_manifest.json`; an extra directory, symlink
-(including an escaping symlink), or special node blocks reuse. The lexical MLflow public URI is
-preserved: every directory from the canonical workspace to the artifact root is opened no-follow
-and identity-frozen, so an alias at the root or any ancestor is rejected even when it targets a
-directory inside the same workspace. After both artifacts are read and validated, the complete
-directory chain is re-established through that original public URI. During creation, the canonical
-experiment and recorder artifact root are safely established and frozen before the first upload.
-The pre-observed present/absent fact and device/inode are checked in the same no-follow
-establishment action, so a create or replacement race between observation and `mkdir` fails closed;
-the staging namespace is frozen before use as well. Each `pred.pkl` and
-`aggregate_manifest.json` regular-node device/inode identity is frozen immediately after it enters
-the candidate namespace and is rechecked after later uploads, terminal transition, inventory,
-create return, and final reinspection. A byte-identical file replacement therefore fails closed.
-Each direct artifact must also be an independent regular node with link count one; stable
-size/mtime/ctime metadata is part of the namespace fingerprint, so a hardlink or byte-identical
-same-inode rewrite fails closed as well.
-The candidate inspection's namespace fingerprint is carried from create/reuse observation through
-the kernel terminal recheck, so equal bytes cannot hide a cross-stage namespace replacement.
-A stable tracking URI alone is insufficient: the complete source-evidence-plus-prediction-bytes
-observation and candidate inventory/inspection/locking/materialization also freeze the public
-SQLite-file or file-store-root
-node, so a same-URI inode replacement fails closed. Before
-granting `publication_input`, the kernel rechecks source/State/current/backend under the candidate
-lock and requires exactly one active, `FINISHED`, exact candidate per target in terminal inventory.
-Duplicates and race drift fail closed. A different candidate key under the same scope or
-attempt/target is a requested collision, not an orphan; raw/requested/orphan/unassigned inventory
-counts remain visible even when publication is denied. The candidate experiment namespace itself counts as a durable
-write when first created.
-If the canonical artifact root is first established before experiment metadata, inventory observes
-that directory write separately; a later failure cannot report `did_write=false`.
-The no-create terminal-lock reacquisition path also omits create semantics from the actual
-`openat()`, so deletion between its precheck and open cannot recreate a missing lock parent or
-node. An existing lock that cannot be opened as the canonical regular file is likewise
-unavailable. Lock unavailability with a known zero-write history returns
-`blocked / did_write=false`. `did_write` accepts only an exact boolean or null, not integer
-`0`/`1`. If terminal reinspection becomes
-incomparable after candidate materialization, the result remains `indeterminate` while preserving
-the observed `did_write=true` fact instead of degrading a known durable write to unknown.
-Lock and staging files use a no-follow observation → open/create → public-name recheck.
-New staging files require exclusive creation, and every writable regular node must retain
-`st_nlink == 1` before and after writing. The SQLite tracking database and any existing
-journal/WAL/SHM sidecars likewise reject symlinks, hardlinks, and special nodes.
-These corrected semantics use `rolling_aggregate_candidate_v2`; v1 candidate identities are not
-reused as v2 candidates.
-
 `--workspace PATH`, `--workspace=PATH`, and programmatic `main(argv=[...])` all use the Prepared
 context as the sole workspace identity; legacy `env` does not reselect it from process `sys.argv`.
 Real execution is ordered as explicit-context safeguard → shared lease → input baseline recheck → workspace
@@ -379,58 +216,6 @@ existing parents. If an in-workspace symlink would place state, record, history,
 OperatorLog writes outside the workspace, the command fails nonzero with
 `rolling_output_outside_workspace`. The Prepared Plan declares the current-record history backup so
 that this legacy backup is not an undeclared side effect.
-
-The project owner controls and runs the Phase 28 full Python suite and workspace gates. A no-write
-gate should use `Demo_Workspace` or a disposable validation workspace explicitly selected by the
-owner, with before/after snapshots of configuration, state, current records, OperatorLog, and MLflow
-paths. Plan commands must not trigger safeguard, lease acquisition, or backend initialization. The
-production workspace remains read-only. A real adapter/bootstrap smoke is an owner acceptance gate
-and may run only with explicit authorization in a disposable validation workspace. Committed code
-and documentation must not contain private workspace identities, absolute paths, or runtime data.
-
-Use the Phase 35 acceptance preflight as follows:
-
-```bash
-python -m quantpits.tools.verify_rolling_aggregate_candidate \
-  --workspace /path/to/Demo_Workspace_validation \
-  --protected-workspace /path/to/Production_Workspace_readonly \
-  --protected-workspace /path/to/Experimental_Workspace_readonly \
-  --commit <40-char-commit> --tree <40-char-tree>
-```
-
-`--protected-workspace` is repeatable; every production and experimental protected root must be
-listed. By default it only validates the frozen scenario, selector, capacity, paths, and all
-protected snapshots; it performs no training, networking, or candidate write. A protected snapshot
-observes an existing symlink node and a hash of its target text without following the target; a node
-or target-text change still fails the before/after comparison. Disposable workspaces continue to
-reject symlinks. The real `--execute` route requires release owner authorization and a disposable
-validation workspace. The production workspace remains read-only.
-The corrected gate protocol is `rolling_aggregate_candidate_gate_v2`, with execution authorization
-`authorize-rolling-aggregate-candidate-gate-v2`. The execute lane uses Linux inotify to recursively
-observe lifecycle mutations in the disposable workspace, protected workspace, and
-tracked-repository boundary. It installs a new-directory watch synchronously before `mkdir` or a
-directory rename returns, including no-wait write-then-delete, and anchors allowed paths to the
-terminal experiment, recorder, and candidate identities instead of broad directory prefixes.
-Physical write bytes come from `/proc/self/io`; network access is denied and training/GPU calls are
-profiled. Primary runs in a separate process with a hard 300-second timeout; separate-process reuse
-gets only the remainder of that total budget and must remain zero
-writer/recorder/path/write-byte. Historical v1 gate evidence cannot close the correction candidate.
-Each lifecycle observer also freezes the device/inode of its public root and complete ancestor
-chain through no-follow directory descriptors. Root/ancestor `MOVE_SELF`/`DELETE_SELF` events are
-recorded even without a child name, and shutdown rejoins every descriptor to the original public
-path. Moving and restoring a root/ancestor, or replacing one with a same-content directory,
-therefore fails closed even when the child-byte snapshots compare equal.
-Cleanup still defaults to preserve. Explicit cleanup accepts only an exact disposable root that
-does not overlap any protected root or the repository, and deletes it component-by-component
-through no-follow directory descriptors. Ancestors, symlinks, hardlinks, special nodes, or
-identity drift fail closed.
-The deterministic source fixture does not invoke the model-capability protocol probe or
-`LinearModel.fit`. A fixed runner creates prediction artifacts, after which the real Phase 32
-evidence inspector and State-repository CAS establish the `units_complete` fixture. Qlib automatic
-repository-code logging is disabled for this isolated fixture, and temp/cache/file-lock paths are
-bound to the disposable workspace. Automatically recorded argv/user values are fixed to generic
-Gate identities, so preserved validation artifacts do not contain the protected path or local
-account name.
 
 > `--training-method` overrides `rolling_config.yaml` — switch modes without editing files.
 

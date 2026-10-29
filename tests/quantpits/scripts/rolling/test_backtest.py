@@ -465,7 +465,7 @@ class TestRunCombinedBacktest:
                  "account": 1e8, "exchange_kwargs": {},
              }), \
              patch("quantpits.utils.strategy.create_backtest_strategy"), \
-             patch("qlib.workflow.R.get_recorder", return_value=recorder), \
+             patch("qlib.workflow.R", get_recorder=Mock(return_value=recorder)), \
              patch("qlib.backtest.executor.SimulatorExecutor"), \
              patch("qlib.backtest.backtest", return_value=mock_bt_return):
             result = run_combined_backtest(
@@ -524,7 +524,7 @@ class TestRunCombinedBacktest:
                  "account": 1e8, "exchange_kwargs": {},
              }), \
              patch("quantpits.utils.strategy.create_backtest_strategy"), \
-             patch("qlib.workflow.R.get_recorder", return_value=recorder), \
+             patch("qlib.workflow.R", get_recorder=Mock(return_value=recorder)), \
              patch("qlib.backtest.executor.SimulatorExecutor"), \
              patch("qlib.backtest.backtest", side_effect=RuntimeError("boom")):
             result = run_combined_backtest(
@@ -545,7 +545,7 @@ class TestRunCombinedBacktest:
                  "account": 1e8, "exchange_kwargs": {},
              }), \
              patch("quantpits.utils.strategy.create_backtest_strategy"), \
-             patch("qlib.workflow.R.get_recorder", return_value=recorder), \
+             patch("qlib.workflow.R", get_recorder=Mock(return_value=recorder)), \
              patch("qlib.backtest.executor.SimulatorExecutor"), \
              patch("qlib.backtest.backtest", return_value=({}, pd.DataFrame())):
             result = run_combined_backtest(
@@ -576,8 +576,8 @@ class TestRunCombinedBacktest:
                  "account": 1e8, "exchange_kwargs": {},
              }), \
              patch("quantpits.utils.strategy.create_backtest_strategy"), \
-             patch("qlib.workflow.R.get_recorder",
-                   side_effect=lambda recorder_id, experiment_name: recorders[recorder_id]), \
+             patch("qlib.workflow.R", get_recorder=Mock(
+                   side_effect=lambda recorder_id, experiment_name: recorders[recorder_id])), \
              patch("qlib.backtest.executor.SimulatorExecutor"), \
              patch("qlib.backtest.backtest", return_value=mock_bt_return):
             result = run_combined_backtest(
@@ -604,7 +604,7 @@ class TestRunCombinedBacktest:
                  "account": 1e8, "exchange_kwargs": {},
              }), \
              patch("quantpits.utils.strategy.create_backtest_strategy"), \
-             patch("qlib.workflow.R.get_recorder", return_value=recorder), \
+             patch("qlib.workflow.R", get_recorder=Mock(return_value=recorder)), \
              patch("qlib.backtest.executor.SimulatorExecutor"), \
              patch("qlib.backtest.backtest", return_value=mock_bt_return):
             result = run_combined_backtest(

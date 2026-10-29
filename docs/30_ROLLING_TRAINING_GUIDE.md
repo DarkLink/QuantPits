@@ -1,6 +1,6 @@
 # Rolling Training Guide（滚动训练 · 总览）
 
-> Phase 28A/28B/28C 已建立 import-pure CLI、filesystem-only authoritative Prepared Plan，以及
+> Rolling 提供 import-pure CLI、filesystem-only authoritative Prepared Plan，以及
 > lease 内的 Resolved Plan 与 legacy execution adapter。导入模块和
 > 执行 `--help` 不要求预先 `source run_env.sh`，也不会改变当前目录。`--dry-run`、
 > `--explain-plan` 与 `--json-plan` 来自同一个 typed plan，冻结 action、ordered targets、workflow
@@ -15,14 +15,10 @@
 > 和 logical execution identity 由 `quantpits.rolling.identity` 统一生成；display index、run ID 与 attempt ID
 > 不会改变 execution identity。adapter 只消费
 > Prepared targets 和 Resolved windows，不重新扫描 registry 或再次生成窗口。Rolling 仍使用 legacy
-> unversioned state 与 legacy record merge，不具备新版 evidence/publication
-> closure parity。
+> unversioned state 与 legacy record merge，不提供逐窗口不可变证据或发布回执。
 
-> Phase 27 过渡边界：Rolling/CPCV-rolling 仍使用既有 window/state 编排，尚未迁入 static/CPCV
-> execution service；但所有真实变更命令现在与 static/CPCV 共用 workspace training execution
-> lease，避免并发覆盖 current record。`--show-state` 与 `--dry-run` 不获取该 lease。Phase 34 已新增独立的
-> exact-unit execution/evidence kernel，但没有把现有 CLI 自动切换过去；publication/current-record/closure
-> 仍属后续边界。
+> Rolling/CPCV-rolling 使用 legacy window/state 编排。真实变更命令与 static/CPCV 共用
+> workspace training execution lease，避免并发覆盖 current record；`--show-state` 与计划命令不获取 lease。
 
 Rolling 的模型 reload 已适配 Qlib artifact 加固更新：自己的明确模型制品使用显式
 `trusted=True`，较旧 API 保持原调用，pred／report 等数据仍默认读取。CPCV 预测与截断修复
@@ -35,10 +31,9 @@ Rolling 的模型 reload 已适配 Qlib artifact 加固更新：自己的明确�
 > `--show-state` 同样使用 `quantpits.rolling.state` 的单次 byte snapshot 严格只读分类；zero-byte、重复
 > JSON key、unsupported schema、跨 workspace symlink、ambiguous index 与 identity mismatch 都不会退化成
 > missing/empty。该 reader 能识别 State V2 identity envelope，且只接受 JSON integer
-> `schema_version: 2`（`2.0`/`2e0` 均拒绝）。`quantpits.rolling.repository` 现在提供显式
-> `WorkspaceContext` 下的 canonical path、sibling lock、CAS、atomic replace/delete 与真实 postimage receipt，
-> 但 public Rolling runtime 尚未采用它，V2 仍不能进入 legacy writer、CLI mutation 或 recovery/reuse。
-> legacy → V2 只提供 deterministic、zero-write、无 `apply()` 的 proposal audit。legacy
+> `schema_version: 2`（`2.0`/`2e0` 均拒绝）。State V2 只保留只读分类、序列化与
+> deterministic、zero-write、无 `apply()` 的迁移 proposal，不能进入 legacy writer、CLI mutation 或 recovery/reuse。
+> legacy
 > `rolling_config` 只有在 state 中真实存在并完成 fingerprint 比较时才标记为 `checked`；mismatch inspection
 > 不会向旧调用方返回 raw compatibility payload。`--clear-state` 会备份/删除 state，因此仍经过
 > safeguard 并持有 shared execution lease。
@@ -92,19 +87,13 @@ rolling_train.py      ← CLI + 流程编排 + 策略分派
 ```
 quantpits/rolling/
 ├── command.py            # filesystem-only PreparedRollingRun
-├── identity.py           # pure canonical target/fold/window/run identities
-├── state.py              # strict V2 serializer + readonly classifier/migration proposal
-├── repository.py         # canonical lock + CAS + atomic State V2 persistence
-├── evidence.py           # immutable per-unit artifact/coverage inspection
-├── recovery.py           # proposal-only recovery classification
-├── windows.py            # runtime windows + exact business-session observation
-├── execution.py          # scope/preflight/result contracts + public domain API
-├── execution_backend.py  # exact-unit kernel / deterministic resume truth owner
-├── unit_runner.py        # LinearModel/DatasetH/Slide narrow runner
-├── mlflow_execution_backend.py # local recorder manifest + evidence adapter
-└── legacy.py             # exact-scope legacy execution adapter + baseline recheck
+├── errors.py             # typed command failures
+├── identity.py           # canonical target/fold/window/run identities
+├── state.py              # read-only classification, V2 serialization and migration proposal
+├── windows.py            # runtime windows and business sessions
+└── legacy.py             # legacy execution adapter and baseline recheck
 
-rolling/
+quantpits/scripts/rolling/
 ├── state.py              # 状态管理（slide 和 CPCV 各自独立文件）
 ├── memory.py             # 3 层内存清理
 ├── backtest.py           # 回测
@@ -186,125 +175,6 @@ Prepared Plan 不展示依赖 Qlib calendar 的精确窗口或 fold；`--show-fo
 `unverified_completion` 及稳定 reason code。State 中的 `completed`、success 或 recorder ID 只是 claim，
 不等于 immutable unit evidence 或 publication receipt。
 
-State V2 repository 是供后续 execution/evidence consumer 使用的独立 domain API，不是新的 CLI。它只接受 exact
-baseline token；`WorkspaceContext.data_dir` 必须严格等于 `root/data`，family 对应的 state/lock 路径是只读派生映射。
-repository 在 canonical sibling lock 内重新读取并分类同一 byte snapshot，验证 workspace identity 和 transition，
-写入同目录临时文件并完成 file fsync、pre-replace CAS、atomic replace、directory fsync 和 actual reread。
-`conflict`、invalid source/transition、写入失败和 interruption 不会被报告为 committed；directory durability 或
-postimage reread 无法确认时只返回 `durability_uncertain`；compare-delete 只接受 exact `failed` V2，不能由公开参数放宽。
-普通 `commit()` 继续拒绝 success/`units_complete`；独立的 evidence-authorized 入口会重建 inspector-owned
-`RollingEvidenceSetInspection`，逐 unit 共同核对 original attempt、experiment、recorder、source protocol/operation、
-source manifest、artifact expectations 与 evidence identity，且最高只允许 `units_complete`。
-`completed` 仍需后续 publication receipt。当前 legacy `rolling_train.py`、`--clear-state`、resume
-和 state backup 行为保持不变，不会自动迁移任何 workspace。
-
-Immutable Rolling evidence 同样是独立的只读 domain API，而不是 CLI。调用方必须显式提供同一
-`RollingRunIdentity` 下有序、无重复的 target×window request，以及 original logical run 冻结的 source manifest。
-`inspect_rolling_evidence(context, requests, backend)` 对 metadata inventory 做前后快照，并由 inspector 从
-workspace root directory fd 开始逐级 no-follow 打开 ancestor 与 required artifact，读取 exact bytes、校验
-size/SHA-256、解码 prediction，并比较完整
-ordered session coverage、唯一 index 和 finite score。prediction pickle 只允许生成 pandas/numpy prediction object
-所需的受限 global 集，不执行任意 reducer。`checked` 只列出实际执行且具有可比较输入的谓词；`n_candidates` 由
-inspector 直接从 authoritative inventory cardinality 计算，每个 inventory member 最多归属一个 requested unit 或
-合法 orphan，无法形成合法 identity 的余量由 `n_unassigned_candidates` 明示。leaf/orphan 的展示 cardinality 也只接受
-inspector provenance，aggregate 也必须保留 inspector provenance 才能进入 recovery；调用方不能通过 public constructor 伪造。只有 inspector 内部创建的 `valid` evidence 具有
-recovery provenance，调用方不能通过 public constructor 拼装可复用事实。recorder 或 state completion 单独存在、legacy source、重复候选、
-identity mismatch、缺 artifact、corrupt、coverage short、不可比较、orphan 或观察漂移都不能成为 `valid`。
-`classify_rolling_recovery(requests, evidence_set)` 只生成保持 requested identity/order/cardinality 的 proposal；仅
-`valid` unit 可进入 reusable subset，proposal 没有 execute、state transition、publication、repair 或 `apply()` 能力。
-
-模型能力探针会监测整个仓库的写入（排除 `.git`、`plan`、`workspaces`）。检测到写入时，错误会
-列出元数据发生变化的路径；只有写入事件而最终元数据相同时也仍失败。此观察不能确定写入者，
-其他 Agent 或验证进程的并发写入也会触发，因此应在受保护目录没有并发变动时运行这类验证。
-
-Phase 34 的权威入口 `build_rolling_execution_scope(prepared, resolved, selected_window_keys, targets, windows)`
-会重验 Prepared target tuple、匹配的 Resolved Plan，以及 resolved windows 的显式有序子集；unknown、duplicate、
-out-of-order selection 均拒绝。内部 `bind_rolling_execution_run_identity(resolved, selected_window_keys, windows)`
-把原 runtime params、实际 business sessions、Qlib provider/region 与 MLflow backend 合并进 execution identity。
-随后 `preflight_rolling_execution()`、
-`execute_rolling_units()` 与 `resume_rolling_units()` 会消费 exact capability row 和上述 evidence：每个
-requested target×window 必有一个有序 terminal result，runner success 只有在 manifest、Phase 32 重验和 State CAS
-全部通过后才成为 `executed_success`。manifest commit 还会重验本次 runner 前后的唯一新增 recorder、experiment 与
-provenance tags；State CAS 会共同核对 attempt、experiment、source manifest/operation 与 artifact expectations。
-resume 实际消费 `classify_rolling_recovery()` 的 exact proposal，只复用 State V2 冻结的 original attempt/recorder/evidence；不读取
-mutable current record 或“最新 recorder”。普通 unit failure 不删除后续 unit，process-control interruption 继续透传。
-`failed → running` 会把上一 attempt 的 failure/interruption 与已有 source selector 原样追加到 canonical
-`prior_attempts`；repository 拒绝删除、篡改、重排或重复历史，最终 success 同时保留 prior audit 与 exact evidence selector。
-若崩溃留下 `executing` envelope 中已持久化的 `failed` claim，resume 会先原样保留该 failure audit 并把旧 envelope
-收敛为 `failed`，再启动新 attempt；旧 attempt 即使留下 valid recorder/evidence 也只作为 orphan，不会被重新解释为
-`reused_success`。
-mapper 会保留 capability blocked 的 canonical target，而不是用 available subset 缩小 requested set；任一 blocked
-decision 会让完整 batch 在 runner 前以同一 identity/order/cardinality 阻断。
-真实 Linear unit 在受控子进程内重新绑定 exact workspace、Qlib provider 与 tracking backend；父进程只接受不含本地路径的
-typed recorder identity/failure 回执，并原样传播 process-control。
-该 domain API 尚未接入 `rolling_train.py`，也不写 combined/current/backtest/history/promotion；publication 仍是后续边界。
-
-Phase 35 在上述 exact `units_complete` 边界之后新增 non-current aggregate candidate API：
-`build_rolling_aggregate_scope()`、`inspect_rolling_aggregate_sources()` 和
-`materialize_rolling_aggregate_candidates()`。它按 target-major 顺序重新观察每个 original
-execution-bound source，要求 requested target/window、business session、canonical
-`(datetime, instrument)` 行和 finite float64 score 全部守恒。prediction index 必须恰好为两层，
-instrument 原始值必须已经是无控制字符的字符串；额外 partition level、隐式字符串转换或 NUL/换行等控制字符都会阻断。
-aggregate inspector 会独立把 backend 返回的 prediction bytes 与 Phase 32 request 中唯一 prediction artifact
-的冻结 size/SHA-256 精确比较，不能依赖 backend 自证。窗口重叠、重复行、foreign source、
-缺失或 partial artifact、非有限数值、State/backend/root 漂移都会 fail closed；不会采用 legacy
-`keep='last'` 语义。成功结果只生成 append-only 的 `Rolling_Aggregate_Candidates` 或
-`CPCV_Rolling_Aggregate_Candidates` recorder，并提供 proposal-only `publication_input` capability。
-它不修改 State、`latest_train_records.json`、current/default、history、backtest、promotion 或订单。
-现有 `rolling_train.py` 仍走 legacy aggregation 路径，不能把 legacy combined recorder 当成
-Phase 35 verified candidate。
-source-set observer 会保留完整 requested unit identity：内容/覆盖不完整返回 `incomplete`，
-观察或 State join 不可比较返回 `observation_drifted`；两者都只有 render 能力，不会抛弃后续 unit
-或获得 aggregate/publication capability。每个 source unit 还携带 inspector-owned namespace
-fingerprint：从 evidence inspection 之前、prediction bytes 读取前后直到 kernel terminal
-postcondition 都必须保持同一 public root、逐级目录和 direct artifact node 的 device/inode identity。
-
-candidate 复用比“recorder 或 artifact 存在”更严格：MLflow run 必须仍为 active 且终态为
-`FINISHED`，重新检查还必须与 source-derived manifest contract 完全一致，包括有序 unit key、
-source request/evidence/recorder identity、逐 unit sessions 与 row count、source content
-fingerprint，以及独立重算的 candidate index/value/content fingerprint。`FAILED`、`KILLED`、
-运行中、已删除、partial、duplicate 或 provenance 不一致的 run 只保留审计意义，不授予
-candidate/publication capability。candidate staging、lock、experiment metadata 与 artifacts
-必须物理包含于同一个 canonical workspace；repository、execution/source scope 与 candidate backend
-workspace identity 必须精确一致。candidate experiment artifact location 必须精确等于
-`data/rolling_aggregate_candidates_<family>/`，仅“位于 workspace 内”不足以授权写入。
-candidate artifact root 必须通过 no-follow 直接子节点清单验证，且只能包含两个 regular file：
-`pred.pkl` 与 `aggregate_manifest.json`；额外目录、symlink（包括外逃 symlink）或特殊节点均阻断。
-artifact root 的 MLflow 公开 URI 保留词法身份；从 canonical workspace 到 root 的每一级目录都以
-no-follow 方式打开并冻结身份，root 本身或任一祖先即使只链接到同一 workspace 内也会阻断。
-创建时会在第一次 artifact 上传前安全建立并冻结 canonical experiment、recorder artifact root；
-目录的“原先存在/原先不存在”事实与 device/inode 在同一次 no-follow 建立动作中核对，
-因此观察与 `mkdir` 之间的抢先创建或替换也会 fail closed；
-staging namespace 也在上传前冻结。`pred.pkl` 与 `aggregate_manifest.json` 每次落入 candidate
-namespace 后立即冻结各自的 regular-node device/inode，并在后续上传、terminal transition、inventory、
-create 返回和最终 reinspection 后逐次复核；同一公开路径下的目录或 byte-identical file replacement
-都会阻断。direct artifact 还必须是 link-count 为 1 的独立 regular node，稳定 size/mtime/ctime
-元数据也进入 namespace fingerprint；hardlink 或 same-inode byte-identical rewrite 同样阻断。
-两个 artifact 读取并验证后还会通过原公开 URI 复核整条目录链和两个 direct node，
-不能用解析后的物理别名获得授权。candidate inspection 产生的 namespace fingerprint 会从
-create/reuse 观察一直带到 kernel terminal recheck，不能以相同 bytes 掩盖跨阶段 namespace replacement。
-tracking URI 相等本身不足以证明 backend 连续；SQLite file 或 file-store root 的公开 node 身份也在
-完整 source evidence+prediction-bytes observation、candidate inventory/inspection、lock 和
-materialization 前后冻结，同 URI inode 替换 fail closed。最终授予
-`publication_input` 前会在 candidate lock 内重新检查 source/State/current/backend，并要求每个 target
-在 terminal inventory 中恰好存在一个 active、`FINISHED`、exact candidate；duplicate 或竞态漂移均 fail closed。
-同一 scope 或同一 attempt/target 的不同 candidate key 是 requested collision，不能归为 orphan；
-即使阻断 publication，raw/requested/orphan/unassigned inventory counts 仍保留。
-首次创建 candidate experiment namespace 本身也计为 durable write。
-若 canonical artifact root 在 experiment metadata 之前被首次建立，该目录写入也由 inventory
-单独观察，后续失败不得伪报 `did_write=false`。
-无创建的 terminal lock 重获路径在实际 `openat()` 也不使用 create 语义，因此即使 lock 在预检后、
-打开前被删除，也不会补建缺失的 lock parent/node；已存在但无法作为 canonical regular file
-打开的 lock 同样视为 unavailable。lock unavailable 在已知零写入时返回
-`blocked / did_write=false`。`did_write` 只接受 exact boolean 或 null，不接受整数 `0`/`1`。
-lock 与 staging 文件均通过 no-follow observation→open/create→public-name recheck 建立；
-新 staging 文件必须使用 exclusive create，所有可写 regular node 在写入前后均要求
-`st_nlink == 1`。SQLite tracking database 及存在的 journal/WAL/SHM sidecar 同样拒绝
-symlink、hardlink 和特殊节点。
-若 candidate 已物化后最终重检变为不可比较，结果保持
-`indeterminate`，同时保留已观察到的 `did_write=true`，不会把已知 durable write 降级为未知。
-修正后的语义使用 `rolling_aggregate_candidate_v2`；v1 candidate identity 不会被当作 v2 复用。
-
 `--workspace PATH`、`--workspace=PATH` 和程序化 `main(argv=[...])` 都以 Prepared context 作为唯一
 workspace identity，不依赖进程 `sys.argv` 让 legacy `env` 再次选择 workspace。真实执行顺序为
 explicit-context safeguard → shared lease → input baseline recheck → workspace activation → Qlib init →
@@ -330,50 +200,6 @@ backtest 子动作才失败。此时 command 仍以 stable backtest reason code 
 state、record、history、MLflow 或 OperatorLog 写入实际落到 workspace 外，会以
 `rolling_output_outside_workspace` 非零拒绝。Prepared Plan 会声明 current-record 的 history backup，避免
 legacy backup 成为未声明副作用。
-
-Phase 28 的全量 Python 测试与 workspace gate 由项目 owner 控制和执行。无写 gate 应使用
-`Demo_Workspace` 或 owner 明确选择的一次性 validation workspace，并对配置、state、current records、
-OperatorLog 与 MLflow 路径做前后快照；计划命令不得触发 safeguard、lease 或 backend 初始化。生产
-workspace 保持只读。真实 adapter/bootstrap smoke 是 owner 验收项，只能在 owner 明确授权的可丢弃
-validation workspace 执行；不得将私有 workspace identity、绝对路径或运行数据写入提交内容。
-
-Phase 35 的 acceptance preflight 使用：
-
-```bash
-python -m quantpits.tools.verify_rolling_aggregate_candidate \
-  --workspace /path/to/Demo_Workspace_validation \
-  --protected-workspace /path/to/Production_Workspace_readonly \
-  --protected-workspace /path/to/Experimental_Workspace_readonly \
-  --commit <40-char-commit> --tree <40-char-tree>
-```
-
-`--protected-workspace` 可重复，所有 production/experimental protected roots 都必须逐一传入。
-该命令默认只验证冻结 scenario、selector、容量、路径与全部 protected snapshots，不训练、不联网且不写
-candidate。protected snapshot 对既有 symlink 只观察链接节点本身及其目标文本哈希，不跟随目标；
-链接节点或目标文本的变化仍会使前后快照不一致。disposable workspace 继续严格拒绝 symlink。
-真实 `--execute` 只允许 release owner 在一次性 validation workspace 上授权；production workspace
-始终只读。
-当前修正 gate protocol 为 `rolling_aggregate_candidate_gate_v2`；真实执行授权字符串为
-`authorize-rolling-aggregate-candidate-gate-v2`。execute lane 使用 Linux inotify 递归观察 disposable、
-protected 与 tracked-repository 的生命周期 mutation，并在 `mkdir`/directory rename 返回前同步接管
-新目录，覆盖无等待 write-then-delete；write allow-list 精确绑定 terminal experiment/recorder/candidate
-identity，宽目录前缀不构成授权。物理写字节来自 `/proc/self/io`，network 被主动拒绝，training/GPU
-调用由 profiler 观察。primary 独立子进程有 300 秒 hard timeout，separate-process reuse 只能使用
-同一总预算的剩余时间，且仍必须是零 writer/recorder/path/write-byte。旧 v1 gate evidence
-不能关闭新的修正候选。
-每个生命周期 observer 还会用 no-follow directory descriptor 冻结其公开根目录及完整祖先链的
-device/inode；root/ancestor 的 `MOVE_SELF`/`DELETE_SELF` 即使没有 child name 也会被记录，
-停止观察时再从原公开路径核对整条目录身份。因此把 protected、disposable 或 repository observer
-root/ancestor 移走后用同内容目录替换，或移走后恢复，均会 fail closed，不能由相同的子树 bytes
-snapshot 掩盖。
-cleanup 默认仍为 preserve；显式 cleanup 只接受与 protected roots、repository 均不重叠的
-exact disposable root，并通过目录描述符逐级 no-follow 删除。ancestor、symlink、hardlink、
-特殊节点或 identity drift 均 fail closed。
-deterministic source fixture 不调用 model capability protocol probe 或 `LinearModel.fit`；它只用
-固定 runner 生成 prediction artifact，再通过真实 Phase 32 evidence inspector 与 State repository
-CAS 建立 `units_complete` fixture。Qlib 自动 repository-code logging 在该隔离 fixture 中禁用，
-temp/cache/file-lock 均绑定 disposable workspace；自动记录的 argv/user 固定为通用 Gate 值，
-不会把 protected path 或本机账号写入保留式验证产物。
 
 > `--training-method` 可覆盖 `rolling_config.yaml` 中的设置，无需改配置文件即可切换模式对比效果。
 
