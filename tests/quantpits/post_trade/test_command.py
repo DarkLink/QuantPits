@@ -6,7 +6,7 @@ from quantpits.post_trade.command import (
     PostTradeRunOptions, execute_prepared, prepare_post_trade_run, render_prepared,
 )
 from quantpits.post_trade.contracts import (
-    PostTradeInputError, PostTradeInputMissingError, PostTradePartialExecutionError,
+    ExecutionEvidenceGapError, PostTradeInputError, PostTradeInputMissingError, PostTradePartialExecutionError,
     PostTradePlanError, SourceChangedError,
 )
 from quantpits.utils.workspace import WorkspaceContext
@@ -107,6 +107,33 @@ def test_allow_missing_settlement_changes_semantic_fingerprint(tmp_path):
         ctx, PostTradeRunOptions(scope="all", allow_missing_settlement=True)
     )
     assert strict.plan_fingerprint != acknowledged.plan_fingerprint
+
+
+def test_real_filled_trade_without_settlement_fails_before_state_commit(tmp_path):
+    days = ("2099-01-01", "2099-01-02")
+    ctx = WorkspaceContext.from_root(tmp_path)
+    ctx.config_dir.mkdir(); ctx.data_dir.mkdir()
+    ctx.config_path("prod_config.json").write_text(json.dumps({
+        "last_processed_date": days[0], "current_cash": 1000, "current_holding": [],
+    }))
+    ctx.config_path("cashflow.json").write_text("{}")
+    ctx.data_path("%s-trade.xlsx" % days[-1]).write_bytes(b"filled trade")
+    ctx.data_path("%s-order.xlsx" % days[-1]).write_bytes(b"filled order")
+
+    class Adapter:
+        def parse_trades(self, _path):
+            return pd.DataFrame({"交易类别": ["深圳A股普通股票竞价买入"], "成交数量": [10]})
+        parse_orders = parse_trades
+
+    prepared = prepare_post_trade_run(ctx, PostTradeRunOptions(
+        scope="all", end_date=days[-1], allow_missing_settlement=True,
+    ))
+    before = {p.relative_to(ctx.root): p.read_bytes() for p in ctx.root.rglob("*") if p.is_file()}
+    with pytest.raises(ExecutionEvidenceGapError, match="without settlement"):
+        execute_prepared(prepared, Adapter(), resolve_trade_dates=lambda *_: (days[-1],),
+                         state_callback=lambda *_: pytest.fail("must not commit"))
+    after = {p.relative_to(ctx.root): p.read_bytes() for p in ctx.root.rglob("*") if p.is_file()}
+    assert after == before
 
 
 def test_execution_scope_rejects_settlement_bundle(tmp_path):

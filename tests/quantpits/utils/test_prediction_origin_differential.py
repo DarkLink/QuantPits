@@ -2,12 +2,60 @@
 import ast
 import copy
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
 
-from tests.quantpits.research.test_decision_surface_maintenance import prediction_origin_source_variants
+def prediction_origin_source_variants(current=None):
+    """Remove only origin annotations from the current prediction functions.
+
+    These are controlled before/after inputs, not historical whole-file bytes.
+    Unrelated changes to training must remain present in both versions.
+    """
+    if current is None:
+        current = (Path(__file__).resolve().parents[3] / "quantpits/utils/train_utils.py").read_text(encoding="utf-8")
+    tree = ast.parse(current)
+    removed_lines = set()
+    for name in ("predict_single_model", "predict_cpcv_model"):
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
+        nodes = list(ast.walk(function))
+        imports = [node for node in nodes if isinstance(node, ast.ImportFrom)
+                   and node.module == "quantpits.training.model_identity"
+                   and [alias.name for alias in node.names] == ["prediction_origin_tags"]]
+        assignments = [node for node in nodes if isinstance(node, ast.Assign)
+                       and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id == "origin_tags"]
+        expansions = [node for node in nodes if isinstance(node, ast.keyword)
+                      and node.arg is None and isinstance(node.value, ast.Name)
+                      and node.value.id == "origin_tags"]
+        assert len(imports) == len(assignments) == len(expansions) == 1, name
+        # keyword nodes have no source positions on Python 3.8; their Name
+        # values do, and each expansion occupies its own line in these calls.
+        for node in imports + assignments + [keyword.value for keyword in expansions]:
+            removed_lines.update(range(node.lineno, node.end_lineno + 1))
+    old = "".join(line for number, line in enumerate(current.splitlines(keepends=True), 1)
+                  if number not in removed_lines)
+    ast.parse(old)
+    return old, current
+
+
+def test_prediction_origin_variants_preserve_unrelated_training_change():
+    source = (Path(__file__).resolve().parents[3] / "quantpits/utils/train_utils.py").read_text(encoding="utf-8")
+    training = next(node for node in ast.parse(source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "train_single_model")
+    lines = source.splitlines(keepends=True)
+    lines.insert(training.body[0].end_lineno, "    unrelated_training_revision = 2\n")
+    edited = "".join(lines)
+    before, after = prediction_origin_source_variants(edited)
+    assert after == edited
+    assert "unrelated_training_revision = 2" in before
+    training_bodies = [next(node for node in ast.parse(value).body
+                           if isinstance(node, ast.FunctionDef) and node.name == "train_single_model")
+                       for value in (before, after)]
+    assert ast.dump(training_bodies[0]) == ast.dump(training_bodies[1])
+
 
 
 @pytest.mark.parametrize('kind', ['static', 'cpcv'])
