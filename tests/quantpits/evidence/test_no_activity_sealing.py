@@ -139,4 +139,3 @@ def test_new_sealer_excludes_old_committed_logical_empty_input_refs(
     _legacy_manifest(root, request)
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
     assert {row["code"] for row in result.problems} == {"deep_analysis_missing", "ranking_coverage_partial"}
-

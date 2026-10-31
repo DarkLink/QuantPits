@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-alpha] - 2026-10-31
+
+This release completes the **post-refactor consolidation**: it retires the experimental forward research pipeline and the unwired rolling execution/capability protocols, trimming ~57,000 lines of code, tests, and documentation while keeping the weekly multi-account `run_cycle` workflow, independent paper accounts, static/CPCV training, legacy rolling CLI, post-trade settlement, and order generation intact.
+
+5 commits, 142 files changed, 437 insertions(+), 57,411 deletions(-) since v0.4.9-alpha.
+
+### Changed
+
+- **System documentation & project layout**: Updated `00_SYSTEM_OVERVIEW.md`, `70_WALKTHROUGH.md`, `33_OPERATIONS.md`, `M0/M2` wrapper guides, and `account_comparison.md` (both Chinese and English) to reflect multi-account project cycles (`run_cycle`) and independent weekly paper accounts (`paper_trade`) as the primary operational workflow, and added `/projects/` to `.gitignore` for cross-workspace project configurations.
+
 ### Removed
 
 - Retired the experimental forward research pipeline, its definition/decision-surface and
@@ -18,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate-candidate backends and validation tool, plus the model capability observation layer.
   `rolling_train.py` continues through its legacy adapter with existing planning, identity and
   read-only state inspection. Model wrappers, datasets, saved models and account data are unchanged.
+
+### Fixed
+
+- **CI**: Select compatible Ubuntu runners by Python version in the GitHub Actions test matrix (`9f2d35e`).
 
 ## [0.4.9-alpha] - 2026-10-29
 
