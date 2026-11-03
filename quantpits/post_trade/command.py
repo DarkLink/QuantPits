@@ -19,7 +19,7 @@ from quantpits.post_trade.contracts import (
 from quantpits.post_trade.contracts import PostTradeInputMissingError, PostTradeSourceRef
 from quantpits.post_trade.intake import (
     discover_inputs, load_ingestion_receipts, parse_pending_sources_with_catalog,
-    validate_cross_stream, verify_parsed_sources, verify_settlement_bundle,
+    settlement_date_gaps, validate_cross_stream, verify_parsed_sources, verify_settlement_bundle,
 )
 from quantpits.post_trade.ingestion import IngestionResult, ingest_execution_evidence
 from quantpits.runtime import CommandPlan, CommandStep, InputRef, OutputRef, StateRef
@@ -352,33 +352,14 @@ def execute_prepared(
         dates = tuple(resolve_trade_dates(state_start, catalog.date_to))
         settlement_dates = dates
         if catalog.settlement_bundle is not None:
-            if dates and (
-                catalog.settlement_bundle.coverage_start > min(dates)
-                or catalog.settlement_bundle.coverage_end < max(dates)
-            ):
-                raise PostTradeInputError(
-                    "Settlement bundle coverage %s..%s does not cover resolved trading dates %s..%s"
-                    % (
-                        catalog.settlement_bundle.coverage_start,
-                        catalog.settlement_bundle.coverage_end,
-                        min(dates), max(dates),
-                    )
-                )
+            settlement_date_gaps(catalog, dates)
             verify_settlement_bundle(prepared.ctx, catalog.settlement_bundle)
     parsed, catalog = parse_pending_sources_with_catalog(
         catalog, adapter,
         reparse_execution_dates=settlement_dates if prepared.options.scope == "all" else (),
     )
     if prepared.options.scope in {"all", "state"} and resolve_trade_dates:
-        known = {item.trade_date for item in catalog.settlement_sources}
-        if catalog.settlement_bundle is not None:
-            unexpected = sorted(known - set(dates))
-            if unexpected:
-                raise PostTradeInputError(
-                    "Settlement bundle contains dates outside the requested trading calendar: %s"
-                    % ", ".join(unexpected)
-                )
-        missing = [date for date in dates if date not in known]
+        missing = settlement_date_gaps(catalog, dates)
         if missing and not prepared.options.allow_missing_settlement:
             raise PostTradeInputMissingError("Missing settlement evidence for: %s" % ", ".join(missing))
         assumed = tuple(PostTradeSourceRef(

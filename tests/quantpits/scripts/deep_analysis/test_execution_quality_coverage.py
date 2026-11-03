@@ -54,6 +54,26 @@ def test_execution_analyzer_init_failure(exec_ctx):
     assert findings.raw_metrics.get("error") == "init failed"
 
 
+@pytest.mark.parametrize("value", [None, float('nan'), float('inf'), "missing"])
+def test_unknown_substitution_returns_do_not_fail_or_generate_significant_bias(exec_ctx, value):
+    with patch("quantpits.scripts.analysis.execution_analyzer.ExecutionAnalyzer") as factory:
+        analyzer = factory.return_value
+        analyzer.calculate_slippage_and_delay.return_value = pd.DataFrame()
+        analyzer.analyze_explicit_costs.return_value = {}
+        data = {"total_missed_count": 1, "total_substitute_count": 1}
+        if value != "missing":
+            data.update(theoretical_substitute_bias_impact=value, realized_substitute_bias_impact=value)
+        analyzer.analyze_order_discrepancies.return_value = data
+        with patch("quantpits.scripts.analysis.utils.init_qlib"):
+            result = ExecutionQualityAgent().analyze(exec_ctx)
+    assert "substitution_bias_error" not in result.raw_metrics
+    assert result.raw_metrics['substitution_bias'] is data
+    finding = next(f for f in result.findings if f.title == "Substitution bias")
+    assert "Theoretical impact: N/A. Realized impact: N/A." in finding.detail
+    assert "Missed buys: 1. Substitutes: 1." in finding.detail
+    assert not any(f.title == "Significant substitution bias" for f in result.findings)
+
+
 def test_friction_computation_exception(exec_ctx):
     """Lines 123-125: friction computation raises → error logged."""
     agent = ExecutionQualityAgent()

@@ -366,6 +366,14 @@ def test_execution_fill_rate_no_latency():
     assert "Latency" not in report
 
 
+def test_missing_substitution_returns_are_unknown_without_hiding_counts():
+    af = AgentFindings(agent_name="Execution Quality", window_label="W1", findings=[],
+                       raw_metrics={"substitution_bias": {"realized_substitute_bias_impact": None,
+                                                           "total_missed_count": 2}})
+    report = ReportGenerator([af], {}, "").generate()
+    assert "theoretical=N/A, realized=N/A (missed buys: 2)" in report
+
+
 def test_prediction_per_model_ic_proxy():
     """Lines 399-407: per_model_hit_rate with IC proxy and underperformers."""
     af = AgentFindings(

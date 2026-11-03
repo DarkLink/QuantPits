@@ -9,6 +9,7 @@ import os
 import numpy as np
 import pandas as pd
 from ..base_agent import BaseAgent, AgentFindings, AnalysisContext, Finding
+from quantpits.scripts.analysis.substitution_display import finite_return, format_substitution_return
 
 
 class ExecutionQualityAgent(BaseAgent):
@@ -156,20 +157,20 @@ class ExecutionQualityAgent(BaseAgent):
             sub_result = ea.analyze_order_discrepancies(workspace_root=ctx.workspace_root)
             if sub_result:
                 raw_metrics['substitution_bias'] = sub_result
-                theo_bias = sub_result.get('theoretical_substitute_bias_impact', 0)
-                real_bias = sub_result.get('realized_substitute_bias_impact', 0)
+                theo_bias = sub_result.get('theoretical_substitute_bias_impact')
+                real_bias = finite_return(sub_result.get('realized_substitute_bias_impact'))
                 n_missed = sub_result.get('total_missed_count', 0)
                 n_sub = sub_result.get('total_substitute_count', 0)
 
                 findings.append(self._make_finding(
                     'info', 'Substitution bias',
-                    f'Theoretical impact: {theo_bias*100:.2f}%. '
-                    f'Realized impact: {real_bias*100:.2f}%. '
+                    f'Theoretical impact: {format_substitution_return(theo_bias, 2)}. '
+                    f'Realized impact: {format_substitution_return(real_bias, 2)}. '
                     f'Missed buys: {n_missed}. Substitutes: {n_sub}.',
                     sub_result
                 ))
 
-                if abs(real_bias) > 0.02:
+                if real_bias is not None and abs(real_bias) > 0.02:
                     findings.append(self._make_finding(
                         'warning', 'Significant substitution bias',
                         f'Realized substitution bias impact: {real_bias*100:.2f}%. '

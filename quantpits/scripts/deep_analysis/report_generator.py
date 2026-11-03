@@ -7,6 +7,7 @@ Formats synthesis results into a structured Markdown report.
 from datetime import datetime
 from typing import List, Dict, Optional
 from .base_agent import AgentFindings, Finding
+from quantpits.scripts.analysis.substitution_display import format_substitution_return
 
 
 class ReportGenerator:
@@ -322,11 +323,11 @@ class ReportGenerator:
 
             sub = af.raw_metrics.get('substitution_bias', {})
             if sub:
-                theo = sub.get('theoretical_substitute_bias_impact', 0)
-                real = sub.get('realized_substitute_bias_impact', 0)
+                theo = format_substitution_return(sub.get('theoretical_substitute_bias_impact'), 2)
+                real = format_substitution_return(sub.get('realized_substitute_bias_impact'), 2)
                 n_missed = sub.get('total_missed_count', 0)
-                lines.append(f"- Substitution bias: theoretical={theo*100:.2f}%, "
-                           f"realized={real*100:.2f}% (missed buys: {n_missed})")
+                lines.append(f"- Substitution bias: theoretical={theo}, "
+                           f"realized={real} (missed buys: {n_missed})")
 
             fill_rate = af.raw_metrics.get('fill_rate')
             if fill_rate is not None:

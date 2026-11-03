@@ -79,6 +79,10 @@ accounts:
 
 `settlement_bundle` 必须相对该实盘 workspace，格式沿原 post_trade；也可省略，使用原逐日文件发现。资料缺失时等待，只有明确 `allow_missing_settlement: true` 才沿原命令的空日假设处理。`paper_cycles` 是本期新计划的 ID 映射；到期 pending 自动按账本里的原 ID 结算。`hold` 仍推进旧账和估值，但不生成该成员的新订单/计划。`skip` 接受 plan 中的明确步骤 ID；依赖被跳过步骤的后续步骤继续等待。
 
+创建正式周期前先检查 `plan` 的实盘post步骤：`settlement_preflight` 列出按当前账户cursor及真实交易日历需要的日期、实际解析得到的日期／行数、缺日和将采用的空日。周bundle文件名覆盖整周不代表每天都有记录；周末／休市不列为缺日，已有逐日空表仍是可用材料。没有明确允许时，该实盘步骤显示waiting及具体日期，独立信号／paper分支继续可运行。只有确认当期导出完整，且缺日无成交、分红、补税、利息和出入金等变化后，才在**新周期inputs**设 `actual.<成员>.allow_missing_settlement: true`；不要将其设为项目永久默认或修改已冻结请求。允许后仍列出 `assumed_empty_dates`，解析损坏、非法日期和来源变化不会被当空日吞掉。
+
+`plan` 保持只读及原退出码约定，调用者须查看各步骤状态；它不写入账务、摄取receipt或周期目录。正式执行前会再次读取并校验材料，预检通过不等于已成交／已入账；已处理到目标日和原生恢复沿原路径接续。
+
 可选 `fit_records` 只为本次新cycle覆盖指定signal的来源，其他signal沿project默认；普通无覆盖操作无需添加字段。路径相对该signal的 **producer workspace**，也可用其中的绝对路径，不相对project目录或paper消费者。来源可以由 [model_source 导出](01_TRAINING_GUIDE.md#明确预览与导出模型来源)，也可直接使用已有合法V1／V2文件；原模型成员、operation和直接source检查保持，不新增“只能选择train”的限制。plan的signals及覆盖预测步骤会显示当期选择，status保留保存请求中的来源。
 
 未知signal、错误类型、空路径或跨workspace符号链接明确报错；文件暂缺只等待其依赖分支，不能回退project默认或latest。请求保存路径，首次可用内容由原 `fit_sha256` 绑定；冻结前内容变更会拒绝，冻结为周期signal目录的 `fit_records.json` 后以该副本为准，原文件删改不使已冻结周期失效。resume／status／独立evaluate不重新读取外部inputs选源，evaluate继续使用该周期保存的预测证据。

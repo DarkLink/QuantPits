@@ -7,6 +7,85 @@ from unittest.mock import patch, MagicMock
 
 from quantpits.scripts.analysis.portfolio_analyzer import BARRA_LIQD_KEY, BARRA_MOMT_KEY, BARRA_VOLA_KEY
 
+
+def _minimal_report(ra, monkeypatch, *, discrepancy=None, start="2024-05-10", end="2024-05-13", shareable=False):
+    from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
+    daily = pd.DataFrame({"成交日期": pd.to_datetime(["2024-05-09", "2024-05-10", "2024-05-13"]),
+                          "收盘价值": [100, 110, 132], "CSI300": [100, 101, 102]})
+    portfolio = PortfolioAnalyzer(daily_amount_df=daily, trade_log_df=pd.DataFrame(),
+                                  holding_log_df=pd.DataFrame(), start_date=start, end_date=end)
+    for method in ("calculate_factor_exposure", "calculate_style_exposures", "calculate_holding_metrics"):
+        monkeypatch.setattr(portfolio, method, lambda: {})
+    monkeypatch.setattr(portfolio, "calculate_classified_returns", lambda: None)
+    execution = MagicMock()
+    execution.trade_log = pd.DataFrame()
+    execution.calculate_slippage_and_delay.return_value = pd.DataFrame()
+    execution.calculate_path_dependency.return_value = pd.DataFrame()
+    execution.analyze_explicit_costs.return_value = {}
+    execution.analyze_order_discrepancies.return_value = discrepancy or {}
+    monkeypatch.setattr(ra, "PortfolioAnalyzer", lambda **kw: portfolio)
+    monkeypatch.setattr(ra, "ExecutionAnalyzer", lambda **kw: execution)
+    monkeypatch.setattr(ra, "init_qlib", lambda: None)
+    monkeypatch.setattr(ra, "load_market_config", lambda: ("synthetic", "BENCH"))
+    arguments = ["run_analysis", "--start-date", start, "--end-date", end, "--output", "output/minimal.md"]
+    monkeypatch.setattr(sys, "argv", arguments + (["--shareable"] if shareable else []))
+    assert ra.main() == 0
+    from pathlib import Path
+    return (Path(ra.ROOT_DIR) / "output/minimal.md").read_text()
+
+
+@pytest.mark.parametrize("shareable", [False, True])
+@pytest.mark.parametrize("value,direction", [
+    (float('nan'), 'Unknown'), (None, 'Unknown'), ('missing', 'Unknown'),
+    (float('inf'), 'Unknown'), (float('-inf'), 'Unknown'),
+    (0, 'Neutral'), (0.0123, 'Lucky/Gain'), (-0.0123, 'Unlucky/Loss'),
+])
+def test_substitution_display_distinguishes_unknown_zero_and_mature_returns(mock_env, monkeypatch, shareable, value, direction):
+    ra, _ = mock_env
+    fields = ("theoretical_substitute_bias_impact", "realized_substitute_bias_impact", "avg_missed_buys_return",
+              "theoretical_avg_substitute_return", "realized_avg_substitute_return")
+    discrepancy = {"total_missed_count": 1, "total_substitute_count": 1, "total_days_with_misses": 1,
+                   "suggestion_sources": [{"date": "2024-05-10", "direction": "buy", "paths": ["cycle/buy.csv"], "sha256": "a" * 64}]}
+    if value != 'missing':
+        discrepancy.update({field: value for field in fields})
+    report = _minimal_report(ra, monkeypatch, discrepancy=discrepancy, shareable=shareable)
+    assert f"Substitution Bias ({direction}) (Theoretical)" in report
+    assert f"Substitution Bias ({direction}) (Realized with Cost)" in report
+    assert "Missed Top Buy Occurrences: 1, Substitute Buy Occurrences: 1" in report
+    section = report.split("### Order Suggestion vs Actual Discrepancy (Buys)")[1].split("## 4.")[0]
+    if direction == 'Unknown':
+        assert section.count("N/A") == 6
+        assert "nan%" not in section and "inf%" not in section and "Loss" not in section
+        assert "insufficient data / pending observation" in section
+    else:
+        expected = format(value, '.1%' if shareable else '.4%')
+        assert section.count(expected) == 5
+        assert 'N/A' not in section
+    assert ('cycle/buy.csv' in report) == (not shareable)
+
+
+@pytest.mark.parametrize("start,expected", [("2024-05-10", "2024-05-09"), ("2024-05-11", "2024-05-10")])
+def test_report_explains_real_return_baseline_without_changing_metrics(mock_env, monkeypatch, start, expected):
+    ra, _ = mock_env
+    report = _minimal_report(ra, monkeypatch, start=start)
+    assert f"Requested return dates: {start} to 2024-05-13" in report
+    assert f"Baseline valuation date (before first return): {expected}" in report
+    assert 'start-date day\'s return' in report
+    if start == "2024-05-10":
+        assert 'Absolute_Return**: 32.00%' in report
+    else:
+        assert 'Effective return dates: 2024-05-13 to 2024-05-13' in report
+        assert 'Return sample count: 1' in report
+        # Traditional metrics still require at least two returns; keep that contract.
+        assert 'Absolute_Return**' not in report
+
+
+def test_empty_return_report_does_not_invent_effective_dates(mock_env, monkeypatch):
+    ra, _ = mock_env
+    report = _minimal_report(ra, monkeypatch, start="2024-05-01", end="2024-05-09")
+    assert "N/A (no valid samples); baseline valuation date: unknown" in report
+    assert "Return sample count: 0" in report
+
 @pytest.fixture
 def mock_env(monkeypatch, tmp_path):
     workspace = tmp_path / "MockWorkspace"
@@ -87,6 +166,7 @@ def test_main_full(mock_port, mock_exec, mock_ens, mock_single,
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {"CAGR_252": 0.15, "Volatility": 0.20}
     mock_pa.calculate_factor_exposure.return_value = {"Beta_Market": 1.0}
     mock_pa.calculate_style_exposures.return_value = {}
@@ -127,6 +207,7 @@ def test_main_no_models(mock_port, mock_exec, mock_market, mock_init, mock_env):
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {}
     mock_pa.calculate_factor_exposure.return_value = {}
     mock_pa.calculate_style_exposures.return_value = {}
@@ -202,6 +283,7 @@ def test_main_shareable(mock_port, mock_exec, mock_ens, mock_single,
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {"CAGR_252": 0.15, "Volatility": 0.20}
     mock_pa.calculate_factor_exposure.return_value = {
         "Beta_Market": 1.0, 
@@ -309,6 +391,7 @@ def test_main_coverage_edges(mock_port, mock_exec, mock_ens, mock_single,
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {
         "CAGR_252": 0.15, "Volatility": 0.20, 
         "Turnover_Rate_Annual": 1500.2,
@@ -390,6 +473,7 @@ def test_main_friction_and_discrepancy_comprehensive(mock_port, mock_exec, mock_
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {}
     mock_pa.calculate_factor_exposure.return_value = {}
     mock_pa.calculate_style_exposures.return_value = {}
@@ -437,6 +521,7 @@ def test_main_performance_attribution(mock_exec, mock_port, mock_fwd, mock_load_
 
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     # Mock data to trigger attribution section
     # CAGR must be not None and not NaN
     mock_pa.calculate_traditional_metrics.return_value = {
@@ -514,6 +599,7 @@ def test_main_manual_trades_details(mock_exec, mock_port, mock_market, mock_init
 
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {}
     mock_pa.calculate_factor_exposure.return_value = {}
     mock_pa.calculate_style_exposures.return_value = {}
@@ -592,6 +678,7 @@ def test_main_empty_ic_decay_and_corr(mock_port, mock_exec, mock_ens, mock_singl
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {}
     mock_pa.calculate_factor_exposure.return_value = {}
     mock_pa.calculate_style_exposures.return_value = {}
@@ -677,6 +764,7 @@ def test_main_shareable_comprehensive(mock_port, mock_exec, mock_ens, mock_singl
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {
         "CAGR_252": 0.15, 
         "Benchmark_CAGR_252": 0.05,
@@ -747,6 +835,7 @@ def test_main_helper_coverage(mock_port, mock_exec, mock_single, mock_fwd, mock_
     
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     mock_pa.calculate_traditional_metrics.return_value = {}
     mock_pa.calculate_factor_exposure.return_value = {}
     mock_pa.calculate_style_exposures.return_value = {}
@@ -915,6 +1004,7 @@ def test_main_coverage_formatting_gaps(mock_port, mock_exec, mock_ens, mock_sing
 
     mock_pa = MagicMock()
     mock_port.return_value = mock_pa
+    mock_pa.describe_return_period.return_value = {"sample_count": 0}
     # Include CAGR_Calendar, Daily_Profit_Factor, Trade_Profit_Factor, Trade_Profit_Factor_MTM
     mock_pa.calculate_traditional_metrics.return_value = {
         "CAGR_252": 0.25,

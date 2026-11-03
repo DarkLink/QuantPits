@@ -28,6 +28,7 @@ except Exception as e:
 
 from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer
 from quantpits.scripts.analysis.execution_analyzer import ExecutionAnalyzer
+from quantpits.scripts.analysis.substitution_display import finite_return
 
 st.set_page_config(page_title="Quantitative Strategy Dashboard", layout="wide", initial_sidebar_state="expanded")
 
@@ -195,12 +196,16 @@ def render_micro_execution(exec_a):
             
             bar_data = pd.DataFrame({
                 'Category': ['Missed Top Buys Expected Return', 'Actual Substitute Buys Return'],
-                'Return': [discrepancy.get('avg_missed_buys_return', 0), discrepancy.get('realized_avg_substitute_return', 0)]
+                'Return': [finite_return(discrepancy.get('avg_missed_buys_return')),
+                           finite_return(discrepancy.get('realized_avg_substitute_return'))]
             })
-            
-            fig4 = px.bar(bar_data, x='Category', y='Return', color='Category', title="Substitution Bias Tracking (Avg 5-Day Forward Return)")
-            fig4.update_yaxes(tickformat=".2%")
-            st.plotly_chart(fig4, use_container_width=True)
+            if bar_data['Return'].isna().any():
+                st.info("Substitution returns: N/A (insufficient data / pending observation).")
+            bar_data = bar_data.dropna(subset=['Return'])
+            if not bar_data.empty:
+                fig4 = px.bar(bar_data, x='Category', y='Return', color='Category', title="Substitution Bias Tracking (Avg 5-Day Forward Return)")
+                fig4.update_yaxes(tickformat=".2%")
+                st.plotly_chart(fig4, use_container_width=True)
 
 def render_factor_exposure(port_a, market):
     st.header("Module 3: Factor Exposure & Attribution")

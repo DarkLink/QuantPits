@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from quantpits.post_trade.contracts import ExecutionEvidenceGapError, ParsedPostTradeInput, PostTradeInputError, PostTradePlanError, PostTradeSourceRef, SourceChangedError
-from quantpits.post_trade.intake import discover_inputs, parse_pending_sources, parse_pending_sources_with_catalog, validate_cross_stream, verify_parsed_sources
+from quantpits.post_trade.intake import discover_inputs, inspect_settlement_inputs, parse_pending_sources, parse_pending_sources_with_catalog, validate_cross_stream, verify_parsed_sources
 from quantpits.utils.workspace import WorkspaceContext
 
 
@@ -167,6 +167,40 @@ def test_explicit_bundle_is_only_physical_settlement_and_is_parsed_once(tmp_path
     assert [item.row_count for item in resolved.settlement_sources] == [2, 1]
     assert all(item.source_kind == "bundle_partition" for item in resolved.settlement_sources)
     assert parsed[("settlement", "2026-01-02")].row_count == 2
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_readonly_inspection_reuses_partitioning_and_rechecks_source_identity(tmp_path, changed):
+    ctx, bundle = _bundle_ctx(tmp_path)
+    catalog = discover_inputs(ctx, "2026-01-02", "2026-01-05",
+                              settlement_bundle="data/" + bundle.name)
+    adapter = MagicMock()
+    def parse(path):
+        if changed:
+            path.write_bytes(b"changed during parsing")
+        return pd.DataFrame({"交收日期": [20260102, 20260102]})
+    adapter.parse_settlement.side_effect = parse
+    if changed:
+        with pytest.raises(SourceChangedError):
+            inspect_settlement_inputs(ctx, catalog, adapter, ["2026-01-02", "2026-01-05"])
+    else:
+        result = inspect_settlement_inputs(ctx, catalog, adapter, ["2026-01-02", "2026-01-05"])
+        assert result["recorded_dates"] == [{"date": "2026-01-02", "row_count": 2}]
+        assert result["missing_dates"] == ["2026-01-05"]
+        assert not ctx.data_path("post_trade_ingestion_state.json").exists()
+    adapter.parse_settlement.assert_called_once()
+    adapter.parse_orders.assert_not_called()
+    adapter.parse_trades.assert_not_called()
+
+
+@pytest.mark.parametrize("bad_date", ["2026-01-03", "invalid", "2026-01-06"])
+def test_readonly_inspection_rejects_illegal_partition_dates(tmp_path, bad_date):
+    ctx, bundle = _bundle_ctx(tmp_path)
+    catalog = discover_inputs(ctx, "2026-01-02", "2026-01-05", settlement_bundle="data/" + bundle.name)
+    adapter = MagicMock()
+    adapter.parse_settlement.return_value = pd.DataFrame({"交收日期": [bad_date]})
+    with pytest.raises(PostTradeInputError):
+        inspect_settlement_inputs(ctx, catalog, adapter, ["2026-01-02", "2026-01-05"])
 
 
 def test_bundle_partitions_reuse_the_strict_daily_accounting_contract(tmp_path):

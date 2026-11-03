@@ -103,6 +103,22 @@ class PortfolioAnalyzer:
             
         return pd.Series(dtype=float)
 
+    def describe_return_period(self):
+        """Describe the actual daily-return sample without changing its values."""
+        returns = self.calculate_daily_returns()
+        period = {"first_return_date": None, "last_return_date": None,
+                  "baseline_date": None, "sample_count": len(returns)}
+        if returns.empty:
+            return period
+        first, last = returns.index[0], returns.index[-1]
+        period.update(first_return_date=first.strftime("%Y-%m-%d"),
+                      last_return_date=last.strftime("%Y-%m-%d"))
+        nav_col = '收盘价值' if '收盘价值' in self.daily_amount.columns else '当日结存'
+        previous = self.daily_amount.loc[self.daily_amount.index < first, nav_col].dropna()
+        if not previous.empty:
+            period["baseline_date"] = previous.index[-1].strftime("%Y-%m-%d")
+        return period
+
     def calculate_traditional_metrics(self):
         """
         Calculate CAGR, Volatility, Sharpe, Sortino, Max Drawdown, Profit Factor.

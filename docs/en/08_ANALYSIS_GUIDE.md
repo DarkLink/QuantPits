@@ -38,11 +38,19 @@ python quantpits/scripts/run_analysis.py \
 
 | Argument Switch | Requirement Designation | Target Logic Mapping Context |
 |------|-----------|------|
-| `--models` | Mandatory | Discrete mapping targets instructing assessment boundary generation explicit algorithm subsets e.g. `gru_Alpha158`. |
-| `--start-date` | Optional | Temporal beginning parameter bounds (YYYY-MM-DD format). Safely inferred bounding dynamically native persistence arrays by default explicitly. |
+| `--models` | Optional | Model names such as `gru_Alpha158`; omit for portfolio and execution analysis only. |
+| `--start-date` | Optional | First included date (YYYY-MM-DD). Portfolio returns include that day's return; the report states the effective sample. Defaults to available records. |
 | `--end-date`| Optional | Temporal ceiling parameter bounds (YYYY-MM-DD format). Bounds inherited autonomously mapping outputs absent targets natively. |
 | `--market`| Optional | Target asset scaling universe mapping targets implicitly (defaults explicitly targeted `csi300`). |
 | `--output` | Optional | Forces IO persistence output routines generating exact discrete markdown file strings. Bypasses terminal exclusively printing sequences typically native defaulting absent paths. |
+
+### Return boundaries and unknown substitution returns
+
+Portfolio daily returns are calculated from the full valuation and cashflow history, then filtered to dates `>= --start-date` and `<= --end-date`. The start date's return is included when available. Its baseline is the preceding effective valuation record, not the preceding calendar day. The traditional return/risk section shows requested dates, the actual first and last return dates, the preceding valuation date, and sample count. Missing history or an empty sample stays unknown. Trade and execution sections retain their own date filters. Shareable reports retain date and count redaction.
+
+Account comparison `--since` uses that date's **close** as its baseline. For synthetic Thursday, Friday, Monday and Tuesday valuations of 100, 110, 121 and 132 with no cashflow, analysis from Friday through Tuesday includes Friday's 10% return, producing 32%; comparison from Friday close through Tuesday produces 20%. To align the closing baseline, start analysis on the first actual return date after Friday (Monday here), and verify that the reported preceding valuation date is Friday. Use the observed records rather than calendar-day arithmetic. Existing return and cashflow formulas are unchanged.
+
+Substitution impacts and related averages display finite percentages only: positive values mean Gain, negative values Loss, and actual zero Neutral. NaN, None, missing fields and infinities display N/A/Unknown, never zero. When the calculation supplies no specific cause, the report says insufficient data / pending observation rather than assuming an immature T+5 sample. Counts and available suggestion sources remain visible. The dashboard omits unknown bars, and deep analysis also retains unknown values.
 
 ### 3. Interactive Visual Dashboard 
 

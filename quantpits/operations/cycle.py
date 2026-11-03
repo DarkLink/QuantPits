@@ -184,7 +184,7 @@ def build_steps(project, request):
     return steps
 
 
-def _preflight(project, request, step):
+def _preflight(project, request, step, observations=None):
     """Light read-only readiness; missing data is local to its own branch."""
     kind = step["kind"]
     if kind == "blocked":
@@ -230,12 +230,22 @@ def _preflight(project, request, step):
             scope="all", start_date=step["start"], end_date=step["through"], run_id=step["run_id"],
             settlement_bundle=bundle,
             allow_missing_settlement=options.get("allow_missing_settlement", False)))
-        if not bundle and not options.get("allow_missing_settlement", False):
-            sessions = [d for d in market.calendar if step["start"] <= d <= step["through"]]
-            present = {s.trade_date for s in prepared.catalog.settlement_sources if s.status in ("present", "already_ingested")}
-            missing = sorted(set(sessions) - present)
-            if missing:
-                return "settlement evidence missing: " + ", ".join(missing)
+        from quantpits.post_trade.intake import inspect_settlement_inputs
+        from quantpits.scripts.brokers import get_adapter
+        sessions = [d for d in market.calendar if prepared.catalog.date_from <= d <= prepared.catalog.date_to]
+        coverage = inspect_settlement_inputs(
+            member.ctx, prepared.catalog, get_adapter(prepared.config.broker_name), sessions,
+        )
+        allowed = options.get("allow_missing_settlement", False)
+        coverage["assumed_empty_dates"] = coverage["missing_dates"] if allowed else []
+        if observations is not None:
+            observations["settlement_preflight"] = coverage
+        if coverage["missing_dates"] and not allowed:
+            return ("settlement evidence missing: " + ", ".join(coverage["missing_dates"])
+                    + ". Confirm the export is complete and these dates have no trades, dividends, "
+                      "taxes, interest or funding changes; before starting a new cycle set "
+                      "actual.%s.allow_missing_settlement: true in its inputs only after confirmation."
+                    % member.id)
     return None
 
 
@@ -243,13 +253,15 @@ def preview(project, request):
     steps = build_steps(project, request)
     rows = []
     for step in steps:
+        observations = {}
         try:
-            reason = _preflight(project, request, step)
+            reason = _preflight(project, request, step, observations)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             reason = str(exc)
         status = "held" if step["kind"] == "hold" else ("skipped" if step["skip"] else ("waiting" if reason else ("dependency" if step["dependencies"] else "ready")))
         rows.append(dict(step, status=status, reason=reason,
-                         source="pending_generation" if step["kind"] in ("predict", "fuse") else None))
+                         source="pending_generation" if step["kind"] in ("predict", "fuse") else None,
+                         **observations))
     signals = {key: dict(spec, fit_records=request["inputs"]["fit_records"][key])
                if key in request["inputs"].get("fit_records", {}) else spec
                for key, spec in project.signals.items()}
@@ -408,7 +420,9 @@ def execute(project, *, request=None, cycle=None, runner=None, fault=None):
                         if source.is_file():
                             step["fit_sha256"] = fingerprint_file(source)
                             state["steps_identity"] = fingerprint_value(state["steps"])
-                    reason = _preflight(project, request, step)
+                    observations = {}
+                    reason = _preflight(project, request, step, observations)
+                    entry.update(observations)
                     if reason:
                         entry.update(status="waiting", reason=reason)
                         save_json(path, state)

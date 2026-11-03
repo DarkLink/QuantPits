@@ -114,6 +114,29 @@ def test_missing_broker_only_waits_actual_and_resume_keeps_frozen_signal(tmp_pat
     assert len(list((tmp_path / "live/output/manifests/static_train").glob("*.json"))) == 1
 
 
+def test_real_plan_cli_shows_bundle_empty_days_without_writing_and_run_keeps_paper_branch(tmp_path):
+    from tests.quantpits.operations.scenario import write_json
+    project = scenario(tmp_path)
+    root = tmp_path / "live"
+    daily = root / "data/2024-05-13-table.xlsx"
+    bundle = root / "data/2024-05-13-2024-05-17-table.xlsx"
+    bundle.write_bytes(daily.read_bytes())
+    inputs = project.parent / "inputs.json"
+    write_json(inputs, {"actual": {"live": {"settlement_bundle": "data/" + bundle.name}}})
+    before = files(tmp_path)
+    plan = rows(command(project, "plan", inputs=inputs, parent_env="missing"))
+    assert files(tmp_path) == before
+    assert not (project.parent / "cycles").exists()
+    assert plan["live-post"]["status"] == "waiting"
+    assert plan["live-post"]["settlement_preflight"]["missing_dates"] == ["2024-05-17"]
+    assert plan["shared-predict"]["status"] == "ready"
+    result = rows(command(project, inputs=inputs, code=2, parent_env="missing"))
+    assert result["live-post"]["status"] == "waiting"
+    assert result["paper_a-new"]["status"] == result["paper_b-new"]["status"] == "done"
+    assert not (root / "data/post_trade_ingestion_state.json").exists()
+    assert not (root / "data/.post_trade_transactions").exists()
+
+
 @pytest.mark.parametrize("step", ["live-post", "shared-predict", "shared-fuse", "paper_a-settle-0", "paper_a-value-2024-05-13", "paper_a-new", "report"])
 def test_native_commit_to_project_progress_gap_is_adopted(tmp_path, step):
     project = scenario(tmp_path)

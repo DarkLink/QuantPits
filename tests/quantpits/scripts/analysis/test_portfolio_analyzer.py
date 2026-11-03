@@ -61,6 +61,46 @@ def test_calculate_daily_returns_empty():
     assert pa.calculate_daily_returns().empty
 
 
+@pytest.mark.parametrize("start,end,first,last,baseline,count", [
+    ("2024-05-10", "2024-05-13", "2024-05-10", "2024-05-13", "2024-05-09", 2),
+    ("2024-05-11", "2024-05-13", "2024-05-13", "2024-05-13", "2024-05-10", 1),
+    ("2024-05-01", "2024-05-09", None, None, None, 0),
+    ("2024-05-20", "2024-05-21", None, None, None, 0),
+])
+def test_return_period_describes_actual_sample_and_preserves_inclusive_returns(start, end, first, last, baseline, count):
+    daily = pd.DataFrame({"成交日期": pd.to_datetime(["2024-05-09", "2024-05-10", "2024-05-13"]),
+                          "收盘价值": [100, 110, 132], "CASHFLOW": [0, 0, 0], "CSI300": [100, 101, 102]})
+    analyzer = PortfolioAnalyzer(daily_amount_df=daily, trade_log_df=pd.DataFrame(),
+                                 holding_log_df=pd.DataFrame(), start_date=start, end_date=end)
+    original = analyzer.calculate_daily_returns()
+    assert analyzer.describe_return_period() == {
+        "first_return_date": first, "last_return_date": last, "baseline_date": baseline, "sample_count": count}
+    pd.testing.assert_series_equal(original, analyzer.calculate_daily_returns())
+    if start == "2024-05-10":
+        assert original.tolist() == pytest.approx([0.1, 0.2])
+        assert analyzer.calculate_traditional_metrics()["Absolute_Return"] == pytest.approx(0.32)
+    elif start == "2024-05-11":
+        assert original.tolist() == pytest.approx([0.2])
+
+
+@pytest.mark.parametrize("daily", [pd.DataFrame(), pd.DataFrame({
+    "成交日期": pd.to_datetime(["2024-05-10"]), "收盘价值": [100]})])
+def test_return_period_without_historical_predecessor_does_not_invent_dates(daily):
+    analyzer = PortfolioAnalyzer(daily_amount_df=daily, trade_log_df=pd.DataFrame(), holding_log_df=pd.DataFrame())
+    assert analyzer.describe_return_period() == {
+        "first_return_date": None, "last_return_date": None, "baseline_date": None, "sample_count": 0}
+
+
+def test_return_period_uses_effective_valuation_and_does_not_change_cashflow_calculation():
+    daily = pd.DataFrame({"成交日期": pd.to_datetime(["2024-05-09", "2024-05-10", "2024-05-13", "2024-05-14"]),
+                          "当日结存": [None, 100, 160, 176], "CASHFLOW": [0, 0, 50, 0]})
+    analyzer = PortfolioAnalyzer(daily_amount_df=daily, trade_log_df=pd.DataFrame(),
+                                 holding_log_df=pd.DataFrame(), start_date="2024-05-09")
+    assert analyzer.calculate_daily_returns().tolist() == pytest.approx([10 / 150, 0.1])
+    assert analyzer.describe_return_period() == {"first_return_date": "2024-05-13", "last_return_date": "2024-05-14",
+                                               "baseline_date": "2024-05-10", "sample_count": 2}
+
+
 # ── calculate_traditional_metrics ────────────────────────────────────────
 
 def test_calculate_traditional_metrics():

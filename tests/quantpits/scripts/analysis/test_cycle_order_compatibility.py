@@ -140,6 +140,7 @@ def test_formal_run_analysis_consumes_cycle_orders(cycle_orders, monkeypatch, ca
     monkeypatch.setattr(analyzer, "analyze_explicit_costs", lambda: {})
     monkeypatch.setattr(ra, "ExecutionAnalyzer", lambda **k: analyzer)
     portfolio = MagicMock()
+    portfolio.describe_return_period.return_value = {"sample_count": 0}
     for method in ("calculate_traditional_metrics", "calculate_factor_exposure",
                    "calculate_style_exposures", "calculate_holding_metrics"):
         getattr(portfolio, method).return_value = {}
@@ -201,7 +202,8 @@ def test_deep_analysis_uses_cycle_orders_and_surfaces_conflicts(cycle_orders, mo
 
 
 @pytest.mark.parametrize("conflict", [False, True])
-def test_dashboard_reads_cycle_orders_without_history(cycle_orders, monkeypatch, conflict):
+@pytest.mark.parametrize("unknown", [False, True])
+def test_dashboard_reads_cycle_orders_without_history(cycle_orders, monkeypatch, conflict, unknown):
     import importlib
     import sys
     from unittest.mock import MagicMock
@@ -224,7 +226,7 @@ def test_dashboard_reads_cycle_orders_without_history(cycle_orders, monkeypatch,
         [(code, pd.Timestamp("2026-10-27")) for code in ("SZ000001", "SZ000002")],
         names=["instrument", "datetime"])
     monkeypatch.setattr("quantpits.scripts.analysis.utils.get_forward_returns",
-                        lambda *a, **k: pd.DataFrame({"return_5d": [0.1, 0.04]}, index=index))
+                        lambda *a, **k: pd.DataFrame({"return_5d": [float('nan'), float('nan')] if unknown else [0.1, 0.04]}, index=index))
     bar = MagicMock(wraps=dashboard.px.bar)
     monkeypatch.setattr(dashboard.px, "bar", bar)
     if conflict:
@@ -236,7 +238,11 @@ def test_dashboard_reads_cycle_orders_without_history(cycle_orders, monkeypatch,
     else:
         assert any("Total Missed Top Buys**: 1" in str(c) for c in display.write.call_args_list)
         assert ledger.buy_csv in str(display.json.call_args)
-        assert bar.call_args[0][0]["Return"].tolist() == pytest.approx([0.1, 0.04])
+        if unknown:
+            bar.assert_not_called()
+            assert "N/A (insufficient data / pending observation)" in display.info.call_args[0][0]
+        else:
+            assert bar.call_args[0][0]["Return"].tolist() == pytest.approx([0.1, 0.04])
 
 
 @pytest.mark.parametrize("directory", ["output", "data/order_history"])

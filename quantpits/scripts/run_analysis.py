@@ -22,6 +22,9 @@ from quantpits.scripts.analysis.single_model_analyzer import SingleModelAnalyzer
 from quantpits.scripts.analysis.ensemble_analyzer import EnsembleAnalyzer
 from quantpits.scripts.analysis.execution_analyzer import ExecutionAnalyzer
 from quantpits.scripts.analysis.portfolio_analyzer import PortfolioAnalyzer, BARRA_LIQD_KEY, BARRA_MOMT_KEY, BARRA_VOLA_KEY
+from quantpits.scripts.analysis.substitution_display import (
+    finite_return, format_substitution_return, substitution_direction,
+)
 
 def main():
     parser = argparse.ArgumentParser(description="Comprehensive Analysis Module")
@@ -300,25 +303,26 @@ def main():
     if discrepancy:
         report.append("\n### Order Suggestion vs Actual Discrepancy (Buys)")
         if discrepancy.get('total_missed_count', 0) > 0:
-            theo_bias_val = discrepancy.get('theoretical_substitute_bias_impact', 0)
-            real_bias_val = discrepancy.get('realized_substitute_bias_impact', 0)
-            theo_bias_str = "Lucky/Gain" if theo_bias_val > 0 else "Unlucky/Loss"
-            real_bias_str = "Lucky/Gain" if real_bias_val > 0 else "Unlucky/Loss"
+            theo_bias_val = discrepancy.get('theoretical_substitute_bias_impact')
+            real_bias_val = discrepancy.get('realized_substitute_bias_impact')
+            digits = 1 if args.shareable else 4
+            report.append(f"- **Substitution Bias ({substitution_direction(theo_bias_val)}) (Theoretical)**: {format_substitution_return(theo_bias_val, digits)}")
+            report.append(f"- **Substitution Bias ({substitution_direction(real_bias_val)}) (Realized with Cost)**: {format_substitution_return(real_bias_val, digits)}")
             days_str = format_count(discrepancy.get('total_days_with_misses', 0))
             if args.shareable:
-                report.append(f"- **Substitution Bias ({theo_bias_str}) (Theoretical)**: {theo_bias_val:.1%}")
-                report.append(f"- **Substitution Bias ({real_bias_str}) (Realized with Cost)**: {real_bias_val:.1%}")
                 report.append(f"  - Scope: Missed Top Buy Occurrences: {format_count(discrepancy.get('total_missed_count', 0))}, Substitute Buy Occurrences: {format_count(discrepancy.get('total_substitute_count', 0))}.")
-                report.append(f"  - Avg Missed Top Buys Expected Return: {discrepancy.get('avg_missed_buys_return', 0):.1%}")
-                report.append(f"  - Avg Actual Substitute Buys Return (Theoretical): {discrepancy.get('theoretical_avg_substitute_return', 0):.1%}")
-                report.append(f"  - Avg Actual Substitute Buys Return (Realized): {discrepancy.get('realized_avg_substitute_return', 0):.1%}")
             else:
-                report.append(f"- **Substitution Bias ({theo_bias_str}) (Theoretical)**: {theo_bias_val:.4%}")
-                report.append(f"- **Substitution Bias ({real_bias_str}) (Realized with Cost)**: {real_bias_val:.4%}")
                 report.append(f"  - Scope: Missed Top Buy Occurrences: {format_count(discrepancy.get('total_missed_count', 0))}, Substitute Buy Occurrences: {format_count(discrepancy.get('total_substitute_count', 0))}, spread across {days_str} trading days.")
-                report.append(f"  - Avg Missed Top Buys Expected Return: {discrepancy.get('avg_missed_buys_return', 0):.4%}")
-                report.append(f"  - Avg Actual Substitute Buys Return (Theoretical): {discrepancy.get('theoretical_avg_substitute_return', 0):.4%}")
-                report.append(f"  - Avg Actual Substitute Buys Return (Realized): {discrepancy.get('realized_avg_substitute_return', 0):.4%}")
+            average_fields = (
+                ('avg_missed_buys_return', 'Avg Missed Top Buys Expected Return'),
+                ('theoretical_avg_substitute_return', 'Avg Actual Substitute Buys Return (Theoretical)'),
+                ('realized_avg_substitute_return', 'Avg Actual Substitute Buys Return (Realized)'),
+            )
+            for field, label in average_fields:
+                report.append(f"  - {label}: {format_substitution_return(discrepancy.get(field), digits)}")
+            if any(finite_return(value) is None for value in
+                   [theo_bias_val, real_bias_val] + [discrepancy.get(field) for field, _ in average_fields]):
+                report.append("  - N/A: insufficient data / pending observation; impact direction is unknown.")
         else:
             report.append("- No measurable substitution bias or date mismatch for buys.")
             
@@ -369,6 +373,19 @@ def main():
                 report.append(f"- **{k}**: {v:.2%}")
 
     report.append("\n### Traditional Return & Risk")
+    period = port_a.describe_return_period()
+    requested_dates = (format_date_range(args.start_date or 'unbounded', args.end_date or 'unbounded')
+                       if args.start_date or args.end_date else 'all available records')
+    report.append(f"- Requested return dates: {requested_dates}")
+    if period['sample_count']:
+        report.append(f"- Effective return dates: {format_date_range(period['first_return_date'], period['last_return_date'])}")
+        baseline = period['baseline_date']
+        baseline_display = ('redacted (recorded)' if args.shareable else baseline) if baseline else 'unknown'
+        report.append(f"- Baseline valuation date (before first return): {baseline_display}")
+    else:
+        report.append("- Effective return dates: N/A (no valid samples); baseline valuation date: unknown")
+    report.append(f"- Return sample count: {format_count(period['sample_count'])}")
+    report.append("- Daily returns include the start-date day's return when available, using the preceding recorded valuation. Trade/execution sections retain their own date filters; account comparison --since uses that date's close as its baseline.")
     if metrics:
         def format_fuzzy_days(val):
             if pd.isna(val): return "N/A"

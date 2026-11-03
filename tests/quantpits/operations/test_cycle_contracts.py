@@ -16,6 +16,88 @@ from tests.quantpits.operations.scenario import scenario, write_json
 from quantpits.utils.workspace import WorkspaceContext, fingerprint_file
 
 
+@pytest.mark.parametrize("allowed", [False, True])
+@pytest.mark.parametrize("complete", [False, True])
+def test_bundle_preflight_reads_actual_partitions_and_only_waits_actual(tmp_path, allowed, complete):
+    from quantpits.operations.config import cycle_request
+    from quantpits.operations.cycle import preview
+    from quantpits.scripts.brokers.base import REQUIRED_COLUMNS
+    from tests.quantpits.semantic.test_project_cycle import files, rows
+
+    project = load_project(scenario(tmp_path, with_broker=False))
+    dates = ["2024-05-13", "2024-05-17"] if complete else ["2024-05-13"]
+    path = tmp_path / "live/data/2024-05-13-2024-05-17-table.xlsx"
+    pd.DataFrame([dict(zip(REQUIRED_COLUMNS, [None] * len(REQUIRED_COLUMNS)),
+                       **{"证券代码": "", "交易类别": "利息归本", "交收日期": date,
+                          "成交数量": 0, "成交价格": 0, "成交金额": 0, "资金发生数": 1})
+                  for date in dates]).to_excel(path, startrow=5, index=False)
+    request = cycle_request(project, cycle="check", anchor="2024-05-17", value_through="2024-05-17",
+                            trade_date="2024-05-21", since="2024-05-10", inputs={"actual": {"live": {
+                                "settlement_bundle": "data/" + path.name,
+                                "allow_missing_settlement": allowed}}})
+    before = files(tmp_path)
+    result = rows(preview(project, request))
+    assert files(tmp_path) == before
+    assert not project.cycle_dir("check").exists()
+    post = result["live-post"]
+    coverage = post["settlement_preflight"]
+    assert coverage["required_dates"] == ["2024-05-13", "2024-05-17"]  # gaps in calendar are holidays
+    assert coverage["recorded_dates"] == [{"date": d, "row_count": 1} for d in dates]
+    assert coverage["missing_dates"] == ([] if complete else ["2024-05-17"])
+    assert coverage["assumed_empty_dates"] == (["2024-05-17"] if allowed and not complete else [])
+    assert post["status"] == ("ready" if allowed or complete else "waiting")
+    if not allowed and not complete:
+        assert "2024-05-17" in post["reason"]
+        assert "actual.live.allow_missing_settlement: true" in post["reason"]
+    assert result["shared-predict"]["status"] == "ready"
+    assert result["paper_a-settle-0"]["status"] == "ready"
+
+
+def test_daily_preflight_and_current_cursor_remain_readonly(tmp_path):
+    from quantpits.operations.config import cycle_request
+    from quantpits.operations.cycle import preview
+    from tests.quantpits.semantic.test_project_cycle import files, rows
+
+    project = load_project(scenario(tmp_path))
+    request = cycle_request(project, cycle="daily", anchor="2024-05-17", value_through="2024-05-17",
+                            trade_date="2024-05-21", since="2024-05-10")
+    before = files(tmp_path)
+    post = rows(preview(project, request))["live-post"]
+    assert post["status"] == "ready"
+    assert post["settlement_preflight"]["recorded_dates"] == [
+        {"date": "2024-05-13", "row_count": 1}, {"date": "2024-05-17", "row_count": 0}]
+    assert files(tmp_path) == before
+    prod = project.members["live"].ctx.config_path("prod_config.json")
+    write_json(prod, dict(json.loads(prod.read_text()), last_processed_date="2024-05-17"))
+    # An already-processed endpoint needs no settlement parsing, even if old files are now unreadable.
+    for path in prod.parents[1].glob("data/*-table.xlsx"):
+        path.write_bytes(b"unreadable")
+    before = files(tmp_path)
+    post = rows(preview(project, request))["live-post"]
+    assert post["status"] == "ready"
+    assert "settlement_preflight" not in post
+    assert files(tmp_path) == before
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_damaged_bundle_is_not_an_empty_day(tmp_path, allowed):
+    from quantpits.operations.config import cycle_request
+    from quantpits.operations.cycle import preview
+    from tests.quantpits.semantic.test_project_cycle import rows
+
+    project = load_project(scenario(tmp_path, with_broker=False))
+    path = tmp_path / "live/data/2024-05-13-2024-05-17-table.xlsx"
+    path.write_bytes(b"damaged workbook")
+    request = cycle_request(project, cycle="damaged", anchor="2024-05-17", value_through="2024-05-17",
+                            trade_date="2024-05-21", since="2024-05-10", inputs={"actual": {"live": {
+                                "settlement_bundle": "data/" + path.name,
+                                "allow_missing_settlement": allowed}}})
+    post = rows(preview(project, request))["live-post"]
+    assert post["status"] == "waiting"
+    assert "confirm" not in post["reason"].lower()
+    assert "settlement_preflight" not in post
+
+
 def test_training_anchor_overrides_fixed_model_date_without_mutation(tmp_path, monkeypatch):
     project = load_project(scenario(tmp_path))
     ctx = project.members["live"].ctx

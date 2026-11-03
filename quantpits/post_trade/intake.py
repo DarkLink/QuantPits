@@ -393,6 +393,49 @@ def parse_pending_sources(catalog: PostTradeInputCatalog, adapter: object, *, re
     return parsed
 
 
+def settlement_date_gaps(catalog: PostTradeInputCatalog, trading_dates: Sequence[str]) -> Tuple[str, ...]:
+    """Validate bundle calendar coverage and return missing logical dates."""
+    bundle = catalog.settlement_bundle
+    if bundle is not None:
+        if trading_dates and (bundle.coverage_start > min(trading_dates)
+                              or bundle.coverage_end < max(trading_dates)):
+            raise PostTradeInputError(
+                "Settlement bundle coverage %s..%s does not cover resolved trading dates %s..%s"
+                % (bundle.coverage_start, bundle.coverage_end, min(trading_dates), max(trading_dates))
+            )
+        unexpected = sorted({s.trade_date for s in catalog.settlement_sources} - set(trading_dates))
+        if unexpected:
+            raise PostTradeInputError(
+                "Settlement bundle contains dates outside the requested trading calendar: %s"
+                % ", ".join(unexpected)
+            )
+    known = {source.trade_date for source in catalog.settlement_sources}
+    return tuple(date for date in trading_dates if date not in known)
+
+
+def inspect_settlement_inputs(
+    ctx: WorkspaceContext, catalog: PostTradeInputCatalog, adapter: object,
+    trading_dates: Sequence[str],
+) -> dict:
+    """Read settlement partitions only; no receipts, ingestion or account writes."""
+    settlement_date_gaps(catalog, trading_dates)
+    if catalog.settlement_bundle is not None:
+        verify_settlement_bundle(ctx, catalog.settlement_bundle)
+    parsed, resolved = parse_pending_sources_with_catalog(
+        replace(catalog, order_sources=(), trade_sources=()), adapter,
+    )
+    verify_parsed_sources(parsed)
+    if resolved.settlement_bundle is not None:
+        verify_settlement_bundle(ctx, resolved.settlement_bundle)
+    missing = settlement_date_gaps(resolved, trading_dates)
+    return {
+        "required_dates": list(trading_dates),
+        "recorded_dates": [{"date": s.trade_date, "row_count": s.row_count}
+                           for s in resolved.settlement_sources],
+        "missing_dates": list(missing),
+    }
+
+
 def _has_trade_activity(frame: pd.DataFrame) -> bool:
     if frame.empty or "交易类别" not in frame.columns:
         return False
