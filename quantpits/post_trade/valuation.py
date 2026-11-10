@@ -77,11 +77,14 @@ class QlibValuationProvider:
                 if len(group) != 1:
                     raise ValuationSchemaError("Duplicate close rows for %s" % instrument)
                 normalized = normalize_instrument(instrument)
-                raw = decimal_value(group.iloc[0]["$close"], field="raw close")
-                factor = decimal_value(group.iloc[0]["$factor"], field="factor")
+                # Box NumPy scalars before Decimal conversion: float32's short
+                # display text can move a valid quote across a cent boundary.
+                quote = group.iloc[0].to_dict()
+                raw = decimal_value(quote["$close"], field="raw close")
+                factor = decimal_value(quote["$factor"], field="factor")
                 value = self._validated_derived_quote(
                     raw, factor,
-                    decimal_value(group.iloc[0][derived], field="close"),
+                    decimal_value(quote[derived], field="close"),
                     normalized,
                 )
                 closes[normalized] = value
@@ -99,11 +102,12 @@ class QlibValuationProvider:
         benchmark_reset = benchmark_frame.reset_index()
         if any(name not in benchmark_reset.columns for name in fields):
             raise ValuationSchemaError("Benchmark valuation data is missing exact fields")
-        benchmark_raw = decimal_value(benchmark_reset.iloc[0]["$close"], field="benchmark raw close")
-        benchmark_factor = decimal_value(benchmark_reset.iloc[0]["$factor"], field="benchmark factor")
+        benchmark_quote = benchmark_reset.iloc[0].to_dict()
+        benchmark_raw = decimal_value(benchmark_quote["$close"], field="benchmark raw close")
+        benchmark_factor = decimal_value(benchmark_quote["$factor"], field="benchmark factor")
         benchmark_value = self._validated_derived_quote(
             benchmark_raw, benchmark_factor,
-            decimal_value(benchmark_reset.iloc[0][derived], field="benchmark"),
+            decimal_value(benchmark_quote[derived], field="benchmark"),
             normalize_instrument(benchmark),
         )
         benchmark_evidence = ValuationQuoteEvidence(
