@@ -80,10 +80,11 @@ commit is already proven by the receipt.
 If partial successes have already advanced current pointers, resume identity still uses the original
 sources recorded by V3 state rather than treating this run's outputs as new inputs.
 
-Qlib's `MTSDatasetH`, used by TRA, internally reads learn data. During predict-only dataset
-construction, the engine removes `DropnaLabel` from an in-memory configuration copy so that the
+Qlib's `MTSDatasetH`, used by TRA, includes CPCV's `PurgedMTSDatasetH` and internally reads learn data.
+For static/CPCV final post-fit predictions and predict-only dataset construction,
+the engine removes `DropnaLabel` from an in-memory configuration copy so that the
 newest trading dates are not discarded merely because their forward labels are not observable yet.
-All other learn processors, all infer processors, and the workspace YAML remain unchanged. Persisted
+Training and validation retain this filter. All other learn processors, all infer processors, and the workspace YAML remain unchanged. Persisted
 predictions must still pass requested-anchor coverage validation; an output that ends before the
 anchor is not published.
 

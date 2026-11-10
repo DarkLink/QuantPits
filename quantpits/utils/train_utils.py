@@ -1601,9 +1601,16 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
 
                 # Predict on fixed test set
                 print(f"  Predicting fold {fold_idx}...")
-                pred = model.predict(dataset=dataset)
+                prediction_cfg = _prepare_predict_only_dataset_config(dataset_cfg)
+                prediction_dataset = dataset
+                if prediction_cfg != dataset_cfg:
+                    prediction_dataset = (cache_mgr.create_dataset(prediction_cfg)
+                                          if cache_mgr is not None else init_instance_by_config(prediction_cfg))
+                    prediction_dataset.setup_data()
+                pred = model.predict(dataset=prediction_dataset)
                 fold_predictions.append(pred)
                 fold_models.append(model)
+                del prediction_dataset
 
                 # Compute fold-level score (IC on validation)
                 try:
@@ -1734,7 +1741,7 @@ def train_cpcv_model(model_name, yaml_file, params, experiment_name,
                 yaml_file, params, folds[0],
                 model_name=model_name, no_pretrain=no_pretrain,
             )
-            backtest_dataset_cfg = backtest_task_config['task']['dataset']
+            backtest_dataset_cfg = _prepare_predict_only_dataset_config(backtest_task_config['task']['dataset'])
             backtest_dataset = init_instance_by_config(backtest_dataset_cfg)
             backtest_dataset.setup_data()
 
@@ -1991,7 +1998,7 @@ def predict_cpcv_model(model_name, model_info, params, experiment_name,
                 yaml_file, params, params['cpcv_folds'][0],
                 model_name=model_name, no_pretrain=no_pretrain,
             )
-            dataset_cfg = task_config['task']['dataset']
+            dataset_cfg = _prepare_predict_only_dataset_config(task_config['task']['dataset'])
             if cache_mgr is not None:
                 dataset = cache_mgr.create_dataset(dataset_cfg)
             else:

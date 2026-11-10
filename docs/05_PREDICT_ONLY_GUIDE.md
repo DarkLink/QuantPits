@@ -72,8 +72,9 @@ recorder 身份。尤其 CPCV predict-only 的当前 experiment 是实际输出�
 同身份 `--resume` 可以完成中断的 publication/manifest closure，不会重新预测已由 receipt 证明提交的 target。
 部分成功已更新 current pointer 时，恢复身份仍采用 V3 state 记录的原始 source，不会把本次输出误当成新的输入。
 
-TRA 使用的 Qlib `MTSDatasetH` 在内部读取 learn 数据。predict-only 构造该数据集时会在内存中的
-配置副本里移除 `DropnaLabel`，避免未来标签尚不可见时把最新交易日从预测中删除；其他 learn
+TRA 使用的 Qlib `MTSDatasetH`（包括 CPCV 的 `PurgedMTSDatasetH`）在内部读取 learn 数据。
+static/CPCV 的 fit 后最终预测与 predict-only 构造该数据集时会在内存中的
+配置副本里移除 `DropnaLabel`，避免未来标签尚不可见时把最新交易日从预测中删除；训练与验证数据仍保留该过滤器，其他 learn
 处理器、全部 infer 处理器及工作区 YAML 均保持不变。持久化预测仍须通过 requested anchor
 覆盖校验，未覆盖锚点时不会发布该模型的新记录。
 

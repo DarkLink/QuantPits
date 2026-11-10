@@ -839,6 +839,52 @@ def test_train_mts_preserves_unlabeled_anchor_after_fit(finite_signal_training, 
         assert case["cache"].stats["misses"] == 2
 
 
+@pytest.mark.parametrize("action", ["train", "predict_only"])
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_cpcv_mts_preserves_unlabeled_anchor(finite_signal_training, mock_env_constants, monkeypatch,
+                                            action, use_cache):
+    train_utils, _ = mock_env_constants
+
+    def execute(case):
+        monkeypatch.setattr(train_utils, "inject_config_for_fold",
+                            lambda *args, **kwargs: copy.deepcopy(case["task_config"]))
+        params = dict(case["params"], cpcv_folds=[{
+            "fold_idx": 0,
+            "train_segments": [case["original_dataset_cfg"]["kwargs"]["segments"]["train"]],
+            "valid_start_time": case["params"]["valid_start_time"],
+            "valid_end_time": case["params"]["valid_end_time"],
+        }])
+        workflow = str(case["workspace"] / "config/finite_signal.yaml")
+        if action == "train":
+            return train_utils.train_cpcv_model(
+                "finite", workflow, params, "finite_signal", cache_mgr=case["cache"],
+                history_file=False, workspace_root=str(case["workspace"]),
+            )
+        source = case["source"]
+        source.set_tags(model="finite", mode="cpcv_train")
+        source.save_objects(**{"model_fold_0.pkl": case["model"]})
+        return train_utils.predict_cpcv_model(
+            "finite", {"yaml_file": workflow, "record_id": source.id}, params, "finite_signal",
+            cache_mgr=case["cache"], source_experiment_name="finite_signal", source_operation="train",
+            history_file=False, workspace_root=str(case["workspace"]),
+        )
+
+    case = finite_signal_training("PurgedMTSDatasetH", use_cache=use_cache,
+                                  predict_only=action == "predict_only", execute=execute)
+    prediction = case["recorder"].load_object("pred.pkl")
+    assert prediction.index.get_level_values("datetime").max() == case["dates"][-1]
+    assert np.isfinite(prediction.to_numpy()).all()
+    assert case["result"]["success"], case["result"]
+    assert case["result"]["record_entry"]["prediction_end"] == "2026-10-09"
+    assert case["task_config"]["task"]["dataset"] == case["original_dataset_cfg"]
+    if action == "train":
+        assert case["model"].fit_calls == 1
+        assert np.isfinite(case["model"].fit_labels).all()
+        assert [type(p).__name__ for p in case["model"].fit_dataset.handler.learn_processors] == [
+            "DropnaLabel", "CSRankNorm",
+        ]
+
+
 @pytest.mark.parametrize("dataset_class", ["DatasetH", "MTSDatasetH", "PurgedMTSDatasetH"])
 @pytest.mark.parametrize("use_cache", [False, True])
 def test_train_reuses_dataset_when_prediction_config_unchanged(finite_signal_training, dataset_class, use_cache):
