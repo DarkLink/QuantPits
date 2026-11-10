@@ -16,7 +16,7 @@ from quantpits.training.persistence import atomic_write_json_bytes, sha256_bytes
 from quantpits.utils.workspace import fingerprint_value
 
 
-def imported_state(snapshot, account_id, selected):
+def imported_state(snapshot, account_id, selected, *, allow_negative_cash=False):
     """Reuse production quantity/cost conversion, without importing its writer."""
     if not isinstance(snapshot, dict) or not {"current_cash", "current_holding"} <= set(snapshot):
         raise PaperError("source account requires explicit current_cash/current_holding")
@@ -32,7 +32,13 @@ def imported_state(snapshot, account_id, selected):
         positions.append({"instrument": p.instrument, "quantity": int(p.quantity),
                           "book_cost": amount(p.cost)})
     return state({"portfolio_id": account_id, "as_of_date": selected,
-                  "cash": amount(source.cash), "positions": sorted(positions, key=lambda p: p["instrument"])}).to_dict()
+                  "cash": amount(source.cash), "positions": sorted(positions, key=lambda p: p["instrument"])},
+                 allow_negative_cash=allow_negative_cash).to_dict()
+
+
+def allows_imported_debit(journal):
+    """Only a source-bound opening debit enables signed cash in a saved account."""
+    return "opening_cash_debit" in journal["bootstrap"]
 
 
 def latest_state(journal):
@@ -88,11 +94,17 @@ def validate_journal(journal, account_id):
     if sha256_bytes(source_raw) != bootstrap["source_sha256"] or strict_json(source_raw) != bootstrap["source_snapshot"]:
         raise PaperError("bootstrap source snapshot/hash mismatch")
     selected = date(bootstrap["date"])
-    current = imported_state(bootstrap["source_snapshot"], account_id, selected)
+    allow_negative_cash = allows_imported_debit(journal)
+    current = imported_state(bootstrap["source_snapshot"], account_id, selected,
+                             allow_negative_cash=allow_negative_cash)
+    if allow_negative_cash and (decimal(current["cash"]) >= ZERO
+                               or bootstrap["opening_cash_debit"] != amount(-decimal(current["cash"]))):
+        raise PaperError("opening cash debit differs from the frozen source")
     verify_closes(bootstrap["price_receipts"], selected, bootstrap["closes"])
     if current != bootstrap["state"]:
         raise PaperError("bootstrap state inconsistent with source snapshot")
-    initial = valuation(current, selected, bootstrap["closes"], {}, bootstrap["initial_nav"], "0.00")
+    initial = valuation(current, selected, bootstrap["closes"], {}, bootstrap["initial_nav"], "0.00",
+                        allow_negative_cash=allow_negative_cash)
     if initial != bootstrap["valuation"] or initial["status"] != "COMPLETE" or initial["unit_nav"] != "1":
         raise PaperError("bootstrap valuation inconsistent")
     if decimal(bootstrap["initial_nav"]) <= ZERO:
@@ -101,7 +113,7 @@ def validate_journal(journal, account_id):
     for key, plan in journal["plans"].items():
         if token(key) != plan["cycle_id"] or plan["account_id"] != account_id:
             raise PaperError("plan identity mismatch")
-        validate_plan(plan)
+        validate_plan(plan, allow_negative_cash=allow_negative_cash)
     for key, event in journal["events"].items():
         validate_event(event)
         if key != event["event_id"]:
@@ -113,14 +125,14 @@ def validate_journal(journal, account_id):
     replay = dict(journal, records=[])
     for record in journal["records"]:
         result = record["result"]
-        if result["prior_digest"] != state(current).digest:
+        if result["prior_digest"] != state(current, allow_negative_cash=allow_negative_cash).digest:
             raise PaperError("record predecessor mismatch")
         events = result["events"]
         event_ids = [e["event_id"] for e in events]
         if len(set(event_ids)) != len(event_ids) or consumed.intersection(event_ids):
             raise PaperError("event applied more than once")
         for event in events:
-            if journal["events"].get(event["event_id"]) != event or event["booking_date"] < state(current).as_of_date:
+            if journal["events"].get(event["event_id"]) != event or event["booking_date"] < state(current, allow_negative_cash=allow_negative_cash).as_of_date:
                 raise PaperError("event source/date mismatch")
         if record["kind"] == "SETTLEMENT":
             cycle = result["cycle_id"]
@@ -153,11 +165,12 @@ def validate_journal(journal, account_id):
                     closing, factor = verify_price_row(quote["previous_close_evidence"], instrument, previous_date, "CASH_CLOSE")
                     if (closing, factor) != (quote["previous_close"], quote["previous_factor"]):
                         raise PaperError("settlement previous close/factor differs from observation")
-            expected = settle_plan(plan, current, result["quotes"], result["rules"], events, buy_locks(replay))
+            expected = settle_plan(plan, current, result["quotes"], result["rules"], events, buy_locks(replay),
+                                   allow_negative_cash=allow_negative_cash)
             settled.add(cycle)
         elif record["kind"] == "EVENTS":
-            after, external = apply_events(current, events)
-            expected = {"prior_digest": state(current).digest, "after": after,
+            after, external = apply_events(current, events, allow_negative_cash=allow_negative_cash)
+            expected = {"prior_digest": state(current, allow_negative_cash=allow_negative_cash).digest, "after": after,
                         "events": events, "external_cashflow": external}
         else:
             raise PaperError("unknown paper record kind")
@@ -186,11 +199,12 @@ def validate_journal(journal, account_id):
         prior_row = states.get(item["record_count"])
         if prior_row is None or result["date"] < last_date:
             raise PaperError("valuation state/date mismatch")
-        if state(prior_row[0]).digest != result["state_digest"]:
+        if state(prior_row[0], allow_negative_cash=allow_negative_cash).digest != result["state_digest"]:
             raise PaperError("valuation state digest mismatch")
         verify_closes(item["price_receipts"], result["date"], item["observed_closes"])
         expected = valuation(prior_row[0], result["date"], item["observed_closes"], cache,
-                             bootstrap["initial_nav"], prior_row[1], prior_row[2])
+                             bootstrap["initial_nav"], prior_row[1], prior_row[2],
+                             allow_negative_cash=allow_negative_cash)
         if result != expected:
             raise PaperError("valuation is inconsistent")
         for row in result["positions"]:

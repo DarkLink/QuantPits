@@ -12,7 +12,7 @@ from quantpits.research.paper_accounting import (
 from quantpits.research.paper_market import PaperMarket, load_signal, strict_json
 from quantpits.research.paper_planning import make_plan, strategy_config
 from quantpits.research.paper_store import (
-    PaperStore, buy_locks, cashflow, has_external_funding, imported_state, latest_state, price_cache, used_events,
+    PaperStore, allows_imported_debit, buy_locks, cashflow, has_external_funding, imported_state, latest_state, price_cache, used_events,
 )
 from quantpits.training.persistence import atomic_write_bytes, sha256_bytes
 from quantpits.utils.config_loader import load_workspace_config
@@ -78,7 +78,10 @@ class PaperWorkflow:
                     raise PaperError("account already bootstrapped from a different source")
                 return {"status": "REUSED", "bootstrap": original}
             snapshot = strict_json(raw)
-            initial = imported_state(snapshot, self.account_id, selected)
+            allow_negative_cash = self.config.get("allow_initial_negative_cash", False)
+            if type(allow_negative_cash) is not bool:
+                raise PaperError("allow_initial_negative_cash must be boolean")
+            initial = imported_state(snapshot, self.account_id, selected, allow_negative_cash=allow_negative_cash)
             market = self._market()
             if market.check_date(selected, actual=True) != "VERIFIED":
                 return {"status": "WAITING_FOR_DATA", "date": selected}
@@ -90,11 +93,14 @@ class PaperWorkflow:
             ), ZERO)
             if nav <= ZERO:
                 raise PaperError("initial NAV must be positive")
-            baseline = valuation(initial, selected, closes, {}, amount(nav), "0.00")
+            baseline = valuation(initial, selected, closes, {}, amount(nav), "0.00",
+                                 allow_negative_cash=allow_negative_cash)
             bootstrap = {"date": selected, "copied_at": now(), "source_path": str(source_path),
                          "source_sha256": source_sha, "source_snapshot": snapshot, "source_json": raw.decode("utf-8"),
                          "state": initial, "closes": closes, "initial_nav": amount(nav),
                          "valuation": baseline, "price_receipts": list(market.receipts)}
+            if decimal(initial["cash"]) < ZERO:
+                bootstrap["opening_cash_debit"] = amount(-decimal(initial["cash"]))
             journal = {"schema_version": 1, "account_id": self.account_id, "bootstrap": bootstrap,
                        "plans": {}, "cancelled_cycles": {}, "events": {}, "records": [], "valuations": []}
             self.store.write(journal)
@@ -140,9 +146,9 @@ class PaperWorkflow:
             # Events already known at the signal anchor are part of its starting account.
             events = self._events(journal, anchor)
             if events:
-                after, external = apply_events(previous, events)
+                after, external = apply_events(previous, events, allow_negative_cash=allows_imported_debit(journal))
                 journal["records"].append({"kind": "EVENTS", "result": {
-                    "prior_digest": state(previous).digest, "after": after,
+                    "prior_digest": state(previous, allow_negative_cash=allows_imported_debit(journal)).digest, "after": after,
                     "events": events, "external_cashflow": external}})
                 previous = after
             market = self._market()
@@ -164,7 +170,8 @@ class PaperWorkflow:
                              market=merged["market"], universe=pool, scores=scores, closes=closes,
                              strategy=strategy, execution=self.config["execution"], source=identity,
                              market_rules=selected_rules, calendar_status=calendar_status,
-                             predecessor_record_count=len(journal["records"]))
+                             predecessor_record_count=len(journal["records"]),
+                             allow_negative_cash=allows_imported_debit(journal))
             journal["plans"][cycle_id] = plan
             self.store.write(journal)
             return {"status": "PLANNED", "plan": plan}
@@ -208,7 +215,7 @@ class PaperWorkflow:
                             "cycle_id": cycle_id, "date": plan["trade_date"]}
             events = self._events(journal, plan["trade_date"])
             result = settle_plan(plan, prior, quotes, selected_rules,
-                                 events, buy_locks(journal))
+                                 events, buy_locks(journal), allow_negative_cash=allows_imported_debit(journal))
             journal["records"].append({"kind": "SETTLEMENT", "result": result, "recorded_at": now(),
                                        "calendar": list(market.calendar)})
             self.store.write(journal)
@@ -242,7 +249,7 @@ class PaperWorkflow:
                 if old != event:
                     raise PaperError("event ID already used for different facts")
                 return {"status": "REUSED", "event": old}
-            frontier = max([state(latest_state(journal)).as_of_date] +
+            frontier = max([state(latest_state(journal), allow_negative_cash=allows_imported_debit(journal)).as_of_date] +
                            [v["result"]["date"] for v in journal["valuations"]])
             if event["booking_date"] < frontier:
                 raise PaperError("late event requires an explicit booking date at/after account frontier")
@@ -269,14 +276,15 @@ class PaperWorkflow:
             if events:
                 if self._pending(journal):
                     raise PaperError("value would change the predecessor of a pending plan")
-                after, external = apply_events(previous, events)
+                after, external = apply_events(previous, events, allow_negative_cash=allows_imported_debit(journal))
                 journal["records"].append({"kind": "EVENTS", "result": {
-                    "prior_digest": state(previous).digest, "after": after,
+                    "prior_digest": state(previous, allow_negative_cash=allows_imported_debit(journal)).digest, "after": after,
                     "events": events, "external_cashflow": external}})
                 previous = after
             closes = market.closes(selected, [p["instrument"] for p in previous["positions"]])
             result = valuation(previous, selected, closes, price_cache(journal, selected),
-                               journal["bootstrap"]["initial_nav"], cashflow(journal), has_external_funding(journal))
+                               journal["bootstrap"]["initial_nav"], cashflow(journal), has_external_funding(journal),
+                               allow_negative_cash=allows_imported_debit(journal))
             if (journal["valuations"] and journal["valuations"][-1]["result"] == result
                     and journal["valuations"][-1]["record_count"] == len(journal["records"])):
                 return {"status": "REUSED", "valuation": result}
@@ -319,12 +327,14 @@ class PaperWorkflow:
             source_date = snapshot.get("last_processed_date", snapshot.get("current_date"))
             reference["observed_date"] = source_date
             if source_date == selected:
-                reference_state = imported_state(snapshot, self.account_id, selected)
+                reference_state = imported_state(snapshot, self.account_id, selected,
+                                                  allow_negative_cash=allows_imported_debit(journal))
                 market = self._market()
                 if market.check_date(selected, actual=True) == "VERIFIED":
                     closes = market.closes(selected, [p["instrument"] for p in reference_state["positions"]])
                     reference = valuation(reference_state, selected, closes, {},
-                                          journal["bootstrap"]["initial_nav"], "0.00")
+                                          journal["bootstrap"]["initial_nav"], "0.00",
+                                          allow_negative_cash=allows_imported_debit(journal))
                     # Actual cashflows cannot be inferred from a current prod_config snapshot.
                     for field in ("pnl_excluding_external", "return_excluding_external", "unit_nav", "net_external_cashflow"):
                         reference[field] = None
@@ -347,10 +357,12 @@ class PaperWorkflow:
                         if reference_start_config is not None:
                             start_path = self._input_path(reference_start_config)
                             start_raw = start_path.read_bytes()
-                            start_state = imported_state(strict_json(start_raw), self.account_id, start["date"])
+                            start_state = imported_state(strict_json(start_raw), self.account_id, start["date"],
+                                                         allow_negative_cash=allows_imported_debit(journal))
                             start_closes = market.closes(start["date"], [p["instrument"] for p in start_state["positions"]])
                             actual_start = valuation(start_state, start["date"], start_closes, {},
-                                                     journal["bootstrap"]["initial_nav"], "0.00")
+                                                     journal["bootstrap"]["initial_nav"], "0.00",
+                                                     allow_negative_cash=allows_imported_debit(journal))
                             start_nav = None if actual_start["nav"] is None else decimal(actual_start["nav"])
                             reference["start_source_sha256"] = sha256_bytes(start_raw)
                         if start_nav is not None and start_nav > ZERO:

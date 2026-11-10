@@ -82,6 +82,14 @@ python -m quantpits.scripts.paper_trade --workspace "$PAPER_WS" --qlib-data-dir 
 
 Bootstrap copies once, preserving costs while setting initial NAV from cash closes. Returns begin at that NAV. Training placeholder balances do not become paper balances. Subsequent periods continue the paper account's own cash/shares/cost. This CLI does not train models, generate model predictions or invoke the production pipeline. Prepare new signals with the existing training/ensemble commands, then consume them read-only.
 
+To copy an existing negative opening cash balance, explicitly set
+`"allow_initial_negative_cash": true` in the new account's `paper_config.json`; the default still rejects it.
+The journal binds this opening debit to the original source snapshot. Net sale proceeds or positive cash
+events can reduce it, but it supplies no buying power or borrowing limit. While cash remains negative,
+the buy budget is zero; blocked sales or a partial repayment can still be saved and valued. Events and
+fills cannot create or increase negative cash, or reopen it after repayment. Existing account/plan formats
+and defaults remain unchanged. A recorded debit does not establish broker financing or generate interest/funding events.
+
 Execution must follow the anchor. Known nontrading dates fail explicitly. Dates beyond the future calendar can be stored as `PENDING_CALENDAR`, then checked against the actual calendar before settlement. Missing whole-session data, or a fully missing requested open surface without explicit facts that all instruments are suspended, leaves settlement pending. No automatic date rolling occurs. Retire an unusable pending plan explicitly, and plan with a new cycle ID:
 
 ```bash

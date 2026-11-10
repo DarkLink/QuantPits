@@ -89,6 +89,97 @@ def event(event_id, kind, cash, effective=DATES[1], booking=None, **kwargs):
     return result
 
 
+def debit_workspace(tmp_path, **kwargs):
+    workflow, source, provider, signal = make_workspace(tmp_path, **kwargs)
+    snapshot = json.loads(source.read_text())
+    snapshot["current_cash"] = -421.23
+    write_json(source, snapshot)
+    path = workflow.ctx.config_path("paper_config.json")
+    config = json.loads(path.read_text())
+    config["allow_initial_negative_cash"] = True
+    write_json(path, config)
+    return PaperWorkflow(workflow.ctx), source, provider, signal
+
+
+def test_negative_opening_cash_requires_explicit_opt_in_and_preserves_nav(tmp_path):
+    workflow, source, provider, signal = make_workspace(tmp_path)
+    snapshot = json.loads(source.read_text())
+    snapshot["current_cash"] = -421.23
+    write_json(source, snapshot)
+    with pytest.raises(PaperError, match="nonnegative"):
+        workflow.bootstrap(source, DATES[0])
+    assert not workflow.store.path.exists()
+    path = workflow.ctx.config_path("paper_config.json")
+    config = json.loads(path.read_text())
+    config["allow_initial_negative_cash"] = True
+    write_json(path, config)
+    workflow = PaperWorkflow(workflow.ctx)
+    result = workflow.bootstrap(source, DATES[0])
+    assert result["bootstrap"]["state"]["cash"] == "-421.23"
+    assert result["bootstrap"]["opening_cash_debit"] == "421.23"
+    assert result["bootstrap"]["initial_nav"] == "5578.77"
+    assert workflow.bootstrap(source, DATES[0])["status"] == "REUSED"
+    assert workflow.report(DATES[0], reference_config=source)["actual_reference"]["cash"] == "-421.23"
+
+
+def test_imported_debit_with_all_sells_blocked_does_not_buy_or_reset_cash(tmp_path):
+    workflow, source, provider, signal = debit_workspace(tmp_path)
+    workflow.bootstrap(source, DATES[0])
+    workflow.plan("debit", DATES[0], DATES[1])
+    calendar(provider, 3)
+    for instrument in HELD:
+        upper = 12 if instrument.startswith("SZ300") else 11
+        feature(provider, instrument, "open", [10, upper, 10, 10, 10])
+    result = workflow.settle("debit")["settlement"]
+    assert result["after"]["cash"] == "-421.23"
+    assert result["slot_budget"] == "0.00"
+    assert not [d for d in result["decisions"] if d["status"] == "FILLED"]
+    assert workflow.settle("debit")["settlement"] == result
+    assert workflow.value(DATES[2])["valuation"]["cash"] == "-421.23"
+    assert len(workflow.store.read()["records"]) == 1
+
+
+def test_partial_debit_repayment_is_saved_without_new_buying_power(tmp_path):
+    workflow, source, provider, signal = debit_workspace(tmp_path, topk=2)
+    snapshot = json.loads(source.read_text())
+    snapshot["current_holding"] = [{"instrument": HELD[0], "value": 200, "amount": 1500},
+                                   {"instrument": HELD[-1], "value": 20, "amount": 150}]
+    write_json(source, snapshot)
+    strategy = workflow.ctx.config_path("strategy_config.yaml")
+    strategy.write_text(strategy.read_text().replace("n_drop: 2", "n_drop: 1"))
+    workflow.bootstrap(source, DATES[0])
+    plan = workflow.plan("repay", DATES[0], DATES[1])["plan"]
+    assert [r["instrument"] for r in plan["sells"]] == [HELD[-1]]
+    calendar(provider, 3)
+    result = workflow.settle("repay")["settlement"]
+    assert result["after"]["cash"] == "-226.33"
+    assert result["slot_budget"] == "0.00"
+    assert not [d for d in result["decisions"] if d["side"] == "BUY" and d["status"] == "FILLED"]
+    assert PaperWorkflow(workflow.ctx).settle("repay")["settlement"] == result
+
+
+def test_debit_events_cannot_increase_or_reopen_negative_cash(tmp_path):
+    workflow, source, provider, signal = debit_workspace(tmp_path)
+    workflow.bootstrap(source, DATES[0])
+    calendar(provider, 3)
+    workflow.add_event(event("credit", "EXTERNAL", "500"))
+    assert workflow.value(DATES[1])["valuation"]["cash"] == "78.77"
+    workflow.add_event(event("withdraw", "EXTERNAL", "-200", effective=DATES[2]))
+    before = workflow.store.path.read_bytes()
+    with pytest.raises(PaperError, match="negative cash"):
+        workflow.value(DATES[2])
+    assert workflow.store.path.read_bytes() == before
+
+
+def test_debit_journal_rejects_tampered_opening_amount(tmp_path):
+    workflow, source, provider, signal = debit_workspace(tmp_path)
+    workflow.bootstrap(source, DATES[0])
+    journal = workflow.store.read()
+    journal["bootstrap"]["opening_cash_debit"] = "422.23"
+    with pytest.raises(PaperError, match="opening cash debit"):
+        workflow.store.write(journal)
+
+
 def test_real_first_cycle_wait_replacements_next_cycle(tmp_path):
     w, source, provider, signal, plan = boot_plan(tmp_path)
     assert w.bootstrap(source, DATES[0])["status"] == "REUSED"

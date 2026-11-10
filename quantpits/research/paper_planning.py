@@ -31,13 +31,13 @@ def strategy_config(raw):
 
 def make_plan(*, account_id, cycle_id, anchor, trade_date, generated_at, prior,
               market, universe, scores, closes, strategy, execution, source,
-              market_rules, calendar_status, predecessor_record_count):
+              market_rules, calendar_status, predecessor_record_count, allow_negative_cash=False):
     token(account_id)
     token(cycle_id)
     integer(predecessor_record_count, "predecessor_record_count")
     date(anchor)
     date(trade_date)
-    current = state(prior)
+    current = state(prior, allow_negative_cash=allow_negative_cash)
     if current.portfolio_id != account_id or not current.as_of_date <= anchor < trade_date:
         raise PaperError("plan account/date/predecessor mismatch")
     universe_snapshot = UniverseSnapshot.observe(market, anchor, universe)
@@ -114,7 +114,7 @@ def _suggested_money(value):
         raise PaperError("suggested amounts must be nonnegative cent amounts")
 
 
-def validate_plan(plan):
+def validate_plan(plan, *, allow_negative_cash=False):
     """Validate a frozen decision, independently of today's production planner.
 
     Suggestions are historical budget references. Their numerical relationship
@@ -134,7 +134,7 @@ def validate_plan(plan):
     token(plan["cycle_id"])
     token(plan["market"])
     integer(plan["predecessor_record_count"], "predecessor_record_count")
-    current = state(plan["prior"])
+    current = state(plan["prior"], allow_negative_cash=allow_negative_cash)
     if current.portfolio_id != plan["account_id"] or not current.as_of_date <= date(plan["anchor"]) < date(plan["trade_date"]):
         raise PaperError("plan account/date/predecessor mismatch")
     if not isinstance(plan["generated_at"], str):

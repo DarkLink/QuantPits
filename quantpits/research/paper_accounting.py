@@ -74,13 +74,15 @@ def integer(value, field, minimum=0):
     return value
 
 
-def state(value):
+def state(value, *, allow_negative_cash=False):
+    if type(allow_negative_cash) is not bool:
+        raise PaperError("allow_negative_cash must be boolean")
     payload = dict(value)
     supplied = payload.pop("digest", None)
     parsed = ShadowPortfolioState.from_dict(payload)
     if supplied is not None and supplied != parsed.digest:
         raise PaperError("state digest mismatch")
-    if parsed.cash < ZERO or parsed.cash != money(parsed.cash) or any(
+    if (parsed.cash < ZERO and not allow_negative_cash) or parsed.cash != money(parsed.cash) or any(
         p.book_cost != money(p.book_cost) for p in parsed.positions
     ):
         raise PaperError("cash/cost must be nonnegative cent amounts")
@@ -216,16 +218,17 @@ def trade_check(instrument, quote, rules, trade_date):
 
 
 @cash_context
-def apply_events(prior, events):
-    prior = state(prior)
+def apply_events(prior, events, *, allow_negative_cash=False):
+    prior = state(prior, allow_negative_cash=allow_negative_cash)
     cash = prior.cash
     positions = {p.instrument: [p.quantity, p.book_cost] for p in prior.positions}
     external = ZERO
     for event in events:
         validate_event(event)
+        floor = min(cash, ZERO) if allow_negative_cash else ZERO
         cash += decimal(event["cash"])
-        if cash < ZERO:
-            raise PaperError("event would make cash negative")
+        if cash < floor:
+            raise PaperError("event would create or increase negative cash")
         if event["kind"] == "EXTERNAL":
             external += decimal(event["cash"])
         if event["kind"] == "SHARES":
@@ -240,7 +243,7 @@ def apply_events(prior, events):
                    "as_of_date": max([prior.as_of_date] + [e["booking_date"] for e in events]),
                    "cash": amount(cash), "positions": [
                        {"instrument": i, "quantity": q, "book_cost": amount(c)}
-                       for i, (q, c) in sorted(positions.items())]})
+                       for i, (q, c) in sorted(positions.items())]}, allow_negative_cash=allow_negative_cash)
     return after.to_dict(), amount(external)
 
 
@@ -287,11 +290,11 @@ def affordable_buy_quantity(cap, price, instrument, config):
 
 
 @cash_context
-def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
+def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None, *, allow_negative_cash=False):
     """Replayable settlement with fixed per-slot budgets and ordered replacement."""
     config = execution_config(plan["execution"])
-    opening_state, external = apply_events(prior, events)
-    opening = state(opening_state)
+    opening_state, external = apply_events(prior, events, allow_negative_cash=allow_negative_cash)
+    opening = state(opening_state, allow_negative_cash=allow_negative_cash)
     trade_date = date(plan["trade_date"])
     validate_rules(rules, trade_date)
     if opening.as_of_date > trade_date:
@@ -350,7 +353,7 @@ def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
             continue
         gross = money(price * quantity)
         fee = decimal(fees(gross, "SELL", instrument, config)["total"])
-        if cash + gross - fee < ZERO:
+        if cash + gross - fee < (min(cash, ZERO) if allow_negative_cash else ZERO):
             decision(row, "SELL", "INSUFFICIENT_CASH_FOR_SELL_FEES", price, limits)
             continue
         filled(row, "SELL", quantity, price, limits)
@@ -358,9 +361,9 @@ def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
     slots = min(plan["target_buys"], max(0, plan["strategy"]["topk"] - len(positions)))
     clean_cash = cash
     reserve = decimal(config["cash_reserve"])
-    if reserve > cash:
+    if reserve > cash and not (allow_negative_cash and cash < ZERO):
         raise PaperError("cash reserve exceeds clean cash")
-    budget = ((cash - reserve) / slots).quantize(CENT, rounding=ROUND_DOWN) if slots else ZERO
+    budget = (max(ZERO, cash - reserve) / slots).quantize(CENT, rounding=ROUND_DOWN) if slots else ZERO
     filled_buys = 0
     for row in plan["buys"]:
         instrument = row["instrument"]
@@ -375,7 +378,7 @@ def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
         if reason:
             decision(row, "BUY", reason, price, limits, budget=amount(budget))
             continue
-        cap = min(budget, cash - reserve)
+        cap = max(ZERO, min(budget, cash - reserve))
         quantity = affordable_buy_quantity(cap, price, instrument, config)
         if quantity == 0:
             decision(row, "BUY", "INSUFFICIENT_SLOT_BUDGET", price, limits, budget=amount(budget))
@@ -386,9 +389,9 @@ def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
     after = state({"portfolio_id": opening.portfolio_id, "as_of_date": trade_date,
                    "cash": amount(cash), "positions": [
                        {"instrument": i, "quantity": q, "book_cost": amount(c)}
-                       for i, (q, c) in sorted(positions.items())]})
+                       for i, (q, c) in sorted(positions.items())]}, allow_negative_cash=allow_negative_cash)
     return {"cycle_id": plan["cycle_id"], "plan_digest": fingerprint_value(plan),
-            "prior_digest": state(prior).digest, "after": after.to_dict(),
+            "prior_digest": state(prior, allow_negative_cash=allow_negative_cash).digest, "after": after.to_dict(),
             "events": list(events), "external_cashflow": external, "buy_locks": locks,
             "quotes": quotes, "rules": rules, "decisions": decisions, "slots": slots,
             "slot_budget": amount(budget), "clean_cash": amount(clean_cash),
@@ -397,8 +400,8 @@ def settle_plan(plan, prior, quotes, rules, events=(), buy_locks=None):
 
 
 @cash_context
-def valuation(prior, valuation_date, closes, cached, baseline_nav, external, has_external=False):
-    current = state(prior)
+def valuation(prior, valuation_date, closes, cached, baseline_nav, external, has_external=False, *, allow_negative_cash=False):
+    current = state(prior, allow_negative_cash=allow_negative_cash)
     date(valuation_date)
     if valuation_date < current.as_of_date:
         raise PaperError("valuation cannot precede current state")
