@@ -25,12 +25,13 @@ def completion_probe(monkeypatch, mock_env_constants):
     observed = {"events": [], "writer_errors": [], "closed": False}
     events = observed["events"]
     opened, release = threading.Event(), threading.Event()
+    prior_opened, prior_release = threading.Event(), threading.Event()
     append = file_store.append_to
     original_consumer = _SavedSignalConsumer.generate
     builder = records.build_model_record_entry
     history = train_utils.append_jsonl
 
-    def setup(case, workflow, client, *, fault=None, race=True):
+    def setup(case, workflow, client, *, fault=None, race=True, prior_metric_window=False):
         recorder = case["recorder"]
         observed.update(case=case, recorder=recorder, client=client)
         old_uri = mlflow.get_tracking_uri()
@@ -44,6 +45,15 @@ def completion_probe(monkeypatch, mock_env_constants):
         workflow.get_recorder.side_effect = get_recorder
 
         def widened_write(path, data):
+            if prior_metric_window and Path(path).name == "Rank ICIR":
+                Path(path).touch()
+                events.append("prior_metric_opened_empty")
+                prior_opened.set()
+                if not prior_release.wait(10):
+                    observed["writer_errors"].append("prior metric release timed out")
+                answer = append(path, data)
+                events.append("prior_metric_written")
+                return answer
             if Path(path).name == METRIC:
                 Path(path).touch()
                 observed["metric_path"] = Path(path)
@@ -57,6 +67,14 @@ def completion_probe(monkeypatch, mock_env_constants):
             return append(path, data)
 
         def analysis(record):
+            if prior_metric_window:
+                assert prior_opened.wait(10), "previous metric writer did not start"
+            # SigAnaRecord queues its metrics before this consumer reads an
+            # artifact. FileStore resolves artifacts by reading all metrics;
+            # finish those unrelated writes before opening our controlled race.
+            prior_done = threading.Event()
+            recorder.async_log(prior_done.set)
+            assert prior_done.wait(10), "previous analysis metrics did not complete"
             original_consumer(record)
             events.append("analysis_done")
             recorder.log_metrics(**{METRIC: .00820673094451452})
@@ -71,6 +89,7 @@ def completion_probe(monkeypatch, mock_env_constants):
         def close(exc_type, exc, traceback):
             events.append("context_exit")
             release.set()
+            prior_release.set()
             if fault in ("close", KeyboardInterrupt, SystemExit):
                 if fault == "close":
                     raise RuntimeError("recorder close failed")
@@ -114,6 +133,18 @@ def completion_probe(monkeypatch, mock_env_constants):
 
         if race:
             monkeypatch.setattr(file_store, "append_to", widened_write)
+        if prior_metric_window:
+            from qlib.utils.paral import AsyncCaller
+            enqueue = AsyncCaller.__call__
+
+            def queue(self, fn, *args, **kwargs):
+                # Release the earlier write when a following queue item is
+                # submitted; its barrier can only run after that write ends.
+                if prior_opened.is_set():
+                    prior_release.set()
+                return enqueue(self, fn, *args, **kwargs)
+
+            monkeypatch.setattr(AsyncCaller, "__call__", queue)
         monkeypatch.setattr(_SavedSignalConsumer, "generate", analysis)
         monkeypatch.setattr(recorder, "list_tags", tags)
         monkeypatch.setattr(recorder, "load_object", load)
@@ -124,6 +155,7 @@ def completion_probe(monkeypatch, mock_env_constants):
 
         def cleanup():
             release.set()
+            prior_release.set()
             # Only failed/interrupted test contexts need cleanup. A completed
             # recorder stays FINISHED even when its later evidence is rejected.
             if recorder.async_log is not None:
@@ -132,6 +164,23 @@ def completion_probe(monkeypatch, mock_env_constants):
         return cleanup
 
     return setup, observed
+
+
+@pytest.mark.parametrize("predict_only", [False, True])
+def test_prior_metric_write_cannot_mask_identity_fault(finite_signal_training, completion_probe, tmp_path, predict_only):
+    setup, probe = completion_probe
+    history = tmp_path / "history.jsonl"
+    case = finite_signal_training("DatasetH", predict_only=predict_only, history_file=str(history),
+                                  record_classes=["SigAnaRecord", "_SavedSignalConsumer"],
+                                  recorder_lifecycle=lambda *a: setup(*a, fault="identity", prior_metric_window=True))
+    assert not case["result"]["success"]
+    assert case["result"]["error"] == "output recorder model tag differs from record identity"
+    assert "record_entry" not in case["result"] and "history_entry" not in case["result"]
+    assert not history.exists() and not probe["writer_errors"]
+    events = probe["events"]
+    assert events.index("prior_metric_opened_empty") < events.index("prior_metric_written") < events.index("analysis_done")
+    assert events.index("recorder_closed") < events.index("read_tags")
+    assert probe["client"].get_run(case["recorder"].id).info.status == "FINISHED"
 
 
 @pytest.mark.parametrize("predict_only", [False, True])
