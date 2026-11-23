@@ -82,3 +82,45 @@ def test_valuation_preserves_float32_values_at_cent_boundary(monkeypatch, select
     assert quote.price == Decimal("1.31")
     assert quote.raw_close == Decimal(str(float(raw)))
     assert quote.factor == Decimal(str(float(factor)))
+
+
+@pytest.mark.parametrize("selected", ["SH600001", "SH000300"])
+@pytest.mark.parametrize("base,expected,direction", [
+    (1.005, "1.00", -np.inf),
+    (5.005, "5.01", np.inf),
+])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_valuation_verifies_float32_division_across_cent_boundary(
+    monkeypatch, selected, base, expected, direction, corrupt,
+):
+    factor = np.float32("0.001")
+    raw = np.float32(base * float(factor))
+    derived = raw / factor
+    if corrupt:
+        # Stay on the same side of the cent boundary, but break the exact
+        # float32 formula by one ULP. A loose tolerance must not accept this.
+        derived = np.nextafter(derived, np.float32(direction))
+    index = pd.MultiIndex.from_tuples(
+        [("SH600001", pd.Timestamp("2024-05-06")), ("SH000300", pd.Timestamp("2024-05-06"))],
+        names=["instrument", "datetime"],
+    )
+    frame = pd.DataFrame({
+        "$close": np.array([20, 20], dtype="float32"),
+        "$factor": np.array([2, 2], dtype="float32"),
+        "Div($close,$factor)": np.array([10, 10], dtype="float32"),
+    }, index=index)
+    frame.loc[selected, ["$close", "$factor", "Div($close,$factor)"]] = [raw, factor, derived]
+
+    import qlib.data
+    monkeypatch.setattr(qlib.data, "D", type("Data", (), {
+        "features": staticmethod(lambda instruments, **kwargs: frame.loc[list(instruments)]),
+    })())
+    if corrupt:
+        with pytest.raises(ValuationSchemaError, match=selected):
+            QlibValuationProvider().snapshot("2024-05-06", ("SH600001",), "SH000300")
+    else:
+        result = QlibValuationProvider().snapshot("2024-05-06", ("SH600001",), "SH000300")
+        quote = result.quote_evidence[0] if selected == "SH600001" else result.benchmark_evidence
+        assert quote.price == Decimal(expected)
+        assert quote.raw_close == Decimal(str(float(raw)))
+        assert quote.factor == Decimal(str(float(factor)))

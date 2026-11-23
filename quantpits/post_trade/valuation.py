@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Mapping, Protocol, Tuple
 
+import numpy as np
+
 from quantpits.post_trade.contracts import ValuationMissingError, ValuationSchemaError
 from quantpits.post_trade.state import (
     MONEY_QUANTUM, ROUNDING_MODE, ValuationSnapshot, decimal_value,
@@ -53,9 +55,23 @@ class QlibValuationProvider:
             MONEY_QUANTUM, rounding=ROUNDING_MODE,
         )
         if calculated_price != operational_price:
-            raise ValuationSchemaError(
-                "Raw close/factor does not match derived close for %s" % instrument
+            # Qlib evaluates Div on float32 features. Its correctly rounded
+            # result can straddle a cent boundary with the exact quotient.
+            # Accept only an exact reproduction from exact float32 operands;
+            # a numeric tolerance would also admit corrupted derived quotes.
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                raw32, factor32 = np.float32(float(raw)), np.float32(float(factor))
+                quotient32 = raw32 / factor32
+            reproduced = (
+                np.isfinite(raw32) and np.isfinite(factor32) and np.isfinite(quotient32)
+                and Decimal(str(float(raw32))) == raw
+                and Decimal(str(float(factor32))) == factor
+                and Decimal(str(float(quotient32))) == derived
             )
+            if not reproduced:
+                raise ValuationSchemaError(
+                    "Raw close/factor does not match derived close for %s" % instrument
+                )
         return operational_price
 
     def snapshot(self, trade_date, instruments, benchmark):

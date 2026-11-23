@@ -186,7 +186,7 @@ cash_after = cash_before + 卖出收入 - 买入支出 + 红利利息 + cashflow
 
 所有期末持仓和基准都必须有有效收盘价；缺失估值会在写盘前失败，不再静默丢失持仓或写入假的零基准。
 
-账户估值会同时读取 `$close`、`$factor` 和 `Div($close,$factor)`。持仓证券与指数基准均先将 Qlib 数值标量展开为完整 Python 标量再转 Decimal，避免 float32 的短显示文本把分值舍入推过边界。两者按现有金额规则使用 `ROUND_HALF_UP` 量化到分，并在同一分值精度验证 close/factor 派生关系；实际跨越一分钱边界的公式错配仍会 fail closed。未来真实 state transaction 会把原始字段、factor、量化后的业务价格、用途和价格口径写入 `data/valuation_evidence.jsonl`。该 sidecar 与状态日志一起恢复提交，位于 daily log 之后、cashflow 与 cursor 之前；旧 CSV schema 不变，不重算历史账务。
+账户估值会同时读取 `$close`、`$factor` 和 `Div($close,$factor)`。持仓证券与指数基准均先将 Qlib 数值标量展开为完整 Python 标量再转 Decimal，避免 float32 的短显示文本把分值舍入推过边界。两者按现有金额规则使用 `ROUND_HALF_UP` 量化到分，并在同一分值精度验证 close/factor 派生关系。如果高精度复算与 Qlib 的 float32 除法恰好位于分值舍入边界两侧，仅在原始两个操作数及派生结果均能精确复现 float32 除法时接受 Qlib 业务价格；不采用数值容差，其他跨分值公式错配仍会 fail closed。未来真实 state transaction 会把原始字段、factor、量化后的业务价格、用途和价格口径写入 `data/valuation_evidence.jsonl`。该 sidecar 与状态日志一起恢复提交，位于 daily log 之后、cashflow 与 cursor 之前；旧 CSV schema 不变，不重算历史账务。
 
 ### 估值日期与券商资产快照
 
