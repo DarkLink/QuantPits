@@ -296,6 +296,20 @@ def test_generate_buy_orders_success(mock_env):
     assert buys[0]['estimated_amount'] == 2000.0
 
 
+@pytest.mark.parametrize("cash", [50, 0, -1000])
+def test_buy_suggestions_retain_zero_estimates_without_negative_quantities(mock_env, cash):
+    strategy, _, _ = mock_env
+    gen = strategy.TopkDropoutOrderGenerator()
+    candidates = pd.DataFrame({
+        'possible_max': [100.0], 'score': [0.9], 'current_close': [95.0],
+    }, index=pd.Index(['A'], name='instrument'))
+    buys = gen.generate_buy_orders(candidates, 1, cash, "2026-03-02", include_zero_estimates=True)
+    assert buys == [{
+        'instrument': 'A', 'datetime': '2026-03-02', 'value': 0,
+        'estimated_amount': 0.0, 'score': 0.9, 'current_close': 95.0,
+    }]
+
+
 def test_generate_sell_orders(mock_env):
     strategy, _, _ = mock_env
     gen = strategy.TopkDropoutOrderGenerator(topk=20, n_drop=3)

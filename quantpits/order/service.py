@@ -44,9 +44,10 @@ def _focus_instruments(*frames: Any) -> tuple[str, ...]:
 
 
 def _estimated_buy_range(orders: tuple[dict, ...], target_count: int) -> tuple[float | None, float | None]:
-    if not orders or target_count <= 0:
+    # Unsized candidates remain eligible, but zero is not a purchase cost.
+    amounts = sorted(float(item["estimated_amount"]) for item in orders if float(item["estimated_amount"]) > 0)
+    if not amounts or target_count <= 0:
         return None, None
-    amounts = sorted(float(item["estimated_amount"]) for item in orders)
     return sum(amounts[:target_count]), sum(amounts[-target_count:])
 
 
@@ -251,7 +252,9 @@ class OrderGenerationService:
             for instrument in analysis.eligible_unscored_instruments
         )
         cash = current_cash + float(sell_amount) + _cashflow_today(prepared.config.cashflow_config, anchor_date)
-        buy_orders = generator.generate_buy_orders(buy_candidates, target_buy_count, cash, trade_date)
+        buy_orders = generator.generate_buy_orders(
+            buy_candidates, target_buy_count, cash, trade_date, include_zero_estimates=True,
+        )
         sell_tuple = tuple(dict(item) for item in sell_orders)
         buy_tuple = tuple(dict(item) for item in buy_orders)
         buy_min, buy_max = _estimated_buy_range(buy_tuple, target_buy_count)
@@ -276,6 +279,7 @@ class OrderGenerationService:
         print(f"买入备选   : {len(buy_tuple)}")
         if buy_tuple:
             print(pd.DataFrame(buy_tuple).to_string(index=False))
+            print("数量为锚点价格估算；0 股候选仍保留，交易日按实际价格和可用资金重新核量。")
         return OrderCalculationResult(
             anchor_date=anchor_date,
             trade_date=trade_date,

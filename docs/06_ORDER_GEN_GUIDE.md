@@ -81,9 +81,13 @@ python quantpits/scripts/order_gen.py --dry-run --verbose
 
 ## 保存完整候选并按当前现金／开盘观察准备数量
 
-订单生成可显式加 `--candidate-output output/candidates/week.json`，保存数量过滤前的完整有序主备、
-原持仓及卖出意图、信号来源／摘要、日期、策略和anchor价格。旧估算不足一手的候选仍保留，估量记为0。
-原建议CSV及分析发现路径保持；省略此选项时，旧计划、输出与周期身份不变，旧周期无需补候选文件。
+买入建议 CSV 按原始候选顺序保留所有主备，包括锚点价格估算不足一手、`value=0` 的候选。
+零估量不取消候选资格，也不把后面的备选提前为主选；`value` 和 `estimated_amount` 仅是日前估量，
+交易日须按实际价格、可用资金及费用重新核量。金额范围统计仅包含正估量项，全部为零时不报告范围。
+CSV 路径和列名保持；历史建议文件不自动改写。低层正数量订单接口与 paper 记账规则保持原合同。
+
+订单生成可显式加 `--candidate-output output/candidates/week.json`，另外保存完整有序主备、
+原持仓及卖出意图、信号来源／摘要、日期、策略和anchor价格。省略此选项时，计划及周期身份不变，旧周期无需补候选文件。
 
 ```bash
 # 在已激活的工作区生成原建议和可复用候选；dry-run仍零写入
@@ -241,8 +245,8 @@ python quantpits/tools/plot_model_opinions.py
 
 ```
 可用现金 = 当前余额 + 预估卖出回收 + 当日出入金
-每股预算 = 可用现金 / 需要买入数量
-买入手数 = floor(每股预算 / 涨停估价 / 100) × 100
+每标的预算 = 可用现金 / 需要买入标的数
+买入估量（股） = max(0, floor(每标的预算 / 涨停估价 / 100) × 100)
 ```
 
 ---
@@ -252,7 +256,7 @@ python quantpits/tools/plot_model_opinions.py
 ```
 output/
 ├── sell_suggestion_{source}_{date}.csv       # 卖出订单
-├── buy_suggestion_{source}_{date}.csv        # 买入订单
+├── buy_suggestion_{source}_{date}.csv        # 有序买入备选（含零估量）
 ├── model_opinions_{date}.csv                 # 多模型判断表
 ├── model_opinions_{date}.json                # 模型组成信息
 └── manifests/order_gen/{run_id}.json         # 本次实际产物与安全摘要
@@ -266,7 +270,7 @@ output/
 |------|------|
 | `instrument` | 标的代码 |
 | `datetime` | 交易日期 |
-| `value` | 数量（股） |
+| `value` | 数量（股）；买入为日前估量，0 仍保留候选资格 |
 | `estimated_amount` | 预估金额 |
 | `score` | 预测分数 |
 | `current_close` | 当前复权收盘价 |

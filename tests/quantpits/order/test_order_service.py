@@ -37,7 +37,8 @@ class _Generator:
     def generate_sell_orders(self, candidates, holdings, trade_date):
         return [], 0.0
 
-    def generate_buy_orders(self, candidates, count, cash, trade_date):
+    def generate_buy_orders(self, candidates, count, cash, trade_date, *, include_zero_estimates=False):
+        assert include_zero_estimates
         return [{"instrument": "A", "estimated_amount": 100.0}]
 
 

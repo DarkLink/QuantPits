@@ -92,8 +92,9 @@ class OrderGenerator:
         """生成具体的卖出定单列表"""
         raise NotImplementedError
         
-    def generate_buy_orders(self, buy_candidates, buy_count, available_cash, next_trade_date_string):
-        """生成具体的买入定单列表"""
+    def generate_buy_orders(self, buy_candidates, buy_count, available_cash, next_trade_date_string,
+                            *, include_zero_estimates=False):
+        """生成买入估量；人工备选表可保留不足一手的零估量候选。"""
         raise NotImplementedError
 
 
@@ -277,13 +278,14 @@ class TopkDropoutOrderGenerator(OrderGenerator):
 
         return sell_orders, sell_amount
 
-    def generate_buy_orders(self, buy_candidates, buy_count, available_cash, next_trade_date_string):
+    def generate_buy_orders(self, buy_candidates, buy_count, available_cash, next_trade_date_string,
+                            *, include_zero_estimates=False):
         avg_cash = available_cash / buy_count if buy_count > 0 else 0
         buy_orders = []
         
         for instrument, row in buy_candidates.iterrows():
-            value = int(np.floor(avg_cash / row['possible_max'] / 100) * 100)
-            if value >= 100:
+            value = max(0, int(np.floor(avg_cash / row['possible_max'] / 100) * 100))
+            if value >= 100 or include_zero_estimates:
                 amount = value * row['possible_max']
                 buy_orders.append({
                     'instrument': instrument,

@@ -82,7 +82,9 @@ instead of reopening mappings to select a source again, and model opinions reuse
 
 ## Save complete candidates and prepare quantities from current cash and cash-open observations
 
-Add `--candidate-output output/candidates/week.json` to order generation to retain the complete ordered primary/backup list before quantity filtering, original holdings and sell intentions, signal identity/digest, dates, strategy and anchor prices. Estimates below one lot remain present with quantity zero. Existing suggestion CSVs and analysis discovery are unchanged. Without the option, legacy plans, outputs and cycle identities remain unchanged; old cycles need no candidate file.
+Buy suggestion CSVs retain every primary and backup candidate in its original order, including candidates with an anchor-price estimate of less than one lot (`value=0`). A zero estimate does not revoke eligibility or promote later backups. `value` and `estimated_amount` are advance estimates; recalculate quantities using actual prices, available cash and fees on the trading day. The estimated cost range includes only positive estimates; no range is reported when all estimates are zero. CSV paths and columns are unchanged. Historical suggestions are not rewritten automatically. The low-level positive-quantity order interface and paper accounting retain their existing contracts.
+
+Add `--candidate-output output/candidates/week.json` to also save the complete ordered primary/backup list, original holdings and sell intentions, signal identity/digest, dates, strategy and anchor prices. Without the option, plan and cycle identities remain unchanged; old cycles need no candidate file.
 
 ```bash
 # Generate the original suggestions and reusable candidates in an activated workspace.
@@ -236,7 +238,7 @@ python quantpits/tools/plot_model_opinions.py
 ```text
 Available Capital = Existing Balance + Estimated Sell Reclamation Proceeds + Inter-day Deposits
 Lot Budget = Available Capital / Gross Buys Triggered
-Bought Shares = floor(Lot Budget / Limit-Up Expected Bounds / 100) × 100
+Estimated Buy Shares = max(0, floor(Lot Budget / Limit-Up Expected Bounds / 100) × 100)
 ```
 
 ---
@@ -246,7 +248,7 @@ Bought Shares = floor(Lot Budget / Limit-Up Expected Bounds / 100) × 100
 ```text
 output/
 ├── sell_suggestion_{source}_{date}.csv       # Sell permutation targets
-├── buy_suggestion_{source}_{date}.csv        # Buy permutation allocations
+├── buy_suggestion_{source}_{date}.csv        # Ordered buy candidates, including zero estimates
 ├── model_opinions_{date}.csv                 # Aggregated prediction multi-matrix
 ├── model_opinions_{date}.json                # Matrix component schemas
 └── manifests/order_gen/{run_id}.json         # Actual artifacts and safe run summary
@@ -260,7 +262,7 @@ output/
 |------|------|
 | `instrument` | Asset code identifier |
 | `datetime` | Target operational mapping date |
-| `value` | Share count quantity |
+| `value` | Shares; buys are advance estimates, and zero retains candidate eligibility |
 | `estimated_amount` | Capital proxy boundary approximations |
 | `score` | Native prediction index evaluation |
 | `current_close` | Adjusted prevailing closing evaluation price vector |

@@ -70,9 +70,17 @@ def legacy_observation(root, cash):
 
 
 @pytest.mark.parametrize("cash", [1050, 10000])
-def test_default_plan_and_csv_match_prechange_baseline(tmp_path, cash):
+def test_default_plan_and_positive_estimates_match_prechange_baseline(tmp_path, cash):
     baseline = json.loads((Path(__file__).parent / "fixtures/preparation_legacy_baseline.json").read_text())
-    assert legacy_observation(tmp_path / "account", cash) == baseline[str(cash)]
+    actual = legacy_observation(tmp_path / "account", cash)
+    if cash == 1050:
+        # The historical fixture deliberately omitted zero estimates. Only the
+        # human-facing CSV changes; the plan and its identity stay the same.
+        csv = actual["csv"].pop("buy_suggestion_ensemble_2026-10-27.csv")
+        assert csv == ("instrument,datetime,value,estimated_amount,score,current_close\n" + "".join(
+            "%s,2026-10-27,0,0.0,%s,10.0\n" % (instrument, score)
+            for instrument, score in zip(BUYS, [5.0, 4.0, 3.0, 2.0])))
+    assert actual == baseline[str(cash)]
 
 
 def exported(tmp_path, **kwargs):
@@ -98,14 +106,18 @@ def rehash(candidates):
     return candidates
 
 
-def test_export_preserves_zero_quantity_full_order_and_legacy_csv(tmp_path):
+def test_export_preserves_zero_estimates_in_csv_and_actual_price_can_make_purchase_affordable(tmp_path):
     from quantpits.order.preparation import prepare_orders
     prepared, _, summary, candidates = exported(tmp_path)
     assert [row["instrument"] for row in candidates["buys"]] == BUYS
     assert [row["role"] for row in candidates["buys"]] == ["PRIMARY", "PRIMARY", "BACKUP", "BACKUP"]
     assert [row["suggested_quantity"] for row in candidates["buys"]] == [0] * 4
-    assert summary.buy_file is None
+    csv = pd.read_csv(prepared.ctx.root / summary.buy_file)
+    assert list(csv["instrument"]) == BUYS and list(csv["value"]) == [0] * 4
     manifest = json.loads((prepared.ctx.root / summary.manifest_path).read_text())
+    assert manifest["records"]["buy_suggestion_count"] == 4
+    assert manifest["records"]["estimated_buy_min"] is None
+    assert manifest["records"]["estimated_buy_max"] is None
     assert manifest["records"]["candidates"] == dict(path="output/candidates.json", digest=candidates["digest"], count=4)
     assert "output/candidates.json" in summary.actual_outputs
     result = prepare_orders(candidates, observation())
@@ -116,6 +128,25 @@ def test_export_preserves_zero_quantity_full_order_and_legacy_csv(tmp_path):
     assert result["slots"] == 1 and result["slot_budget"] == "1050.00"
     assert result["estimated_remaining_cash"] == "84.99"
     assert "FILLED" not in json.dumps(result) and "after" not in result
+
+
+def test_zero_estimate_does_not_promote_backup_or_reduce_positive_cost_range(tmp_path):
+    prepared, hooks = scenario(tmp_path / "account", cash=2000, candidate_output="output/candidates.json")
+    prices = hooks.get_price_data()
+    prices.loc[BUYS[0], ["current_close", "possible_min", "possible_max"]] = [20., 18., 22.]
+    hooks = replace(hooks, get_price_data=lambda *a, **k: prices)
+    summary = OrderGenerationService(hooks).execute(prepared)
+    csv = pd.read_csv(prepared.ctx.root / summary.buy_file)
+    assert list(csv["instrument"]) == BUYS
+    assert list(csv["value"]) == [0, 100, 100, 100]
+    candidates = json.loads(prepared.ctx.output_path("candidates.json").read_text())
+    assert [r["instrument"] for r in candidates["buys"] if r["role"] == "PRIMARY"] == BUYS[:2]
+    assert [r["suggested_quantity"] for r in candidates["buys"]] == list(csv["value"])
+    manifest = json.loads((prepared.ctx.root / summary.manifest_path).read_text())
+    assert manifest["records"]["target_buy_count"] == 2
+    assert manifest["records"]["buy_suggestion_count"] == 4
+    assert manifest["records"]["estimated_buy_min"] == 2200.0
+    assert manifest["records"]["estimated_buy_max"] == 2200.0
 
 
 def test_missing_primary_uses_original_backup_and_does_not_simulate_sells(tmp_path):
@@ -243,13 +274,14 @@ def test_candidate_conflict_partial_outputs_and_no_op_write_are_truthful(tmp_pat
     changed = copy.deepcopy(candidates); changed["source"]["description"] = "changed"; rehash(changed)
     with pytest.raises(FileExistsError): write_derived_json(prepared.ctx,"output/candidates.json",changed)
     assert prepared.ctx.output_path("candidates.json").read_bytes() == before
-    # A failed extra output retains the original CSV in the failure manifest.
+    # A failed extra output retains both committed CSVs in the failure manifest.
     other = replace(prepared, plan=replace(prepared.plan,run_id="failed-candidate"))
     prepared.ctx.output_path("candidates.json").write_text("{}")
     with pytest.raises(OrderPersistenceError): OrderGenerationService(hooks).execute(other)
     manifest = json.loads(prepared.ctx.output_path("manifests/order_gen/failed-candidate.json").read_text())
     assert manifest["status"] == "failed"
-    assert [r["path"] for r in manifest["outputs"]] == [summary.sell_file,"output/manifests/order_gen/failed-candidate.json"]
+    assert [r["path"] for r in manifest["outputs"]] == [
+        summary.sell_file, summary.buy_file, "output/manifests/order_gen/failed-candidate.json"]
     monkeypatch.setattr("quantpits.order.persistence.os.link",lambda *a,**k: None)
     with pytest.raises(OSError,match="postcondition"):
         write_derived_json(prepared.ctx,"output/no_op.json",candidates)

@@ -177,7 +177,8 @@ class RecordingOrderGenerator:
     def generate_sell_orders(self, candidates, holdings, trade_date):
         return [], 0.0
 
-    def generate_buy_orders(self, candidates, count, cash, trade_date):
+    def generate_buy_orders(self, candidates, count, cash, trade_date, *, include_zero_estimates=False):
+        assert include_zero_estimates
         self.cash_seen = cash
         return ([{"instrument": "AAA", "estimated_amount": min(float(cash), 100.0)}] if count else [])
 
