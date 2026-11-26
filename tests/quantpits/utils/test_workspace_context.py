@@ -69,7 +69,7 @@ def test_workspace_context_respects_explicit_runtime_metadata(tmp_path):
     )
 
     assert ctx.mlflow_uri == "sqlite:////tmp/custom.db"
-    assert ctx.qlib_data_dir == Path("/tmp/qlib_data")
+    assert ctx.qlib_data_dir == Path("/tmp/qlib_data").resolve()
     assert ctx.qlib_region == "us"
 
 
@@ -91,7 +91,7 @@ def test_env_get_workspace_context_uses_current_env_state(monkeypatch, tmp_path)
     assert Path.cwd() == cwd_before
     assert ctx.root == workspace.resolve()
     assert ctx.mlflow_uri == env.mlflow_backend
-    assert ctx.qlib_data_dir == Path("/tmp/qlib_data")
+    assert ctx.qlib_data_dir == Path("/tmp/qlib_data").resolve()
     assert ctx.qlib_region == "us"
 
 

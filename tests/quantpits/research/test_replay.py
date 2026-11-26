@@ -22,6 +22,7 @@ from quantpits.research.replay import (
 from quantpits.utils.predict_utils import rank_norm
 
 
+PHYSICAL_TMP = Path("/tmp").resolve()
 DATES = (
     "2026-07-03", "2026-07-10", "2026-07-17", "2026-07-24",
     "2026-07-31", "2026-08-07", "2026-08-14", "2026-08-21",
@@ -381,8 +382,8 @@ def test_a0_observes_anchor_close_and_next_open_coverage_without_qlib_init(tmp_p
 
 def test_output_is_create_new_tmp_only_and_content_manifest_is_repeatable(tmp_path):
     result, _workspace, _qlib = _run(tmp_path / "source")
-    first = write_replay_output(result, Path("/tmp") / ("qp_replay_test_%s_a" % tmp_path.name))
-    second = write_replay_output(result, Path("/tmp") / ("qp_replay_test_%s_b" % tmp_path.name))
+    first = write_replay_output(result, PHYSICAL_TMP / ("qp_replay_test_%s_a" % tmp_path.name))
+    second = write_replay_output(result, PHYSICAL_TMP / ("qp_replay_test_%s_b" % tmp_path.name))
     try:
         assert first == second
         assert first["status"] == "complete"
@@ -391,14 +392,14 @@ def test_output_is_create_new_tmp_only_and_content_manifest_is_repeatable(tmp_pa
             write_replay_output(result, Path.cwd() / "not_allowed_replay_output")
     finally:
         import shutil
-        shutil.rmtree(Path("/tmp") / ("qp_replay_test_%s_a" % tmp_path.name), ignore_errors=True)
-        shutil.rmtree(Path("/tmp") / ("qp_replay_test_%s_b" % tmp_path.name), ignore_errors=True)
+        shutil.rmtree(PHYSICAL_TMP / ("qp_replay_test_%s_a" % tmp_path.name), ignore_errors=True)
+        shutil.rmtree(PHYSICAL_TMP / ("qp_replay_test_%s_b" % tmp_path.name), ignore_errors=True)
 
 
 def test_output_rejects_symlink_parent_even_when_target_resolves_below_tmp(tmp_path):
     result, _workspace, _qlib = _run(tmp_path / "source")
-    real_parent = Path("/tmp") / ("qp_replay_real_%s" % tmp_path.name)
-    alias = Path("/tmp") / ("qp_replay_alias_%s" % tmp_path.name)
+    real_parent = PHYSICAL_TMP / ("qp_replay_real_%s" % tmp_path.name)
+    alias = PHYSICAL_TMP / ("qp_replay_alias_%s" % tmp_path.name)
     real_parent.mkdir()
     alias.symlink_to(real_parent, target_is_directory=True)
     try:
@@ -411,7 +412,7 @@ def test_output_rejects_symlink_parent_even_when_target_resolves_below_tmp(tmp_p
 
 def test_output_detects_canonical_root_replacement_after_member_commit(tmp_path, monkeypatch):
     result, _workspace, _qlib = _run(tmp_path / "source")
-    output = Path("/tmp") / ("qp_replay_drift_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("qp_replay_drift_%s" % tmp_path.name)
     displaced = output.with_name(output.name + "_displaced")
     original_replace = replay.os.replace
     triggered = {"value": False}
@@ -455,7 +456,7 @@ def test_public_replay_and_dataclass_replace_cannot_forge_observed_authority(tmp
     with pytest.raises(ReplayContractError, match="inspector-owned"):
         replace(inputs, parity_anchor=DATES[-2])
     with pytest.raises(ReplayContractError, match="truth-owner"):
-        write_replay_output(dict(result), Path("/tmp") / ("forged_%s" % tmp_path.name))
+        write_replay_output(dict(result), PHYSICAL_TMP / ("forged_%s" % tmp_path.name))
 
 
 def test_price_inventory_aggregate_revalidates_member_and_digest(tmp_path):
@@ -492,7 +493,7 @@ def test_cli_executes_complete_replay_without_backend_initialization(tmp_path):
     from quantpits.scripts import research_replay
 
     workspace, qlib = _fixture(tmp_path)
-    output = Path("/tmp") / ("qp_replay_cli_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("qp_replay_cli_%s" % tmp_path.name)
     try:
         status = research_replay.main([
             "--workspace", str(workspace),

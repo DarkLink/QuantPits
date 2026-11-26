@@ -4,6 +4,7 @@ These tests verify fit hooks and custom fit loops using mocks to avoid loading q
 """
 
 import os
+import sys
 import pytest
 import pandas as pd
 import numpy as np
@@ -11,6 +12,10 @@ from unittest.mock import MagicMock, patch
 
 # Skip all tests if torch is not installed
 torch = pytest.importorskip("torch", reason="torch not installed")
+
+# The tiny model fixtures also run in macOS sandboxes that prohibit the
+# shared-memory socket used by DataLoader workers. Linux still tests a worker.
+DATALOADER_WORKERS = 0 if sys.platform == "darwin" else 1
 
 
 # ===========================================================================
@@ -96,7 +101,7 @@ def test_ts_wrapper_hooks(module_name, class_name):
     # Instantiate via __new__ to avoid calling super().__init__ which requires Qlib
     model = cls.__new__(cls)
     model.batch_size = 2
-    model.n_jobs = 1
+    model.n_jobs = DATALOADER_WORKERS
     model.device = torch.device("cpu")
 
     # Mock qlib sampler for GATs by patching in the target wrapper module
@@ -208,7 +213,7 @@ class TestGeneralPTNNWrapper:
         model.metric = "ir"
         model.n_epochs = 2
         model.batch_size = 2
-        model.n_jobs = 1
+        model.n_jobs = DATALOADER_WORKERS
         model.device = torch.device("cpu")
         model.early_stop = 2
         model.logger = MagicMock()
@@ -362,7 +367,7 @@ class TestLSTMICModel:
             n_epochs=2,
             batch_size=2,
             early_stop=2,
-            n_jobs=1,
+            n_jobs=DATALOADER_WORKERS,
             GPU=-1,
         )
         
@@ -387,7 +392,7 @@ class TestLSTMICModel:
             n_epochs=2,
             batch_size=2,
             early_stop=2,
-            n_jobs=1,
+            n_jobs=DATALOADER_WORKERS,
             GPU=-1,
             metric="ir"
         )
@@ -451,7 +456,7 @@ class TestLSTMRankModel:
             n_epochs=2,
             batch_size=2,
             early_stop=2,
-            n_jobs=1,
+            n_jobs=DATALOADER_WORKERS,
             GPU=-1,
         )
         
@@ -888,7 +893,7 @@ class TestGATsPlusModel:
             metric="ic",
             n_epochs=2,
             early_stop=2,
-            n_jobs=1,
+            n_jobs=DATALOADER_WORKERS,
             GPU=-1,
             seed=42
         )
@@ -910,7 +915,7 @@ class TestGATsPlusModel:
             metric="ir",
             n_epochs=2,
             early_stop=2,
-            n_jobs=1,
+            n_jobs=DATALOADER_WORKERS,
             GPU=-1,
             seed=42
         )
@@ -936,7 +941,7 @@ class TestGATsPlusModel:
             model_path=str(model_path_save),
             n_epochs=1,
             early_stop=1,
-            n_jobs=1,
+            n_jobs=DATALOADER_WORKERS,
             GPU=-1,
             seed=42
         )

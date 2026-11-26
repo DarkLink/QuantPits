@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from quantpits.scripts import cycle_evidence
-from tests.quantpits.evidence.test_sealing import cycle_factory
+from tests.quantpits.evidence.test_sealing import HAS_NATIVE_EVIDENCE, cycle_factory
 
 
 def _args(root, qlib, request, *, dry=False):
@@ -30,9 +30,19 @@ def _args(root, qlib, request, *, dry=False):
 def test_cli_capture_prints_machine_result_and_preserves_cwd(cycle_factory, capsys):
     root, qlib, request = cycle_factory()
     before = Path.cwd()
-    assert cycle_evidence.main(_args(root, qlib, request)) == 0
+    exit_code = cycle_evidence.main(_args(root, qlib, request))
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "sealed_complete"
+    if HAS_NATIVE_EVIDENCE:
+        assert exit_code == 0
+        assert payload["status"] == "sealed_complete"
+    else:
+        assert exit_code == 2
+        assert payload["status"] == "failed_no_final"
+        assert payload["write_scope"] == "staging_only"
+        assert payload["capability"] == "none"
+        assert payload["bundle_path"] is None
+        assert not (root / "data/evidence/v1/cycles" / request.cycle_id).exists()
+        assert any(problem["code"] == "publication_failed" for problem in payload["problems"])
     assert payload["did_write"] is True
     assert Path.cwd() == before
 
@@ -41,7 +51,8 @@ def test_cli_dry_run_creates_no_evidence_namespace(cycle_factory, capsys):
     root, qlib, request = cycle_factory()
     assert cycle_evidence.main(_args(root, qlib, request, dry=True)) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "preview_complete"
+    expected = "preview_complete" if HAS_NATIVE_EVIDENCE else "preview_partial"
+    assert payload["status"] == expected
     assert payload["did_write"] is False
     assert payload["bundle_path"] is None
     assert not (root / "data/evidence").exists()

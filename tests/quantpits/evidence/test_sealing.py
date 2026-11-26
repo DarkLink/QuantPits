@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sys
 from dataclasses import replace
 
 import pytest
@@ -9,6 +10,13 @@ import pandas as pd
 from quantpits.evidence import CaptureRequest, ContractError, ProductionCycleEvidenceSealer, TypedDigest
 import quantpits.evidence.sealing as sealing_module
 from quantpits.utils.workspace import fingerprint_value
+
+
+HAS_NATIVE_EVIDENCE = sys.platform == "linux"
+requires_native_evidence = pytest.mark.skipif(
+    not HAS_NATIVE_EVIDENCE,
+    reason="native evidence sealing requires Linux inotify and renameat2",
+)
 
 
 def _write_json(path, value):
@@ -163,6 +171,7 @@ def cycle_factory(tmp_path, monkeypatch):
     return build
 
 
+@requires_native_evidence
 def test_complete_cycle_publishes_one_verified_deterministic_bundle(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -186,6 +195,7 @@ def test_dataclass_replace_cannot_replay_inspector_authority(cycle_factory):
         replace(result, status="adopted", did_write=False)
 
 
+@requires_native_evidence
 def test_capture_write_set_is_only_lock_staging_and_one_final_bundle(cycle_factory):
     root, qlib, request = cycle_factory()
     before = {path.relative_to(root).as_posix() for path in root.rglob("*")}
@@ -198,6 +208,7 @@ def test_capture_write_set_is_only_lock_staging_and_one_final_bundle(cycle_facto
     assert not any(path.endswith(".lock") or "/.staging/" in path for path in created)
 
 
+@requires_native_evidence
 def test_exact_replay_adopts_without_final_write(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -212,6 +223,7 @@ def test_exact_replay_adopts_without_final_write(cycle_factory):
     assert (root / first.bundle_path / "seal.json").read_bytes() == before
 
 
+@requires_native_evidence
 def test_exact_final_appearing_after_lock_is_verified_and_adopted(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -232,6 +244,7 @@ def test_exact_final_appearing_after_lock_is_verified_and_adopted(cycle_factory)
     assert not (root / "data/evidence/v1/.locks/2099-01-02.lock").exists()
 
 
+@requires_native_evidence
 def test_different_final_appearing_after_lock_is_conflict(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -253,6 +266,7 @@ def test_different_final_appearing_after_lock_is_conflict(cycle_factory):
     assert conflict.capability == "none"
 
 
+@requires_native_evidence
 def test_exact_final_winning_atomic_publish_race_is_fail_closed_after_staging(
     cycle_factory, monkeypatch,
 ):
@@ -303,6 +317,7 @@ def test_stage_member_file_exists_is_failure_not_cycle_conflict(
     assert any(item["code"] == "staging_member_conflict" for item in result.problems)
 
 
+@requires_native_evidence
 def test_replay_source_mutation_during_existing_verification_denies_adoption(
     cycle_factory, monkeypatch,
 ):
@@ -323,6 +338,7 @@ def test_replay_source_mutation_during_existing_verification_denies_adoption(
     assert replay.capability == "none"
 
 
+@requires_native_evidence
 def test_replay_final_replacement_during_existing_verification_denies_adoption(
     cycle_factory, monkeypatch,
 ):
@@ -348,6 +364,7 @@ def test_replay_final_replacement_during_existing_verification_denies_adoption(
     assert replay.capability == "none"
 
 
+@requires_native_evidence
 def test_transient_valid_final_cannot_mask_tampered_canonical_bundle(
     cycle_factory, monkeypatch,
 ):
@@ -381,6 +398,7 @@ def test_transient_valid_final_cannot_mask_tampered_canonical_bundle(
     assert (final / "ranking.csv").read_text() == "tampered\n"
 
 
+@requires_native_evidence
 def test_replay_member_tamper_after_first_verification_denies_adoption(
     cycle_factory, monkeypatch,
 ):
@@ -407,6 +425,7 @@ def test_replay_member_tamper_after_first_verification_denies_adoption(
     assert replay.capability == "none"
 
 
+@requires_native_evidence
 def test_existing_bundle_member_tamper_denies_adoption_capability(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -418,6 +437,7 @@ def test_existing_bundle_member_tamper_denies_adoption_capability(cycle_factory)
     assert second.seal_digest is None
 
 
+@requires_native_evidence
 def test_existing_manifest_semantic_tamper_cannot_be_hidden_by_resealing(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -438,6 +458,7 @@ def test_existing_manifest_semantic_tamper_cannot_be_hidden_by_resealing(cycle_f
     assert replay.capability == "none"
 
 
+@requires_native_evidence
 def test_existing_noncanonical_manifest_representation_denies_adoption(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -455,6 +476,7 @@ def test_existing_noncanonical_manifest_representation_denies_adoption(cycle_fac
     assert sealer.capture(request).status == "conflict"
 
 
+@requires_native_evidence
 def test_existing_extra_empty_object_directory_denies_adoption(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -464,6 +486,7 @@ def test_existing_extra_empty_object_directory_denies_adoption(cycle_factory):
     assert sealer.capture(request).status == "conflict"
 
 
+@requires_native_evidence
 def test_resealed_bundle_cannot_omit_manifest_embedded_object(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -485,6 +508,7 @@ def test_resealed_bundle_cannot_omit_manifest_embedded_object(cycle_factory):
     assert sealer.capture(request).status == "conflict"
 
 
+@requires_native_evidence
 def test_resealed_bundle_cannot_omit_manifest_named_evidence(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -503,6 +527,7 @@ def test_resealed_bundle_cannot_omit_manifest_named_evidence(cycle_factory):
     assert sealer.capture(request).status == "conflict"
 
 
+@requires_native_evidence
 def test_same_cycle_changed_input_conflicts_without_overwrite(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -519,6 +544,7 @@ def test_same_cycle_changed_input_conflicts_without_overwrite(cycle_factory):
     assert seal_path.read_bytes() == before
 
 
+@requires_native_evidence
 def test_missing_deep_analysis_is_visible_partial(cycle_factory):
     root, qlib, request = cycle_factory(deep=False)
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
@@ -526,6 +552,7 @@ def test_missing_deep_analysis_is_visible_partial(cycle_factory):
     assert any(item["code"] == "deep_analysis_missing" for item in result.problems)
 
 
+@requires_native_evidence
 def test_explicit_missing_deep_analysis_path_is_sealed_as_stable_partial(cycle_factory):
     root, qlib, request = cycle_factory(deep=False)
     request = replace(request, deep_analysis_run="output/deep/missing")
@@ -535,6 +562,7 @@ def test_explicit_missing_deep_analysis_path_is_sealed_as_stable_partial(cycle_f
     assert any(item["code"] == "deep_analysis_incomplete" for item in result.problems)
 
 
+@requires_native_evidence
 def test_missing_required_manifest_is_preserved_in_partial_bundle(cycle_factory):
     root, qlib, request = cycle_factory()
     (root / request.order_manifest).unlink()
@@ -547,6 +575,7 @@ def test_missing_required_manifest_is_preserved_in_partial_bundle(cycle_factory)
     )
 
 
+@requires_native_evidence
 def test_partial_replay_adoption_never_upgrades_complete_capability(cycle_factory):
     root, qlib, request = cycle_factory(deep=False)
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -557,6 +586,7 @@ def test_partial_replay_adoption_never_upgrades_complete_capability(cycle_factor
     assert replay.capability == "partial_replay_only"
 
 
+@requires_native_evidence
 def test_foreign_manifest_command_cannot_fill_an_m1_to_m4_slot(cycle_factory):
     root, qlib, request = cycle_factory()
     path = root / request.post_trade_manifest
@@ -568,6 +598,7 @@ def test_foreign_manifest_command_cannot_fill_an_m1_to_m4_slot(cycle_factory):
     assert any(item["code"] == "manifest_command_mismatch" for item in result.problems)
 
 
+@requires_native_evidence
 def test_missing_prediction_does_not_forge_ranking(cycle_factory):
     root, qlib, request = cycle_factory(scores={"AAA": 1.0})
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
@@ -583,6 +614,7 @@ def test_missing_prediction_does_not_forge_ranking(cycle_factory):
     assert any("BBB" in row and "missing_prediction" in row for row in rows)
 
 
+@requires_native_evidence
 def test_missing_frozen_market_fingerprint_cannot_select_universe_by_filename_count(
     cycle_factory,
 ):
@@ -600,6 +632,7 @@ def test_missing_frozen_market_fingerprint_cannot_select_universe_by_filename_co
     assert not (root / result.bundle_path / "ranking.csv").exists()
 
 
+@requires_native_evidence
 def test_malformed_universe_rows_cannot_manufacture_full_coverage(cycle_factory):
     root, qlib, request = cycle_factory()
     (qlib / "instruments/synthetic.txt").write_text("AAA\nBBB\n")
@@ -608,6 +641,7 @@ def test_malformed_universe_rows_cannot_manufacture_full_coverage(cycle_factory)
     assert any(item["code"] == "ranking_unavailable" for item in result.problems)
 
 
+@requires_native_evidence
 def test_disjoint_historical_universe_intervals_resolve_at_exact_anchor(cycle_factory):
     root, qlib, request = cycle_factory()
     (qlib / "instruments/synthetic.txt").write_text(
@@ -623,6 +657,7 @@ def test_disjoint_historical_universe_intervals_resolve_at_exact_anchor(cycle_fa
     assert manifest["ranking"]["missing_count"] == 0
 
 
+@requires_native_evidence
 def test_overlapping_active_universe_intervals_cannot_forge_coverage(cycle_factory):
     root, qlib, request = cycle_factory()
     (qlib / "instruments/synthetic.txt").write_text(
@@ -639,6 +674,7 @@ def test_overlapping_active_universe_intervals_cannot_forge_coverage(cycle_facto
     )
 
 
+@requires_native_evidence
 def test_portfolio_numeric_strings_are_canonicalized_without_binary_float(cycle_factory):
     root, qlib, request = cycle_factory()
     _write_json(root / "config/prod_config.json", {
@@ -661,6 +697,7 @@ def test_portfolio_numeric_strings_are_canonicalized_without_binary_float(cycle_
 
 
 @pytest.mark.parametrize("invalid", ["", " 1", "+1", "01", "1e2", "NaN", "Infinity", "-0.1"])
+@requires_native_evidence
 def test_noncanonical_portfolio_numeric_strings_remain_visible_partial(
     cycle_factory, invalid,
 ):
@@ -676,6 +713,7 @@ def test_noncanonical_portfolio_numeric_strings_remain_visible_partial(
     assert any(item["code"] == "portfolio_invalid" for item in result.problems)
 
 
+@requires_native_evidence
 def test_exponent_form_json_portfolio_number_is_not_binary_float_canonicalized(
     cycle_factory,
 ):
@@ -689,6 +727,7 @@ def test_exponent_form_json_portfolio_number_is_not_binary_float_canonicalized(
     assert any(item["code"] == "portfolio_invalid" for item in result.problems)
 
 
+@requires_native_evidence
 def test_proven_ensemble_recorder_output_is_not_misclassified_as_missing_file(
     cycle_factory,
 ):
@@ -711,6 +750,7 @@ def test_proven_ensemble_recorder_output_is_not_misclassified_as_missing_file(
     )
 
 
+@requires_native_evidence
 def test_unproven_logical_output_remains_a_missing_required_file(cycle_factory):
     root, qlib, request = cycle_factory()
     path = root / request.ensemble_manifest
@@ -722,6 +762,7 @@ def test_unproven_logical_output_remains_a_missing_required_file(cycle_factory):
     assert any(item["code"] == "referenced_file_missing" for item in result.problems)
 
 
+@requires_native_evidence
 def test_empty_prediction_creates_no_fake_ranking_rows(cycle_factory):
     root, qlib, request = cycle_factory(scores={})
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
@@ -730,6 +771,7 @@ def test_empty_prediction_creates_no_fake_ranking_rows(cycle_factory):
     assert any(item["code"] == "ranking_unavailable" for item in result.problems)
 
 
+@requires_native_evidence
 def test_invalid_m3_prediction_keeps_diagnostic_and_no_fake_ranking(cycle_factory):
     root, qlib, request = cycle_factory()
     path = root / request.ensemble_manifest
@@ -742,6 +784,7 @@ def test_invalid_m3_prediction_keeps_diagnostic_and_no_fake_ranking(cycle_factor
     assert any(item["code"] == "ranking_unavailable" for item in result.problems)
 
 
+@requires_native_evidence
 def test_local_recorder_evidence_loads_exact_pred_without_backend_initialization(cycle_factory):
     import pandas as pd
 
@@ -771,6 +814,7 @@ def test_local_recorder_evidence_loads_exact_pred_without_backend_initialization
     assert manifest["ranking"]["prediction_digest"]["domain"] == "raw_bytes"
 
 
+@requires_native_evidence
 def test_dirty_observed_and_fingerprinted_can_remain_complete(cycle_factory):
     root, qlib, request = cycle_factory(dirty=True)
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
@@ -780,6 +824,7 @@ def test_dirty_observed_and_fingerprinted_can_remain_complete(cycle_factory):
     assert manifest["workspace_identity"]["status_inventory_digest"]["domain"] == "raw_bytes"
 
 
+@requires_native_evidence
 def test_absent_decision_is_not_recorded_not_no_action(cycle_factory):
     root, qlib, request = cycle_factory(decision=False)
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
@@ -788,6 +833,7 @@ def test_absent_decision_is_not_recorded_not_no_action(cycle_factory):
     assert manifest["decision_state"] == {"status": "not_recorded", "as_of_capture": True}
 
 
+@requires_native_evidence
 def test_foreign_cycle_decision_is_partial_and_never_recorded(cycle_factory):
     root, qlib, request = cycle_factory()
     path = root / request.decision_event
@@ -800,6 +846,7 @@ def test_foreign_cycle_decision_is_partial_and_never_recorded(cycle_factory):
     assert manifest["decision_state"]["status"] == "invalid"
 
 
+@requires_native_evidence
 def test_valid_decision_retains_exact_event_and_distinct_raw_canonical_digests(cycle_factory):
     root, qlib, request = cycle_factory()
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
@@ -810,6 +857,7 @@ def test_valid_decision_retains_exact_event_and_distinct_raw_canonical_digests(c
     assert decision["canonical_digest"]["domain"] == "canonical_json"
 
 
+@requires_native_evidence
 def test_model_recorder_chain_and_llm_trace_are_retained(cycle_factory):
     root, qlib, request = cycle_factory()
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
@@ -834,7 +882,10 @@ def test_dry_run_has_zero_filesystem_write(cycle_factory):
     before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
     result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request, dry_run=True)
     after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
-    assert result.status == "preview_complete"
+    expected = "preview_complete" if HAS_NATIVE_EVIDENCE else "preview_partial"
+    assert result.status == expected
+    if not HAS_NATIVE_EVIDENCE:
+        assert any(problem["code"] == "source_observer_unavailable" for problem in result.problems)
     assert result.did_write is False
     assert result.bundle_path is None
     assert result.capability == "none"
@@ -842,6 +893,7 @@ def test_dry_run_has_zero_filesystem_write(cycle_factory):
     assert before == after
 
 
+@requires_native_evidence
 def test_dry_run_with_existing_bundle_remains_non_authoritative_preview(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -852,6 +904,7 @@ def test_dry_run_with_existing_bundle_remains_non_authoritative_preview(cycle_fa
     assert preview.bundle_path is None
 
 
+@requires_native_evidence
 def test_duplicate_json_keys_make_source_visible_partial(cycle_factory):
     root, qlib, request = cycle_factory()
     path = root / request.order_manifest
@@ -864,6 +917,7 @@ def test_duplicate_json_keys_make_source_visible_partial(cycle_factory):
     )
 
 
+@requires_native_evidence
 def test_internal_qlib_symlink_is_incomparable_without_outside_read(cycle_factory, tmp_path):
     root, qlib, request = cycle_factory()
     instruments = qlib / "instruments"
@@ -879,7 +933,7 @@ def test_internal_qlib_symlink_is_incomparable_without_outside_read(cycle_factor
 
 @pytest.mark.parametrize("fault_point,expected", [
     ("before_publish", "failed_no_final"),
-    ("after_publish", "uncertain"),
+    pytest.param("after_publish", "uncertain", marks=requires_native_evidence),
 ])
 def test_artifact_tree_member_addition_denies_capability(
     cycle_factory, fault_point, expected,
@@ -1049,6 +1103,7 @@ def test_same_bytes_portfolio_replacement_breaks_identity_continuity(cycle_facto
     assert result.capability == "none"
 
 
+@requires_native_evidence
 def test_transient_portfolio_move_away_and_back_is_not_erased(cycle_factory):
     root, qlib, request = cycle_factory()
     portfolio = root / "config/prod_config.json"
@@ -1066,6 +1121,7 @@ def test_transient_portfolio_move_away_and_back_is_not_erased(cycle_factory):
     assert result.capability == "none"
 
 
+@requires_native_evidence
 def test_transient_artifact_member_add_remove_is_not_erased(cycle_factory):
     root, qlib, request = cycle_factory()
 
@@ -1115,6 +1171,7 @@ def test_qlib_mutation_before_publish_fails_without_final(cycle_factory):
     assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
 
 
+@requires_native_evidence
 def test_source_mutation_after_publish_is_uncertain(cycle_factory):
     root, qlib, request = cycle_factory()
     source = root / request.order_manifest
@@ -1134,6 +1191,7 @@ def test_source_mutation_after_publish_is_uncertain(cycle_factory):
     )
 
 
+@requires_native_evidence
 def test_portfolio_mutation_after_publish_is_uncertain(cycle_factory):
     root, qlib, request = cycle_factory()
     portfolio = root / "config/prod_config.json"
@@ -1161,6 +1219,7 @@ def test_process_interruption_propagates_and_claims_no_success(cycle_factory):
     assert not (root / "data/evidence/v1/cycles/2099-01-02").exists()
 
 
+@requires_native_evidence
 def test_post_publish_parent_loss_is_uncertain_without_capability(cycle_factory):
     root, qlib, request = cycle_factory()
 
@@ -1174,6 +1233,7 @@ def test_post_publish_parent_loss_is_uncertain_without_capability(cycle_factory)
     assert result.seal_digest is None
 
 
+@requires_native_evidence
 def test_post_publish_path_boundary_exception_is_uncertain(
     cycle_factory, monkeypatch,
 ):
@@ -1201,6 +1261,7 @@ def test_post_publish_path_boundary_exception_is_uncertain(
     assert result.capability == "none"
 
 
+@requires_native_evidence
 def test_post_publish_public_name_replacement_is_uncertain(cycle_factory):
     root, qlib, request = cycle_factory()
 
@@ -1216,6 +1277,7 @@ def test_post_publish_public_name_replacement_is_uncertain(cycle_factory):
     assert result.capability == "none"
 
 
+@requires_native_evidence
 def test_post_publish_sealed_member_tamper_is_uncertain(cycle_factory):
     root, qlib, request = cycle_factory()
 
@@ -1235,6 +1297,7 @@ def test_post_publish_sealed_member_tamper_is_uncertain(cycle_factory):
     )
 
 
+@requires_native_evidence
 def test_member_tamper_after_first_post_publish_verification_is_uncertain(
     cycle_factory, monkeypatch,
 ):
@@ -1264,6 +1327,7 @@ def test_member_tamper_after_first_post_publish_verification_is_uncertain(
     )
 
 
+@requires_native_evidence
 def test_transient_valid_final_cannot_mask_tampered_post_publish_bundle(
     cycle_factory, monkeypatch,
 ):
@@ -1371,7 +1435,7 @@ def test_foreign_existing_lock_is_blocked_and_never_removed(cycle_factory):
 
 @pytest.mark.parametrize("fault_point,expected_status", [
     ("before_publish", "failed_no_final"),
-    ("after_publish", "uncertain"),
+    pytest.param("after_publish", "uncertain", marks=requires_native_evidence),
 ])
 def test_replaced_owned_lock_fails_closed_and_preserves_foreign_lock(
     cycle_factory, fault_point, expected_status,
@@ -1392,6 +1456,7 @@ def test_replaced_owned_lock_fails_closed_and_preserves_foreign_lock(
     assert lock.read_text() == "foreign-owner"
 
 
+@requires_native_evidence
 def test_lock_cleanup_failure_after_publish_is_uncertain(
     cycle_factory, monkeypatch,
 ):
@@ -1422,6 +1487,7 @@ def test_publication_ancestor_symlink_replacement_fails_before_publish(cycle_fac
     assert not (root / "data/evidence/displaced-v1/cycles/2099-01-02").exists()
 
 
+@requires_native_evidence
 def test_research_epoch_change_on_replay_conflicts(cycle_factory):
     root, qlib, request = cycle_factory()
     sealer = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib)
@@ -1430,6 +1496,7 @@ def test_research_epoch_change_on_replay_conflicts(cycle_factory):
     assert sealer.capture(changed).status == "conflict"
 
 
+@requires_native_evidence
 def test_workspace_git_mutation_during_capture_is_visible_and_partial(cycle_factory, monkeypatch):
     root, qlib, request = cycle_factory()
     original = ProductionCycleEvidenceSealer._ranking
@@ -1444,6 +1511,7 @@ def test_workspace_git_mutation_during_capture_is_visible_and_partial(cycle_fact
     assert any(item["code"] == "workspace_git_mutated" for item in result.problems)
 
 
+@requires_native_evidence
 def test_transient_git_head_mutation_before_publish_denies_capability(cycle_factory):
     root, qlib, request = cycle_factory()
     head = root / ".synthetic-git-control" / "HEAD"

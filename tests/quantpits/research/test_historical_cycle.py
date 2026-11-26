@@ -34,6 +34,7 @@ from quantpits.scripts.research_shadow_cycle import main as shadow_cycle_main
 from quantpits.utils.predict_utils import rank_norm
 
 
+PHYSICAL_TMP = Path("/tmp").resolve()
 DATES = (
     "2026-07-03", "2026-07-10", "2026-07-17", "2026-07-24",
     "2026-07-31", "2026-08-07", "2026-08-14", "2026-08-21",
@@ -650,7 +651,7 @@ def test_public_result_construction_and_existing_output_are_fail_closed(tmp_path
             root_parent_identity_before=(1, 2, 3, 0, 0),
             root_parent_identity_after=(1, 2, 3, 0, 0),
         )
-    output = Path("/tmp") / ("quantpits_b2_conflict_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_conflict_%s" % tmp_path.name)
     output.mkdir()
     try:
         receipt = write_historical_cycle_output(runner, result, output)
@@ -673,7 +674,7 @@ def test_stage_a_current_ranking_tamper_is_denied_before_runner_capability(tmp_p
     carried["rankings"][ANCHOR]["DROP_1_3"] = canonical_full_ranking(
         tuple(row["instrument"] for row in current.rows), changed_scores,
     )
-    output = Path("/tmp") / ("quantpits_b2_stage_a_tamper_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_stage_a_tamper_%s" % tmp_path.name)
     with pytest.raises(HistoricalCycleContractError, match="result-digest revalidation"):
         HistoricalShadowCycleReplay(
             stage_a_result=stage_a, stage_a_inputs=inputs, profile=profile,
@@ -685,7 +686,7 @@ def test_stage_a_current_ranking_tamper_is_denied_before_runner_capability(tmp_p
 def test_publication_is_manifest_last_exact_and_recomputed(tmp_path):
     runner, workspace, qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    output = Path("/tmp") / ("quantpits_b2_success_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_success_%s" % tmp_path.name)
     workspace_before = sorted((path.relative_to(workspace).as_posix(), path.stat().st_size) for path in workspace.rglob("*") if path.is_file())
     qlib_before = sorted((path.relative_to(qlib).as_posix(), path.stat().st_size) for path in qlib.rglob("*") if path.is_file())
     try:
@@ -714,7 +715,7 @@ def test_tampered_result_is_denied_before_output_root_creation(tmp_path):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
     object.__setattr__(result, "_bytes", result.to_canonical_json_bytes() + b" ")
-    output = Path("/tmp") / ("quantpits_b2_tamper_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_tamper_%s" % tmp_path.name)
     with pytest.raises(HistoricalCycleContractError, match="before write"):
         write_historical_cycle_output(runner, result, output)
     assert not output.exists()
@@ -723,8 +724,8 @@ def test_tampered_result_is_denied_before_output_root_creation(tmp_path):
 def test_publication_rejects_symlink_parent_without_creating_target(tmp_path):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    real_parent = Path("/tmp") / ("quantpits_b2_real_%s" % tmp_path.name)
-    alias = Path("/tmp") / ("quantpits_b2_alias_%s" % tmp_path.name)
+    real_parent = PHYSICAL_TMP / ("quantpits_b2_real_%s" % tmp_path.name)
+    alias = PHYSICAL_TMP / ("quantpits_b2_alias_%s" % tmp_path.name)
     real_parent.mkdir()
     alias.symlink_to(real_parent, target_is_directory=True)
     try:
@@ -739,7 +740,7 @@ def test_publication_rejects_symlink_parent_without_creating_target(tmp_path):
 def test_publication_rejects_nested_parent_before_and_after_replacement(tmp_path):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    parent = Path("/tmp") / ("quantpits_b2_nested_%s" % tmp_path.name)
+    parent = PHYSICAL_TMP / ("quantpits_b2_nested_%s" % tmp_path.name)
     displaced = parent.with_name(parent.name + "_displaced")
     target = parent.with_name(parent.name + "_target")
     parent.mkdir()
@@ -764,7 +765,7 @@ def test_publication_rejects_nested_parent_before_and_after_replacement(tmp_path
 def test_publication_root_create_is_relative_to_observed_tmp_descriptor(tmp_path, monkeypatch):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    output = Path("/tmp") / ("quantpits_b2_dirfd_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_dirfd_%s" % tmp_path.name)
     original = os.mkdir
     observed = []
 
@@ -772,7 +773,7 @@ def test_publication_root_create_is_relative_to_observed_tmp_descriptor(tmp_path
         if path == output.name:
             observed.append(dir_fd)
             assert dir_fd is not None
-            assert historical_cycle_module._directory_descriptor_identity(dir_fd) == historical_cycle_module._root_identity(Path("/tmp"))
+            assert historical_cycle_module._directory_descriptor_identity(dir_fd) == historical_cycle_module._root_identity(PHYSICAL_TMP)
         return original(path, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "mkdir", recording)
@@ -787,7 +788,7 @@ def test_publication_root_create_is_relative_to_observed_tmp_descriptor(tmp_path
 def test_process_control_during_publication_propagates_and_manifest_is_absent(tmp_path, monkeypatch):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    output = Path("/tmp") / ("quantpits_b2_interrupt_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_interrupt_%s" % tmp_path.name)
     original = os.fsync
     calls = []
 
@@ -810,7 +811,7 @@ def test_process_control_during_publication_propagates_and_manifest_is_absent(tm
 def test_canonical_root_replacement_yields_uncertain_not_committed(tmp_path, monkeypatch):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    output = Path("/tmp") / ("quantpits_b2_replace_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_replace_%s" % tmp_path.name)
     displaced = output.with_name(output.name + "_displaced")
     original = historical_cycle_module._stable_read
     triggered = []
@@ -836,7 +837,7 @@ def test_canonical_root_replacement_yields_uncertain_not_committed(tmp_path, mon
 def test_foreign_final_namespace_member_yields_uncertain(tmp_path, monkeypatch, foreign_kind):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    output = Path("/tmp") / ("quantpits_b2_foreign_%s_%s" % (foreign_kind, tmp_path.name))
+    output = PHYSICAL_TMP / ("quantpits_b2_foreign_%s_%s" % (foreign_kind, tmp_path.name))
     original = historical_cycle_module._stable_read
     injected = []
 
@@ -865,7 +866,7 @@ def test_foreign_final_namespace_member_yields_uncertain(tmp_path, monkeypatch, 
 def test_member_move_away_and_back_during_final_read_yields_uncertain(tmp_path, monkeypatch):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    output = Path("/tmp") / ("quantpits_b2_member_move_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_member_move_%s" % tmp_path.name)
     original = historical_cycle_module._stable_read
     calls = []
 
@@ -895,7 +896,7 @@ def test_member_move_away_and_back_during_final_read_yields_uncertain(tmp_path, 
 def test_invalid_expected_member_after_manifest_yields_uncertain(tmp_path, monkeypatch, mutation):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    output = Path("/tmp") / ("quantpits_b2_member_%s_%s" % (mutation, tmp_path.name))
+    output = PHYSICAL_TMP / ("quantpits_b2_member_%s_%s" % (mutation, tmp_path.name))
     original = historical_cycle_module._stable_read
     injected = []
 
@@ -925,7 +926,7 @@ def test_invalid_expected_member_after_manifest_yields_uncertain(tmp_path, monke
 def test_process_control_after_manifest_write_propagates(tmp_path, monkeypatch):
     runner, _workspace, _qlib = build_runner(tmp_path / "source")
     result = runner.run()
-    output = Path("/tmp") / ("quantpits_b2_manifest_interrupt_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_manifest_interrupt_%s" % tmp_path.name)
 
     def interrupted(*_args, **_kwargs):
         raise KeyboardInterrupt()
@@ -952,7 +953,7 @@ def test_output_outside_tmp_is_rejected_before_write(tmp_path):
 
 def test_cli_executes_the_same_complete_bundle_contract(tmp_path, capsys):
     runner, workspace, qlib = build_runner(tmp_path / "source")
-    output = Path("/tmp") / ("quantpits_b2_cli_%s" % tmp_path.name)
+    output = PHYSICAL_TMP / ("quantpits_b2_cli_%s" % tmp_path.name)
     try:
         code = shadow_cycle_main([
             "--workspace", str(workspace), "--qlib-data-dir", str(qlib),

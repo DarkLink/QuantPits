@@ -20,8 +20,11 @@ from quantpits.research.historical_window_publication import (
 from tests.quantpits.research.test_historical_window import build_window
 
 
+PHYSICAL_TMP = Path("/tmp").resolve()
+
+
 def _root(tmp_path, suffix="one"):
-    return Path("/tmp") / ("quantpits_b3b_%s_%s" % (tmp_path.name, suffix))
+    return PHYSICAL_TMP / ("quantpits_b3b_%s_%s" % (tmp_path.name, suffix))
 
 
 def _clean(*roots):
@@ -125,10 +128,10 @@ def test_existing_root_is_conflict_unread_and_unchanged(tmp_path):
 def test_relative_nested_workspace_and_symlink_parent_are_denied_before_write(tmp_path):
     runner = build_window(tmp_path / "source", 4)[0]
     result = runner.run()
-    for root in (Path("relative"), tmp_path / "nested", Path("/tmp") / "a" / "nested"):
+    for root in (Path("relative"), tmp_path / "nested", PHYSICAL_TMP / "a" / "nested"):
         with pytest.raises(HistoricalWindowPublicationContractError, match="direct child"):
             write_historical_window_output(runner, result, root)
-    alias = Path("/tmp") / ("quantpits_b3b_alias_%s" % tmp_path.name)
+    alias = PHYSICAL_TMP / ("quantpits_b3b_alias_%s" % tmp_path.name)
     alias.symlink_to(tmp_path, target_is_directory=True)
     try:
         with pytest.raises(HistoricalWindowPublicationContractError, match="direct child"):
@@ -201,7 +204,7 @@ def test_parent_identity_drift_and_root_or_directory_replacement_are_uncertain(t
         parent_calls = {"count": 0}
         def drift_parent(path):
             identity = original_identity(path)
-            if Path(path) == Path("/tmp"):
+            if Path(path) == PHYSICAL_TMP:
                 parent_calls["count"] += 1
                 if parent_calls["count"] == 2:
                     return (identity[0], identity[1] + 1, identity[2], 0, 0)

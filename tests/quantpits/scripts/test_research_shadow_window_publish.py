@@ -60,7 +60,7 @@ def test_publish_cli_requires_exact_arguments_and_rejects_resume_selection_and_r
 
 def test_publish_cli_committed_receipt_is_one_line_safe_and_exact(tmp_path, capsys):
     runner, _stage_a, _inputs, profile, workspace, qlib = build_window(tmp_path / "source", 4)
-    output = Path("/tmp") / ("quantpits_b3b_cli_%s" % tmp_path.name)
+    output = Path("/tmp").resolve() / ("quantpits_b3b_cli_%s" % tmp_path.name)
     shutil.rmtree(str(output), ignore_errors=True)
     args = [
         "--workspace", str(workspace), "--qlib-data-dir", str(qlib),

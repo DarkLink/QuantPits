@@ -14,7 +14,7 @@ from quantpits.post_trade.command import PostTradeRunOptions, execute_prepared, 
 from quantpits.post_trade.service import PostTradeService
 from quantpits.post_trade.state import ValuationSnapshot
 from quantpits.utils.workspace import WorkspaceContext
-from tests.quantpits.evidence.test_sealing import cycle_factory, _write_json
+from tests.quantpits.evidence.test_sealing import HAS_NATIVE_EVIDENCE, cycle_factory, _write_json
 
 
 DAYS = ("2099-01-01", "2099-01-02")
@@ -111,6 +111,21 @@ def _legacy_manifest(root, request):
     return raw
 
 
+def _assert_partial_evidence(root, qlib, request):
+    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(
+        request, dry_run=not HAS_NATIVE_EVIDENCE,
+    )
+    expected = {"deep_analysis_missing", "ranking_coverage_partial"}
+    problems = {row["code"] for row in result.problems}
+    if HAS_NATIVE_EVIDENCE:
+        assert result.status == "sealed_partial"
+        assert problems == expected
+    else:
+        assert result.status == "preview_partial"
+        assert expected | {"source_observer_unavailable"} <= problems
+        assert result.did_write is False
+
+
 @pytest.mark.parametrize("settlement_mode", ["empty", "daily", "bundle"])
 def test_new_daily_or_bundle_audit_and_seal(
     cycle_factory, tmp_path, settlement_mode,
@@ -127,9 +142,7 @@ def test_new_daily_or_bundle_audit_and_seal(
     if settlement_mode != "empty":
         assert logical[DAYS[0]]["status"] == "observed" and logical[DAYS[0]]["row_count"] == 1
         assert logical[DAYS[0]]["source_fingerprint"]
-    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
-    assert result.status == "sealed_partial"
-    assert {row["code"] for row in result.problems} == {"deep_analysis_missing", "ranking_coverage_partial"}
+    _assert_partial_evidence(root, qlib, request)
 
 
 def test_new_sealer_excludes_old_committed_logical_empty_input_refs(
@@ -137,5 +150,4 @@ def test_new_sealer_excludes_old_committed_logical_empty_input_refs(
 ):
     root, qlib, request, _ = _layout(cycle_factory, tmp_path)
     _legacy_manifest(root, request)
-    result = ProductionCycleEvidenceSealer(root, qlib_data_dir=qlib).capture(request)
-    assert {row["code"] for row in result.problems} == {"deep_analysis_missing", "ranking_coverage_partial"}
+    _assert_partial_evidence(root, qlib, request)
